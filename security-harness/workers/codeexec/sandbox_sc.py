@@ -203,7 +203,7 @@ def operation(kind: str, **fields):
     flush()
 
 
-# Technique families for the exploit-deepening loop (docs/EXPLOIT_DEEPENING.md): a small, fixed
+# Technique families for the exploit-deepening loop (design/DEEP_EXPLOITATION.md §2/§6): a small, fixed
 # vocabulary so per-family coverage is machine-groupable. Unknown/absent -> "other".
 _FAMILY_TOKENS = {
     "reflection-breakout", "alternate-engine", "encoding-bypass", "gadget-chain", "oob-exfil",

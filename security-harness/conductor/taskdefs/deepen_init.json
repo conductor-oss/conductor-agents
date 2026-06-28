@@ -1,6 +1,6 @@
 {
   "name": "deepen_init",
-  "description": "Persistent exploitation deepening (deepen_init): technique-ladder walk with no-premature-give-up guard + self-learning lessons (docs/DEEP_EXPLOITATION.md).",
+  "description": "Persistent exploitation deepening (deepen_init): technique-ladder walk with no-premature-give-up guard + self-learning lessons (design/DEEP_EXPLOITATION.md).",
   "ownerEmail": "security-conductor@local",
   "retryCount": 0,
   "timeoutSeconds": 60,

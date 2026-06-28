@@ -120,8 +120,11 @@ worker is a sink that never fires.
   (`exploit_agent`, `verify_finding`, `purple_check`).
 - **Nesting.** The sub-workflow relation `⊐` is the fixed finite hierarchy
   `deep_assess ⊐ {surface, docs_ingest, assess_pass, reflect_pass}`,
-  `assess_pass ⊐ {explore_agent, exploit_agent, verify_finding, purple_check}`, with no
-  cycles (a workflow never transitively calls itself). Depth `≤ 3`.
+  `assess_pass ⊐ {explore_agent, exploit_agent, exploit_deepen, verify_finding, purple_check}`,
+  with no cycles (a workflow never transitively calls itself). Depth `≤ 3`. (`exploit_deepen`
+  is routed in place of `exploit_agent` by `build_exploit_jobs` for injection/code-exec/sandbox
+  sinks; its `exploit_loop` carries the same `iteration < max_steps` bound, so Lemma A's loop
+  argument covers it unchanged.)
 
 By structural induction over `⊐`, each level contributes finitely many tasks and the
 recursion bottoms out, so `|Nσ| < ∞`. ∎
@@ -134,7 +137,7 @@ is not earlier in scope (the same check that forbids bare `${X.y}` refs). Theref
 edge of `dep` points from a later task to an earlier one in declaration order restricted
 to each scope; declaration order is a total order, so `dep` ⊆ a strict total order ⇒
 acyclic. Loop/fork *bodies* re-enter via fresh unrolled copies (Lemma A), not via a cycle
-in `dep`. ∎ (Empirically: all 14 workflows register without error — §5.)
+in `dep`. ∎ (Empirically: all 15 workflows register without error — §5.)
 
 ### 3.3 Proof of the Theorem
 Define the potential `Φ(σ) = ` (number of non-terminal tasks in `Nσ`) `+ Σ_loops μ`.
@@ -198,7 +201,7 @@ intervention.
 
 The proof rests on premises that are mechanically checkable (and were checked):
 - **Lemma B / registration validity:** `bash conductor/register.sh` accepts all task defs
-  and all 14 workflows against a live server (no `${…}` resolves to an undefined task) —
+  and all 15 workflows against a live server (no `${…}` resolves to an undefined task) —
   verified.
 - **Cov:** the worker startup log enumerates one active worker per `SIMPLE` task name in
   the closure — verifiable via `grep 'Worker\[name=' ` over the worker log.

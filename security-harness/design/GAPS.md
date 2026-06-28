@@ -1,7 +1,7 @@
 # Design ↔ implementation delta
 
 > Tracks the gap between `design/ARCHITECTURE.md` (the end state) and the build, after the
-> implementation pass driven by `docs/IMPLEMENTATION_PLAN.md`. Two layers are distinguished:
+> implementation pass driven by `design/IMPLEMENTATION_PLAN.md`. Two layers are distinguished:
 >
 > - **Logic** — the deterministic substance (pure modules in `workers/common/` + `bench/`),
 >   provable here by unit tests (`make test`).
@@ -18,14 +18,22 @@
 
 | Gap | Logic (unit-proven) | Runtime wiring (server-gated) |
 |---|---|---|
-| **G1** intel feeds | ✅ `deps.prioritize/top_attempt` (KEV/EPSS/exploit weighting), `deps.parse_kev/parse_epss` — `test_deps_priority`, `test_wiring_cores` | ✅ **folded into `dep_cve_scan`** (`_intel_feeds` live KEV/EPSS + `substrates_version` + `feeds_as_of` → dossier), already in `deep_assess`. The redundant standalone `intel_refresh` worker/taskdef were **removed**. **NVD + GHSA added** (`deps.query_ghsa`/`merge_cve_records`/`nvd_enrich`; GHSA gated on `GITHUB_TOKEN`, NVD backfills severity) — `test_deps_feeds`. |
-| **G2** substrate pack + IMDSv2 + replay | ✅ `catalog/substrates.yaml` (8 substrates), `substrates.imds_probe_targets/file_secret_targets/imdsv2_plan/replay_check` — `test_substrates`, `test_wiring_cores` | exploit agent executes the `imdsv2_plan`; `replay_check` run from the sandbox; confirm-and-halt |
+| **G1** intel feeds | ✅ `deps.prioritize/top_attempt` (KEV/EPSS/exploit weighting), `deps.parse_kev/parse_epss` — `test_deps_priority`, `test_wiring_cores` | ✅ **folded into `dep_cve_scan`** (`_intel_feeds` live KEV/EPSS + `substrates_version` + `feeds_as_of` → dossier), already in `deep_assess`. The redundant standalone `intel_refresh` worker/taskdef were **removed**. **NVD + GHSA added** (`deps.query_ghsa`/`merge_cve_records`/`nvd_enrich`; GHSA gated on `GITHUB_TOKEN`, NVD backfills severity) — `test_deps_feeds`. **Weaponization index (Exploit-DB/Metasploit/Nuclei) is not yet wired** (P1-2): identity = OSV+GHSA, severity = OSV/GHSA/NVD, in-the-wild = KEV/EPSS — only the exploit-availability lookup remains. |
+| **G2** substrate pack + IMDSv2 + replay | ✅ `catalog/substrates.yaml` (9 substrates: aws, gcp, azure, oci, alibaba, digitalocean, loopback, kubernetes, host), `substrates.imds_probe_targets/file_secret_targets/imdsv2_plan/replay_check` — `test_substrates`, `test_wiring_cores` | exploit agent executes the `imdsv2_plan`; `replay_check` run from the sandbox; confirm-and-halt |
 | **G3** docs JS-render tier | ✅ `sitemap.urls/security_relevant` + batched Playwright rendering in `rag/tasks.py` | ✅ wired through `docs_ingest(render_js=true, index_docs=true)`; live doc-site acceptance pending |
 | **G4** incremental chaining | ✅ `chaining.preconditions/unlocked_objectives/attach` — `test_wiring_cores` | ✅ `evaluate_campaign_progress` persists graph/preconditions → next pass; live chain acceptance pending |
 | **G5** provenance types | ✅ `provenance.classify` + `findings.finding(provenance=…)` + `memory._stamp` preserve — `test_provenance` | producers already pass `source_tool`; no further wiring |
 | **G6** oracle (living/held-out/adversarial/coverage) | ✅ `oracle.kfold/distill/merge_fixtures`, `score.objective_coverage`; canonical coverage corpus measures **all 31** catalog objectives (0 unmeasured), 9 near-miss negatives; `bench/coverage.py` emits `reports/BENCH.md` offline — `test_oracle`, `test_bench_coverage`, `test_bench_report` | ✅ **held-out split is now genuine**: 2 scored targets (`seeded-vuln-app` + `juice-shop`, `bench/expected/juice-shop.json` = 13 documented challenges across 7 classes) → `holdout.k=2` k-fold; **`oracle_adequate` returns True** (was blocked). Remaining: feed ratified findings into the living corpus from a real run (still authored fixtures, not self-growing). |
 | **G7** config versioning/lineage | ✅ **complete** — `config_lineage.*` (content-addressed, versioned, rollback, verify_chain, pinned, `why()`, `snapshot`) — `test_config_lineage` | (used by G8 write-back) |
 | **G8** hill-climbing meta-loop | ✅ engine core — `hillclimb.*`, `prompt_units.*`, `trace.*`; `hc_analyze` read-only worker; **trace corpus persisted** (`memory.traces_path` → `state/<fp>/traces.jsonl` via `memory_save`); **write-back loop** `hc_writeback.*` (`decide`/`promote`/`run_cycle`/`apply_ratified`/rollback/`activate` + oracle-adequacy gate) committing reversible `config_lineage` editions; **proposer** (`bench/proposer.py`) + **paired held-out eval** (`bench/eval_runner.py`) — `test_hillclimb`, `test_trace`, `test_trace_persist`, `test_hc_writeback`, `test_proposer` | ✅ the **full cycle is wired**: oracle adequate (2nd scored target `juice-shop`), proposer built (`bench/proposer.py` — deterministic `prompt_units` exemplar-gradient default + gated LLM tier; `prompts/exploit.md` has an opted-in `TACTICS` region), paired held-out eval (`bench/eval_runner.py`), and the orchestrator `hc_writeback.run_cycle` (propose→eval→gated `promote`→reversible lineage), driven by `bench/hc_writeback.py --apply`. Pure loop unit-tested with stubs (`test_hc_writeback` run_cycle cases + `test_proposer`). The only thing left is **running it live** (server + reachable held-out targets + `make register` so a prompt overlay reaches workers) — a live acceptance run, not new logic. |
+
+## Post-E11 depth work (`design/DEEP_EXPLOITATION.md`)
+
+This delta predates the depth-satisficing fix. Recorded here for completeness:
+
+| Item | Logic (unit-proven) | Runtime wiring (server-gated) |
+|---|---|---|
+| **Persistent per-sink deepening** | ✅ `workers/common/deepen.py` — technique ladders + ledger + no-premature-give-up gate (Theorem 2) + lesson-carrying self-learning; `feature_exercise.technique_coverage` (soft cross-pass family coverage) — `test_deepen`, `test_deepening_invariants`, `test_exploit_deepening` | ✅ `exploit_deepen` sub-workflow + `deepen_{init,observe,gate}` taskdefs wired; `build_exploit_jobs` routes injection/RCE/SQLi/JS/sandbox/CVE sinks to it (15th workflow). Same live-acceptance run as G2/G4/G8 discharges the depth claim (≥2 families attempted per high-value sink; evidence in `deepen_state`). |
 
 ## Design-decision verification (D1–D18)
 
@@ -34,7 +42,7 @@ Each decision in `design/ARCHITECTURE.md` §21, with where it is enforced and it
 | # | Enforced by | Proof |
 |---|---|---|
 | D1 catalog data spine | `common/catalog.py`, `catalog/objectives.yaml` | `test_catalog` |
-| D2 single workflow entry point | `deep_assess.json`, `docs/EXECUTION_MODEL.md` | termination proof (structural) |
+| D2 single workflow entry point | `deep_assess.json`, `design/EXECUTION_MODEL.md` | termination proof (structural) |
 | D3 generic engine, profiles/data | `common/profiles.py`, `catalog/substrates.yaml` | `test_profiles`, `test_substrates` |
 | D4 adversarial verifier separate | `verify_finding.json`, `prompts/verify.md` | workflow (live) |
 | D5 manifest + capability, fail-closed | `common/authz.py` | `test_authz` |

@@ -1,4 +1,4 @@
-"""Executable proof of the persistent-deepening invariants (docs/DEEP_EXPLOITATION.md).
+"""Executable proof of the persistent-deepening invariants (design/DEEP_EXPLOITATION.md).
 
 These tests are the machine-checked companion to the formal proof: they exercise the
 no-premature-give-up guard (Theorem 2), the termination bound (Theorem 1), and the self-learning

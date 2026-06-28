@@ -6,8 +6,8 @@
 > the load-bearing decisions, and the extension seams along which it grows.
 >
 > **What it is not.** It is not the requirements wishlist (`SECURITY_HARNESS_SPEC.md`), not
-> the orchestration termination proof (`docs/EXECUTION_MODEL.md`), and not the backlog or a
-> status report (`docs/ROADMAP.md`). It describes the target design, not what is built today;
+> the orchestration termination proof (`design/EXECUTION_MODEL.md`), and not the backlog or a
+> status report (`design/ROADMAP.md`). It describes the target design, not what is built today;
 > the delta between this design and the current implementation is tracked separately.
 >
 > **Units.** A **campaign** (≡ a *run*) is one invocation of `assess(I)`. A **pass** is one
@@ -1153,4 +1153,4 @@ A single `deep_assess` run, mapped to the layers, to make the composition concre
 ---
 
 *Companion documents:* requirements → `SECURITY_HARNESS_SPEC.md`; orchestration termination
-proof → `docs/EXECUTION_MODEL.md`; spec conformance → `CONFORMANCE.md`; backlog → `docs/ROADMAP.md`.
+proof → `design/EXECUTION_MODEL.md`; spec conformance → `CONFORMANCE.md`; backlog → `design/ROADMAP.md`.

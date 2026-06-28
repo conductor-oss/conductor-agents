@@ -182,7 +182,7 @@ def _focused_block_reason(entry: dict, adequacy: dict, cap: int) -> str:
 
 def technique_coverage(operations: list | None, catalog_objectives: list | None = None) -> dict:
     """Per-objective summary of which exploit technique families were attempted, derived ONLY from
-    the operation ledger (docs/EXPLOIT_DEEPENING.md §3). A read-only *summary of what happened* — not
+    the operation ledger (design/DEEP_EXPLOITATION.md §6). A read-only *summary of what happened* — not
     the rejected next_technique/proximity/exhausted engine. Lets `reflect` reopen a hypothesis that
     tried only one family. Returns {objective_id: {tried_families: [...], n_tried: k}}."""
     by: dict = {}

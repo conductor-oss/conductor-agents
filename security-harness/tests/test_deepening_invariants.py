@@ -82,5 +82,5 @@ def test_I6_no_new_auto_tune_surface_and_no_rejected_engine():
     assert {s for s, m in hillclimb.SURFACE_MODE.items() if m == "auto"} == {"profile", "prompt"}
     assert hillclimb.SURFACE_MODE.get("tradecraft") == "ratify"
     assert hillclimb.SURFACE_MODE.get("safety") == "never"
-    # The rejected per-feature "techniques engine" (EXPLOIT_DEEPENING.md §5) was NOT introduced.
+    # The rejected per-feature "techniques engine" (DEEP_EXPLOITATION.md §6) was NOT introduced.
     assert not os.path.exists(os.path.join(REPO, "workers", "common", "techniques.py"))

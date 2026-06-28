@@ -2,7 +2,7 @@
 
 > **Source of truth:** `design/ARCHITECTURE.md` (the target design). This plan tracks the
 > **delta** between that design and the current implementation, as a checklist.
-> **Companion:** `CONFORMANCE.md` (§-by-§ status), `docs/ROADMAP.md` (epic history).
+> **Companion:** `CONFORMANCE.md` (§-by-§ status), `design/ROADMAP.md` (epic history).
 >
 > **Status legend:** `[x]` built · `[~]` partial · `[ ]` not started. Section references
 > (e.g. §19.2, D16) point into `design/ARCHITECTURE.md`.
@@ -18,8 +18,8 @@
 
 The entire assessment engine is production-grade. Recorded here so the plan is complete.
 
-- [x] **L1 Orchestration** — 14 workflows, 10 workers, `assess`/`scan`/`retest.py`, 27 taskdefs
-- [x] **L3 Reasoning** — 13 prompts + `register.sh` injection
+- [x] **L1 Orchestration** — 15 workflows, 10 workers, `assess`/`scan`/`retest.py`, 27 taskdefs
+- [x] **L3 Reasoning** — 14 prompts + `register.sh` injection
 - [x] **L4 Action** — `http_request` (capability-gated, halt-aware), `code_exec` (hardened sandbox), `browser` (Playwright), `load_probe` (knee), `sast`, `oob` (collaborator)
 - [x] **L5 Epistemics (§12)** — separate adversarial verifier, per-class evidence bars, OOB confirmation, content-hash integrity, contradiction detection
 - [x] **L6 Safety/Authz (§10)** — manifest + capability levels 0–4 + `forbids`, scope enforcement, halt conditions, safety governor, guardrail preamble, append-only hash-chain audit log, leave-clean cleanup
@@ -35,8 +35,8 @@ The entire assessment engine is production-grade. Recorded here so the plan is c
 
 | # | Artifact | Status | Section |
 |---|---|---|---|
-> **Status after the implementation pass (see `docs/GAPS.md`):** every gap's **logic is
-> implemented and unit-proven** (`make test` → 181 passed, +52 new). The residual `[~]` is
+> **Status after the implementation pass (see `design/GAPS.md`):** every gap's **logic is
+> implemented and unit-proven** (`make test` green). The residual `[~]` is
 > **runtime wiring** (Conductor workflow-DAG edits + live LLM/target run), gated on a server.
 >
 > **⚠ Live-run RCA (`docs/RCA-product-exploitation-gap.md`):** a real run against
@@ -75,7 +75,7 @@ The entire assessment engine is production-grade. Recorded here so the plan is c
   - [ ] exploit-availability (Exploit-DB / Metasploit / Nuclei)
   - [x] prioritization = reachable × version-matched × severity × (KEV/EPSS) × exploit-available — `deps.prioritize`
   - *Done when:* KEV-listed, exploit-available, reachable CVEs are tried first. **(Identity = OSV+GHSA; severity = OSV/GHSA/NVD; weaponization index still pending.)**
-- [x] **P1-3 — Substrate metadata reference pack (§15, G2).** → `catalog/substrates.yaml`, `workers/common/substrates.py`, `tests/test_substrates.py` (7 tests)
+- [x] **P1-3 — Substrate metadata reference pack (§15, G2).** → `catalog/substrates.yaml`, `workers/common/substrates.py`, `tests/test_substrates.py`
   - [x] `catalog/substrates.yaml` — AWS IMDSv1/v2 (+ handshake data + IPv6), GCP, Azure, OCI, Alibaba, DO, k8s, host; versioned + `as_of`
   - [x] loader: `imds_probe_targets` (HTTP/SSRF, cloud only) **vs** `file_secret_targets` (file-read: k8s SA token, `/proc/self/environ`, `~/.aws/credentials`…) — faithful to §15's two technique families; `infer()` fingerprints the substrate
   - [ ] wired into the start-of-loop refresh — deferred to **P1-1** (`as_of` stamping into the report)
@@ -131,10 +131,10 @@ The entire assessment engine is production-grade. Recorded here so the plan is c
   - [x] verdict-with-reasons records — `trace.from_findings` builds one record per confirmed/rejected/blind verdict (objective_id, outcome, evidence_bar = class, reason, finding_sig); clustering keys off controlled fields only (H7).
   - [x] queryable per-run trace store — `memory.traces_path(fp)` → `state/<fingerprint>/traces.jsonl`; `memory_save` persists the run's traces there (best-effort), so the corpus grows across runs (recurrence = signal, H4). `hc_analyze` already loads via `trace.load`/`trace_path`.
   - *Done when:* each verdict records *why*; corpus is machine-readable. **(Done — `tests/test_trace_persist.py`. Now mining real persisted traces, not a mirrored corpus.)**
-- [x] **P3-6 — Config versioning & lineage (§19 H5, G7).** → `workers/common/config_lineage.py`, `tests/test_config_lineage.py` (8 tests)
+- [x] **P3-6 — Config versioning & lineage (§19 H5, G7).** → `workers/common/config_lineage.py`, `tests/test_config_lineage.py`
   - [x] `version` + content-hash on `catalog/objectives.yaml`, `prompts/*`, `profiles/*` — `snapshot()` baselines the live tree (proven: 15 artifacts → one verifiable lineage)
   - [x] content-addressed editions + a `config_lineage` store + `rollback_target` + `verify_chain` + pinned (model, benchmark, seed) + provenance + benchmark before/after + `why()` reproducibility
-  - *Done:* every config edition is attributable (provenance), reproducible (`why()` + pins), reversible (`rollback_target`), and tamper-evident (`verify_chain`). Safety/authz rejected as a surface (H2). **Proof:** `pytest tests/test_config_lineage.py` 8/8; full suite 136 passed.
+  - *Done:* every config edition is attributable (provenance), reproducible (`why()` + pins), reversible (`rollback_target`), and tamper-evident (`verify_chain`). Safety/authz rejected as a surface (H2). **Proof:** `pytest tests/test_config_lineage.py` green.
 
 ---
 

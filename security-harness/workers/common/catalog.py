@@ -1,4 +1,4 @@
-"""Security Objective Catalog loader (docs/ROADMAP.md#E0) — the harness spine.
+"""Security Objective Catalog loader (design/ROADMAP.md#E0) — the harness spine.
 
 The catalog (`catalog/objectives.yaml`) is the single source of truth for WHAT the
 harness tests for. This module loads it, evaluates which objectives are APPLICABLE to a

@@ -8,7 +8,7 @@ known standard, with honest coverage and reproducible proof.
 This roadmap turns the gap analysis into trackable epics. Status legend per task:
 `[ ]` not started · `[~]` in progress · `[x]` done.
 
-> **See also:** `design/ARCHITECTURE.md` is the end-state design; `docs/IMPLEMENTATION_PLAN.md`
+> **See also:** `design/ARCHITECTURE.md` is the end-state design; `design/IMPLEMENTATION_PLAN.md`
 > tracks the delta from that design to the current build (Phases 0–5, with the §19
 > hill-climbing meta-loop as the centerpiece).
 
@@ -65,7 +65,7 @@ report + benchmark.
 - [x] `prompts/hypothesize.md` consumes the **applicable** catalog entries (breadth mandate) and tags each hypothesis with `objective_id`, which flows through to confirmed findings.
 - [x] `workers/common/coverage.py` `build_from_catalog()` builds cells **from the catalog** and classifies tested/partial/untested/**not_applicable**; wired into the in-loop + post-loop coverage builds.
 - [x] `prompts/report.md` Coverage section renders catalog coverage with OWASP/CWE refs and excludes N/A from the denominator.
-- [x] Tests (`tests/test_catalog.py`, extended `test_coverage`) green (105 total); workflows register cleanly.
+- [x] Tests (`tests/test_catalog.py`, extended `test_coverage`) green; workflows register cleanly.
 
 **Acceptance.** A scan against the seeded app reports coverage as "X of N *applicable*
 catalog objectives tested," with N/A objectives excluded and a CWE/ASVS column. Unit

@@ -1,4 +1,4 @@
-"""Persistent exploitation deepening (design + proof: docs/DEEP_EXPLOITATION.md).
+"""Persistent exploitation deepening (design + proof: design/DEEP_EXPLOITATION.md).
 
 A satisficing agent stops at its first plausible conclusion: "I sent one SQL quote, got a 200,
 concluded not-injectable" or "one GraalJS reflection payload was blocked, concluded sandboxed".
