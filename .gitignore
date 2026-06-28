@@ -30,3 +30,4 @@
 # OS / scratch
 .DS_Store
 **/.scratch/
+/.idea
