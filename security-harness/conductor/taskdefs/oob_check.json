@@ -1,0 +1,11 @@
+{
+  "name": "oob_check",
+  "description": "Query the OOB collaborator for inbound canary hits (out-of-band confirmation of blind SSRF/exfil/exec). Given canary token(s) or URL(s), returns whether the target's server reached the canary, with source IPs and a hit sample. Reads the listener's local port from workers/oob/state.json; never raises (no collaborator -> hit=false).",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 30,
+  "responseTimeoutSeconds": 20,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

@@ -1,0 +1,69 @@
+{
+  "name": "web_crawl",
+  "version": 1,
+  "description": "Optional form login, then a scoped headless-browser crawl. Returns the attack surface (urls/forms/params/endpoints), passive DOM findings, and crawl metadata.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 1500,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["base_url", "scope", "login_url", "username", "password", "max_pages", "max_depth", "auth"],
+  "variables": { "storage_state": null },
+  "tasks": [
+    {
+      "name": "decide_login",
+      "taskReferenceName": "decide_login",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "($.login_url && $.login_url.length > 0) ? 'yes' : 'no'",
+      "inputParameters": {
+        "login_url": "${workflow.input.login_url}"
+      },
+      "decisionCases": {
+        "yes": [
+          {
+            "name": "playwright_login",
+            "taskReferenceName": "login",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "login_url": "${workflow.input.login_url}",
+              "username": "${workflow.input.username}",
+              "password": "${workflow.input.password}",
+              "scope": "${workflow.input.scope}",
+              "auth": "${workflow.input.auth}"
+            }
+          },
+          {
+            "name": "save_state",
+            "taskReferenceName": "save_state",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "storage_state": "${login.output.storage_state}"
+            }
+          }
+        ],
+        "no": [
+          { "name": "no_login", "taskReferenceName": "no_login", "type": "NOOP" }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "playwright_crawl",
+      "taskReferenceName": "crawl",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "base_url": "${workflow.input.base_url}",
+        "scope": "${workflow.input.scope}",
+        "max_pages": "${workflow.input.max_pages}",
+        "max_depth": "${workflow.input.max_depth}",
+        "storage_state": "${workflow.variables.storage_state}",
+        "auth": "${workflow.input.auth}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "surface": "${crawl.output.surface}",
+    "findings": "${crawl.output.findings}",
+    "meta": "${crawl.output.meta}"
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "name": "verify_finding",
+  "version": 1,
+  "description": "Adversarial verification of one claimed finding: re-run its PoC request live, then a skeptical LLM judges whether the evidence + replay prove a real, reproducible vulnerability. System prompt injected from prompts/verify.md.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["finding", "identities", "scope"],
+  "tasks": [
+    {
+      "name": "http_request",
+      "taskReferenceName": "replay",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "method": "${workflow.input.finding.poc_request.method}",
+        "url": "${workflow.input.finding.poc_request.url}",
+        "json": "${workflow.input.finding.poc_request.json}",
+        "identity": "${workflow.input.finding.poc_request.identity}",
+        "identities": "${workflow.input.identities}",
+        "scope": "${workflow.input.scope}"
+      }
+    },
+    {
+      "name": "oob_check",
+      "taskReferenceName": "oob_check",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "tokens": "${workflow.input.finding.oob_tokens}"
+      }
+    },
+    {
+      "name": "prep_verify",
+      "taskReferenceName": "prep_verify",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "finding": "${workflow.input.finding}",
+        "replay": "${replay.output}",
+        "oob": "${oob_check.output}",
+        "queryExpression": "{ finding: .finding, poc_replay: { status: (.replay.response.status // null), body_excerpt: ((.replay.response.body_excerpt // .replay.error // \"<no replay>\")[0:800]), summary: (.replay.summary // \"\"), leaked_data: (.replay.response.sensitive // {found:false}), data_classes: ((.replay.response.sensitive.classes) // {}) }, oob_confirmation: { checked: ((.finding.oob_tokens // []) | length > 0), hit: (.oob.hit // false), count: (.oob.count // 0), source_ips: (.oob.source_ips // []), user_agents: (.oob.user_agents // []), note: (if ((.finding.oob_tokens // []) | length) == 0 then \"no OOB canary was planted for this finding\" elif (.oob.hit // false) then \"OOB collaborator received an inbound hit on the planted canary -- strong confirmation of a blind/server-side request\" else \"OOB canary was planted but NO inbound hit was observed -- blind vector NOT confirmed\" end) } } | tojson"
+      }
+    },
+    {
+      "name": "verify",
+      "taskReferenceName": "verify",
+      "type": "LLM_CHAT_COMPLETE",
+      "inputParameters": {
+        "llmProvider": "${workflow.input.llm_provider}",
+        "model": "${workflow.input.model}",
+        "temperature": 1,
+        "thinkingTokenLimit": 6000,
+        "maxTokens": 8000,
+        "jsonOutput": false,
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_VERIFY" },
+          { "role": "user", "message": "Claimed finding + live PoC replay + OOB confirmation (JSON):\n${prep_verify.output.result}" }
+        ]
+      }
+    },
+    {
+      "name": "parse_verify",
+      "taskReferenceName": "parse_verify",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "raw": "${verify.output.result}",
+        "queryExpression": ".raw as $r | (if ($r|type) == \"object\" then $r else (try ($r[ ($r|index(\"{\")) : (($r|rindex(\"}\"))+1) ] | fromjson) catch {real: false, confidence: \"low\", reasoning: \"verifier output could not be parsed\"}) end)"
+      }
+    }
+  ],
+  "outputParameters": {
+    "finding": "${workflow.input.finding}",
+    "verdict": "${parse_verify.output.result}"
+  }
+}

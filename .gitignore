@@ -1,0 +1,32 @@
+# Monorepo-wide ignores (each harness may also have its own .gitignore).
+# Defense-in-depth: never commit runtime state — it can contain live tokens / PII from real targets.
+
+# Python / build
+**/.venv/
+**/venv/
+**/__pycache__/
+*.pyc
+*.egg-info/
+**/.pytest_cache/
+**/.ruff_cache/
+
+# Per-harness scan/run output + state
+**/reports/*
+!**/reports/.gitkeep
+**/state/
+**/workers/state/
+**/workers/oob/
+
+# Conductor local-server embedded DB
+**/c123.db*
+*.db
+*.db-shm
+*.db-wal
+
+# Env / secrets
+**/.env
+*.local
+
+# OS / scratch
+.DS_Store
+**/.scratch/

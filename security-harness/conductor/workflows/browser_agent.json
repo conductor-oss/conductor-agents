@@ -1,0 +1,142 @@
+{
+  "name": "browser_agent",
+  "version": 1,
+  "description": "Autonomous ReAct browser agent: an LLM drives a real browser one action at a time (navigate/fill/click) to reach states a link crawler misses. Returns discovered URLs + the resulting (possibly authenticated) session. The agent system prompt is injected from prompts/agent.md by register.sh.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["base_url", "scope", "goal", "max_steps", "storage_state", "auth"],
+  "variables": { "messages": [], "done": "", "cur_url": "", "cur_state": null, "discovered": [] },
+  "tasks": [
+    {
+      "name": "playwright_action",
+      "taskReferenceName": "observe_start",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "base_url": "${workflow.input.base_url}",
+        "scope": "${workflow.input.scope}",
+        "url": "${workflow.input.base_url}",
+        "storage_state": "${workflow.input.storage_state}",
+        "action": { "type": "observe" },
+        "auth": "${workflow.input.auth}"
+      }
+    },
+    {
+      "name": "build_init",
+      "taskReferenceName": "build_init",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "state": "${observe_start.output}",
+        "goal": "${workflow.input.goal}",
+        "queryExpression": "{ msg: (\"Goal: \" + (.goal // \"explore the app\") + \"\\nCurrent URL: \" + (.state.url // \"\") + \"\\nTitle: \" + (.state.title // \"\") + \"\\nInteractive elements:\\n\" + ((.state.dom_summary // []) | tojson) + \"\\n\\nDecide the next action.\"), seed: ([.state.url] + [((.state.dom_summary // [])[] | select(.kind==\"link\") | .url)] | unique) }"
+      }
+    },
+    {
+      "name": "agent_init",
+      "taskReferenceName": "agent_init",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_AGENT" },
+          { "role": "user", "message": "${build_init.output.result.msg}" }
+        ],
+        "done": "",
+        "cur_url": "${observe_start.output.url}",
+        "cur_state": "${observe_start.output.storage_state}",
+        "discovered": "${build_init.output.result.seed}"
+      }
+    },
+    {
+      "name": "agent_loop",
+      "taskReferenceName": "agent_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ return $.agent_loop['iteration'] < $.max_steps && $.done === ''; })();",
+      "inputParameters": {
+        "agent_loop": "${agent_loop.output}",
+        "max_steps": "${workflow.input.max_steps}",
+        "done": "${workflow.variables.done}"
+      },
+      "loopOver": [
+        {
+          "name": "decide",
+          "taskReferenceName": "decide",
+          "type": "LLM_CHAT_COMPLETE",
+          "inputParameters": {
+            "llmProvider": "${workflow.input.llm_provider}",
+            "model": "${workflow.input.model}",
+            "temperature": 0.2,
+            "maxTokens": 1200,
+            "jsonOutput": true,
+            "messages": "${workflow.variables.messages}"
+          }
+        },
+        {
+          "name": "route",
+          "taskReferenceName": "route",
+          "type": "SWITCH",
+          "evaluatorType": "graaljs",
+          "expression": "$.atype === 'done' ? 'done' : 'act'",
+          "inputParameters": {
+            "atype": "${decide.output.result.action.type}"
+          },
+          "decisionCases": {
+            "done": [
+              {
+                "name": "mark_done",
+                "taskReferenceName": "mark_done",
+                "type": "SET_VARIABLE",
+                "inputParameters": { "done": "done" }
+              }
+            ],
+            "act": [
+              {
+                "name": "playwright_action",
+                "taskReferenceName": "act",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "base_url": "${workflow.input.base_url}",
+                  "scope": "${workflow.input.scope}",
+                  "url": "${workflow.variables.cur_url}",
+                  "storage_state": "${workflow.variables.cur_state}",
+                  "action": "${decide.output.result.action}",
+                  "auth": "${workflow.input.auth}"
+                }
+              },
+              {
+                "name": "build_turn",
+                "taskReferenceName": "build_turn",
+                "type": "JSON_JQ_TRANSFORM",
+                "inputParameters": {
+                  "messages": "${workflow.variables.messages}",
+                  "discovered": "${workflow.variables.discovered}",
+                  "action": "${decide.output.result.action}",
+                  "state": "${act.output}",
+                  "queryExpression": "{ messages: (.messages + [ {role:\"assistant\", message:(.action | tojson)}, {role:\"user\", message:(\"Action result. New URL: \" + (.state.url // \"\") + \"\\nTitle: \" + (.state.title // \"\") + \"\\nNote: \" + (.state.note // \"\") + \"\\nInteractive elements:\\n\" + ((.state.dom_summary // []) | tojson) + \"\\n\\nDecide the next action.\")} ]), discovered: ((.discovered // []) + [.state.url] + [((.state.dom_summary // [])[] | select(.kind==\"link\") | .url)] | unique) }"
+                }
+              },
+              {
+                "name": "update_state",
+                "taskReferenceName": "update_state",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "messages": "${build_turn.output.result.messages}",
+                  "discovered": "${build_turn.output.result.discovered}",
+                  "cur_url": "${act.output.url}",
+                  "cur_state": "${act.output.storage_state}"
+                }
+              }
+            ]
+          },
+          "defaultCase": []
+        }
+      ]
+    }
+  ],
+  "outputParameters": {
+    "discovered_urls": "${workflow.variables.discovered}",
+    "final_state": "${workflow.variables.cur_state}",
+    "steps": "${agent_loop.output.iteration}"
+  }
+}

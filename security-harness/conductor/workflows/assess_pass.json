@@ -1,0 +1,470 @@
+{
+  "name": "assess_pass",
+  "version": 1,
+  "description": "One focused pass of the deep pentest: explore (deeper, focus-directed, docs-aware) -> hypothesize (docs-invariant + race + chaining aware, deduped against already-tried) -> exploit fan-out -> adversarial verify. Returns new confirmed/rejected/blind findings + the hypothesis signatures attempted this pass, for the multi-pass loop in deep_assess. LLM prompts injected by register.sh.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": [
+    "base_url",
+    "scope",
+    "identities",
+    "app_model",
+    "surface",
+    "docs_namespace",
+    "docs_index",
+    "docs_available",
+    "docs_digest",
+    "prior_confirmed",
+    "tried_signatures",
+    "focus_directive",
+    "max_explore",
+    "max_hypos",
+    "max_exploit",
+    "model",
+    "think_analysis",
+    "analysis_temp",
+    "oob_base",
+    "run_id",
+    "manifest",
+    "capability_max",
+    "personas",
+    "purple",
+    "catalog_objectives",
+    "cve_leads",
+    "feature_exploitation_playbook",
+    "operation_ledger",
+    "identity_adequacy",
+    "chaining_context",
+    "objective_focus",
+    "sast_findings",
+    "feature_inventory",
+    "triage_signals"
+  ],
+  "tasks": [
+    {
+      "name": "explore_agent",
+      "taskReferenceName": "explore_sub",
+      "type": "SUB_WORKFLOW",
+      "subWorkflowParam": {
+        "name": "explore_agent",
+        "version": 1
+      },
+      "inputParameters": {
+        "base_url": "${workflow.input.base_url}",
+        "scope": "${workflow.input.scope}",
+        "identities": "${workflow.input.identities}",
+        "app_model": "${workflow.input.app_model}",
+        "surface": "${workflow.input.surface}",
+        "max_steps": "${workflow.input.max_explore}",
+        "docs_namespace": "${workflow.input.docs_namespace}",
+        "docs_index": "${workflow.input.docs_index}",
+        "docs_available": "${workflow.input.docs_available}",
+        "focus_directive": "${workflow.input.focus_directive}",
+        "prior_confirmed": "${workflow.input.prior_confirmed}",
+        "manifest": "${workflow.input.manifest}",
+        "capability_max": "${workflow.input.capability_max}",
+        "personas": "${workflow.input.personas}",
+        "llm_provider": "${workflow.input.loop_provider}",
+        "model": "${workflow.input.loop_model}",
+        "embed_provider": "${workflow.input.embed_provider}",
+        "embed_model": "${workflow.input.embed_model}"
+      }
+    },
+    {
+      "name": "build_mandatory_hypotheses",
+      "taskReferenceName": "mandatory_hypotheses",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "playbook": "${workflow.input.feature_exploitation_playbook}",
+        "operations": "${workflow.input.operation_ledger}",
+        "cve_leads": "${workflow.input.cve_leads}",
+        "adequacy": "${workflow.input.identity_adequacy}",
+        "capability_max": "${workflow.input.capability_max}",
+        "identities": "${workflow.input.identities}",
+        "objective_focus": "${workflow.input.objective_focus}",
+        "catalog_objectives": "${workflow.input.catalog_objectives}",
+        "sast_findings": "${workflow.input.sast_findings}",
+        "feature_inventory": "${workflow.input.feature_inventory}",
+        "triage_signals": "${workflow.input.triage_signals}",
+        "prior_confirmed": "${workflow.input.prior_confirmed}"
+      }
+    },
+    {
+      "name": "prep_hypo",
+      "taskReferenceName": "prep_hypo",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "app_model": "${workflow.input.app_model}",
+        "observations": "${explore_sub.output.observations}",
+        "identities": "${workflow.input.identities}",
+        "docs_digest": "${workflow.input.docs_digest}",
+        "tried": "${workflow.input.tried_signatures}",
+        "focus": "${workflow.input.focus_directive}",
+        "personas": "${workflow.input.personas}",
+        "catalog_objectives": "${workflow.input.catalog_objectives}",
+        "cve_leads": "${workflow.input.cve_leads}",
+        "mandatory_hypotheses": "${mandatory_hypotheses.output.hypotheses}",
+        "chaining_context": "${workflow.input.chaining_context}",
+        "objective_focus": "${workflow.input.objective_focus}",
+        "queryExpression": "{ app_model: .app_model, exploration: (.observations // []), available_identities: ((.identities // {}) | keys), personas: (.personas // []), catalog_objectives: (.catalog_objectives // []), cve_leads: (.cve_leads // []), mandatory_hypotheses: (.mandatory_hypotheses // []), chaining_context: (.chaining_context // {}), objective_focus: (.objective_focus // []), object_id_patterns: (.app_model.object_id_patterns // []), docs_digest: (.docs_digest // {}), tried_signatures: (.tried // []), focus_directive: (.focus // \"\") } | tojson"
+      }
+    },
+    {
+      "name": "hypothesize",
+      "taskReferenceName": "hypothesize",
+      "type": "LLM_CHAT_COMPLETE",
+      "optional": true,
+      "retryCount": 2,
+      "retryDelaySeconds": 10,
+      "inputParameters": {
+        "llmProvider": "${workflow.input.analysis_provider}",
+        "model": "${workflow.input.model}",
+        "temperature": "${workflow.input.analysis_temp}",
+        "maxTokens": 16000,
+        "thinkingTokenLimit": "${workflow.input.think_analysis}",
+        "reasoningSummary": "detailed",
+        "jsonOutput": false,
+        "messages": [
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_HYPOTHESIZE"
+          },
+          {
+            "role": "user",
+            "message": "Application model + exploration + identities + docs digest + focus (JSON):\n${prep_hypo.output.result}"
+          }
+        ]
+      }
+    },
+    {
+      "name": "parse_hypothesize",
+      "taskReferenceName": "parse_hypothesize",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "raw": "${hypothesize.output.result}",
+        "queryExpression": ".raw as $r | (if ($r|type) == \"object\" then $r else (try ($r[ ($r|index(\"{\")) : (($r|rindex(\"}\"))+1) ] | fromjson) catch {hypotheses: []}) end)"
+      }
+    },
+    {
+      "name": "merge_hypotheses",
+      "taskReferenceName": "merge_hypotheses",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "mandatory": "${mandatory_hypotheses.output.hypotheses}",
+        "generated": "${parse_hypothesize.output.result.hypotheses}",
+        "queryExpression": "{ hypotheses: (((.mandatory // []) + (.generated // [])) | unique_by(.id // ((.category // \"other\") + \"|\" + (.target // \"\")))) }"
+      }
+    },
+    {
+      "name": "dedupe_hypos",
+      "taskReferenceName": "dedupe_hypos",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "hypotheses": "${merge_hypotheses.output.result.hypotheses}",
+        "tried": "${workflow.input.tried_signatures}",
+        "queryExpression": ". as $in | { hypotheses: [ ($in.hypotheses // [])[] | . as $h | (($h.category // \"other\") + \"|\" + (($h.target // \"\") | ascii_downcase | gsub(\"\\\\s+\";\"\")) + \"|\" + (($h.identities // []) | sort | join(\",\"))) as $sig | select(($h.mandatory // false) == true or (($in.tried // []) | index($sig) | not)) ] }"
+      }
+    },
+    {
+      "name": "build_exploit_jobs",
+      "taskReferenceName": "build_exploit_jobs",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "hypotheses": "${dedupe_hypos.output.result.hypotheses}",
+        "base_url": "${workflow.input.base_url}",
+        "scope": "${workflow.input.scope}",
+        "identities": "${workflow.input.identities}",
+        "app_model": "${workflow.input.app_model}",
+        "docs_namespace": "${workflow.input.docs_namespace}",
+        "docs_index": "${workflow.input.docs_index}",
+        "docs_available": "${workflow.input.docs_available}",
+        "max_hypos": "${workflow.input.max_hypos}",
+        "max_steps": "${workflow.input.max_exploit}",
+        "oob_base": "${workflow.input.oob_base}",
+        "run_id": "${workflow.input.run_id}",
+        "manifest": "${workflow.input.manifest}",
+        "capability_max": "${workflow.input.capability_max}",
+        "personas": "${workflow.input.personas}",
+        "loop_provider": "${workflow.input.loop_provider}",
+        "loop_model": "${workflow.input.loop_model}",
+        "embed_provider": "${workflow.input.embed_provider}",
+        "embed_model": "${workflow.input.embed_model}",
+        "feature_operations": "${workflow.input.feature_operations}",
+        "queryExpression": ". as $in | def dwf($h): (if ((($h.category // \"\") + \" \" + ($h.objective_id // \"\") + \" \" + ($h.mandatory_kind // \"\") + \" \" + ($h.title // \"\") + \" \" + ($h.target // \"\")) | test(\"inject|rce|sqli|sql injection|javascript|scriptengine|eval|sandbox|deserial|ssti|expression|supply-chain|cve|xss|cross-site|traversal|\\\\blfi\\\\b|open-redirect|feature.sweep\";\"i\")) then \"exploit_deepen\" else \"exploit_agent\" end); ([ ($in.hypotheses // [])[] | select((.blind // false) == false) ] | sort_by(.mandatory != true)) as $f | ($f | .[0:([($in.max_hypos), ([ $f[] | select(.mandatory == true) ] | length)] | max)] | to_entries) as $entries | { forkTasks: ($entries | map({ name: dwf(.value), taskReferenceName: (\"exploit_\" + (.key|tostring)), type: \"SUB_WORKFLOW\", optional: true, subWorkflowParam: {name: dwf(.value), version:1} })), forkTasksInputs: ($entries | map({ key: (\"exploit_\" + (.key|tostring)), value: { base_url: $in.base_url, scope: $in.scope, identities: $in.identities, app_model: $in.app_model, hypothesis: .value, max_steps: (if (dwf(.value)==\"exploit_deepen\") then ([($in.max_steps), 30] | max) else $in.max_steps end), docs_namespace: $in.docs_namespace, docs_index: $in.docs_index, docs_available: $in.docs_available, oob_base: $in.oob_base, run_id: $in.run_id, manifest: $in.manifest, capability_max: $in.capability_max, personas: $in.personas, llm_provider: $in.loop_provider, model: $in.loop_model, embed_provider: $in.embed_provider, embed_model: $in.embed_model, feature_operations: $in.feature_operations } }) | from_entries), count: ($entries | length) }"
+      }
+    },
+    {
+      "name": "exploit_count_gate",
+      "taskReferenceName": "exploit_count_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "$.count > 0 ? 'go' : 'skip'",
+      "inputParameters": {
+        "count": "${build_exploit_jobs.output.result.count}"
+      },
+      "decisionCases": {
+        "go": [
+          {
+            "name": "exploit_fork",
+            "taskReferenceName": "exploit_fork",
+            "type": "FORK_JOIN_DYNAMIC",
+            "dynamicForkTasksParam": "forkTasks",
+            "dynamicForkTasksInputParamName": "forkTasksInputs",
+            "inputParameters": {
+              "forkTasks": "${build_exploit_jobs.output.result.forkTasks}",
+              "forkTasksInputs": "${build_exploit_jobs.output.result.forkTasksInputs}"
+            }
+          },
+          {
+            "name": "exploit_join",
+            "taskReferenceName": "exploit_join",
+            "type": "JOIN"
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "no_exploit",
+          "taskReferenceName": "no_exploit",
+          "type": "NOOP"
+        }
+      ]
+    },
+    {
+      "name": "collect_exploit",
+      "taskReferenceName": "collect_exploit",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "join": "${exploit_join.output}",
+        "queryExpression": "[ (.join // {}) | to_entries[] | .value | select(.conclusion.confirmed == true) | { title: (.conclusion.title // .hypothesis.title), objective_id: (.hypothesis.objective_id // \"other\"), severity: (.conclusion.severity // \"Info\"), category: (.conclusion.category // .hypothesis.category // \"other\"), cwe: (.conclusion.cwe // \"\"), owasp: (.conclusion.owasp // .hypothesis.owasp // \"\"), evidence: (.conclusion.evidence // \"\"), reproduction: (.conclusion.reproduction // \"\"), poc_request: (.conclusion.poc_request // {}), hypothesis_id: (.hypothesis.id // \"\"), evidence_chain: (.evidence // []), oob_tokens: (.oob_tokens // []) } ]"
+      }
+    },
+    {
+      "name": "collect_created",
+      "taskReferenceName": "collect_created",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "join": "${exploit_join.output}",
+        "queryExpression": "[ (.join // {}) | to_entries[] | .value | ((.conclusion.created_resources // []) + (.created // []))[] | select(.url and (.url|type==\"string\")) | { method: (.method // \"DELETE\"), url: .url, identity: (.identity // \"\") } ]"
+      }
+    },
+    {
+      "name": "collect_operations",
+      "taskReferenceName": "collect_operations",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "join": "${exploit_join.output}",
+        "queryExpression": "([ (.join // {}) | to_entries[] | .value.hypothesis | select((.objective_id // \"\") != \"\") | {type:\"objective_attempt\", objective_id:.objective_id, hypothesis_id:(.id // \"\"), note:\"exploit agent completed\"} ] + [ (.join // {}) | to_entries[] | .value as $v | ($v.operations // [])[] | . + {objective_id: ($v.hypothesis.objective_id // \"other\"), hypothesis_id: ($v.hypothesis.id // \"\")} ]) | unique_by((.type // \"\") + \"|\" + (.method // \"\") + \"|\" + (.path // \"\") + \"|\" + (.workflow_name // \"\") + \"|\" + (.execution_id // \"\") + \"|\" + (.identity // \"\") + \"|\" + ((.status // \"\") | tostring) + \"|\" + (.objective_id // \"\") + \"|\" + (.hypothesis_id // \"\") + \"|\" + (.cve_id // \"\") + \"|\" + (.family // \"\"))"
+      }
+    },
+    {
+      "name": "collect_deepen",
+      "taskReferenceName": "collect_deepen",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "join": "${exploit_join.output}",
+        "queryExpression": "[ (.join // {}) | to_entries[] | .value | select((.deepen_state // {}) | (.ladder // []) | length > 0) | { objective_id: (.hypothesis.objective_id // \"other\"), sink_class: (.deepen_state.sink_class // \"\"), cve_id: (.deepen_state.cve_id // .hypothesis.cve_id // \"\"), dependency: (.deepen_state.dependency // .hypothesis.dependency // \"\"), ledger: (.deepen_state.ledger // {}), confirmed: (.deepen_state.confirmed // false) } ]"
+      }
+    },
+    {
+      "name": "collect_halt",
+      "taskReferenceName": "collect_halt",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "join": "${exploit_join.output}",
+        "queryExpression": "[ (.join // {}) | to_entries[] | .value | (.halt_requested // \"\") | select(. != \"\" and . != null) ] | (if length > 0 then {reason: .[0]} else {} end)"
+      }
+    },
+    {
+      "name": "collect_oob",
+      "taskReferenceName": "collect_oob",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "join": "${exploit_join.output}",
+        "queryExpression": "(.join // {}) | ([ to_entries[] | .value | select(((.oob_tokens // []) | length) > 0) | { hypothesis: (.hypothesis // {}), tokens: (.oob_tokens // []), evidence_chain: (.evidence // []) } ]) as $agents | { agents: $agents, tokens: ([ $agents[].tokens[] ] | unique) }"
+      }
+    },
+    {
+      "name": "oob_check",
+      "taskReferenceName": "oob_sweep",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "tokens": "${collect_oob.output.result.tokens}"
+      }
+    },
+    {
+      "name": "build_oob_findings",
+      "taskReferenceName": "build_oob_findings",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "agents": "${collect_oob.output.result.agents}",
+        "sweep": "${oob_sweep.output}",
+        "queryExpression": ".sweep as $s | (($s.per_token) // {}) as $pt | [ (.agents // [])[] | select( ([ .tokens[] | ($pt[.] // 0) ] | add) > 0 ) | { title: (\"SSRF: target server fetched an attacker-controlled URL via \" + (.hypothesis.target // .hypothesis.title // \"an outbound-fetch feature\")), objective_id: \"INFRA-SSRF\", severity: \"High\", category: \"ssrf\", cwe: \"CWE-918\", owasp: \"A10:2021 - Server-Side Request Forgery\", evidence: (\"Out-of-band confirmation: planted canary(es) [\" + (.tokens | join(\", \")) + \"] received an inbound request FROM THE TARGET SERVER (not the tester). Source IP(s): \" + (($s.source_ips // []) | join(\", \")) + \"; User-Agent(s): \" + (($s.user_agents // []) | join(\", \")) + \". A request originating from the target to a tester-controlled URL confirms server-side request forgery.\"), reproduction: (.hypothesis.test_plan // []), poc_request: {}, confidence: \"high\", source_tool: \"oob_confirmed\", oob_tokens: .tokens, evidence_chain: .evidence_chain } ]"
+      }
+    },
+    {
+      "name": "build_verify_jobs",
+      "taskReferenceName": "build_verify_jobs",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "findings": "${collect_exploit.output.result}",
+        "identities": "${workflow.input.identities}",
+        "scope": "${workflow.input.scope}",
+        "analysis_provider": "${workflow.input.analysis_provider}",
+        "analysis_model": "${workflow.input.analysis_model}",
+        "queryExpression": ". as $in | ($in.findings // []) | to_entries | { forkTasks: map({ name: \"verify_finding\", taskReferenceName: (\"verify_\" + (.key|tostring)), type: \"SUB_WORKFLOW\", optional: true, subWorkflowParam: {name:\"verify_finding\", version:1} }), forkTasksInputs: (map({ key: (\"verify_\" + (.key|tostring)), value: { finding: .value, identities: $in.identities, scope: $in.scope, llm_provider: $in.analysis_provider, model: $in.analysis_model } }) | from_entries), count: length }"
+      }
+    },
+    {
+      "name": "verify_count_gate",
+      "taskReferenceName": "verify_count_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "$.count > 0 ? 'go' : 'skip'",
+      "inputParameters": {
+        "count": "${build_verify_jobs.output.result.count}"
+      },
+      "decisionCases": {
+        "go": [
+          {
+            "name": "verify_fork",
+            "taskReferenceName": "verify_fork",
+            "type": "FORK_JOIN_DYNAMIC",
+            "dynamicForkTasksParam": "forkTasks",
+            "dynamicForkTasksInputParamName": "forkTasksInputs",
+            "inputParameters": {
+              "forkTasks": "${build_verify_jobs.output.result.forkTasks}",
+              "forkTasksInputs": "${build_verify_jobs.output.result.forkTasksInputs}"
+            }
+          },
+          {
+            "name": "verify_join",
+            "taskReferenceName": "verify_join",
+            "type": "JOIN"
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "no_verify",
+          "taskReferenceName": "no_verify",
+          "type": "NOOP"
+        }
+      ]
+    },
+    {
+      "name": "collect_verified",
+      "taskReferenceName": "collect_verified",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "join": "${verify_join.output}",
+        "queryExpression": "[ (.join // {}) | to_entries[] | .value | { finding: .finding, verdict: .verdict } ] | { confirmed: [ .[] | select(.verdict.real == true) | (.finding + { severity: (.verdict.severity // .finding.severity), confidence: (.verdict.confidence // \"medium\"), validation: (.verdict.reasoning // \"\"), source_tool: \"deep_exploit\" }) ], rejected: [ .[] | select(.verdict.real != true) | { title: .finding.title, reason: (.verdict.false_positive_reason // .verdict.reasoning // \"\") } ] }"
+      }
+    },
+    {
+      "name": "merge_confirmed",
+      "taskReferenceName": "merge_confirmed",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "verified": "${collect_verified.output.result.confirmed}",
+        "oob": "${build_oob_findings.output.result}",
+        "queryExpression": "((.verified // []) + (.oob // [])) | unique_by(.title)"
+      }
+    },
+    {
+      "name": "build_purple_jobs",
+      "taskReferenceName": "build_purple_jobs",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "findings": "${merge_confirmed.output.result}",
+        "purple": "${workflow.input.purple}",
+        "identities": "${workflow.input.identities}",
+        "scope": "${workflow.input.scope}",
+        "manifest": "${workflow.input.manifest}",
+        "capability_max": "${workflow.input.capability_max}",
+        "analysis_provider": "${workflow.input.analysis_provider}",
+        "analysis_model": "${workflow.input.analysis_model}",
+        "queryExpression": ". as $in | (($in.purple == true) or ($in.purple == \"true\")) as $on | (if $on then ($in.findings // []) else [] end) | to_entries | { forkTasks: map({ name: \"purple_check\", taskReferenceName: (\"purple_\" + (.key|tostring)), type: \"SUB_WORKFLOW\", optional: true, subWorkflowParam: {name:\"purple_check\", version:1} }), forkTasksInputs: (map({ key: (\"purple_\" + (.key|tostring)), value: { finding: .value, identities: $in.identities, scope: $in.scope, manifest: $in.manifest, capability_max: $in.capability_max, llm_provider: $in.analysis_provider, model: $in.analysis_model } }) | from_entries), count: length }"
+      }
+    },
+    {
+      "name": "purple_count_gate",
+      "taskReferenceName": "purple_count_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "$.count > 0 ? 'go' : 'skip'",
+      "inputParameters": {
+        "count": "${build_purple_jobs.output.result.count}"
+      },
+      "decisionCases": {
+        "go": [
+          {
+            "name": "purple_fork",
+            "taskReferenceName": "purple_fork",
+            "type": "FORK_JOIN_DYNAMIC",
+            "dynamicForkTasksParam": "forkTasks",
+            "dynamicForkTasksInputParamName": "forkTasksInputs",
+            "inputParameters": {
+              "forkTasks": "${build_purple_jobs.output.result.forkTasks}",
+              "forkTasksInputs": "${build_purple_jobs.output.result.forkTasksInputs}"
+            }
+          },
+          {
+            "name": "purple_join",
+            "taskReferenceName": "purple_join",
+            "type": "JOIN"
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "no_purple",
+          "taskReferenceName": "no_purple",
+          "type": "NOOP"
+        }
+      ]
+    },
+    {
+      "name": "enrich_confirmed",
+      "taskReferenceName": "enrich_confirmed",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "findings": "${merge_confirmed.output.result}",
+        "purple_join": "${purple_join.output}",
+        "queryExpression": "([ ((.purple_join // {}) | to_entries[] | .value) | select(.title) | {key: .title, value: .detection_observations} ] | from_entries) as $p | [ (.findings // [])[] | . + (if ($p[.title]) then {detection_observations: $p[.title]} else {} end) ]"
+      }
+    },
+    {
+      "name": "prep_blind",
+      "taskReferenceName": "prep_blind",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "hypotheses": "${dedupe_hypos.output.result.hypotheses}",
+        "queryExpression": "[ (.hypotheses // [])[] | select(.blind == true) | { title, category, owasp, target, rationale, test_plan, expected_evidence } ]"
+      }
+    },
+    {
+      "name": "emit_signatures",
+      "taskReferenceName": "emit_signatures",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "hypotheses": "${dedupe_hypos.output.result.hypotheses}",
+        "queryExpression": "[ (.hypotheses // [])[] | ((.category // \"other\") + \"|\" + ((.target // \"\") | ascii_downcase | gsub(\"\\\\s+\";\"\")) + \"|\" + ((.identities // []) | sort | join(\",\"))) ]"
+      }
+    }
+  ],
+  "outputParameters": {
+    "new_confirmed": "${enrich_confirmed.output.result}",
+    "new_rejected": "${collect_verified.output.result.rejected}",
+    "new_blind": "${prep_blind.output.result}",
+    "tried_signatures": "${emit_signatures.output.result}",
+    "created_resources": "${collect_created.output.result}",
+    "operation_ledger": "${collect_operations.output.result}",
+    "deepen_states": "${collect_deepen.output.result}",
+    "halt_requested": "${collect_halt.output.result}",
+    "observations": "${explore_sub.output.observations}"
+  }
+}

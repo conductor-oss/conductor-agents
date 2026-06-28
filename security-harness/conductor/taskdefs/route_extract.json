@@ -1,0 +1,11 @@
+{
+  "name": "route_extract",
+  "description": "Regex-sweep the source for HTTP routes to seed the live scan surface.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 180,
+  "responseTimeoutSeconds": 120,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

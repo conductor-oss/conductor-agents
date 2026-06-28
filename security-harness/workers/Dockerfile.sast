@@ -1,0 +1,20 @@
+# SAST worker image: semgrep + gitleaks + trivy.
+FROM golang:1.25-bookworm AS tools
+ENV GOTOOLCHAIN=auto
+RUN go install github.com/zricethezav/gitleaks/v8@latest
+
+FROM python:3.12-slim
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 WORKER_MODULES=sast
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=tools /go/bin/gitleaks /usr/local/bin/
+RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+      | sh -s -- -b /usr/local/bin
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt semgrep
+
+COPY . /app
+CMD ["python", "main.py"]

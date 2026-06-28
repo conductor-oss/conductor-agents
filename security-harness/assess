@@ -1,0 +1,409 @@
+#!/usr/bin/env bash
+# security-conductor — DEEP APPLICATION PENTEST against an authorized target.
+#
+#   ./assess <url> --authorized [options]
+#
+# Unlike ./scan (a fast surface scan), ./assess runs the app-aware agentic mode:
+# it learns what the app does (surface -> app model -> autonomous exploration),
+# generates app-specific abuse-case hypotheses, then actively exploits them
+# (multi-identity, full feature-exercising within scope) and adversarially
+# verifies each finding by re-running its proof-of-concept. Takes tens of minutes.
+#
+# Options:
+#   --authorized            Assert you are permitted to test this target. Synthesizes a
+#                           capability-1 authorization manifest (read-only). Product-feature
+#                           execution needs --capability 2 or an explicit manifest.
+#   --manifest <path>       Machine-enforceable authorization manifest (JSON; spec s15).
+#                           Source of truth when present: approvers, in_scope_hosts,
+#                           window{start,expiry}, capability_max, rate, forbidden_operations,
+#                           protected_records. Validated (fails closed) before any testing.
+#   --capability <0-4>      Capability ceiling for the synthesized manifest (default 1).
+#                           1 = read-only; 2 = state-changing w/ synthetic data; 3 =
+#                           sensitive/risky proof; 4 = destructive (prohibited by default).
+#                           The harness can never exceed this level.
+#   --kill-switch <path>    A sentinel file; if it exists, the safety governor halts the
+#                           campaign at the next pass boundary.
+#   --purple                Purple-team mode: after each confirmed finding, assess whether
+#                           the malicious action was prevented/logged/alertable (spec 21).
+#   --resilience            Authorize the bounded availability/denial-of-wallet tier (off by
+#                           default): adds 'resilience' to the manifest's allowed_classes so
+#                           the self-aborting ramped-load probe may run. Never floods.
+#   --require-tenants <n>   Fail fast unless at least <n> distinct-tenant identities are
+#                           supplied (use to guarantee cross-tenant isolation is testable).
+#   --profile <name|path>   OPTIONAL target profile (profiles/<name>.json) supplying
+#                           platform hints — auth header + token-exchange shape, protected
+#                           probe paths, cleanup resource families, application documentation,
+#                           and a feature-exploitation playbook. Profile docs are ingested
+#                           automatically and combine with repeatable --docs inputs. The engine is generic
+#                           without it; e.g. `--profile conductor` for an Orkes/Conductor target.
+#   --objective <id>        Pin the campaign toward a catalog objective (REPEATABLE), e.g.
+#                           INFRA-SUPPLY-CHAIN or CONF-CROSS-TENANT-READ.
+#   --focus <text>          Initial concrete focus directive for targeted validation.
+#   --leave-evidence        Validation-only: retain tagged product artifacts/executions so the
+#                           operator can inspect them. Default remains leave-clean.
+#   --source <path>         Path to the target's source code (enriches understanding; optional).
+#   --scope <h1,h2,...>     Hosts in scope (default: the target's host).
+#   --id '<label>=<spec>'   Add a test identity (REPEATABLE; >=2 enables BOLA/privesc).
+#                           spec is comma-separated key:value pairs:
+#                             token:<JWT>                       a bearer token, or
+#                             key:<K>,secret:<S>,tokenurl:<U>   Conductor key/secret
+#                                                               (exchanged to a SHORT-LIVED
+#                                                                token locally; the secret
+#                                                                never enters the workflow)
+#                             session:<file>                    a session captured from an
+#                                                               interactive SSO login via
+#                                                               ./sso-capture (Google/Okta/etc.)
+#                           optional: header:<name> (default Authorization), scheme:<scheme>,
+#                           tenant:<id> (mark which tenant this identity belongs to, so
+#                           cross-tenant isolation coverage is judged honestly)
+#                           e.g.  --id 'userA=token:eyJhbGci...'
+#                                 --id 'admin=key:abc,secret:xyz,tokenurl:https://h/api/token'
+#                                 --id 'userA=session:state/sessions/userA.json'   (SSO)
+#                           An anonymous identity is always added automatically.
+#   --login-url/--username/--password   Authenticated browser crawl for the surface phase.
+#   --max-pages <n>         Crawl page cap (default 25).
+#   --max-explore-steps <n> Autonomous exploration actions (default 14).
+#   --max-hypotheses <n>    Max abuse-case hypotheses to exploit (default 12).
+#   --max-exploit-steps <n> Actions per exploit agent per pass (default 8).
+#   --docs <path|URL>       How-to-use docs (local dir/file or hosted URL/OpenAPI), REPEATABLE.
+#                           Teaches the harness intended workflows + documented invariants to test.
+#   --max-passes <n>        Iterative-deepening passes (default 3; loops until no new findings).
+#   --reasoning <off|med|high>  Extended-thinking effort on analysis steps (default high).
+#   --model <id>            Model for ANALYSIS/deep steps — app-model, hypothesize, verify,
+#                           reflect, triage, report (default claude-opus-4-8).
+#   --loop-model <id>       Model for the inner ReAct agent LOOPS — explore/exploit/browser
+#                           'decide' steps (default: same as --model).
+#   --provider <name>       LLM integration name on the Conductor server for analysis steps
+#                           (default 'anthropic'; the server auto-enables it from ANTHROPIC_API_KEY).
+#   --loop-provider <name>  LLM integration for the loop steps (default: same as --provider).
+#   --embed-provider <name> Provider for the EMBEDDING model used by docs/KB vector indexing &
+#                           search (default 'openai'). Embeddings are a separate provider from the
+#                           chat/analysis LLM — Anthropic has no embedding model.
+#   --embed-model <id>      Embedding model (default 'text-embedding-3-small').
+#   --oob <url>             OOB collaborator base URL for blind SSRF/exfil/exec confirmation.
+#                           Defaults to a running collaborator (see `make oob`) if present.
+#   --agent                 Also run the ReAct browser agent during the surface phase.
+#   --no-wait               Start and return immediately.
+#   --no-bootstrap          Don't auto-start the local server / workers; assume they're running
+#                           (also via SC_NO_BOOTSTRAP=1). By default ./assess brings the stack up.
+#   -h, --help              Show this help.
+#
+# Examples:
+#   ./assess http://localhost:3001 --authorized \
+#       --id 'userA=token:eyJ...A' --id 'userB=token:eyJ...B'
+#   ./assess https://app.example.com --authorized --source ./code --scope app.example.com \
+#       --id 'admin=key:K,secret:S,tokenurl:https://app.example.com/api/token'
+set -euo pipefail
+
+WF="deep_assess"
+URL=""; SOURCE=""; SCOPE=""; AUTH=false; WAIT=true; AGENT=false; NO_BOOTSTRAP=false; AUTH_PROBE_PATHS_JSON="[]"
+LOGIN_URL=""; USERNAME=""; PASSWORD=""; MAXPAGES=""
+MAX_EXPLORE=""; MAX_HYPOS=""; MAX_EXPLOIT=""; MAXPASSES=""; REASONING=""; MODEL=""; OOB=""
+LOOP_MODEL=""; PROVIDER=""; LOOP_PROVIDER=""; EMBED_PROVIDER=""; EMBED_MODEL=""
+IDS_JSON="[]"; FIRST_TOKEN=""; FIRST_HEADER=""; FIRST_SCHEME=""; NID=0
+DOCS_JSON="[]"
+MANIFEST_PATH=""; CAPABILITY=""; KILL_SWITCH=""; PURPLE=false; PROFILE=""; REQUIRE_TENANTS=""; RESILIENCE=false
+LEAVE_EVIDENCE=false; OBJECTIVES_JSON="[]"; INITIAL_FOCUS=""
+
+# Pre-pass: an optional TARGET profile (profiles/<name>.json or a path) supplies
+# platform hints (auth header/scheme + token-exchange body, protected probe paths,
+# cleanup resource families). The engine is generic; the profile only sharpens it.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+for ((i=1; i<=$#; i++)); do [ "${!i}" = "--profile" ] && { j=$((i+1)); PROFILE="${!j}"; }; done
+PROFILE_JSON="{}"
+if [ -n "$PROFILE" ]; then
+  PFILE="$PROFILE"; [ -f "$PFILE" ] || PFILE="$SCRIPT_DIR/profiles/$PROFILE.json"
+  [ -f "$PFILE" ] || { echo "ERROR: profile not found: $PROFILE" >&2; exit 1; }
+  PROFILE_JSON=$(jq -c '.' "$PFILE") || { echo "ERROR: profile is not valid JSON: $PFILE" >&2; exit 1; }
+  echo "ℹ  target profile: $PROFILE ($PFILE)"
+fi
+PROF_HEADER=$(jq -r '.auth.header // ""' <<<"$PROFILE_JSON")
+PROF_TF=$(jq -r '.auth.token_exchange.token_field // "token"' <<<"$PROFILE_JSON")
+PROF_EXBODY=$(jq -c '.auth.token_exchange.body // empty' <<<"$PROFILE_JSON")
+
+# Add a --docs entry: local paths are made absolute, URLs passed through.
+add_doc() {
+  local d="$1"
+  case "$d" in
+    http://*|https://*) : ;;
+    *) local abs; abs="$(cd "$d" 2>/dev/null && pwd)"; [ -n "$abs" ] && d="$abs" || d="$(cd "$(dirname "$d")" 2>/dev/null && pwd)/$(basename "$d")" ;;
+  esac
+  DOCS_JSON=$(jq -c --arg d "$d" '. + [$d]' <<< "$DOCS_JSON")
+}
+
+add_objective() {
+  local objective="$1"
+  [ -n "$objective" ] || { echo "ERROR: --objective needs a catalog id" >&2; exit 1; }
+  OBJECTIVES_JSON=$(jq -c --arg o "$objective" '. + [$o] | unique' <<< "$OBJECTIVES_JSON")
+}
+
+usage() { sed -n '/^# /,/^set -/p' "$0" | sed 's/^# \{0,1\}//; /^set -/d'; exit "${1:-0}"; }
+
+# Parse one --id 'label=spec' into a JSON identity object; exchange key/secret -> token locally.
+add_identity() {
+  local raw="$1" label spec tok="" key="" sec="" turl="" hdr="" sch="" tnt="" ses="" kv k v
+  label="${raw%%=*}"; spec="${raw#*=}"
+  [ -n "$label" ] && [ "$label" != "$raw" ] || { echo "ERROR: --id must be 'label=spec' (got '$raw')" >&2; exit 1; }
+  IFS=',' read -ra PAIRS <<< "$spec"
+  for kv in "${PAIRS[@]}"; do
+    k="${kv%%:*}"; v="${kv#*:}"
+    case "$k" in
+      token) tok="$v" ;; key) key="$v" ;; secret) sec="$v" ;;
+      tokenurl) turl="$v" ;; header) hdr="$v" ;; scheme) sch="$v" ;; tenant) tnt="$v" ;;
+      session) ses="$v" ;;
+      *) echo "ERROR: unknown identity field '$k' in --id '$raw'" >&2; exit 1 ;;
+    esac
+  done
+  # session:<file> — a credential captured from an interactive SSO login (./sso-capture). It
+  # supplies the token + its header/scheme, so SSO targets need no manual token copying.
+  if [ -n "$ses" ]; then
+    [ -f "$ses" ] || { echo "ERROR: --id session file not found: $ses" >&2; exit 1; }
+    tok=$(jq -r '.auth_token // empty' "$ses" 2>/dev/null)
+    [ -n "$tok" ] || { echo "ERROR: session file has no auth_token: $ses" >&2; exit 1; }
+    [ -z "$hdr" ] && hdr=$(jq -r '.auth_header // empty' "$ses" 2>/dev/null)
+    [ -z "$sch" ] && sch=$(jq -r '.auth_scheme // empty' "$ses" 2>/dev/null)
+    echo "  loaded $(jq -r '.credential_kind // "?"' "$ses" 2>/dev/null) credential for '$label' from $ses"
+  fi
+  if [ -z "$tok" ] && [ -n "$key" ] && [ -n "$sec" ] && [ -n "$turl" ]; then
+    echo "  exchanging key/secret -> short-lived token for '$label' ($turl)"
+    local body
+    if [ -n "$PROF_EXBODY" ]; then
+      body=$(jq -c --arg k "$key" --arg s "$sec" 'walk(if type=="string" then (gsub("\\$KEY";$k)|gsub("\\$SECRET";$s)) else . end)' <<<"$PROF_EXBODY")
+    else
+      body=$(jq -nc --arg k "$key" --arg s "$sec" '{keyId:$k, keySecret:$s}')
+    fi
+    tok=$(curl -sk -X POST "$turl" -H 'Content-Type: application/json' -d "$body" \
+         | jq -r --arg tf "$PROF_TF" '.[$tf] // .token // empty')
+    [ -n "$tok" ] || { echo "ERROR: token exchange failed for identity '$label'" >&2; exit 1; }
+  fi
+  [ -n "$tok" ] || { echo "ERROR: identity '$label' has no token (give token: or key:/secret:/tokenurl:)" >&2; exit 1; }
+  # default the auth header from the profile when --id didn't pin one (e.g. Orkes
+  # X-Authorization); scheme stays unset so the resolver sends the raw token.
+  [ -z "$hdr" ] && [ -n "$PROF_HEADER" ] && hdr="$PROF_HEADER"
+  local obj
+  obj=$(jq -nc --arg l "$label" --arg t "$tok" --arg h "$hdr" --arg s "$sch" --arg tn "$tnt" '
+    {label:$l, auth_token:$t}
+    + (if $h == "" then {} else {auth_header:$h} end)
+    + (if $s == "" then {} else {auth_scheme:$s} end)
+    + (if $tn == "" then {} else {tenant:$tn} end)')
+  IDS_JSON=$(jq -c --argjson e "$obj" '. + [$e]' <<< "$IDS_JSON")
+  if [ "$NID" -eq 0 ]; then FIRST_TOKEN="$tok"; FIRST_HEADER="$hdr"; FIRST_SCHEME="$sch"; fi
+  NID=$((NID+1))
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --authorized) AUTH=true ;;
+    --manifest)   MANIFEST_PATH="${2:-}"; shift ;;
+    --capability) CAPABILITY="${2:-}"; shift ;;
+    --kill-switch) KILL_SWITCH="${2:-}"; shift ;;
+    --profile)    PROFILE="${2:-}"; shift ;;
+    --objective)  add_objective "${2:-}"; shift ;;
+    --focus)      INITIAL_FOCUS="${2:-}"; shift ;;
+    --leave-evidence) LEAVE_EVIDENCE=true ;;
+    --require-tenants) REQUIRE_TENANTS="${2:-}"; shift ;;
+    --resilience) RESILIENCE=true ;;
+    --purple)     PURPLE=true ;;
+    --no-wait)    WAIT=false ;;
+    --agent)      AGENT=true ;;
+    --source)     SOURCE="${2:-}"; shift ;;
+    --docs)       add_doc "${2:-}"; shift ;;
+    --scope)      SCOPE="${2:-}"; shift ;;
+    --id)         add_identity "${2:-}"; shift ;;
+    --login-url)  LOGIN_URL="${2:-}"; shift ;;
+    --username)   USERNAME="${2:-}"; shift ;;
+    --password)   PASSWORD="${2:-}"; shift ;;
+    --max-pages)  MAXPAGES="${2:-}"; shift ;;
+    --max-explore-steps) MAX_EXPLORE="${2:-}"; shift ;;
+    --max-hypotheses)    MAX_HYPOS="${2:-}"; shift ;;
+    --max-exploit-steps) MAX_EXPLOIT="${2:-}"; shift ;;
+    --max-passes)        MAXPASSES="${2:-}"; shift ;;
+    --reasoning)         REASONING="${2:-}"; shift ;;
+    --model)             MODEL="${2:-}"; shift ;;
+    --loop-model)        LOOP_MODEL="${2:-}"; shift ;;
+    --provider)          PROVIDER="${2:-}"; shift ;;
+    --loop-provider)     LOOP_PROVIDER="${2:-}"; shift ;;
+    --embed-provider)    EMBED_PROVIDER="${2:-}"; shift ;;
+    --embed-model)       EMBED_MODEL="${2:-}"; shift ;;
+    --oob)               OOB="${2:-}"; shift ;;
+    --auth-probe-path)   AUTH_PROBE_PATHS_JSON=$(jq -c --arg p "${2:-}" '. + [$p]' <<<"${AUTH_PROBE_PATHS_JSON:-[]}"); shift ;;
+    --no-bootstrap)      NO_BOOTSTRAP=true ;;
+    -h|--help)    usage 0 ;;
+    -*)           echo "unknown option: $1" >&2; usage 1 ;;
+    *)            if [ -z "$URL" ]; then URL="$1"; else echo "unexpected arg: $1" >&2; usage 1; fi ;;
+  esac
+  shift
+done
+
+[ -n "$URL" ] || { echo "ERROR: target URL required" >&2; usage 1; }
+command -v conductor >/dev/null || { echo "ERROR: conductor CLI not found" >&2; exit 1; }
+command -v jq >/dev/null || { echo "ERROR: jq required" >&2; exit 1; }
+command -v curl >/dev/null || { echo "ERROR: curl required" >&2; exit 1; }
+
+# Bring the stack up (server + workflows + worker fleet) unless told not to. Idempotent: each
+# piece is skipped if already healthy. Without workers polling, the campaign would hang.
+if ! $NO_BOOTSTRAP; then
+  export SC_REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+  source "$SC_REPO_ROOT/conductor/ensure-stack.sh"
+  sc_ensure_stack "$WF"
+fi
+
+# A target profile may declare its canonical application documentation. Merge it with
+# explicit --docs inputs so selecting a known product teaches the harness how to operate
+# that product before exploitation without hiding operator-supplied sources.
+PROFILE_DOCS_JSON=$(jq -c '
+  (.documentation // [])
+  | if type == "array" then map(select(type == "string" and length > 0)) else [] end
+' <<<"$PROFILE_JSON")
+DOCS_JSON=$(jq -cn --argjson profile "$PROFILE_DOCS_JSON" --argjson explicit "$DOCS_JSON" '
+  ($profile + $explicit) | unique
+')
+if [ "$(jq 'length' <<<"$PROFILE_DOCS_JSON")" -gt 0 ]; then
+  echo "ℹ  profile documentation enrolled: $(jq -r 'join(", ")' <<<"$PROFILE_DOCS_JSON")"
+fi
+
+if ! $AUTH; then
+  echo "⚠  Running WITHOUT --authorized: the workflow will refuse at the authorization gate."
+fi
+if [ "$NID" -lt 2 ]; then
+  echo "ℹ  $NID credential(s) supplied. BOLA/privilege-escalation hypotheses need >=2 identities;"
+  echo "   the run will still proceed (anonymous baseline + any supplied identity)."
+  echo "   Cross-tenant isolation will be reported as BLOCKED (not 'clean') with <2 tenants."
+fi
+# distinct tenants = explicit tenant tags if given, else count of privileged identities
+DISTINCT_TENANTS=$(jq -r '([.[] | (.tenant // .label)] | unique | length)' <<< "$IDS_JSON" 2>/dev/null || echo "$NID")
+if [ -n "$REQUIRE_TENANTS" ] && [ "${DISTINCT_TENANTS:-0}" -lt "$REQUIRE_TENANTS" ]; then
+  echo "ERROR: --require-tenants $REQUIRE_TENANTS but only $DISTINCT_TENANTS distinct-tenant identity(ies) supplied." >&2
+  echo "       Supply more '--id <label>=...,tenant:<id>' credentials, or drop --require-tenants." >&2
+  exit 1
+fi
+if [ -n "$SOURCE" ]; then
+  ABS="$(cd "$SOURCE" 2>/dev/null && pwd)"; [ -n "$ABS" ] && SOURCE="$ABS" || echo "⚠  --source '$SOURCE' not a dir; SAST skipped."
+fi
+if [ -z "$INITIAL_FOCUS" ] && [ "$(jq 'length' <<<"$OBJECTIVES_JSON")" -gt 0 ]; then
+  INITIAL_FOCUS="Prioritize these catalog objectives until attempted or explicitly blocked: $(jq -r 'join(\", \")' <<<"$OBJECTIVES_JSON")"
+fi
+# OOB collaborator: use --oob if given, else auto-detect a running one from its state file.
+# When set, exploit agents can plant canaries (sc.oob()) and the verifier confirms blind
+# SSRF/exfil/exec via inbound hits. Absent -> blind vectors stay unconfirmed (in-band only).
+OOB_STATE="$(cd "$(dirname "$0")" && pwd)/workers/oob/state.json"
+if [ -z "$OOB" ] && [ -f "$OOB_STATE" ]; then
+  OOB="$(jq -r '.public_base_url // empty' "$OOB_STATE" 2>/dev/null || true)"
+  [ -n "$OOB" ] && echo "ℹ  using OOB collaborator $OOB (from workers/oob/state.json)"
+fi
+[ -z "$OOB" ] && echo "ℹ  no OOB collaborator (run 'make oob'); blind SSRF/exfil leads will stay unconfirmed."
+
+# Authorization manifest (spec section 15). A --manifest file is the source of truth;
+# otherwise --authorized synthesizes a minimal, capability-bounded manifest so existing
+# usage keeps working. Default capability is 1 (read-only) -- state-changing pentest
+# (capability >=2) must be opted into explicitly via --capability or a manifest.
+MANIFEST_JSON="{}"
+if [ -n "$MANIFEST_PATH" ]; then
+  [ -f "$MANIFEST_PATH" ] || { echo "ERROR: --manifest file not found: $MANIFEST_PATH" >&2; exit 1; }
+  MANIFEST_JSON=$(jq -c '.' "$MANIFEST_PATH") || { echo "ERROR: --manifest is not valid JSON" >&2; exit 1; }
+  echo "ℹ  authorization manifest loaded from $MANIFEST_PATH"
+elif $AUTH; then
+  now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  exp_iso=$(date -u -v+1d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)
+  host=$(printf '%s' "$URL" | sed -E 's#^[a-zA-Z]+://##; s#[:/?].*$##')
+  if [ -n "$SCOPE" ]; then hosts_json=$(jq -cn --arg s "$SCOPE" '$s|split(",")'); else hosts_json=$(jq -cn --arg h "$host" '[$h]'); fi
+  # Bare --authorized remains conservative. Product-feature execution is state-changing
+  # and therefore requires an explicit --capability 2 (or a full manifest).
+  cap="${CAPABILITY:-1}"
+  MANIFEST_JSON=$(jq -nc \
+    --argjson hosts "$hosts_json" --arg start "$now_iso" --arg exp "$exp_iso" --argjson cap "$cap" \
+    --argjson resil "$RESILIENCE" '
+    { approvers: ["local-operator"], in_scope_hosts: $hosts,
+      window: {start: $start, expiry: $exp}, capability_max: $cap,
+      rate: {burst_max: 20}, note: "synthesized by ./assess --authorized" }
+    + (if $resil then {allowed_classes: ["resilience"]} else {} end)')
+  echo "ℹ  synthesized capability-$cap manifest (24h window). Level 3+ (sensitive/destructive) needs --capability or a --manifest."
+fi
+
+# Preflight: a capability>=2 campaign drives the product through the code_exec sandbox, which
+# needs the sc-codeexec image + a Docker egress jail. If the image is missing, EVERY run_code
+# fails closed ("egress jail unavailable") and the campaign silently degrades to read-only
+# probing (exercise_rate 0) -- a 0%-exercise report must never be mistaken for assurance.
+EFFCAP=$(jq -r '.capability_max // 1' <<<"$MANIFEST_JSON" 2>/dev/null || echo 1)
+if [ "${EFFCAP:-1}" -ge 2 ] 2>/dev/null && command -v docker >/dev/null 2>&1; then
+  CXIMG="${SC_CODEEXEC_IMAGE:-sc-codeexec:latest}"
+  if ! docker image inspect "$CXIMG" >/dev/null 2>&1; then
+    echo "⚠  PREFLIGHT: code_exec sandbox image '$CXIMG' is NOT built. At capability $EFFCAP the" >&2
+    echo "   exploit agents cannot run code (run_code fails closed: 'egress jail unavailable'), so" >&2
+    echo "   the run degrades to read-only probing and exercise_rate will be 0. Build it first:" >&2
+    echo "       make codeexec-image" >&2
+    echo "   Re-run --capability 2 only after the image exists. Aborting." >&2
+    exit 1
+  fi
+fi
+
+input=$(jq -n \
+  --arg t "$URL" --arg src "$SOURCE" --arg scope "$SCOPE" \
+  --arg lurl "$LOGIN_URL" --arg user "$USERNAME" --arg pass "$PASSWORD" --arg mp "$MAXPAGES" \
+  --arg mex "$MAX_EXPLORE" --arg mhy "$MAX_HYPOS" --arg mxp "$MAX_EXPLOIT" \
+  --arg mps "$MAXPASSES" --arg rs "$REASONING" --arg md "$MODEL" --arg oob "$OOB" \
+  --arg lmd "$LOOP_MODEL" --arg prov "$PROVIDER" --arg lprov "$LOOP_PROVIDER" \
+  --arg eprov "$EMBED_PROVIDER" --arg emodel "$EMBED_MODEL" \
+  --arg atoken "$FIRST_TOKEN" --arg aheader "$FIRST_HEADER" --arg ascheme "$FIRST_SCHEME" \
+  --arg ks "$KILL_SWITCH" --arg focus "$INITIAL_FOCUS" \
+  --argjson manifest "$MANIFEST_JSON" --argjson purple "$PURPLE" \
+  --argjson leave "$LEAVE_EVIDENCE" --argjson objectives "$OBJECTIVES_JSON" \
+  --argjson profile "$PROFILE_JSON" \
+  --argjson app "${AUTH_PROBE_PATHS_JSON:-[]}" \
+  --argjson ids "$IDS_JSON" --argjson docs "$DOCS_JSON" --argjson auth "$AUTH" --argjson agent "$AGENT" '
+  {target: $t, authorized: $auth, identities: $ids, target_profile: $profile,
+   leave_evidence: $leave, objective_focus: $objectives, initial_focus: $focus}
+  + (if ($manifest | length) == 0 then {} else {manifest: $manifest} end)
+  + (if $ks == "" then {} else {kill_switch: $ks} end)
+  + (if $purple then {purple: true} else {} end)
+  + ((($app // []) + (($profile.auth.probe_paths) // []) | unique) as $pp | if ($pp|length)>0 then {auth_probe_paths:$pp} else {} end)
+  + (($profile.auth.token_exchange) as $te | if ($te|type)=="object" then {token_exchange:$te} else {} end)
+  + (($profile.cleanup_families) as $cf | if ($cf|type)=="array" and ($cf|length)>0 then {cleanup_families:$cf} else {} end)
+  + (if ($docs | length) == 0 then {} else {docs: $docs} end)
+  + (if $src   == "" then {} else {source_path: $src} end)
+  + (if $scope == "" then {} else {scope: {in_scope_hosts: ($scope | split(","))}} end)
+  + (if $lurl  == "" then {} else {login_url: $lurl} end)
+  + (if $user  == "" then {} else {username: $user} end)
+  + (if $pass  == "" then {} else {password: $pass} end)
+  + (if $mp    == "" then {} else {max_pages: ($mp | tonumber)} end)
+  + (if $mex   == "" then {} else {max_explore_steps: ($mex | tonumber)} end)
+  + (if $mhy   == "" then {} else {max_hypotheses: ($mhy | tonumber)} end)
+  + (if $mxp   == "" then {} else {max_exploit_steps: ($mxp | tonumber)} end)
+  + (if $mps   == "" then {} else {max_passes: ($mps | tonumber)} end)
+  + (if $rs    == "" then {} else {reasoning: $rs} end)
+  + (if $md    == "" then {} else {model: $md} end)
+  + (if $lmd   == "" then {} else {loop_model: $lmd} end)
+  + (if $prov  == "" then {} else {llm_provider: $prov} end)
+  + (if $lprov == "" then {} else {loop_provider: $lprov} end)
+  + (if $eprov == "" then {} else {embed_provider: $eprov} end)
+  + (if $emodel == "" then {} else {embed_model: $emodel} end)
+  + (if $oob   == "" then {} else {oob_base: $oob} end)
+  + (if $agent then {agent: true, agent_steps: 8} else {} end)
+  + (if $atoken  == "" then {} else {auth_token: $atoken} end)
+  + (if $aheader == "" then {} else {auth_header: $aheader} end)
+  + (if $ascheme == "" then {} else {auth_scheme: $ascheme} end)')
+
+echo "→ starting $WF against $URL (authorized=$AUTH, identities=$NID + anon)"
+WID=$(conductor workflow start -w "$WF" -i "$input" 2>&1 | tr -d '[:space:]')
+echo "  workflow id: $WID"
+BASE_URL="${CONDUCTOR_SERVER_URL:-http://localhost:8080/api}"; BASE_URL="${BASE_URL%/api}"
+echo "  UI: $BASE_URL/execution/$WID"
+$WAIT || exit 0
+
+# Wait UNTIL the workflow reaches a terminal state — no cap. A deep, multi-pass, ladder-walking
+# campaign can run for hours; the wrapper must not give up while the server is still working.
+# (Ctrl-C to detach; the workflow keeps running server-side and the UI link shows progress.)
+echo -n "  working (deep campaigns can run for hours; waiting for completion)"
+while true; do
+  J=$(conductor workflow get-execution "$WID" 2>/dev/null || true)
+  ST=$(printf '%s' "$J" | jq -r '.status // empty' 2>/dev/null || true)
+  case "$ST" in
+    COMPLETED) echo " ✓ COMPLETED"
+      printf '%s' "$J" | jq -r '"  risk: \(.output.risk_rating // "n/a")   confirmed: \((.output.confirmed_findings // [])|length) (rejected \((.output.rejected_findings // [])|length))   blind leads: \((.output.blind_leads // [])|length)\n  passes: \(.output.passes_run // 1)   hypotheses tried: \((.output.tried_signatures // [])|length)   cleanup: removed \((.output.cleanup.deleted // [])|length), residue \((.output.cleanup.residue // [])|length)\n  report: \(.output.report_dir // "n/a")\n  pdf: \(.output.pdf // "n/a")"'
+      exit 0 ;;
+    FAILED|TERMINATED|TIMED_OUT) echo " ✗ $ST"
+      printf '%s' "$J" | jq -r '"  reason: \(.reasonForIncompletion // "see UI")"'
+      exit 1 ;;
+    *) echo -n "." ; ping -c 3 127.0.0.1 >/dev/null 2>&1 || true ;;
+  esac
+done

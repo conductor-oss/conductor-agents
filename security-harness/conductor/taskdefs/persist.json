@@ -1,0 +1,13 @@
+{
+  "name": "persist",
+  "description": "Write triaged findings.json, report.md, and report.pdf to REPORTS_DIR/<scan_id>/.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 120,
+  "responseTimeoutSeconds": 60,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

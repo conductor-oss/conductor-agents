@@ -1,0 +1,11 @@
+{
+  "name": "kb_chunks",
+  "description": "Split the remediation knowledge base markdown into per-section chunks for vector indexing.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "timeoutSeconds": 120,
+  "responseTimeoutSeconds": 90,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

@@ -1,0 +1,126 @@
+{
+  "name": "docs_ingest",
+  "version": 1,
+  "description": "Ingest the target's how-to-use docs (local paths + URLs): chunk them, index into a per-run pgvector docs namespace for on-demand agent retrieval, and produce a digest (intended workflows + documented invariants) for understanding/hypotheses. A single warm-up index creates the namespace relation before the parallel fan-out to avoid the create-relation race; indexing is best-effort so the digest always runs. System prompt injected by register.sh into task ref docs_digest.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["docs", "auth", "scope", "run_id", "model", "provider", "embed_provider", "embed_model", "index_docs", "render_js"],
+  "tasks": [
+    {
+      "name": "ingest_docs",
+      "taskReferenceName": "ingest_docs",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "docs": "${workflow.input.docs}",
+        "auth": "${workflow.input.auth}",
+        "scope": "${workflow.input.scope}",
+        "render_js": "${workflow.input.render_js}"
+      }
+    },
+    {
+      "name": "build_docs_index_jobs",
+      "taskReferenceName": "build_docs_index_jobs",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "chunks": "${ingest_docs.output.chunks}",
+        "namespace": "docs",
+        "index": "${workflow.input.run_id}",
+        "provider": "${workflow.input.embed_provider}",
+        "model": "${workflow.input.embed_model}",
+        "queryExpression": ". as $in | ($in.chunks // []) as $ch | (\"docs_\" + ((($in.index // \"\") | tostring) | gsub(\"[^a-zA-Z0-9]\"; \"_\"))) as $safe | { has_warmup: (($ch|length) > 0), index: $safe, warmup: (if ($ch|length) > 0 then {vectorDB:\"pgvector\", namespace:$in.namespace, index:$safe, embeddingModelProvider:$in.provider, embeddingModel:$in.model, text:$ch[0].text, docId:$ch[0].docId, metadata:$ch[0].metadata} else {} end), forkTasks: ($ch[1:] | to_entries | map({name:(\"didx_\"+(.key|tostring)), taskReferenceName:(\"didx_\"+(.key|tostring)), type:\"LLM_INDEX_TEXT\", optional:true})), forkTasksInputs: ($ch[1:] | to_entries | map({key:(\"didx_\"+(.key|tostring)), value:{vectorDB:\"pgvector\", namespace:$in.namespace, index:$safe, embeddingModelProvider:$in.provider, embeddingModel:$in.model, text:.value.text, docId:.value.docId, metadata:.value.metadata}}) | from_entries), rest_count: (if ($ch|length) > 0 then (($ch|length) - 1) else 0 end), count: ($ch|length) }"
+      }
+    },
+    {
+      "name": "warmup_gate",
+      "taskReferenceName": "warmup_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "($.has === true && ($.idx === true || $.idx === 'true')) ? 'go' : 'skip'",
+      "inputParameters": { "has": "${build_docs_index_jobs.output.result.has_warmup}", "idx": "${workflow.input.index_docs}" },
+      "decisionCases": {
+        "go": [
+          {
+            "name": "warmup_index",
+            "taskReferenceName": "warmup_index",
+            "type": "LLM_INDEX_TEXT",
+            "optional": true,
+            "inputParameters": {
+              "vectorDB": "pgvector",
+              "namespace": "${build_docs_index_jobs.output.result.warmup.namespace}",
+              "index": "${build_docs_index_jobs.output.result.warmup.index}",
+              "embeddingModelProvider": "${build_docs_index_jobs.output.result.warmup.embeddingModelProvider}",
+              "embeddingModel": "${build_docs_index_jobs.output.result.warmup.embeddingModel}",
+              "text": "${build_docs_index_jobs.output.result.warmup.text}",
+              "docId": "${build_docs_index_jobs.output.result.warmup.docId}",
+              "metadata": "${build_docs_index_jobs.output.result.warmup.metadata}"
+            }
+          }
+        ]
+      },
+      "defaultCase": [ { "name": "no_warmup", "taskReferenceName": "no_warmup", "type": "NOOP" } ]
+    },
+    {
+      "name": "rest_index_gate",
+      "taskReferenceName": "rest_index_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "($.c > 0 && ($.idx === true || $.idx === 'true')) ? 'go' : 'skip'",
+      "inputParameters": { "c": "${build_docs_index_jobs.output.result.rest_count}", "idx": "${workflow.input.index_docs}" },
+      "decisionCases": {
+        "go": [
+          {
+            "name": "docs_index_fork",
+            "taskReferenceName": "docs_index_fork",
+            "type": "FORK_JOIN_DYNAMIC",
+            "dynamicForkTasksParam": "forkTasks",
+            "dynamicForkTasksInputParamName": "forkTasksInputs",
+            "inputParameters": {
+              "forkTasks": "${build_docs_index_jobs.output.result.forkTasks}",
+              "forkTasksInputs": "${build_docs_index_jobs.output.result.forkTasksInputs}"
+            }
+          },
+          { "name": "docs_index_join", "taskReferenceName": "docs_index_join", "type": "JOIN" }
+        ]
+      },
+      "defaultCase": [ { "name": "no_rest_index", "taskReferenceName": "no_rest_index", "type": "NOOP" } ]
+    },
+    {
+      "name": "docs_digest",
+      "taskReferenceName": "docs_digest",
+      "type": "LLM_CHAT_COMPLETE",
+      "inputParameters": {
+        "llmProvider": "${workflow.input.provider}",
+        "model": "${workflow.input.model}",
+        "temperature": 1,
+        "maxTokens": 12000,
+        "thinkingTokenLimit": 4000,
+        "reasoningSummary": "detailed",
+        "jsonOutput": false,
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_DOCS_DIGEST" },
+          { "role": "user", "message": "Documentation excerpts:\n${ingest_docs.output.raw_excerpt}" }
+        ]
+      }
+    },
+    {
+      "name": "parse_docs_digest",
+      "taskReferenceName": "parse_docs_digest",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "raw": "${docs_digest.output.result}",
+        "queryExpression": ".raw as $r | (if ($r|type) == \"object\" then $r else (try ($r[ ($r|index(\"{\")) : (($r|rindex(\"}\"))+1) ] | fromjson) catch {}) end)"
+      }
+    }
+  ],
+  "outputParameters": {
+    "digest": "${parse_docs_digest.output.result}",
+    "docs_available": "${ingest_docs.output.docs_available}",
+    "index_ready": "${build_docs_index_jobs.output.result.has_warmup}",
+    "namespace": "docs",
+    "index": "${build_docs_index_jobs.output.result.index}",
+    "chunk_count": "${build_docs_index_jobs.output.result.count}",
+    "ingest_meta": "${ingest_docs.output.meta}"
+  }
+}

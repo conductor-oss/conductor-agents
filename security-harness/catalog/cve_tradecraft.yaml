@@ -1,0 +1,68 @@
+# CVE exploitation tradecraft (§14 supply-chain) — turns a version-matched CVE LEAD into a concrete
+# exploit HINT (technique + oracle) the agent can actually issue, instead of "attempt the published
+# exploit" from the id alone. Hybrid source: this curated map is consulted FIRST (deterministic,
+# offline), then deps.py's runtime advisory/PoC fetch fills the gap for unmapped CVEs.
+#
+# Resolution order in cve_tradecraft.hint(): overrides[<cve_id>] -> classify(dependency+summary) ->
+# generic. `family` is informational; the agent walks the generic `cve` deepen ladder (deepen.py)
+# specialized by `technique`/`oracle`. HC may propose ratify-gated additions here (detection/exploit
+# machinery -> ratify-only, never auto-applied).
+
+# CVE CLASS -> exploitation technique template + the oracle that proves impact.
+classes:
+  deserialization-gadget:
+    technique: "Reach the vulnerable readObject/parse path with a serialized gadget chain (ysoserial-style for the present libs); embed an OOB beacon or command in the chain."
+    oracle: "OOB canary hit from the server, or an exec/error oracle — never a 200."
+    family: deserialization-gadget
+  ssrf-filter-bypass:
+    technique: "Use the CVE's parser/filter flaw to slip an internal target past the egress allow/deny filter. Walk the WHOLE internal-target corpus (the ssrf deepen ladder enumerates it), not one form: bare IPv6 loopback [::1] (the decisive one when IPv4 127.0.0.1 is blocked), IPv4-mapped/compressed [::ffff:127.0.0.1], the AWS IPv6 IMDS [fd00:ec2::254], decimal/hex/octal, trailing-dot/userinfo tricks, subnet-filter bug."
+    oracle: "An internal/metadata target ([::1]:8080/actuator, 169.254.169.254, [fd00:ec2::254]) returns a backend response — internal content OR a backend auth error (INVALID_TOKEN) proving traversal — instead of the cluster 403 'blocked in this cluster'."
+    family: ssrf-filter-bypass
+  dos-amplification:
+    technique: "Issue the CVE's resource-amplification input (decompression bomb, unbounded read, ReDoS, PBKDF2/iteration blowup) at BOUNDED scale; measure, do not flood."
+    oracle: "Latency/RSS/CPU knee vs a baseline request on the same endpoint (resilience tier; abort at the knee)."
+    family: dos-amplification
+  jwt-auth-bypass:
+    technique: "Exploit the JWT/JOSE flaw — alg confusion (RS256->HS256), alg:none, kid injection, weak/missing signature verification — to mint or alter a token the server trusts."
+    oracle: "A forged/altered token authenticates as another principal (UserInfo / a protected read succeeds)."
+    family: jwt-auth-bypass
+  request-smuggling:
+    technique: "Send conflicting/obfuscated Transfer-Encoding/Content-Length over keep-alive so a fronting proxy and the backend disagree, smuggling a second request at the prior connection's trust."
+    oracle: "A smuggled request reaches an internal/admin route (/api/admin, /actuator) and its response surfaces on the attacker connection."
+    family: request-smuggling
+  parser-confusion:
+    technique: "Feed the malformed/edge-case input the CVE describes (XML/JSON/proto/encoding quirk) to desync the parser — entity expansion, encoding declaration, polyglot."
+    oracle: "Parser-specific impact: an out-of-band entity fetch, a crash/error oracle, or reflected internal data."
+    family: parser-confusion
+  generic:
+    technique: "Map the reachable feature/endpoint that exercises the vulnerable dependency, then issue the published PoC payload from the advisory references; vary encoding/sizing to fit the deployment."
+    oracle: "Demonstrated runtime impact (exec / OOB hit / timing / parser oracle / extracted data) — dependency+version presence alone is NOT confirmation."
+    family: generic
+
+# Per-CVE overrides for high-value, version-matched CVEs seen in the target stack. `class` selects the
+# template above; technique/oracle here append target-specific detail.
+overrides:
+  CVE-2026-44249:    # io.netty:netty-handler — IPv6 subnet-filter bypass
+    class: ssrf-filter-bypass
+    technique: "netty-handler IpSubnetFilterRule IPv6 bypass: encode the internal target as an IPv6 literal the IPv4-oriented filter mis-evaluates — the bare loopback [::1] and [0:0:0:0:0:0:0:1] (reach the LOCAL backend when 127.0.0.1 is blocked), the AWS IPv6 IMDS [fd00:ec2::254], and IPv4-mapped/compressed [::ffff:169.254.169.254] / [::ffff:a9fe:a9fe] / [::ffff:127.0.0.1] — so the subnet filter passes it and the egress allowlist lets it through."
+    oracle: "[::1]:8080/actuator|/api-docs, 169.254.169.254, [fd00:ec2::254] or metadata.google.internal returns a backend response (internal content / OpenAPI spec / a backend INVALID_TOKEN proving traversal) instead of the 'blocked in this cluster' 403."
+  CVE-2026-42585:    # io.netty:netty-codec-http — Transfer-Encoding request smuggling
+    class: request-smuggling
+    technique: "Craft conflicting/obfuscated Transfer-Encoding headers (chunked with whitespace/duplicate/x-prefixed values) plus a smuggled GET /api/admin or /actuator/env over a keep-alive connection."
+    oracle: "The smuggled admin/actuator response body is returned on a connection that should not be authorized for it."
+  CVE-2026-42587:    # netty-codec-http — decompression bomb DoS
+    class: dos-amplification
+    technique: "Submit a small highly-compressible body with a large declared/expanded size to a feature that decompresses request bodies; ramp bounded."
+    oracle: "Latency/CPU knee vs baseline (resilience tier)."
+  CVE-2026-50560:    # netty-codec-http2 — HTTP/2 reset (Rapid Reset-style) DoS
+    class: dos-amplification
+    technique: "Open then rapidly RST_STREAM many HTTP/2 streams at bounded rate against an h2 endpoint."
+    oracle: "Server-side stream-handling latency/error knee vs baseline (resilience tier)."
+  CVE-2024-47554:    # commons-io — XmlStreamReader unbounded read DoS
+    class: parser-confusion
+    technique: "Feed an XML stream with a crafted/garbage encoding declaration to a feature that uses commons-io XmlStreamReader (import/upload/proto), forcing an unbounded read."
+    oracle: "Elevated latency/RSS vs a baseline well-formed upload."
+  CVE-2023-52428:    # nimbus-jose-jwt — PBKDF2 iteration-count DoS
+    class: dos-amplification
+    technique: "Present a PBES2 JWE whose p2c (PBKDF2 iteration count) header is very large to a JWT-processing endpoint."
+    oracle: "Per-request CPU/latency knee vs a normal token (resilience tier)."

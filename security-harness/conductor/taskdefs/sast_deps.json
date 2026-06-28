@@ -1,0 +1,11 @@
+{
+  "name": "sast_deps",
+  "description": "Run trivy fs over the source path for vulnerable dependencies.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 600,
+  "responseTimeoutSeconds": 480,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

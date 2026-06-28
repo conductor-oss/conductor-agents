@@ -1,0 +1,13 @@
+{
+  "name": "playwright_action",
+  "description": "Execute one agent browser action (navigate/fill/click/observe) from a saved session; return the new page state + interactive elements.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 180,
+  "responseTimeoutSeconds": 120,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

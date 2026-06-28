@@ -1,0 +1,11 @@
+{
+  "name": "sweep_resources",
+  "description": "Ledger-independent cleanup: enumerate and delete every target object whose name starts with the sc-pentest- prefix (Conductor-aware, self-skipping per resource family, scope-enforced). The reliable safety net for resources the agent created but did not ledger. Returns {swept, residue}.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 300,
+  "responseTimeoutSeconds": 240,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

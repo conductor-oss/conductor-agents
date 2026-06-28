@@ -1,0 +1,13 @@
+{
+  "name": "active_check",
+  "description": "Run one planned active check (HTTP probe or nuclei/sqlmap/dalfox/ffuf) against the target; returns normalized findings.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 600,
+  "responseTimeoutSeconds": 360,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

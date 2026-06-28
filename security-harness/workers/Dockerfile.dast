@@ -1,0 +1,30 @@
+# DAST worker image: active_check with full tooling (nuclei, ffuf, dalfox, sqlmap).
+# Stage 1 compiles the Go scanners; stage 2 is a slim Python runtime.
+FROM golang:1.25-bookworm AS tools
+# Allow Go to auto-fetch a newer toolchain if a tool's go.mod requires it.
+ENV GOTOOLCHAIN=auto
+RUN go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest && \
+    go install github.com/ffuf/ffuf/v2@latest && \
+    go install github.com/hahwul/dalfox/v2@latest
+
+FROM python:3.12-slim
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
+    SC_IN_DOCKER=1 WORKER_MODULES=dast
+
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Go scanners
+COPY --from=tools /go/bin/nuclei /go/bin/ffuf /go/bin/dalfox /usr/local/bin/
+# sqlmap (python; uses the image's `python`)
+RUN git clone --depth 1 https://github.com/sqlmapproject/sqlmap /opt/sqlmap && \
+    ln -s /opt/sqlmap/sqlmap.py /usr/local/bin/sqlmap && chmod +x /opt/sqlmap/sqlmap.py
+# Pre-cache nuclei templates so the first scan doesn't pay the download.
+RUN nuclei -update-templates -silent || true
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . /app
+CMD ["python", "main.py"]

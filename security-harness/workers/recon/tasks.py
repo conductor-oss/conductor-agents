@@ -1,0 +1,1071 @@
+"""Base-worker task implementations.
+
+Three SIMPLE tasks back the Phase-0 thin slice of the ``security_scan`` workflow:
+
+  normalize_target  – parse/validate the target, derive the authorized scope,
+                      and produce the authorization flag the SWITCH gate reads.
+  recon             – PASSIVE reconnaissance (no attack traffic): security
+                      headers, cookie flags, info disclosure, robots/sitemap,
+                      transport. Emits normalized raw findings for triage.
+  persist           – write the triaged findings, markdown, and PDF for a scan
+                      to REPORTS_DIR/<scan_id>/.
+
+All network access is funnelled through common.scope.enforce so a scan can
+never touch a host the operator did not authorize.
+"""
+
+import glob
+import json
+import os
+import shutil
+from datetime import datetime, timezone
+from http.cookies import SimpleCookie
+from urllib.parse import urljoin, urlparse
+
+import requests
+import urllib3
+from bs4 import BeautifulSoup
+from conductor.client.worker.worker_task import worker_task
+
+from common import auth as auth_mod
+from common import authz
+from common import catalog as catalog_mod
+from common import chaining as chaining_mod
+from common import deps as deps_mod
+from common import coverage as coverage_mod
+from common import deepen as deepen_mod
+from common import dossier as dossier_mod
+from common import feature_exercise as feature_mod
+from common import features as features_mod
+from common import identity as identity_mod
+from common import memory
+from common import personas as personas_mod
+from common import scope as scope_mod
+from common import substrates as substrates_mod
+from common import trace as trace_mod
+from common.auth import auth_headers, resolve_auth, resolve_identities
+from common.findings import CRITICAL, HIGH, INFO, LOW, MEDIUM, finding
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+USER_AGENT = "security-conductor/0.1 (+authorized-scan)"
+TIMEOUT = 15
+
+# Security response headers we expect a hardened app to set, with the
+# severity hint and OWASP/CWE mapping used when they are absent.
+SECURITY_HEADERS = {
+    "content-security-policy": (MEDIUM, "CWE-1021", "A05:2021 - Security Misconfiguration",
+                                "Content-Security-Policy mitigates XSS and data injection."),
+    "strict-transport-security": (MEDIUM, "CWE-319", "A05:2021 - Security Misconfiguration",
+                                  "HSTS forces HTTPS and prevents protocol downgrade."),
+    "x-frame-options": (LOW, "CWE-1021", "A05:2021 - Security Misconfiguration",
+                        "Protects against clickjacking (or use CSP frame-ancestors)."),
+    "x-content-type-options": (LOW, "CWE-693", "A05:2021 - Security Misconfiguration",
+                               "nosniff stops MIME-type confusion attacks."),
+    "referrer-policy": (INFO, "CWE-200", "A05:2021 - Security Misconfiguration",
+                        "Controls how much referrer information is leaked."),
+    "permissions-policy": (INFO, "CWE-693", "A05:2021 - Security Misconfiguration",
+                           "Restricts powerful browser features."),
+}
+
+
+def _session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update({"User-Agent": USER_AGENT})
+    s.verify = False  # scanners commonly target self-signed/staging hosts
+    s.max_redirects = 5
+    return s
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+@worker_task(task_definition_name="normalize_target")
+def normalize_target(task):
+    """Validate the target URL, derive scope, and gate on authorization."""
+    inp = task.input_data or {}
+    target = str(inp.get("target") or "").strip()
+    scope = inp.get("scope") if isinstance(inp.get("scope"), dict) else None
+    authorized = inp.get("authorized", False)
+    intrusive = inp.get("intrusive", False)
+    source_path = inp.get("source_path") or ""
+    candidate_profile = inp.get("target_profile")
+    target_profile = candidate_profile if (
+        isinstance(candidate_profile, dict)
+        and any(k in candidate_profile for k in ("name", "archetype", "feature_exploitation_playbook"))
+    ) else {}
+    manifest = inp.get("manifest") if isinstance(inp.get("manifest"), dict) else {}
+    if not target:
+        raise ValueError("target is required")
+    if "://" not in target:
+        target = "https://" + target
+
+    parsed = urlparse(target)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"unsupported scheme: {parsed.scheme}")
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+    norm_scope = scope_mod.normalize_scope(scope, target)
+
+    def _truthy(v: object) -> bool:
+        return str(v).strip().lower() in ("true", "1", "yes")
+
+    # Authorization is a machine-enforceable manifest (spec 15). A manifest, when
+    # supplied, is the source of truth and fails closed. The legacy `authorized`
+    # boolean remains a back-compat shorthand for a capability-1 (read-only) run.
+    if manifest:
+        verdict = authz.validate(manifest, target)
+        authorized_str = "true" if verdict["ok"] else "false"
+        capability_max = verdict["capability_max"]
+        authz_reason = verdict["reason"]
+    else:
+        authorized_str = "true" if _truthy(authorized) else "false"
+        capability_max = 1 if authorized_str == "true" else 0
+        authz_reason = "legacy --authorized shorthand (capability 1, read-only)" \
+            if authorized_str == "true" else "not authorized"
+
+    # Resolve auth by PROBING the target for the working scheme (raw-token header vs
+    # Authorization: Bearer) so we never silently run unauthenticated. A target profile
+    # (optional) supplies protected `auth_probe_paths` for deterministic verification.
+    probe_paths = inp.get("auth_probe_paths") if isinstance(inp.get("auth_probe_paths"), list) else []
+    resolved_auth = resolve_auth(inp, base_url=base_url, scope=norm_scope, probe_paths=probe_paths)
+    identities = resolve_identities(inp, base_url=base_url, scope=norm_scope, probe_paths=probe_paths)
+    # Authenticated if no creds were supplied (anon-only is "verified" trivially) OR a
+    # supplied credential probe-authenticated. An UNVERIFIED credential is the dangerous
+    # case (false "nothing found"), so flag it.
+    creds = [resolved_auth] + [v for k, v in identities.items() if k != "anon" and isinstance(v, dict) and v.get("value")]
+    creds = [c for c in creds if isinstance(c, dict) and c.get("value")]
+    statuses = [str(c.get("verified") or "unknown") for c in creds]
+    # tri-state: true (a cred authenticated) / false (a cred was rejected by a protected
+    # path) / unknown (couldn't confirm pre-surface). Only "false" is the alarming case.
+    if not creds:
+        auth_verified = "true"
+    elif "true" in statuses:
+        auth_verified = "true"
+    elif "false" in statuses:
+        auth_verified = "false"
+    else:
+        auth_verified = "unknown"
+    auth_note = "; ".join(sorted({c.get("note", "") for c in creds if c.get("note")})) or "no credentials supplied (anonymous baseline only)"
+
+    # Load any persistent cross-run knowledge for this deployment (spec 13) so the
+    # campaign skips already-tried hypotheses and can build on / regress prior findings.
+    host = parsed.hostname or ""
+    fp = memory.fingerprint(host)
+    prior = memory.load(fp)
+    prior_state = {
+        "tried_signatures": prior.get("tried_signatures") or [],
+        "gaps": prior.get("gaps") or [],
+        "all_confirmed": prior.get("all_confirmed") or [],
+        "app_version": prior.get("app_version") or "",
+        "runs": prior.get("runs") or 0,
+    }
+
+    return {
+        "target": target,
+        "base_url": base_url,
+        "host": host,
+        "scheme": parsed.scheme,
+        "scope": norm_scope,
+        "authorized_str": authorized_str,
+        "intrusive_str": "true" if _truthy(intrusive) else "false",
+        "source_path": source_path or "",
+        "target_profile": target_profile,
+        "auth": resolved_auth,
+        "identities": identities,
+        "auth_verified": auth_verified,
+        "auth_note": auth_note,
+        "manifest": manifest,
+        "capability_max": capability_max,
+        "authz_reason": authz_reason,
+        "fingerprint": fp,
+        "prior_state": prior_state,
+        "identity_adequacy": identity_mod.classify(identities),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+@worker_task(task_definition_name="recon")
+def recon(task):
+    """Passive recon: emit normalized raw findings without sending attack traffic."""
+    inp = task.input_data or {}
+    base_url = str(inp.get("base_url") or "").strip()
+    scope = inp.get("scope") if isinstance(inp.get("scope"), dict) else None
+    scope = scope or scope_mod.derive_scope(base_url)
+    scope_mod.enforce(base_url, scope)
+
+    findings: list[dict] = []
+    meta: dict = {"base_url": base_url}
+    sess = _session()
+    sess.headers.update(auth_headers(inp.get("auth")))
+
+    try:
+        resp = sess.get(base_url, timeout=TIMEOUT, allow_redirects=True)
+    except requests.RequestException as exc:
+        return {"findings": [finding(
+            title="Target unreachable during recon", source_tool="recon",
+            severity_hint=INFO, location=base_url, evidence=str(exc),
+            description="The scanner could not fetch the target for passive analysis.",
+        )], "meta": {"error": str(exc), "base_url": base_url}}
+
+    headers = {k.lower(): v for k, v in resp.headers.items()}
+    meta.update({
+        "status_code": resp.status_code,
+        "final_url": resp.url,
+        "server": headers.get("server", ""),
+        "powered_by": headers.get("x-powered-by", ""),
+        "content_type": headers.get("content-type", ""),
+    })
+
+    # 1. Missing security headers
+    for name, (sev, cwe, owasp, why) in SECURITY_HEADERS.items():
+        if name == "strict-transport-security" and resp.url.startswith("http://"):
+            continue  # HSTS is irrelevant over plaintext; transport finding covers it
+        if name not in headers:
+            findings.append(finding(
+                title=f"Missing security header: {name}", source_tool="recon",
+                severity_hint=sev, location=resp.url, cwe=cwe, owasp=owasp,
+                evidence=f"Response from {resp.url} did not include `{name}`.",
+                description=why,
+            ))
+
+    # 2. Information disclosure via headers
+    for h in ("server", "x-powered-by", "x-aspnet-version", "x-generator"):
+        if headers.get(h):
+            findings.append(finding(
+                title=f"Technology disclosure via `{h}` header", source_tool="recon",
+                severity_hint=INFO, location=resp.url, cwe="CWE-200",
+                owasp="A05:2021 - Security Misconfiguration",
+                evidence=f"{h}: {headers[h]}",
+                description="Software/version disclosure helps an attacker target known CVEs.",
+            ))
+
+    # 3. Cookie flags
+    set_cookies = []
+    try:
+        if hasattr(resp.raw, "headers") and hasattr(resp.raw.headers, "getlist"):
+            set_cookies = resp.raw.headers.getlist("Set-Cookie")
+    except Exception:
+        set_cookies = []
+    for raw_cookie in set_cookies:
+        jar = SimpleCookie()
+        try:
+            jar.load(raw_cookie)
+        except Exception:
+            continue
+        for cname, morsel in jar.items():
+            missing = [flag for flag, present in (
+                ("Secure", morsel["secure"]),
+                ("HttpOnly", morsel["httponly"]),
+                ("SameSite", morsel["samesite"]),
+            ) if not present]
+            if missing:
+                findings.append(finding(
+                    title=f"Cookie `{cname}` missing flags: {', '.join(missing)}",
+                    source_tool="recon", severity_hint=MEDIUM if "HttpOnly" in missing else LOW,
+                    location=resp.url, cwe="CWE-614",
+                    owasp="A05:2021 - Security Misconfiguration",
+                    evidence=raw_cookie,
+                    description="Session cookies should set Secure, HttpOnly, and SameSite.",
+                ))
+
+    # 4. Insecure transport
+    if resp.url.startswith("http://"):
+        findings.append(finding(
+            title="Application served over plaintext HTTP", source_tool="recon",
+            severity_hint=HIGH, location=resp.url, cwe="CWE-319",
+            owasp="A02:2021 - Cryptographic Failures",
+            evidence=f"Final URL after redirects is {resp.url}",
+            description="Traffic (including credentials/session) is exposed to interception.",
+        ))
+
+    # 5. Page title + generator fingerprint
+    try:
+        soup = BeautifulSoup(resp.text, "html.parser")
+        if soup.title and soup.title.string:
+            meta["title"] = soup.title.string.strip()[:200]
+        gen = soup.find("meta", attrs={"name": "generator"})
+        if gen and gen.get("content"):
+            meta["generator"] = gen["content"]
+            findings.append(finding(
+                title="Framework disclosed via generator meta tag", source_tool="recon",
+                severity_hint=INFO, location=resp.url, cwe="CWE-200",
+                owasp="A05:2021 - Security Misconfiguration",
+                evidence=f'<meta name="generator" content="{gen["content"]}">',
+                description="Reveals the underlying CMS/framework and version.",
+            ))
+    except Exception:
+        pass
+
+    # 6. robots.txt / sitemap.xml
+    for path in ("robots.txt", "sitemap.xml"):
+        url = urljoin(base_url + "/", path)
+        if not scope_mod.in_scope(url, scope):
+            continue
+        try:
+            r = sess.get(url, timeout=TIMEOUT)
+        except requests.RequestException:
+            continue
+        if r.status_code == 200 and r.text.strip():
+            meta[path] = True
+            if path == "robots.txt":
+                disallows = [ln.split(":", 1)[1].strip()
+                             for ln in r.text.splitlines()
+                             if ln.lower().startswith("disallow:") and ln.split(":", 1)[1].strip()]
+                if disallows:
+                    findings.append(finding(
+                        title="robots.txt discloses paths", source_tool="recon",
+                        severity_hint=INFO, location=url, cwe="CWE-200",
+                        owasp="A05:2021 - Security Misconfiguration",
+                        evidence="Disallow: " + ", ".join(disallows[:20]),
+                        description="Disallowed paths often point to sensitive or admin areas.",
+                        raw={"disallow": disallows},
+                    ))
+
+    meta["finding_count"] = len(findings)
+    return {"findings": findings, "meta": meta}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+@worker_task(task_definition_name="persist")
+def persist(task):
+    """Write findings.json, report.md, and report.pdf to REPORTS_DIR/<scan_id>/."""
+    inp = task.input_data or {}
+    scan_id = str(inp.get("scan_id") or "")
+    target = str(inp.get("target") or "")
+    findings = inp.get("findings")
+    report_md = inp.get("report_md") or ""
+    pdf_location = inp.get("pdf_location") or ""
+    reports_dir = os.environ.get("REPORTS_DIR", "./reports")
+    out_dir = os.path.abspath(os.path.join(reports_dir, scan_id or "latest"))
+    os.makedirs(out_dir, exist_ok=True)
+
+    written: list[str] = []
+
+    if isinstance(findings, str):
+        try:
+            findings = json.loads(findings)
+        except json.JSONDecodeError:
+            findings = {"raw": findings}
+    findings_path = os.path.join(out_dir, "findings.json")
+    with open(findings_path, "w") as fh:
+        json.dump({"target": target, "scan_id": scan_id, "triage": findings}, fh, indent=2)
+    written.append(findings_path)
+
+    # SARIF 2.1.0 export so findings flow into the tool ecosystem (GitHub code scanning,
+    # DefectDojo, SIEM). Best-effort: a malformed triage must never fail the persist step.
+    try:
+        from common import sarif as sarif_mod
+        sarif_path = os.path.join(out_dir, "report.sarif")
+        with open(sarif_path, "w") as fh:
+            json.dump(sarif_mod.to_sarif(findings if isinstance(findings, dict) else {},
+                                         target=target, scan_id=scan_id), fh, indent=2)
+        written.append(sarif_path)
+    except Exception:
+        pass
+
+    if report_md:
+        md_path = os.path.join(out_dir, "report.md")
+        with open(md_path, "w") as fh:
+            fh.write(report_md)
+        written.append(md_path)
+
+    for name, value in (("surface", inp.get("surface")), ("plan", inp.get("plan")),
+                        ("active_findings", inp.get("active_findings")),
+                        ("dossier", inp.get("dossier"))):
+        if value is None:
+            continue
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                pass
+        path = os.path.join(out_dir, f"{name}.json")
+        with open(path, "w") as fh:
+            json.dump(value, fh, indent=2)
+        written.append(path)
+
+    pdf_saved = _save_pdf(pdf_location, os.path.join(out_dir, "report.pdf"))
+    if pdf_saved:
+        written.append(pdf_saved)
+
+    dashboard = _update_dashboard(reports_dir)
+
+    return {
+        "report_dir": out_dir,
+        "files": written,
+        "pdf_location": pdf_location,
+        "pdf_saved": bool(pdf_saved),
+        "dashboard": dashboard,
+    }
+
+
+_OSV_URL = "https://api.osv.dev/v1/query"
+
+
+def _osv_fetch(ecosystem, name, version):
+    """Query OSV.dev for known vulns of one dependency (version-matched if known).
+    Returns [{id, severity, summary}] (best-effort, never raises)."""
+    pkg = {"ecosystem": ecosystem, "name": name}
+    body = {"package": pkg}
+    if version:
+        body["version"] = version
+    try:
+        r = requests.post(_OSV_URL, json=body, timeout=12)
+        if r.status_code != 200:
+            return []
+        out = []
+        for v in (r.json() or {}).get("vulns", [])[:8]:
+            sev = ""
+            ds = v.get("database_specific") or {}
+            if ds.get("severity"):
+                sev = str(ds["severity"]).lower()
+            elif v.get("severity"):
+                sc = str(v["severity"][0].get("score", "")) if v.get("severity") else ""
+                sev = "high" if "CVSS:3" in sc else ""
+            cve = next((a for a in (v.get("aliases") or []) if str(a).startswith("CVE-")), v.get("id"))
+            out.append({"id": cve, "severity": sev, "summary": (v.get("summary") or "")[:140]})
+        return out
+    except (requests.RequestException, ValueError):
+        return []
+
+
+_GHSA_ECOSYSTEM = {"maven": "MAVEN", "npm": "NPM", "pypi": "PIP", "pip": "PIP", "go": "GO",
+                   "rubygems": "RUBYGEMS", "gem": "RUBYGEMS", "nuget": "NUGET",
+                   "composer": "COMPOSER", "cargo": "RUST", "rust": "RUST"}
+
+
+def _ghsa_fetch(ecosystem, name, version):
+    """Identity feed #2 (§14, P1-2): GitHub Advisory Database via GraphQL — package-based advisories
+    for one dependency. Needs GITHUB_TOKEN/GH_TOKEN; degrades to [] without it (so the chain stays
+    OSV-only rather than failing). Returns [{id, severity, summary}] (best-effort, never raises)."""
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    eco = _GHSA_ECOSYSTEM.get(str(ecosystem or "").lower())
+    if not token or not eco or not name:
+        return []
+    q = ("query($eco:SecurityAdvisoryEcosystem!,$pkg:String!){"
+         "securityVulnerabilities(ecosystem:$eco,package:$pkg,first:10){nodes{"
+         "advisory{ghsaId severity identifiers{type value} summary} vulnerableVersionRange}}}")
+    try:
+        r = requests.post("https://api.github.com/graphql",
+                          json={"query": q, "variables": {"eco": eco, "pkg": name}},
+                          headers={"Authorization": f"bearer {token}"}, timeout=12)
+        if r.status_code != 200:
+            return []
+        nodes = (((r.json() or {}).get("data") or {}).get("securityVulnerabilities") or {}).get("nodes") or []
+        out = []
+        for n in nodes[:8]:
+            adv = n.get("advisory") or {}
+            cve = next((i.get("value") for i in (adv.get("identifiers") or []) if i.get("type") == "CVE"), None)
+            cid = cve or adv.get("ghsaId") or ""
+            if not cid:
+                continue
+            out.append({"id": cid, "severity": str(adv.get("severity") or "").lower(),
+                        "summary": (adv.get("summary") or f"GHSA advisory ({n.get('vulnerableVersionRange') or 'range n/a'})")[:140]})
+        return out
+    except (requests.RequestException, ValueError):
+        return []
+
+
+def _nvd_fetch(cve_id):
+    """Severity source (§14): NVD CVSS for one CVE id (NVD is CPE-based, so it's used to backfill
+    severity, not for package identity). Best-effort, never raises; NVD rate-limits unauthenticated."""
+    try:
+        r = requests.get("https://services.nvd.nist.gov/rest/json/cves/2.0",
+                         params={"cveId": cve_id}, timeout=12)
+        if r.status_code != 200:
+            return None
+        vulns = (r.json() or {}).get("vulnerabilities") or []
+        if not vulns:
+            return None
+        metrics = ((vulns[0].get("cve") or {}).get("metrics") or {})
+        for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+            m = metrics.get(key) or []
+            if m:
+                data = m[0].get("cvssData") or {}
+                return {"severity": str(m[0].get("baseSeverity") or data.get("baseSeverity") or "").lower(),
+                        "cvss": data.get("baseScore")}
+        return None
+    except (requests.RequestException, ValueError):
+        return None
+
+
+def _intel_feeds(cve_ids):
+    """Best-effort KEV (exploited-in-the-wild) + EPSS (exploit-probability) fetch for CVE
+    prioritization (design §5/§14, D12). Returns (kev_set, epss_map, feeds_as_of, notes).
+    Degrades silently to OSV-only; never raises."""
+    import datetime
+    kev, epss, notes = set(), {}, []
+    try:
+        import requests
+        try:
+            r = requests.get("https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+                             timeout=20, verify=False)
+            if r.ok:
+                kev = deps_mod.parse_kev(r.json())
+        except Exception as exc:
+            notes.append(f"kev unavailable: {exc}")
+        ids = [c for c in (cve_ids or []) if c][:100]
+        if ids:
+            try:
+                r = requests.get("https://api.first.org/data/v1/epss",
+                                 params={"cve": ",".join(ids)}, timeout=20, verify=False)
+                if r.ok:
+                    epss = deps_mod.parse_epss(r.json())
+            except Exception as exc:
+                notes.append(f"epss unavailable: {exc}")
+    except Exception as exc:
+        notes.append(f"requests unavailable: {exc}")
+    as_of = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return kev, epss, as_of, notes
+
+
+@worker_task(task_definition_name="dep_cve_scan")
+def dep_cve_scan(task):
+    """Dependency -> known-CVE lookup (ROADMAP E4 supply chain). Extracts dependencies from
+    SOURCE manifests (high fidelity) or, absent source, INFERS the stack from the app model /
+    recon fingerprint, then queries OSV.dev for known CVEs. Emits findings + `cve_leads` that
+    seed exploitation hypotheses (the agent then TRIES to exploit reachable ones). Uses OSV
+    (free, no key, no docker) -- works whether or not trivy is installed. Never raises."""
+    inp = task.input_data or {}
+    source_path = str(inp.get("source_path") or "").strip()
+    app_model = inp.get("app_model") if isinstance(inp.get("app_model"), dict) else {}
+    recon_meta = inp.get("recon_meta") if isinstance(inp.get("recon_meta"), dict) else {}
+    try:
+        deps = deps_mod.parse_source(source_path) if source_path else []
+        source = "source-manifests" if deps else "stack-inference"
+        if not deps:
+            deps = deps_mod.infer_stack(app_model, recon_meta)
+        records = deps_mod.query_osv(deps, _osv_fetch)
+        ghsa = deps_mod.query_ghsa(deps, _ghsa_fetch)              # identity feed #2 (GitHub Advisory DB; OSV-only without GITHUB_TOKEN)
+        if ghsa:
+            records = deps_mod.merge_cve_records(records, ghsa)    # union OSV + GHSA, deduped by CVE id
+        deps_mod.nvd_enrich(records[:5], _nvd_fetch)               # NVD severity backfill on the top records (by CVE id)
+        feeds_used = ["osv"] + (["ghsa"] if ghsa else []) + ["nvd"]
+        # Start-of-loop intel refresh (§5/§14/D12): KEV + EPSS so the most ATTEMPTABLE CVE is
+        # offered first; this is THE intel-refresh step (no separate worker), and it stamps the
+        # substrate-pack version + feeds_as_of carried into the dossier.
+        cve_ids = [t.get("id") for r in records for t in (r.get("top") or []) if t.get("id")]
+        kev, epss, feeds_as_of, intel_notes = _intel_feeds(cve_ids)
+        records = deps_mod.prioritize(records, kev=kev, epss=epss, exploitable=kev)
+        findings, leads = [], []
+        sev_map = {"critical": CRITICAL, "high": HIGH, "medium": MEDIUM, "moderate": MEDIUM, "low": LOW}
+        for rec in records:
+            top = rec["top"][0] if rec["top"] else {}
+            ids = ", ".join(t.get("id", "") for t in rec["top"])
+            if rec["version_known"]:
+                # version-matched: the deployed version IS affected -> real severity + exploit lead
+                sev = sev_map.get((top.get("severity") or "").lower(), LOW)
+                title = f"Known-vulnerable dependency {rec['dependency']} ({rec['cve_count']} CVE(s) for the deployed version: {ids})"
+                ev = (f"OSV reports {rec['cve_count']} vuln(s) for {rec['dependency']} (VERSION-MATCHED, scope={rec['scope']}). "
+                      f"Top: {top.get('id')} - {top.get('summary')}")
+                if rec["scope"] != "test":
+                    leads.append({"dependency": rec["dependency"], "ecosystem": rec["ecosystem"],
+                                  "version_known": True, "top_cves": rec["top"][:3],
+                                  "priority_score": rec.get("priority_score"),
+                                  "kev": rec.get("kev"), "exploit_available": rec.get("exploit_available")})
+            else:
+                # version UNKNOWN: OSV returns ALL historical CVEs for the package regardless of
+                # deployed version -> NOT confirmed. Cap at INFO and do NOT offer as an exploit lead.
+                sev = INFO
+                title = f"Dependency {rec['dependency']} has historical CVEs (version unresolved - VERIFY): {ids}"
+                ev = (f"Could not resolve the deployed version of {rec['dependency']} from the build, so OSV "
+                      f"returned ALL historical CVEs for the package ({rec['cve_count']}); these are NOT confirmed "
+                      f"to affect the deployed version. Verify the pinned version. Top historical: {top.get('id')}.")
+            findings.append(finding(
+                title=title, source_tool="dep_cve", severity_hint=sev,
+                location=rec["dependency"], cwe="CWE-1104", owasp="A06:2021 - Vulnerable and Outdated Components",
+                evidence=ev,
+                description=("A deployed dependency version has known CVEs; assess reachability and attempt "
+                             "exploitation of the most severe reachable CVE." if rec["version_known"]
+                             else "Dependency flagged for version verification; not a confirmed vulnerability.")))
+        try:
+            substrates_version = substrates_mod.version(substrates_mod.load())
+        except Exception:
+            substrates_version = ""
+        return {"deps_found": len(deps), "with_vulns": len(records),
+                "version_matched": sum(1 for r in records if r["version_known"]),
+                "source": source, "findings": findings, "cve_leads": leads[:12],
+                "feeds_as_of": feeds_as_of, "kev_count": len(kev), "intel_notes": intel_notes,
+                "substrates_version": substrates_version, "feeds_used": feeds_used}
+    except Exception as exc:
+        return {"deps_found": 0, "with_vulns": 0, "findings": [], "cve_leads": [], "error": str(exc)}
+
+
+@worker_task(task_definition_name="catalog_context")
+def catalog_context(task):
+    """Load the Security Objective Catalog (spec spine), derive applicability facts from
+    the app model + runtime context, and return the APPLICABLE objectives (to seed
+    hypothesis breadth) and the NOT-APPLICABLE ones (so coverage can show N/A honestly).
+    Never raises."""
+    inp = task.input_data or {}
+    app_model = inp.get("app_model") if isinstance(inp.get("app_model"), dict) else {}
+    identities = inp.get("identities") if isinstance(inp.get("identities"), dict) else {}
+    has_cred = any(k != "anon" and isinstance(v, dict) and v.get("value") for k, v in identities.items())
+    extra = {
+        "authenticated": str(inp.get("auth_verified") or "") in ("true", "unknown") and has_cred,
+        "has_source": bool(str(inp.get("has_source") or "").strip()),
+    }
+    try:
+        cat = catalog_mod.load()
+        facts = catalog_mod.derive_facts(app_model, extra)
+        appl = catalog_mod.applicable_entries(cat, facts)
+        na = catalog_mod.na_entries(cat, facts)
+        return {
+            "facts": facts,
+            "applicable": catalog_mod.compact(appl),
+            "not_applicable": [{"id": e.get("id"), "class": e.get("class"),
+                                "coverage_dimension": e.get("coverage_dimension")} for e in na],
+            "dimensions": catalog_mod.coverage_dimensions(cat),
+            "counts": {"total": len(cat), "applicable": len(appl), "not_applicable": len(na)},
+        }
+    except Exception as exc:
+        return {"facts": {}, "applicable": [], "not_applicable": [], "dimensions": [],
+                "counts": {}, "error": str(exc)}
+
+
+@worker_task(task_definition_name="build_personas")
+def build_personas(task):
+    """Map supplied identities onto attacker personas (spec 8). Never raises."""
+    inp = task.input_data or {}
+    identities = inp.get("identities") if isinstance(inp.get("identities"), dict) else {}
+    app_model = inp.get("app_model") if isinstance(inp.get("app_model"), dict) else {}
+    manifest = inp.get("manifest") if isinstance(inp.get("manifest"), dict) else {}
+    try:
+        return {"personas": personas_mod.build(identities, app_model, manifest)}
+    except Exception as exc:
+        return {"personas": [], "error": str(exc)}
+
+
+@worker_task(task_definition_name="build_mandatory_hypotheses")
+def build_mandatory_hypotheses(task):
+    """Seed machine-required product-feature and top-CVE hypotheses.
+
+    These hypotheses are generated outside the LLM so the campaign cannot omit an
+    applicable engine primitive merely because a cheaper management-API lead exists.
+    """
+    inp = task.input_data or {}
+    try:
+        identities = inp.get("identities") if isinstance(inp.get("identities"), dict) else {}
+        hypotheses = feature_mod.mandatory_hypotheses(
+            inp.get("playbook") if isinstance(inp.get("playbook"), dict) else {},
+            inp.get("operations") if isinstance(inp.get("operations"), list) else [],
+            inp.get("cve_leads") if isinstance(inp.get("cve_leads"), list) else [],
+            inp.get("adequacy") if isinstance(inp.get("adequacy"), dict) else {},
+            inp.get("capability_max"),
+            identities,
+            inp.get("objective_focus") if isinstance(inp.get("objective_focus"), list) else [],
+            inp.get("catalog_objectives") if isinstance(inp.get("catalog_objectives"), list) else [],
+            inp.get("sast_findings") if isinstance(inp.get("sast_findings"), list) else [],
+            prior_confirmed=inp.get("prior_confirmed") if isinstance(inp.get("prior_confirmed"), list) else [],
+        )
+        # Feature-complete sweep: one deep hypothesis per (feature, class) flagged during triage.
+        sweep = feature_mod.feature_sweep_hypotheses(
+            inp.get("triage_signals") if isinstance(inp.get("triage_signals"), list) else [],
+            inp.get("feature_inventory") if isinstance(inp.get("feature_inventory"), list) else [],
+            inp.get("capability_max"),
+            identities,
+        )
+        hypotheses = hypotheses + sweep
+        return {"hypotheses": hypotheses, "count": len(hypotheses), "sweep_count": len(sweep)}
+    except Exception as exc:
+        return {"hypotheses": [], "count": 0, "error": str(exc)}
+
+
+@worker_task(task_definition_name="build_feature_inventory")
+def build_feature_inventory(task):
+    """Enumerate EVERY input-bearing feature from all available signal (live surface, app model,
+    docs recipes) into a prioritised inventory — the denominator for the feature-complete sweep."""
+    inp = task.input_data or {}
+    try:
+        inventory = features_mod.build_inventory(
+            inp.get("app_model") if isinstance(inp.get("app_model"), dict) else {},
+            inp.get("surface") if isinstance(inp.get("surface"), dict) else {},
+            inp.get("docs_digest") if isinstance(inp.get("docs_digest"), dict) else {},
+            inp.get("playbook") if isinstance(inp.get("playbook"), dict) else {},
+        )
+        candidates = features_mod.sweep_candidates(inventory)
+        return {"inventory": inventory, "candidates": candidates,
+                "total": len(inventory), "candidate_count": len(candidates)}
+    except Exception as exc:
+        return {"inventory": [], "candidates": [], "total": 0, "candidate_count": 0, "error": str(exc)}
+
+
+def _triage_one(feat, base_url, ident, auth, scope, oob_base):
+    """Fire ONE polyglot canary at a feature (all its fields at once) and classify what surfaces."""
+    import uuid as _uuid
+    token = _uuid.uuid4().hex[:10]
+    canary = features_mod.polyglot_canary(token, oob=(f"{oob_base.rstrip('/')}/f/{token}" if oob_base else ""))
+    method = (feat.get("method") or "GET").upper()
+    path = feat.get("path") or "/"
+    for p in [i["name"] for i in feat.get("inputs", []) if i.get("location") == "path"]:
+        path = path.replace("{" + p + "}", token).replace(":" + p, token)
+    url = base_url.rstrip("/") + ("/" + path.lstrip("/"))
+    if scope and not scope_mod.in_scope(url, scope):
+        return None, {"feature_id": feat["id"], "status": "out-of-scope"}
+    params = {i["name"]: canary for i in feat.get("inputs", []) if i.get("location") == "query"}
+    body = {i["name"]: canary for i in feat.get("inputs", []) if i.get("location") in ("body", "form")}
+    headers = {"Content-Type": "application/json"}
+    headers.update(auth_mod.auth_headers(auth) or {})
+    try:
+        r = requests.request(method, url, params=params or None, json=(body or None) if method != "GET" else None,
+                             headers=headers, timeout=15, verify=False, allow_redirects=False)
+        classes = features_mod.classify_reflection(token, r.text, dict(r.headers), [])
+    except requests.RequestException as exc:
+        return None, {"feature_id": feat["id"], "status": "error", "error": str(exc)[:120]}
+    field = ", ".join(i["name"] for i in feat.get("inputs", [])) or "(no-field)"
+    sigs = [{"feature_id": feat["id"], "field": field, "class": c,
+             "evidence": f"canary surfaced as {c} in {method} {path} (status {r.status_code})"} for c in classes]
+    return sigs, {"feature_id": feat["id"], "status": ("triaged" if classes else "clean"), "classes": classes}
+
+
+@worker_task(task_definition_name="feature_triage")
+def feature_triage(task):
+    """Cheap reflection probe across every input-bearing feature: plant a polyglot canary and record
+    which injection class (if any) each feature's input surfaces as. Only flagged features get the
+    expensive exploit_deepen ladder walk (triage-then-deepen). Write probes need capability>=2."""
+    inp = task.input_data or {}
+    try:
+        inventory = inp.get("inventory") if isinstance(inp.get("inventory"), list) else []
+        identities = inp.get("identities") if isinstance(inp.get("identities"), dict) else {}
+        scope = inp.get("scope") if isinstance(inp.get("scope"), dict) else {}
+        base_url = inp.get("base_url") or inp.get("target") or ""
+        oob_base = inp.get("oob_base") or ""
+        try:
+            cap = int(inp.get("capability_max") or 1)
+        except (TypeError, ValueError):
+            cap = 1
+        labels = [k for k, v in identities.items() if k != "anon" and isinstance(v, dict) and v.get("value")]
+        ident = labels[0] if labels else "anon"
+        auth = identities.get(ident) if isinstance(identities.get(ident), dict) else {}
+        candidates = features_mod.sweep_candidates(inventory)
+        signals, probed = [], []
+        for feat in candidates:
+            # workflow-definition fields can't be host-probed (they need define+run) -> deep only
+            if any(i.get("location") == "definition" for i in feat.get("inputs", [])):
+                probed.append({"feature_id": feat["id"], "status": "needs-deep"})
+                continue
+            is_write = (feat.get("method") or "GET").upper() in ("POST", "PUT", "PATCH", "DELETE")
+            if is_write and cap < 2:
+                probed.append({"feature_id": feat["id"], "status": "blocked",
+                               "reason": "requires capability>=2 for a write probe"})
+                continue
+            sigs, rec = _triage_one(feat, base_url, ident, auth, scope, oob_base)
+            if sigs:
+                signals.extend(sigs)
+            probed.append(rec)
+        return {"triage_signals": signals, "probed": probed,
+                "candidates": len(candidates), "signal_count": len(signals)}
+    except Exception as exc:
+        return {"triage_signals": [], "probed": [], "candidates": 0, "signal_count": 0, "error": str(exc)}
+
+
+@worker_task(task_definition_name="deepen_init")
+def deepen_init(task):
+    """Initialise persistent-deepening state for one high-value sink hypothesis: pick the technique
+    ladder (SQLi / JS-sandbox-escape / generic injection) and start an empty attempt ledger."""
+    inp = task.input_data or {}
+    hyp = inp.get("hypothesis") if isinstance(inp.get("hypothesis"), dict) else {}
+    try:
+        state = deepen_mod.init_state(hyp)
+        return {"state": state, "brief": deepen_mod.focus_brief(state),
+                "next_family": deepen_mod.next_family(state)}
+    except Exception as exc:
+        return {"state": deepen_mod.init_state({}), "brief": "", "error": str(exc)}
+
+
+@worker_task(task_definition_name="deepen_observe")
+def deepen_observe(task):
+    """Record ONE escalation attempt: bump the tagged family, store the lesson, and set the
+    confirmed flag if a code_exec/OOB oracle fired. Returns the updated state + next rung + brief."""
+    inp = task.input_data or {}
+    state = inp.get("state") if isinstance(inp.get("state"), dict) else {}
+    if not state.get("ladder"):
+        state = deepen_mod.init_state(inp.get("hypothesis") if isinstance(inp.get("hypothesis"), dict) else {})
+    try:
+        family = str(inp.get("family") or "")
+        lesson = str(inp.get("lesson") or "")
+        new = deepen_mod.observe(
+            state,
+            family,
+            lesson,
+            result=inp.get("result") if isinstance(inp.get("result"), dict) else {},
+            oob_hits=inp.get("oob_hits") if isinstance(inp.get("oob_hits"), list) else [],
+        )
+        # Deterministic family/CVE-tagged op so technique_coverage + the cve_attempt completion gate
+        # see this attempt even when the agent's code didn't call sc.injection_attempt/sc.cve_attempt.
+        op = deepen_mod.attempt_op(new, family, lesson, confirmed=bool(new.get("confirmed"))) if family else {}
+        return {"state": new, "brief": deepen_mod.focus_brief(new),
+                "next_family": deepen_mod.next_family(new), "operation": op,
+                "confirmed": bool(new.get("confirmed")), "exhausted": deepen_mod.exhausted(new)}
+    except Exception as exc:
+        return {"state": state, "brief": "", "confirmed": False, "error": str(exc)}
+
+
+@worker_task(task_definition_name="deepen_gate")
+def deepen_gate(task):
+    """The no-premature-give-up guard. Given the proposed conclusion + deepening state, decide
+    whether 'conclude' is allowed (confirmed OR ladder exhausted) or must be REJECTED with a
+    'try harder' directive naming the untried families + lessons learned (design-doc Theorem 2)."""
+    inp = task.input_data or {}
+    state = inp.get("state") if isinstance(inp.get("state"), dict) else {}
+    proposed = inp.get("proposed_confirmed")
+    proposed = (proposed is True) or (str(proposed).lower() == "true")
+    try:
+        g = deepen_mod.gate_conclude(state, proposed)
+        return g
+    except Exception as exc:
+        # fail-safe: on error, ALLOW conclusion (never trap the loop) but record the error
+        return {"allow": True, "reason": "gate-error", "directive": "", "error": str(exc)}
+
+
+@worker_task(task_definition_name="evaluate_campaign_progress")
+def evaluate_campaign_progress(task):
+    """Advance chaining state and evaluate the non-LLM campaign completion gate."""
+    inp = task.input_data or {}
+    try:
+        graph = inp.get("attack_graph") if isinstance(inp.get("attack_graph"), dict) else {
+            "nodes": [], "edges": []
+        }
+        graph = {
+            "nodes": list(graph.get("nodes") or []),
+            "edges": list(graph.get("edges") or []),
+        }
+        existing = {str(n.get("id")) for n in graph["nodes"]}
+        for finding_obj in inp.get("new_confirmed") or []:
+            if not isinstance(finding_obj, dict):
+                continue
+            node_id = (
+                finding_obj.get("finding_sig")
+                or finding_obj.get("objective_id")
+                or finding_obj.get("title")
+            )
+            if str(node_id) not in existing:
+                graph = chaining_mod.attach(graph, finding_obj)
+                existing.add(str(node_id))
+
+        preconditions, unlocked = [], []
+        for node in graph.get("nodes") or []:
+            for p in node.get("preconditions") or []:
+                if p not in preconditions:
+                    preconditions.append(p)
+            for objective_id in node.get("unlocks") or []:
+                if objective_id not in unlocked:
+                    unlocked.append(objective_id)
+        chaining_context = {
+            "preconditions": preconditions,
+            "unlocked_objectives": unlocked,
+            "attack_graph": graph,
+        }
+        feature = feature_mod.evaluate(
+            inp.get("playbook") if isinstance(inp.get("playbook"), dict) else {},
+            inp.get("operations") if isinstance(inp.get("operations"), list) else [],
+            inp.get("cve_leads") if isinstance(inp.get("cve_leads"), list) else [],
+            inp.get("adequacy") if isinstance(inp.get("adequacy"), dict) else {},
+            inp.get("capability_max"),
+            inp.get("objective_focus") if isinstance(inp.get("objective_focus"), list) else [],
+            inp.get("catalog_objectives") if isinstance(inp.get("catalog_objectives"), list) else [],
+            inp.get("sast_findings") if isinstance(inp.get("sast_findings"), list) else [],
+            deepen_states=inp.get("deepen_states") if isinstance(inp.get("deepen_states"), list) else [],
+        )
+        return {
+            "attack_graph": graph,
+            "chaining_context": chaining_context,
+            "feature_exercise": feature,
+            "mandatory_focus": feature_mod.focus_directive(feature, chaining_context),
+        }
+    except Exception as exc:
+        return {
+            "attack_graph": {"nodes": [], "edges": []},
+            "chaining_context": {"preconditions": [], "unlocked_objectives": []},
+            "feature_exercise": {"complete": False, "pending": ["progress-evaluation-error"]},
+            "mandatory_focus": "Campaign progress evaluation failed; do not claim completion.",
+            "error": str(exc),
+        }
+
+
+@worker_task(task_definition_name="build_coverage")
+def build_coverage(task):
+    """Build the coverage ledger (spec 22). Catalog-driven (ROADMAP E0) when the
+    applicable-objective list is supplied (one cell per applicable objective + N/A for
+    the rest); otherwise falls back to the heuristic app-model dimensions. Never raises."""
+    inp = task.input_data or {}
+
+    def _d(k):
+        return inp.get(k) if isinstance(inp.get(k), dict) else {}
+
+    def _l(k):
+        return inp.get(k) if isinstance(inp.get(k), list) else []
+
+    try:
+        applicable = _l("catalog_applicable")
+        if applicable:
+            return coverage_mod.build_from_catalog(applicable, _l("catalog_not_applicable"),
+                                                   _l("confirmed"), _l("tried"), _l("rejected"),
+                                                   adequacy=_d("adequacy"))
+        return coverage_mod.build(_d("app_model"), _l("personas"), _d("docs_digest"),
+                                  _l("confirmed"), _l("tried"), _l("rejected"))
+    except Exception as exc:
+        return {"ledger": [], "summary": {}, "error": str(exc)}
+
+
+@worker_task(task_definition_name="build_dossier")
+def build_dossier(task):
+    """Assemble the living security dossier + attack graph (spec 19/20/26). Also writes
+    dossier.json into the run's report dir. Never raises."""
+    inp = task.input_data or {}
+
+    def _l(k):
+        return inp.get(k) if isinstance(inp.get(k), list) else []
+
+    def _d(k):
+        return inp.get(k) if isinstance(inp.get(k), dict) else {}
+
+    try:
+        contradictions = memory.detect_contradictions(_l("documented_invariants"), _l("confirmed"))
+        doc = dossier_mod.build(
+            authorization={"manifest": _d("manifest"), "reason": inp.get("authz_reason") or ""},
+            fingerprint=str(inp.get("fingerprint") or ""),
+            app_model=_d("app_model"), personas=_l("personas"),
+            documented_invariants=_l("documented_invariants"),
+            coverage_summary=_d("coverage"), confirmed=_l("confirmed"),
+            rejected=_l("rejected"), blind=_l("blind"),
+            contradictions=contradictions, cleanup=_d("cleanup"),
+            coverage_ledger=_l("coverage_ledger"),
+            attack_graph=_d("attack_graph"),
+            operation_ledger=_l("operation_ledger"),
+            feature_exercise=_d("feature_exercise"),
+            feeds_as_of=str(inp.get("feeds_as_of") or ""))
+        report_dir = inp.get("report_dir") or ""
+        written = ""
+        if report_dir and os.path.isdir(report_dir):
+            written = os.path.join(report_dir, "dossier.json")
+            with open(written, "w") as fh:
+                json.dump(doc, fh, indent=2)
+        return {"dossier": doc, "attack_graph": doc["attack_graph"],
+                "residual_risk": doc["residual_risk"], "compliance": doc["compliance"],
+                "regression": doc["regression"], "written": written}
+    except Exception as exc:
+        return {"dossier": {}, "attack_graph": {"nodes": [], "edges": []},
+                "residual_risk": "", "error": str(exc)}
+
+
+@worker_task(task_definition_name="memory_save")
+def memory_save(task):
+    """Persist this run's knowledge into the cross-run store (spec 13).
+
+    Merges the accumulated confirmed/rejected/blind findings, tried-hypothesis
+    signatures, gaps, and coverage into the prior knowledge model keyed by the
+    deployment fingerprint; applies release-triggered invalidation; appends a run
+    record to history. Best-effort and never raises -- a memory failure must not fail
+    an otherwise-complete assessment."""
+    inp = task.input_data or {}
+    fp = str(inp.get("fingerprint") or "").strip()
+    host = str(inp.get("host") or "")
+    app_version = str(inp.get("app_version") or "")
+    run_id = str(inp.get("run_id") or "")
+
+    def _list(key):
+        v = inp.get(key)
+        return v if isinstance(v, list) else []
+
+    if not fp:
+        return {"saved": False, "reason": "no fingerprint", "stats": {}}
+    try:
+        prior = memory.load(fp)
+        state, stats = memory.merge_run(
+            prior, fp=fp, host=host, app_version=app_version,
+            new_confirmed=_list("all_confirmed"), new_rejected=_list("all_rejected"),
+            new_blind=_list("all_blind"), new_tried=_list("tried_signatures"),
+            gaps=_list("gaps"),
+            coverage=inp.get("coverage") if isinstance(inp.get("coverage"), dict) else {},
+            documented_invariants=_list("documented_invariants"),
+            run_id=run_id)
+        path = memory.save(fp, state)
+        memory.append_history(fp, {"run_id": run_id, "ts": state["updated"],
+                                   "app_version": app_version, **stats})
+        # Persist the verdict-with-reasons trace corpus (P3-5) so the §19 hc_analyze loop mines
+        # REAL run traces (recurrence across runs = signal), not a mirrored corpus. Best-effort.
+        traces = 0
+        try:
+            as_of = state.get("updated") or ""
+            confirmed = _list("all_confirmed")
+            # ATTEMPT-LEVEL signal (not just verdicts): the deepen technique-coverage, the rich
+            # per-family deepen states (lessons), and the feature-sweep triage results. This is what
+            # turns an intensive run into real HC learning fuel instead of a 1-line verdict cache.
+            feat_ex = inp.get("feature_exercise") if isinstance(inp.get("feature_exercise"), dict) else {}
+            tech_cov = feat_ex.get("technique_coverage") if isinstance(feat_ex.get("technique_coverage"), dict) else {}
+            recs = (
+                trace_mod.from_findings(run_id, as_of, confirmed=confirmed,
+                                        rejected=_list("all_rejected"), blind=_list("all_blind"))
+                + trace_mod.from_technique_coverage(run_id, as_of, tech_cov, confirmed=confirmed)
+                + trace_mod.from_deepen_states(run_id, as_of, _list("deepen_states"))
+                + trace_mod.from_triage(run_id, as_of, _list("triage_signals"), confirmed=confirmed)
+            )
+            for rec in recs:
+                trace_mod.persist(memory.traces_path(fp), rec)
+                traces += 1
+        except Exception:
+            pass
+        return {"saved": True, "path": path, "fingerprint": fp, "stats": stats, "traces": traces}
+    except Exception as exc:  # never fail the assessment over memory
+        return {"saved": False, "reason": str(exc), "stats": {}}
+
+
+_SEV_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+
+
+def _update_dashboard(reports_dir):
+    """Regenerate reports/DASHBOARD.md from every scan's findings.json (idempotent)."""
+    rows = []
+    for fp in glob.glob(os.path.join(reports_dir, "*", "findings.json")):
+        try:
+            with open(fp) as fh:
+                data = json.load(fh)
+        except Exception:
+            continue
+        tri = data.get("triage") or {}
+        c = tri.get("counts") or {}
+        rows.append({
+            "scan_id": data.get("scan_id") or os.path.basename(os.path.dirname(fp)),
+            "target": data.get("target") or "?",
+            "risk": tri.get("risk_rating") or "?",
+            "c": c.get("critical", 0), "h": c.get("high", 0), "m": c.get("medium", 0),
+            "l": c.get("low", 0), "fp": c.get("false_positive", 0),
+            "mtime": os.path.getmtime(fp),
+        })
+    rows.sort(key=lambda r: r["mtime"], reverse=True)
+    out = [
+        "# security-conductor — scan dashboard", "",
+        f"_Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} — {len(rows)} scan(s)._", "",
+        "| Risk | Target | Crit | High | Med | Low | FP | Scan |",
+        "|------|--------|------|------|-----|-----|----|------|",
+    ]
+    for r in sorted(rows, key=lambda r: (_SEV_ORDER.get(r["risk"], 9), -r["mtime"])):
+        out.append(f"| {r['risk']} | {r['target']} | {r['c']} | {r['h']} | {r['m']} | "
+                   f"{r['l']} | {r['fp']} | `{r['scan_id'][:8]}` |")
+    path = os.path.join(reports_dir, "DASHBOARD.md")
+    try:
+        with open(path, "w") as fh:
+            fh.write("\n".join(out) + "\n")
+    except OSError:
+        return ""
+    return path
+
+
+def _save_pdf(location: str, dest: str) -> str | None:
+    """Best-effort retrieval of the GENERATE_PDF artifact into the report dir."""
+    if not location:
+        return None
+    try:
+        if location.startswith("http://") or location.startswith("https://"):
+            r = requests.get(location, timeout=TIMEOUT, verify=False)
+            r.raise_for_status()
+            with open(dest, "wb") as fh:
+                fh.write(r.content)
+            return dest
+        src = location[len("file://"):] if location.startswith("file://") else location
+        if os.path.isfile(src):
+            shutil.copyfile(src, dest)
+            return dest
+    except Exception:
+        return None
+    return None

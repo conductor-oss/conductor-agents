@@ -1,0 +1,23 @@
+{
+  "_doc": "Living corpus (design \u00a719.2): fixtures distilled from HUMAN-RATIFIED real-run findings via oracle.distill (origin:ratified). The forgetting guard only adds + dedupes by signature, so a past real win keeps being measured and a change that re-breaks it is rejected.",
+  "expected": [
+    {
+      "id": "ratified-SSRF via Wor",
+      "kind": "positive",
+      "origin": "ratified",
+      "as_of": "distilled 2026-06-27T03:18:45Z",
+      "class": null,
+      "objective_id": "INFRA-SSRF",
+      "category": "ssrf",
+      "cwe": "CWE-918",
+      "keywords": [
+        "ssrf",
+        "via",
+        "workflow",
+        "http-task",
+        "sink",
+        "uri"
+      ]
+    }
+  ]
+}

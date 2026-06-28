@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# security-conductor — kick off a scan against an authorized target.
+#
+#   ./scan <url> [options]
+#
+# Options:
+#   --authorized            Assert you are permitted to test this target (REQUIRED
+#                           for the scan to run; the workflow refuses otherwise).
+#   --manifest <path>       Machine-enforceable authorization manifest (JSON; spec s15).
+#                           When present it is the source of truth and is validated
+#                           (fails closed) at the authorization gate.
+#   --source <path>         Path to the target's source code (SAST seeding; Phase 3).
+#   --scope <h1,h2,...>     Hosts in scope (default: the target's host).
+#   --login-url <url>       Login page URL (enables authenticated crawl).
+#   --username <user>       Login username/email.
+#   --password <pass>       Login password (note: visible in process list/history).
+#   --max-pages <n>         Crawl page cap (default 25).
+#   --max-depth <n>         Crawl link depth (default 2).
+#   --agent                 Run the ReAct browser agent to discover extra surface.
+#   --agent-steps <n>       Max agent actions (default 6).
+#   --auth-token <tok>      Bearer token to authenticate ALL requests (authenticated scan).
+#   --session <file>        Credential captured from an interactive SSO login (./sso-capture).
+#   --auth-key/-secret <v>  Conductor keyId/keySecret to exchange for a token.
+#   --token-url <url>       Token-exchange endpoint (e.g. https://host/api/token).
+#   --auth-header <name>    Header to carry the credential (default Authorization).
+#   --intrusive             Allow intrusive/active checks (Phase 2).
+#   --deep                  Deep scan profile (later phases).
+#   --no-wait               Start and return immediately; don't wait for completion.
+#   --no-bootstrap          Don't auto-start the local server / workers; assume they're running
+#                           (also via SC_NO_BOOTSTRAP=1). By default ./scan brings the stack up.
+#   -h, --help              Show this help.
+#
+# Examples:
+#   ./scan http://localhost:3001 --authorized          # auto-starts server + workers if needed
+#   ./scan http://localhost:3001 --authorized --no-bootstrap   # use an already-running stack
+#   ./scan https://app.example.com --authorized --login-url https://app.example.com/login \
+#          --username admin --password secret --scope app.example.com
+set -euo pipefail
+
+WF="security_scan"
+URL=""; SOURCE=""; SCOPE=""; AUTH=false; INTRUSIVE=false; DEEP=false; WAIT=true; NO_BOOTSTRAP=false
+LOGIN_URL=""; USERNAME=""; PASSWORD=""; MAXPAGES=""; MAXDEPTH=""; AGENT=false; AGENTSTEPS="6"
+AUTH_TOKEN=""; AUTH_KEY=""; AUTH_SECRET=""; TOKEN_URL=""; AUTH_HEADER=""; AUTH_SCHEME=""
+MANIFEST_PATH=""; SESSION_FILE=""
+
+usage() { sed -n '/^# /,/^set -/p' "$0" | sed 's/^# \{0,1\}//; /^set -/d'; exit "${1:-0}"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --authorized) AUTH=true ;;
+    --manifest)   MANIFEST_PATH="${2:-}"; shift ;;
+    --intrusive)  INTRUSIVE=true ;;
+    --deep)       DEEP=true ;;
+    --no-wait)    WAIT=false ;;
+    --no-bootstrap) NO_BOOTSTRAP=true ;;
+    --source)     SOURCE="${2:-}"; shift ;;
+    --scope)      SCOPE="${2:-}"; shift ;;
+    --login-url)  LOGIN_URL="${2:-}"; shift ;;
+    --username)   USERNAME="${2:-}"; shift ;;
+    --password)   PASSWORD="${2:-}"; shift ;;
+    --max-pages)  MAXPAGES="${2:-}"; shift ;;
+    --max-depth)  MAXDEPTH="${2:-}"; shift ;;
+    --agent)      AGENT=true ;;
+    --agent-steps) AGENTSTEPS="${2:-}"; shift ;;
+    --auth-token)  AUTH_TOKEN="${2:-}"; shift ;;
+    --session)     SESSION_FILE="${2:-}"; shift ;;
+    --auth-key)    AUTH_KEY="${2:-}"; shift ;;
+    --auth-secret) AUTH_SECRET="${2:-}"; shift ;;
+    --token-url)   TOKEN_URL="${2:-}"; shift ;;
+    --auth-header) AUTH_HEADER="${2:-}"; shift ;;
+    --auth-scheme) AUTH_SCHEME="${2:-}"; shift ;;
+    -h|--help)    usage 0 ;;
+    -*)           echo "unknown option: $1" >&2; usage 1 ;;
+    *)            if [ -z "$URL" ]; then URL="$1"; else echo "unexpected arg: $1" >&2; usage 1; fi ;;
+  esac
+  shift
+done
+
+[ -n "$URL" ] || { echo "ERROR: target URL required" >&2; usage 1; }
+command -v conductor >/dev/null || { echo "ERROR: conductor CLI not found" >&2; exit 1; }
+command -v jq >/dev/null || { echo "ERROR: jq required" >&2; exit 1; }
+
+# --session <file>: load an SSO-captured credential (./sso-capture) into the auth fields.
+if [ -n "$SESSION_FILE" ]; then
+  [ -f "$SESSION_FILE" ] || { echo "ERROR: --session file not found: $SESSION_FILE" >&2; exit 1; }
+  AUTH_TOKEN=$(jq -r '.auth_token // empty' "$SESSION_FILE" 2>/dev/null)
+  [ -n "$AUTH_TOKEN" ] || { echo "ERROR: session file has no auth_token: $SESSION_FILE" >&2; exit 1; }
+  [ -z "$AUTH_HEADER" ] && AUTH_HEADER=$(jq -r '.auth_header // empty' "$SESSION_FILE" 2>/dev/null)
+  [ -z "$AUTH_SCHEME" ] && AUTH_SCHEME=$(jq -r '.auth_scheme // empty' "$SESSION_FILE" 2>/dev/null)
+  echo "ℹ  loaded $(jq -r '.credential_kind // "?"' "$SESSION_FILE" 2>/dev/null) credential from $SESSION_FILE"
+fi
+
+# Bring the stack up (server + workflows + worker fleet) unless told not to. Idempotent: each
+# piece is skipped if already healthy. Without workers polling, the workflow would hang.
+if ! $NO_BOOTSTRAP; then
+  export SC_REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+  source "$SC_REPO_ROOT/conductor/ensure-stack.sh"
+  sc_ensure_stack "$WF"
+fi
+
+if ! $AUTH; then
+  echo "⚠  Running WITHOUT --authorized: the workflow will refuse this scan at the"
+  echo "   authorization gate. Only pass --authorized for targets you may test."
+fi
+
+if [ -n "$SOURCE" ]; then
+  ABS="$(cd "$SOURCE" 2>/dev/null && pwd)"
+  [ -n "$ABS" ] && SOURCE="$ABS" || echo "⚠  --source '$SOURCE' is not a directory; SAST will be skipped."
+fi
+
+MANIFEST_JSON="{}"
+if [ -n "$MANIFEST_PATH" ]; then
+  [ -f "$MANIFEST_PATH" ] || { echo "ERROR: --manifest file not found: $MANIFEST_PATH" >&2; exit 1; }
+  MANIFEST_JSON=$(jq -c '.' "$MANIFEST_PATH") || { echo "ERROR: --manifest is not valid JSON" >&2; exit 1; }
+fi
+
+input=$(jq -n \
+  --arg t "$URL" --arg src "$SOURCE" --arg scope "$SCOPE" \
+  --arg lurl "$LOGIN_URL" --arg user "$USERNAME" --arg pass "$PASSWORD" \
+  --arg mp "$MAXPAGES" --arg md "$MAXDEPTH" --arg asteps "$AGENTSTEPS" \
+  --arg atoken "$AUTH_TOKEN" --arg akey "$AUTH_KEY" --arg asecret "$AUTH_SECRET" \
+  --arg turl "$TOKEN_URL" --arg aheader "$AUTH_HEADER" --arg ascheme "$AUTH_SCHEME" \
+  --argjson manifest "$MANIFEST_JSON" \
+  --argjson auth "$AUTH" --argjson intr "$INTRUSIVE" --argjson deep "$DEEP" --argjson agent "$AGENT" '
+  {target: $t, authorized: $auth, intrusive: $intr, deep: $deep}
+  + (if ($manifest | length) == 0 then {} else {manifest: $manifest} end)
+  + (if $src   == "" then {} else {source_path: $src} end)
+  + (if $scope == "" then {} else {scope: {in_scope_hosts: ($scope | split(","))}} end)
+  + (if $lurl  == "" then {} else {login_url: $lurl} end)
+  + (if $user  == "" then {} else {username: $user} end)
+  + (if $pass  == "" then {} else {password: $pass} end)
+  + (if $mp    == "" then {} else {max_pages: ($mp | tonumber)} end)
+  + (if $md    == "" then {} else {max_depth: ($md | tonumber)} end)
+  + (if $agent then {agent: true, agent_steps: ($asteps | tonumber)} else {} end)
+  + (if $atoken  == "" then {} else {auth_token: $atoken} end)
+  + (if $akey    == "" then {} else {auth_key: $akey} end)
+  + (if $asecret == "" then {} else {auth_secret: $asecret} end)
+  + (if $turl    == "" then {} else {token_url: $turl} end)
+  + (if $aheader == "" then {} else {auth_header: $aheader} end)
+  + (if $ascheme == "" then {} else {auth_scheme: $ascheme} end)')
+
+echo "→ starting $WF against $URL (authorized=$AUTH)"
+WID=$(conductor workflow start -w "$WF" -i "$input" 2>&1 | tr -d '[:space:]')
+echo "  workflow id: $WID"
+
+BASE_URL="${CONDUCTOR_SERVER_URL:-http://localhost:8080/api}"; BASE_URL="${BASE_URL%/api}"
+echo "  UI: $BASE_URL/execution/$WID"
+
+if ! $WAIT; then exit 0; fi
+
+echo -n "  waiting"
+for _ in $(seq 1 240); do
+  J=$(conductor workflow get-execution "$WID" 2>/dev/null || true)
+  ST=$(printf '%s' "$J" | jq -r '.status // empty' 2>/dev/null || true)
+  case "$ST" in
+    COMPLETED) echo " ✓ COMPLETED"
+      printf '%s' "$J" | jq -r '"  risk: \(.output.risk_rating // "n/a")   crawled: \(.output.pages_crawled // 0) pages   report: \(.output.report_dir // "n/a")"'
+      exit 0 ;;
+    FAILED|TERMINATED|TIMED_OUT) echo " ✗ $ST"
+      printf '%s' "$J" | jq -r '"  reason: \(.reasonForIncompletion // "see UI")"'
+      exit 1 ;;
+    *) echo -n "." ; ping -c 2 127.0.0.1 >/dev/null 2>&1 || true ;;
+  esac
+done
+echo " (still running — check the UI)"

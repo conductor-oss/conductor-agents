@@ -1,0 +1,39 @@
+{
+  "note": "Benchmark targets (spec 24, design §19.2). A SCORED target carries `expected` ground truth and measures false-NEGATIVES/recall; a CLEAN target (no `expected`) measures the false-POSITIVE rate. The seeded vuln-app's weaknesses are SAST-detectable from source (--source), so it is scored even though the live app (examples/vuln-app/server.js, port 3000) crashes on DB routes. Run it with `node examples/vuln-app/server.js` (needs `npm i express` there), or point url at any reachable in-scope host. Edit URLs to match your environment.",
+  "holdout": {
+    "k": 2,
+    "note": "K-fold (oracle.kfold) over SCORED targets only. The §19 proposer trains on the train fold; a champion is promoted ONLY on improvement over the HELD-OUT fold it never trained on (the antidote to benchmark overfitting). A genuine split needs >=2 scored targets — add reachable, ground-truthed targets below as the living corpus grows."
+  },
+  "coverage_corpus": "bench/expected/catalog-coverage.json",
+  "adversarial_corpus": "bench/expected/adversarial.json",
+  "targets": [
+    {
+      "name": "seeded-vuln-app",
+      "role": "scored",
+      "mode": "scan",
+      "url": "http://localhost:3000",
+      "source": "examples/vuln-app",
+      "args": ["--source", "examples/vuln-app"],
+      "expected": "bench/expected/vuln-app.json"
+    },
+    {
+      "name": "known-clean-app",
+      "role": "clean",
+      "mode": "scan",
+      "url": "http://localhost:3003",
+      "source": "",
+      "args": [],
+      "expected": null
+    },
+    {
+      "name": "juice-shop",
+      "role": "scored",
+      "mode": "scan",
+      "url": "http://localhost:3001",
+      "source": "",
+      "args": [],
+      "expected": "bench/expected/juice-shop.json",
+      "note": "OWASP Juice Shop (`make up`). Black-box scored target — ground truth at bench/expected/juice-shop.json (13 documented challenges across 7 catalog classes). The 2nd SCORED target: with seeded-vuln-app this makes holdout.k=2 a genuine held-out split (oracle.kfold) and clears the §19.2/D16 oracle-adequacy gate for live HC auto-adoption."
+    }
+  ]
+}

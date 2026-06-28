@@ -1,0 +1,47 @@
+{
+  "approvers": [
+    "security@example.com"
+  ],
+  "in_scope_hosts": [
+    "your-conductor.example.com"
+  ],
+  "window": {
+    "start": "2025-01-01T00:00:00Z",
+    "expiry": "2025-01-01T08:00:00Z"
+  },
+  "capability_max": 2,
+  "rate": {
+    "burst_max": 20
+  },
+  "expected_data_hosts": [
+    "your-conductor.example.com"
+  ],
+  "auth_probe_paths": [
+    "/api/applications"
+  ],
+  "forbidden_operations": [
+    "DELETE */api/cluster/*",
+    "POST */delete-pod",
+    "POST */deploy-debugger-pod",
+    "POST */deploy-mcp-worker",
+    "POST */backup-conductor",
+    "POST */restore-*",
+    "POST */download-heap-dump",
+    "POST */download-all-logs",
+    "POST */download-thread-dump",
+    "DELETE */api/organization/keys*",
+    "DELETE */api/organization/users/*",
+    "DELETE */api/organization*",
+    "DELETE */api/user/*",
+    "POST */api/user/*/profile/*",
+    "DELETE */api/teams/*",
+    "DELETE */api/groups/*",
+    "POST */sql*",
+    "POST */execute-sql*",
+    "POST */run-sql*",
+    "POST */scale*",
+    "POST */restart*",
+    "POST */terminate*"
+  ],
+  "note": "EXAMPLE capability-2 manifest. Copy it, set in_scope_hosts/expected_data_hosts to a target you OWN or are authorized to test, set a fresh window (start/expiry) for the run, and list the destructive/irreversible operations to FENCE (halt-on-attempt). Capability 2 permits state-changing tests; the agent may create+mutate its OWN test objects and probe authz/IDOR/SSRF/cross-tenant on the safe surface, then sweep its artifacts."
+}

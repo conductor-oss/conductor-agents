@@ -1,0 +1,11 @@
+{
+  "name": "safety_check",
+  "description": "Independent safety governor: at each pass boundary, decide whether the campaign may proceed (authorization window, kill-switch, accumulated halt request).",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 60,
+  "responseTimeoutSeconds": 30,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

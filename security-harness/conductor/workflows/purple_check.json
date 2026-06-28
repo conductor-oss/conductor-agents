@@ -1,0 +1,68 @@
+{
+  "name": "purple_check",
+  "version": 1,
+  "description": "Purple-team control assurance for ONE confirmed finding (spec 21): re-issue the malicious PoC to see if it is now PREVENTED, probe any audit/event endpoint for DETECTION, then a purple-team LLM judges prevention/detection/response. System prompt injected from prompts/purple.md into task ref purple_check.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["finding", "identities", "scope", "manifest", "capability_max"],
+  "tasks": [
+    {
+      "name": "http_request",
+      "taskReferenceName": "preplay",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "method": "${workflow.input.finding.poc_request.method}",
+        "url": "${workflow.input.finding.poc_request.url}",
+        "json": "${workflow.input.finding.poc_request.json}",
+        "identity": "${workflow.input.finding.poc_request.identity}",
+        "identities": "${workflow.input.identities}",
+        "scope": "${workflow.input.scope}",
+        "manifest": "${workflow.input.manifest}",
+        "capability_max": "${workflow.input.capability_max}"
+      }
+    },
+    {
+      "name": "prep_purple",
+      "taskReferenceName": "prep_purple",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "finding": "${workflow.input.finding}",
+        "replay": "${preplay.output}",
+        "queryExpression": "{ finding: { title: .finding.title, category: .finding.category, poc_request: .finding.poc_request, evidence: ((.finding.evidence // \"\")[0:400]) }, detection_probe: { reissue_status: (.replay.response.status // .replay.error // null), reissue_summary: (.replay.summary // \"\"), blocked_signal: (if ((.replay.response.status // 0) | tostring | test(\"^(401|403|429)$\")) then true else false end), refused: ((.replay.error // \"\") | test(\"refused\")) } } | tojson"
+      }
+    },
+    {
+      "name": "purple_check",
+      "taskReferenceName": "purple_check",
+      "type": "LLM_CHAT_COMPLETE",
+      "inputParameters": {
+        "llmProvider": "${workflow.input.llm_provider}",
+        "model": "${workflow.input.model}",
+        "temperature": 1,
+        "thinkingTokenLimit": 6000,
+        "maxTokens": 8000,
+        "jsonOutput": false,
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_PURPLE" },
+          { "role": "user", "message": "Confirmed finding + detection probe (JSON):\n${prep_purple.output.result}" }
+        ]
+      }
+    },
+    {
+      "name": "parse_purple",
+      "taskReferenceName": "parse_purple",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "raw": "${purple_check.output.result}",
+        "queryExpression": ".raw as $r | (if ($r|type) == \"object\" then $r else (try ($r[ ($r|index(\"{\")) : (($r|rindex(\"}\"))+1) ] | fromjson) catch {prevented: \"unknown\", logged: \"unknown\", assessment: \"purple output could not be parsed\"}) end)"
+      }
+    }
+  ],
+  "outputParameters": {
+    "title": "${workflow.input.finding.title}",
+    "detection_observations": "${parse_purple.output.result}"
+  }
+}

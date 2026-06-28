@@ -1,0 +1,20 @@
+{
+  "approvers": [
+    "security@example.com"
+  ],
+  "in_scope_hosts": [
+    "your-target.example.com"
+  ],
+  "window": {
+    "start": "2025-01-01T00:00:00Z",
+    "expiry": "2025-01-01T08:00:00Z"
+  },
+  "capability_max": 1,
+  "rate": {
+    "burst_max": 10
+  },
+  "expected_data_hosts": [
+    "your-target.example.com"
+  ],
+  "note": "EXAMPLE capability-1 (read-only) manifest. Copy it, set in_scope_hosts to a target you OWN or are authorized to test, and set a fresh window for the run. Capability 1 is reads only; raise to 2 (see example-cap2.json) for state-changing product-feature exercises."
+}

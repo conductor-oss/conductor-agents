@@ -1,0 +1,11 @@
+{
+  "name": "sast_semgrep",
+  "description": "Run semgrep (p/owasp-top-ten + p/security-audit) over the provided source path.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 1800,
+  "responseTimeoutSeconds": 1500,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

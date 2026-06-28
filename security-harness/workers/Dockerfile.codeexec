@@ -1,0 +1,21 @@
+# Sandbox image for the code_exec worker: runs agent-authored Python that drives
+# the target product (Conductor) via its REST API / SDK. Kept slim and dependency-
+# light; the host code_exec worker runs this with `docker run --rm` under tight
+# hardening flags (non-root, cap-drop, read-only rootfs, mem/cpu/pids/time caps).
+#
+# The `sc` helper is baked onto PYTHONPATH so agent code can `import sc` regardless
+# of cwd; the per-step script and result file live in the mounted /work volume.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/opt/sc
+
+# requests for raw REST; conductor-python so the agent can drive workflows via the SDK.
+RUN pip install --no-cache-dir requests conductor-python
+
+# The in-sandbox helper (sandbox_sc.py -> importable as `sc`) and the egress proxy
+# (run as a sidecar from this same image to jail the sandbox's network).
+COPY codeexec/sandbox_sc.py /opt/sc/sc.py
+COPY codeexec/egress_proxy.py /opt/sc/egress_proxy.py
+
+WORKDIR /work
+# No CMD: the code_exec worker supplies `timeout ... python /work/step.py`.

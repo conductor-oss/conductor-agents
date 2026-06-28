@@ -1,0 +1,367 @@
+{
+  "name": "security_scan",
+  "version": 1,
+  "description": "All-in-one web security scan: authorize -> passive recon -> browser crawl (+optional ReAct agent) -> optional SAST on source + API discovery -> merge attack surface -> LLM attack plan -> active DAST fan-out (FORK_JOIN_DYNAMIC, intrusive-gated) -> LLM triage (KB-grounded) -> markdown+PDF report -> persist + dashboard. LLM system prompts injected from prompts/ by register.sh.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 5400,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["target", "scope", "authorized", "manifest", "source_path", "intrusive", "login_url", "username", "password", "max_pages", "max_depth", "agent", "agent_steps", "auth_token", "auth_key", "auth_secret", "token_url", "auth_header", "auth_scheme"],
+  "tasks": [
+    {
+      "name": "normalize_target",
+      "taskReferenceName": "normalize_target",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "target": "${workflow.input.target}",
+        "scope": "${workflow.input.scope}",
+        "authorized": "${workflow.input.authorized}",
+        "manifest": "${workflow.input.manifest}",
+        "source_path": "${workflow.input.source_path}",
+        "intrusive": "${workflow.input.intrusive}",
+        "auth_token": "${workflow.input.auth_token}",
+        "auth_key": "${workflow.input.auth_key}",
+        "auth_secret": "${workflow.input.auth_secret}",
+        "token_url": "${workflow.input.token_url}",
+        "auth_header": "${workflow.input.auth_header}",
+        "auth_scheme": "${workflow.input.auth_scheme}"
+      }
+    },
+    {
+      "name": "authorization_gate",
+      "taskReferenceName": "authorization_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "authorized_str",
+      "inputParameters": {
+        "authorized_str": "${normalize_target.output.authorized_str}"
+      },
+      "decisionCases": {
+        "true": [
+          { "name": "authorized_noop", "taskReferenceName": "authorized_noop", "type": "NOOP" }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "refuse_unauthorized",
+          "taskReferenceName": "refuse_unauthorized",
+          "type": "TERMINATE",
+          "inputParameters": {
+            "terminationStatus": "FAILED",
+            "terminationReason": "Refused: authorization not granted. Re-run with authorized=true and only against systems you are explicitly permitted to test.",
+            "workflowOutput": { "refused": true, "reason": "authorization_required" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "surface_fork",
+      "taskReferenceName": "surface_fork",
+      "type": "FORK_JOIN",
+      "forkTasks": [
+        [
+          {
+            "name": "recon",
+            "taskReferenceName": "recon",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "base_url": "${normalize_target.output.base_url}",
+              "scope": "${normalize_target.output.scope}",
+              "auth": "${normalize_target.output.auth}"
+            }
+          }
+        ],
+        [
+          {
+            "name": "web_crawl",
+            "taskReferenceName": "crawl_sub",
+            "type": "SUB_WORKFLOW",
+            "subWorkflowParam": { "name": "web_crawl", "version": 1 },
+            "inputParameters": {
+              "base_url": "${normalize_target.output.base_url}",
+              "scope": "${normalize_target.output.scope}",
+              "login_url": "${workflow.input.login_url}",
+              "username": "${workflow.input.username}",
+              "password": "${workflow.input.password}",
+              "max_pages": "${workflow.input.max_pages}",
+              "max_depth": "${workflow.input.max_depth}",
+              "auth": "${normalize_target.output.auth}"
+            }
+          }
+        ],
+        [
+          {
+            "name": "api_discover",
+            "taskReferenceName": "api_discover",
+            "type": "SIMPLE",
+            "optional": true,
+            "inputParameters": {
+              "base_url": "${normalize_target.output.base_url}",
+              "scope": "${normalize_target.output.scope}",
+              "auth": "${normalize_target.output.auth}"
+            }
+          }
+        ],
+        [
+          {
+            "name": "sast_scan",
+            "taskReferenceName": "sast_sub",
+            "type": "SUB_WORKFLOW",
+            "optional": true,
+            "subWorkflowParam": { "name": "sast_scan", "version": 1 },
+            "inputParameters": { "source_path": "${normalize_target.output.source_path}" }
+          }
+        ]
+      ]
+    },
+    {
+      "name": "surface_join",
+      "taskReferenceName": "surface_join",
+      "type": "JOIN",
+      "joinOn": ["recon", "crawl_sub", "api_discover", "sast_sub"]
+    },
+    {
+      "name": "agent_gate",
+      "taskReferenceName": "agent_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "($.agent === true || $.agent === 'true') ? 'yes' : 'no'",
+      "inputParameters": { "agent": "${workflow.input.agent}" },
+      "decisionCases": {
+        "yes": [
+          {
+            "name": "browser_agent",
+            "taskReferenceName": "agent_sub",
+            "type": "SUB_WORKFLOW",
+            "optional": true,
+            "subWorkflowParam": { "name": "browser_agent", "version": 1 },
+            "inputParameters": {
+              "base_url": "${normalize_target.output.base_url}",
+              "scope": "${normalize_target.output.scope}",
+              "goal": "Explore the application to discover pages, forms, and functionality a simple link crawler would miss (menus, account/admin areas, multi-step flows).",
+              "max_steps": "${workflow.input.agent_steps}",
+              "storage_state": null,
+              "auth": "${normalize_target.output.auth}"
+            }
+          }
+        ]
+      },
+      "defaultCase": [
+        { "name": "no_agent", "taskReferenceName": "no_agent", "type": "NOOP" }
+      ]
+    },
+    {
+      "name": "merge_surface",
+      "taskReferenceName": "merge_surface",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "recon": "${recon.output}",
+        "crawl": "${crawl_sub.output}",
+        "agent": "${agent_sub.output}",
+        "sast": "${sast_sub.output}",
+        "api": "${api_discover.output}",
+        "base_url": "${normalize_target.output.base_url}",
+        "queryExpression": ". as $in | ((($in.sast.routes) // []) | map({url: ($in.base_url + .path), method: .method})) as $sastep | ((($in.api.endpoints) // []) | map({url: .url, method: .method})) as $apiep | { findings: (($in.recon.findings // []) + ($in.crawl.findings // []) + ($in.sast.findings // []) + ($in.api.findings // [])), surface: { meta: ($in.recon.meta // {}), urls: ((($in.crawl.surface.urls // []) + ($in.agent.discovered_urls // []) + ($sastep | map(.url)) + ($apiep | map(.url))) | unique), forms: ($in.crawl.surface.forms // []), endpoints: ((($in.crawl.surface.endpoints // []) + $apiep + $sastep) | unique), params: ($in.crawl.surface.params // []) }, crawl_meta: ($in.crawl.meta // {}), agent_steps: ($in.agent.steps // 0), source_routes: (($in.sast.routes // []) | length), api_specs: (($in.api.meta.specs // []) | length) }"
+      }
+    },
+    {
+      "name": "prep_plan",
+      "taskReferenceName": "prep_plan",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "merged": "${merge_surface.output.result}",
+        "target": "${normalize_target.output.target}",
+        "queryExpression": "{target: .target, surface: .merged.surface} | tojson"
+      }
+    },
+    {
+      "name": "plan",
+      "taskReferenceName": "plan",
+      "type": "LLM_CHAT_COMPLETE",
+      "inputParameters": {
+        "llmProvider": "openai",
+        "model": "gpt-5.5",
+        "temperature": 0.2,
+        "maxTokens": 8000,
+        "jsonOutput": true,
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_PLAN" },
+          { "role": "user", "message": "Attack surface (JSON):\n${prep_plan.output.result}" }
+        ]
+      }
+    },
+    {
+      "name": "build_jobs",
+      "taskReferenceName": "build_jobs",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "planned_checks": "${plan.output.result.planned_checks}",
+        "base_url": "${normalize_target.output.base_url}",
+        "scope": "${normalize_target.output.scope}",
+        "allow_intrusive": "${normalize_target.output.intrusive_str}",
+        "auth": "${normalize_target.output.auth}",
+        "queryExpression": ". as $in | ($in.allow_intrusive == \"true\") as $intr | ([{id:\"nuclei\",check_type:\"nuclei\",target:$in.base_url,param:\"\",intrusive:false,tool:\"nuclei\"}] + ($in.planned_checks // [])) | map(select((.intrusive // false) == false or $intr)) | to_entries | {forkTasks: map({name:\"active_check\",taskReferenceName:(\"check_\" + (.key|tostring)),type:\"SIMPLE\"}), forkTasksInputs: (map({key:(\"check_\" + (.key|tostring)),value:{check:.value,scope:$in.scope,base_url:$in.base_url,intrusive_allowed:$intr,auth:$in.auth}}) | from_entries), count: length}"
+      }
+    },
+    {
+      "name": "active_scan",
+      "taskReferenceName": "active_scan",
+      "type": "FORK_JOIN_DYNAMIC",
+      "dynamicForkTasksParam": "forkTasks",
+      "dynamicForkTasksInputParamName": "forkTasksInputs",
+      "inputParameters": {
+        "forkTasks": "${build_jobs.output.result.forkTasks}",
+        "forkTasksInputs": "${build_jobs.output.result.forkTasksInputs}"
+      }
+    },
+    {
+      "name": "active_join",
+      "taskReferenceName": "active_join",
+      "type": "JOIN"
+    },
+    {
+      "name": "collect_active",
+      "taskReferenceName": "collect_active",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "join": "${active_join.output}",
+        "queryExpression": "[ .join[]? | .findings? // [] ] | add // []"
+      }
+    },
+    {
+      "name": "kb_query",
+      "taskReferenceName": "kb_query",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "merged": "${merge_surface.output.result}",
+        "active": "${collect_active.output.result}",
+        "queryExpression": "([((.merged.findings // []) + (.active // []))[] | .title] | unique | join(\"; \")) as $q | (if ($q | length) > 0 then $q else \"web application security misconfiguration injection access control remediation\" end)"
+      }
+    },
+    {
+      "name": "kb_retrieve",
+      "taskReferenceName": "kb_retrieve",
+      "type": "LLM_SEARCH_INDEX",
+      "optional": true,
+      "inputParameters": {
+        "vectorDB": "pgvector",
+        "namespace": "kb",
+        "index": "sc",
+        "embeddingModelProvider": "openai",
+        "embeddingModel": "text-embedding-3-small",
+        "query": "${kb_query.output.result}",
+        "maxResults": 6
+      }
+    },
+    {
+      "name": "prep_triage",
+      "taskReferenceName": "prep_triage",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "merged": "${merge_surface.output.result}",
+        "active": "${collect_active.output.result}",
+        "kb": "${kb_retrieve.output.result}",
+        "target": "${normalize_target.output.target}",
+        "queryExpression": "{target: .target, raw_findings: ((.merged.findings // []) + (.active // [])), remediation_kb: ([(.kb // [])[] | .text])} | tojson"
+      }
+    },
+    {
+      "name": "triage",
+      "taskReferenceName": "triage",
+      "type": "LLM_CHAT_COMPLETE",
+      "inputParameters": {
+        "llmProvider": "openai",
+        "model": "gpt-5.5",
+        "temperature": 0,
+        "maxTokens": 12000,
+        "jsonOutput": true,
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_TRIAGE" },
+          { "role": "user", "message": "Scan data (JSON):\n${prep_triage.output.result}" }
+        ]
+      }
+    },
+    {
+      "name": "prep_report",
+      "taskReferenceName": "prep_report",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "triage": "${triage.output.result}",
+        "plan": "${plan.output.result}",
+        "merged": "${merge_surface.output.result}",
+        "checks_run": "${build_jobs.output.result.count}",
+        "target": "${normalize_target.output.target}",
+        "queryExpression": "{target: .target, triage: .triage, attack_surface: .plan, surface_stats: {urls: (.merged.surface.urls | length), forms: (.merged.surface.forms | length), endpoints: (.merged.surface.endpoints | length), active_checks_run: .checks_run}} | tojson"
+      }
+    },
+    {
+      "name": "report_md",
+      "taskReferenceName": "report_md",
+      "type": "LLM_CHAT_COMPLETE",
+      "inputParameters": {
+        "llmProvider": "openai",
+        "model": "gpt-5.5",
+        "temperature": 0.2,
+        "maxTokens": 12000,
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_REPORT" },
+          { "role": "user", "message": "Report data (JSON):\n${prep_report.output.result}" }
+        ]
+      }
+    },
+    {
+      "name": "sanitize_md",
+      "taskReferenceName": "sanitize_md",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "md": "${report_md.output.result}",
+        "queryExpression": ".md | gsub(\"\\u2192\";\"->\") | gsub(\"\\u21d2\";\"=>\") | gsub(\"\\u2190\";\"<-\") | gsub(\"\\u2014\";\" -- \") | gsub(\"\\u2013\";\"-\") | gsub(\"\\u2026\";\"...\") | gsub(\"[^\\u0009\\u000a\\u000d\\u0020-\\u00ff]\";\"\")"
+      }
+    },
+    {
+      "name": "report_pdf",
+      "taskReferenceName": "report_pdf",
+      "type": "GENERATE_PDF",
+      "inputParameters": {
+        "markdown": "${sanitize_md.output.result}",
+        "pageSize": "A4",
+        "theme": "default",
+        "baseFontSize": 10,
+        "marginTop": 54,
+        "marginBottom": 54,
+        "marginLeft": 54,
+        "marginRight": 54,
+        "pdfMetadata": {
+          "title": "Security Assessment Report",
+          "author": "security-conductor",
+          "subject": "${normalize_target.output.target}"
+        }
+      }
+    },
+    {
+      "name": "persist",
+      "taskReferenceName": "persist",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "scan_id": "${workflow.workflowId}",
+        "target": "${normalize_target.output.target}",
+        "findings": "${triage.output.result}",
+        "surface": "${merge_surface.output.result.surface}",
+        "plan": "${plan.output.result}",
+        "active_findings": "${collect_active.output.result}",
+        "report_md": "${report_md.output.result}",
+        "pdf_location": "${report_pdf.output.result.location}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "scan_id": "${workflow.workflowId}",
+    "target": "${normalize_target.output.target}",
+    "risk_rating": "${triage.output.result.risk_rating}",
+    "counts": "${triage.output.result.counts}",
+    "pages_crawled": "${crawl_sub.output.meta.pages_crawled}",
+    "active_checks_run": "${build_jobs.output.result.count}",
+    "report_dir": "${persist.output.report_dir}",
+    "pdf": "${report_pdf.output.result.location}"
+  }
+}

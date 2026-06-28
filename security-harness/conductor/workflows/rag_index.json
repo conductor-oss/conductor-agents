@@ -1,0 +1,51 @@
+{
+  "name": "rag_index",
+  "version": 1,
+  "description": "Index the remediation knowledge base into the pgvector vectorDB: chunk the KB, then fan out LLM_INDEX_TEXT (OpenAI embeddings) per chunk. Run once after enabling RAG.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 600,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["kb_path", "vectorDB", "namespace", "index", "provider", "model"],
+  "tasks": [
+    {
+      "name": "kb_chunks",
+      "taskReferenceName": "kb_chunks",
+      "type": "SIMPLE",
+      "inputParameters": { "kb_path": "${workflow.input.kb_path}" }
+    },
+    {
+      "name": "build_index_jobs",
+      "taskReferenceName": "build_index_jobs",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "chunks": "${kb_chunks.output.chunks}",
+        "vectorDB": "${workflow.input.vectorDB}",
+        "namespace": "${workflow.input.namespace}",
+        "index": "${workflow.input.index}",
+        "provider": "${workflow.input.provider}",
+        "model": "${workflow.input.model}",
+        "queryExpression": ". as $in | ($in.chunks // []) | to_entries | { forkTasks: map({name: (\"idx_\" + (.key|tostring)), taskReferenceName: (\"idx_\" + (.key|tostring)), type: \"LLM_INDEX_TEXT\"}), forkTasksInputs: (map({key: (\"idx_\" + (.key|tostring)), value: {vectorDB: $in.vectorDB, namespace: $in.namespace, index: $in.index, embeddingModelProvider: $in.provider, embeddingModel: $in.model, text: .value.text, docId: .value.docId, metadata: .value.metadata}}) | from_entries), count: length }"
+      }
+    },
+    {
+      "name": "index_fork",
+      "taskReferenceName": "index_fork",
+      "type": "FORK_JOIN_DYNAMIC",
+      "dynamicForkTasksParam": "forkTasks",
+      "dynamicForkTasksInputParamName": "forkTasksInputs",
+      "inputParameters": {
+        "forkTasks": "${build_index_jobs.output.result.forkTasks}",
+        "forkTasksInputs": "${build_index_jobs.output.result.forkTasksInputs}"
+      }
+    },
+    {
+      "name": "index_join",
+      "taskReferenceName": "index_join",
+      "type": "JOIN"
+    }
+  ],
+  "outputParameters": {
+    "indexed": "${build_index_jobs.output.result.count}"
+  }
+}

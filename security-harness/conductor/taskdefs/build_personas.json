@@ -1,0 +1,11 @@
+{
+  "name": "build_personas",
+  "description": "Map supplied identities onto attacker personas (spec 8): initial knowledge, start position, objectives, success conditions, constraints.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 60,
+  "responseTimeoutSeconds": 30,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

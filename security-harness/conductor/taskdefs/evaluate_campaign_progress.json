@@ -1,0 +1,11 @@
+{
+  "name": "evaluate_campaign_progress",
+  "description": "Advance the incremental attack graph and machine-check mandatory product-feature/CVE exercise completion.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 60,
+  "responseTimeoutSeconds": 30,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

@@ -1,0 +1,817 @@
+{
+  "name": "deep_assess",
+  "version": 1,
+  "description": "Deep Application Pentest v2 — docs-driven, multi-pass, hardened-app testing. INGEST docs (intended workflows + documented invariants, indexed for on-demand retrieval). UNDERSTAND once (surface -> app_model, with extended thinking). Then a MULTI-PASS loop: each assess_pass explores deeper (focus-directed), hypothesizes (invariant/race/chaining aware, deduped vs already-tried), exploits (multi-identity, full-send, concurrent-burst), and adversarially verifies; a reflect critic decides whether to go deeper and where (loop-until-dry, capped). REPORT once over the accumulated findings. LLM prompts injected by register.sh.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["target", "scope", "authorized", "manifest", "kill_switch", "purple", "source_path", "docs", "identities", "login_url", "username", "password", "max_pages", "max_depth", "agent", "agent_steps", "max_explore_steps", "max_hypotheses", "max_exploit_steps", "max_passes", "reasoning", "model", "oob_base", "auth_token", "auth_key", "auth_secret", "token_url", "auth_header", "auth_scheme", "auth_probe_paths", "token_exchange", "cleanup_families", "target_profile", "leave_evidence", "objective_focus", "initial_focus"],
+  "variables": {
+    "all_confirmed": [],
+    "all_rejected": [],
+    "all_blind": [],
+    "tried_signatures": [],
+    "focus_directive": "",
+    "keep_going": true,
+    "gaps": [],
+    "cleanup_ledger": [],
+    "operation_ledger": [],
+    "deepen_states": [],
+    "attack_graph": {"nodes": [], "edges": []},
+    "chaining_context": {"preconditions": [], "unlocked_objectives": []},
+    "feature_exercise": {"complete": false, "pending": []},
+    "halt": ""
+  },
+  "tasks": [
+    {
+      "name": "normalize_target",
+      "taskReferenceName": "normalize_target",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "target": "${workflow.input.target}",
+        "scope": "${workflow.input.scope}",
+        "authorized": "${workflow.input.authorized}",
+        "manifest": "${workflow.input.manifest}",
+        "source_path": "${workflow.input.source_path}",
+        "identities": "${workflow.input.identities}",
+        "auth_token": "${workflow.input.auth_token}",
+        "auth_key": "${workflow.input.auth_key}",
+        "auth_secret": "${workflow.input.auth_secret}",
+        "token_url": "${workflow.input.token_url}",
+        "auth_header": "${workflow.input.auth_header}",
+        "auth_scheme": "${workflow.input.auth_scheme}",
+        "auth_probe_paths": "${workflow.input.auth_probe_paths}",
+        "token_exchange": "${workflow.input.token_exchange}",
+        "target_profile": "${workflow.input.target_profile}"
+      }
+    },
+    {
+      "name": "authorization_gate",
+      "taskReferenceName": "authorization_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "authorized_str",
+      "inputParameters": { "authorized_str": "${normalize_target.output.authorized_str}" },
+      "decisionCases": {
+        "true": [ { "name": "authorized_noop", "taskReferenceName": "authorized_noop", "type": "NOOP" } ]
+      },
+      "defaultCase": [
+        {
+          "name": "refuse_unauthorized",
+          "taskReferenceName": "refuse_unauthorized",
+          "type": "TERMINATE",
+          "inputParameters": {
+            "terminationStatus": "FAILED",
+            "terminationReason": "Refused: authorization not granted. Re-run with authorized=true and only against systems you are explicitly permitted to test.",
+            "workflowOutput": { "refused": true, "reason": "authorization_required" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "caps",
+      "taskReferenceName": "caps",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "es": "${workflow.input.max_explore_steps}",
+        "hy": "${workflow.input.max_hypotheses}",
+        "ex": "${workflow.input.max_exploit_steps}",
+        "ps": "${workflow.input.max_passes}",
+        "rs": "${workflow.input.reasoning}",
+        "md": "${workflow.input.model}",
+        "lmd": "${workflow.input.loop_model}",
+        "prov": "${workflow.input.llm_provider}",
+        "lprov": "${workflow.input.loop_provider}",
+        "eprov": "${workflow.input.embed_provider}",
+        "emodel": "${workflow.input.embed_model}",
+        "dc": "${workflow.input.docs}",
+        "obj": "${workflow.input.objective_focus}",
+        "focus": "${workflow.input.initial_focus}",
+        "leave": "${workflow.input.leave_evidence}",
+        "queryExpression": ". as $in | (if ($in.rs|tostring)==\"\" or $in.rs==null then \"high\" else ($in.rs|tostring) end) as $r | (if ($in.md|tostring)==\"\" or $in.md==null then \"claude-opus-4-8\" else ($in.md|tostring) end) as $am | (if ($in.prov|tostring)==\"\" or $in.prov==null then \"anthropic\" else ($in.prov|tostring) end) as $ap | (if ($in.eprov|tostring)==\"\" or $in.eprov==null then \"openai\" else ($in.eprov|tostring) end) as $ep | (if ($in.emodel|tostring)==\"\" or $in.emodel==null then \"text-embedding-3-small\" else ($in.emodel|tostring) end) as $em | { explore: ($in.es as $v | if ($v|tostring)==\"\" or $v==null then 8 else ($v|tostring|tonumber) end), hypos: ($in.hy as $v | if ($v|tostring)==\"\" or $v==null then 8 else ($v|tostring|tonumber) end), exploit: ($in.ex as $v | if ($v|tostring)==\"\" or $v==null then 8 else ($v|tostring|tonumber) end), passes: ($in.ps as $v | if ($v|tostring)==\"\" or $v==null then 4 else ($v|tostring|tonumber) end), model: $am, analysis_model: $am, analysis_provider: $ap, embed_provider: $ep, embed_model: $em, loop_model: (if ($in.lmd|tostring)==\"\" or $in.lmd==null then $am else ($in.lmd|tostring) end), loop_provider: (if ($in.lprov|tostring)==\"\" or $in.lprov==null then $ap else ($in.lprov|tostring) end), reasoning: $r, think_analysis: (if $r==\"off\" then 0 elif $r==\"med\" then 3000 else 6000 end), analysis_temp: (if $r==\"off\" then 0 else 1 end), has_docs: ((($in.dc // []) | length) > 0), objective_focus:(if ($in.obj|type)==\"array\" then $in.obj else [] end), initial_focus:(if ($in.focus|type)==\"string\" then $in.focus else \"\" end), leave_evidence:($in.leave == true or $in.leave == \"true\") }"
+      }
+    },
+    {
+      "name": "docs_gate",
+      "taskReferenceName": "docs_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "$.h === true ? 'go' : 'skip'",
+      "inputParameters": { "h": "${caps.output.result.has_docs}" },
+      "decisionCases": {
+        "go": [
+          {
+            "name": "docs_ingest",
+            "taskReferenceName": "docs_sub",
+            "type": "SUB_WORKFLOW",
+            "optional": true,
+            "subWorkflowParam": { "name": "docs_ingest", "version": 1 },
+            "inputParameters": {
+              "docs": "${workflow.input.docs}",
+              "auth": "${normalize_target.output.auth}",
+              "scope": "${normalize_target.output.scope}",
+              "run_id": "${workflow.workflowId}",
+              "model": "${caps.output.result.model}",
+              "provider": "${caps.output.result.analysis_provider}",
+              "embed_provider": "${caps.output.result.embed_provider}",
+              "embed_model": "${caps.output.result.embed_model}",
+              "index_docs": true,
+              "render_js": true
+            }
+          }
+        ]
+      },
+      "defaultCase": [ { "name": "no_docs", "taskReferenceName": "no_docs", "type": "NOOP" } ]
+    },
+    {
+      "name": "surface",
+      "taskReferenceName": "surface_sub",
+      "type": "SUB_WORKFLOW",
+      "subWorkflowParam": { "name": "surface", "version": 1 },
+      "inputParameters": {
+        "base_url": "${normalize_target.output.base_url}",
+        "scope": "${normalize_target.output.scope}",
+        "source_path": "${normalize_target.output.source_path}",
+        "login_url": "${workflow.input.login_url}",
+        "username": "${workflow.input.username}",
+        "password": "${workflow.input.password}",
+        "max_pages": "${workflow.input.max_pages}",
+        "max_depth": "${workflow.input.max_depth}",
+        "agent": "${workflow.input.agent}",
+        "agent_steps": "${workflow.input.agent_steps}",
+        "auth": "${normalize_target.output.auth}",
+        "llm_provider": "${caps.output.result.loop_provider}",
+        "model": "${caps.output.result.loop_model}"
+      }
+    },
+    {
+      "name": "prep_appmodel",
+      "taskReferenceName": "prep_appmodel",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "target": "${normalize_target.output.target}",
+        "surface": "${surface_sub.output.surface}",
+        "findings": "${surface_sub.output.findings}",
+        "docs_digest": "${docs_sub.output.digest}",
+        "queryExpression": "{ target: .target, surface: .surface, docs_digest: (.docs_digest // {}), source_and_passive_findings: ([ (.findings // [])[] | {title, evidence: ((.evidence // \"\")[0:300]), source_tool} ]) } | tojson"
+      }
+    },
+    {
+      "name": "app_model",
+      "taskReferenceName": "app_model",
+      "type": "LLM_CHAT_COMPLETE",
+      "retryCount": 2,
+      "retryDelaySeconds": 10,
+      "inputParameters": {
+        "llmProvider": "${caps.output.result.analysis_provider}",
+        "model": "${caps.output.result.model}",
+        "temperature": "${caps.output.result.analysis_temp}",
+        "maxTokens": 16000,
+        "thinkingTokenLimit": "${caps.output.result.think_analysis}",
+        "reasoningSummary": "detailed",
+        "jsonOutput": false,
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_APP_MODEL" },
+          { "role": "user", "message": "Reconnaissance surface + docs digest (JSON):\n${prep_appmodel.output.result}" }
+        ]
+      }
+    },
+    {
+      "name": "parse_app_model",
+      "taskReferenceName": "parse_app_model",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "raw": "${app_model.output.result}",
+        "profile": "${normalize_target.output.target_profile}",
+        "queryExpression": ".raw as $r | (if ($r|type) == \"object\" then $r else (try ($r[ ($r|index(\"{\")) : (($r|rindex(\"}\"))+1) ] | fromjson) catch {}) end) as $m | $m + (if (.profile|type)==\"object\" and (.profile|length)>0 then {target_profile_name:(.profile.name // \"\"), archetype:(.profile.archetype // \"\"), feature_exploitation_playbook:(.profile.feature_exploitation_playbook // {})} else {} end)"
+      }
+    },
+    {
+      "name": "catalog_context",
+      "taskReferenceName": "catalog_context",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "app_model": "${parse_app_model.output.result}",
+        "identities": "${normalize_target.output.identities}",
+        "auth_verified": "${normalize_target.output.auth_verified}",
+        "has_source": "${normalize_target.output.source_path}"
+      }
+    },
+    {
+      "name": "dep_cve_scan",
+      "taskReferenceName": "dep_cve_scan",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "source_path": "${normalize_target.output.source_path}",
+        "app_model": "${parse_app_model.output.result}",
+        "recon_meta": "${surface_sub.output.surface.meta}"
+      }
+    },
+    {
+      "name": "build_feature_inventory",
+      "taskReferenceName": "build_feature_inventory",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "app_model": "${parse_app_model.output.result}",
+        "surface": "${surface_sub.output.surface}",
+        "docs_digest": "${docs_sub.output.digest}",
+        "playbook": "${parse_app_model.output.result.feature_exploitation_playbook}"
+      }
+    },
+    {
+      "name": "feature_triage",
+      "taskReferenceName": "feature_triage",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "inventory": "${build_feature_inventory.output.inventory}",
+        "identities": "${normalize_target.output.identities}",
+        "scope": "${normalize_target.output.scope}",
+        "base_url": "${normalize_target.output.base_url}",
+        "capability_max": "${normalize_target.output.capability_max}",
+        "oob_base": "${workflow.input.oob_base}"
+      }
+    },
+    {
+      "name": "fp_version",
+      "taskReferenceName": "fp_version",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "app_model": "${parse_app_model.output.result}",
+        "queryExpression": "((.app_model.tech // []) | map(tostring) | sort | join(\",\"))[0:120]"
+      }
+    },
+    {
+      "name": "seed_state",
+      "taskReferenceName": "seed_state",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "tried_signatures": "${normalize_target.output.prior_state.tried_signatures}",
+        "gaps": "${normalize_target.output.prior_state.gaps}",
+        "focus_directive": "${caps.output.result.initial_focus}"
+      }
+    },
+    {
+      "name": "build_personas",
+      "taskReferenceName": "build_personas",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "identities": "${normalize_target.output.identities}",
+        "app_model": "${parse_app_model.output.result}",
+        "manifest": "${normalize_target.output.manifest}"
+      }
+    },
+    {
+      "name": "pass_loop",
+      "taskReferenceName": "pass_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ return $.pass_loop['iteration'] < $.max_passes && $.keep_going === true; })();",
+      "inputParameters": {
+        "pass_loop": "${pass_loop.output}",
+        "max_passes": "${caps.output.result.passes}",
+        "keep_going": "${workflow.variables.keep_going}"
+      },
+      "loopOver": [
+        {
+          "name": "safety_check",
+          "taskReferenceName": "safety_check",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "manifest": "${normalize_target.output.manifest}",
+            "target": "${normalize_target.output.target}",
+            "kill_switch": "${workflow.input.kill_switch}",
+            "prior_halt": "${workflow.variables.halt}"
+          }
+        },
+        {
+          "name": "safety_gate",
+          "taskReferenceName": "safety_gate",
+          "type": "SWITCH",
+          "evaluatorType": "graaljs",
+          "expression": "$.proceed === true ? 'go' : 'halt'",
+          "inputParameters": { "proceed": "${safety_check.output.proceed}" },
+          "decisionCases": {
+            "go": [ { "name": "safety_ok", "taskReferenceName": "safety_ok", "type": "NOOP" } ]
+          },
+          "defaultCase": [
+            {
+              "name": "halt_campaign",
+              "taskReferenceName": "halt_campaign",
+              "type": "TERMINATE",
+              "inputParameters": {
+                "terminationStatus": "FAILED",
+                "terminationReason": "Safety governor halted the campaign: ${safety_check.output.reason}",
+                "workflowOutput": { "halted": true, "reason": "${safety_check.output.reason}" }
+              }
+            }
+          ]
+        },
+        {
+          "name": "load_state",
+          "taskReferenceName": "load_state",
+          "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "all_confirmed": "${workflow.variables.all_confirmed}",
+            "tried_signatures": "${workflow.variables.tried_signatures}",
+            "focus_directive": "${workflow.variables.focus_directive}",
+            "gaps": "${workflow.variables.gaps}",
+            "operation_ledger": "${workflow.variables.operation_ledger}",
+            "chaining_context": "${workflow.variables.chaining_context}",
+            "queryExpression": "{ all_confirmed: (.all_confirmed // []), tried_signatures: (.tried_signatures // []), focus_directive: (.focus_directive // \"\"), gaps: (.gaps // []), operation_ledger: (.operation_ledger // []), chaining_context: (.chaining_context // {}) }"
+          }
+        },
+        {
+          "name": "assess_pass",
+          "taskReferenceName": "assess_pass",
+          "type": "SUB_WORKFLOW",
+          "subWorkflowParam": { "name": "assess_pass", "version": 1 },
+          "inputParameters": {
+            "base_url": "${normalize_target.output.base_url}",
+            "scope": "${normalize_target.output.scope}",
+            "identities": "${normalize_target.output.identities}",
+            "app_model": "${parse_app_model.output.result}",
+            "surface": "${surface_sub.output.surface}",
+            "docs_namespace": "${docs_sub.output.namespace}",
+            "docs_index": "${docs_sub.output.index}",
+            "docs_available": "${docs_sub.output.index_ready}",
+            "docs_digest": "${docs_sub.output.digest}",
+            "prior_confirmed": "${load_state.output.result.all_confirmed}",
+            "tried_signatures": "${load_state.output.result.tried_signatures}",
+            "focus_directive": "${load_state.output.result.focus_directive}",
+            "max_explore": "${caps.output.result.explore}",
+            "max_hypos": "${caps.output.result.hypos}",
+            "max_exploit": "${caps.output.result.exploit}",
+            "model": "${caps.output.result.model}",
+            "analysis_provider": "${caps.output.result.analysis_provider}",
+            "analysis_model": "${caps.output.result.analysis_model}",
+            "loop_provider": "${caps.output.result.loop_provider}",
+            "loop_model": "${caps.output.result.loop_model}",
+            "embed_provider": "${caps.output.result.embed_provider}",
+            "embed_model": "${caps.output.result.embed_model}",
+            "think_analysis": "${caps.output.result.think_analysis}",
+            "analysis_temp": "${caps.output.result.analysis_temp}",
+            "oob_base": "${workflow.input.oob_base}",
+            "run_id": "${workflow.workflowId}",
+            "manifest": "${normalize_target.output.manifest}",
+            "capability_max": "${normalize_target.output.capability_max}",
+            "personas": "${build_personas.output.personas}",
+            "purple": "${workflow.input.purple}",
+            "catalog_objectives": "${catalog_context.output.applicable}",
+            "cve_leads": "${dep_cve_scan.output.cve_leads}",
+            "feature_exploitation_playbook": "${parse_app_model.output.result.feature_exploitation_playbook}",
+            "feature_operations": "${workflow.input.target_profile.feature_operations}",
+            "feature_inventory": "${build_feature_inventory.output.inventory}",
+            "triage_signals": "${feature_triage.output.triage_signals}",
+            "operation_ledger": "${load_state.output.result.operation_ledger}",
+            "identity_adequacy": "${normalize_target.output.identity_adequacy}",
+            "chaining_context": "${load_state.output.result.chaining_context}",
+            "objective_focus": "${caps.output.result.objective_focus}",
+            "sast_findings": "${surface_sub.output.findings}"
+          }
+        },
+        {
+          "name": "accumulate",
+          "taskReferenceName": "accumulate",
+          "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "prior_confirmed": "${workflow.variables.all_confirmed}",
+            "prior_rejected": "${workflow.variables.all_rejected}",
+            "prior_blind": "${workflow.variables.all_blind}",
+            "prior_sigs": "${workflow.variables.tried_signatures}",
+            "prior_created": "${workflow.variables.cleanup_ledger}",
+            "new_confirmed": "${assess_pass.output.new_confirmed}",
+            "new_rejected": "${assess_pass.output.new_rejected}",
+            "new_blind": "${assess_pass.output.new_blind}",
+            "new_sigs": "${assess_pass.output.tried_signatures}",
+            "new_created": "${assess_pass.output.created_resources}",
+            "prior_operations": "${workflow.variables.operation_ledger}",
+            "new_operations": "${assess_pass.output.operation_ledger}",
+            "new_halt": "${assess_pass.output.halt_requested}",
+            "prior_halt": "${workflow.variables.halt}",
+            "prior_deepen": "${workflow.variables.deepen_states}",
+            "new_deepen": "${assess_pass.output.deepen_states}",
+            "queryExpression": "{ all_confirmed: ((.prior_confirmed // []) + (.new_confirmed // [])), all_rejected: ((.prior_rejected // []) + (.new_rejected // [])), all_blind: (((.prior_blind // []) + (.new_blind // [])) | unique), tried_signatures: (((.prior_sigs // []) + (.new_sigs // [])) | unique | (if length > 250 then .[length-250:] else . end)), all_created: ((.prior_created // []) + (.new_created // [])), operation_ledger: (((.prior_operations // []) + (.new_operations // [])) | unique_by((.type // \"\") + \"|\" + (.method // \"\") + \"|\" + (.path // \"\") + \"|\" + (.workflow_name // \"\") + \"|\" + (.execution_id // \"\") + \"|\" + (.identity // \"\") + \"|\" + ((.status // \"\") | tostring) + \"|\" + (.objective_id // \"\") + \"|\" + (.hypothesis_id // \"\") + \"|\" + (.cve_id // \"\") + \"|\" + (.family // \"\")) | map(select((.type // \"\") != \"workflow_polled\")) | (if length > 220 then .[length-220:] else . end)), deepen_states: (((.prior_deepen // []) + (.new_deepen // [])) | (if length > 40 then .[length-40:] else . end)), new_confirmed_count: ((.new_confirmed // []) | length), new_hypo_count: ((.new_sigs // []) | length), halt: (if (.prior_halt // \"\") != \"\" then .prior_halt else ((.new_halt.reason) // \"\") end) }"
+          }
+        },
+        {
+          "name": "set_state",
+          "taskReferenceName": "set_state",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "all_confirmed": "${accumulate.output.result.all_confirmed}",
+            "all_rejected": "${accumulate.output.result.all_rejected}",
+            "all_blind": "${accumulate.output.result.all_blind}",
+            "tried_signatures": "${accumulate.output.result.tried_signatures}",
+            "cleanup_ledger": "${accumulate.output.result.all_created}",
+            "operation_ledger": "${accumulate.output.result.operation_ledger}",
+            "deepen_states": "${accumulate.output.result.deepen_states}",
+            "halt": "${accumulate.output.result.halt}"
+          }
+        },
+        {
+          "name": "evaluate_campaign_progress",
+          "taskReferenceName": "campaign_progress",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "attack_graph": "${workflow.variables.attack_graph}",
+            "new_confirmed": "${assess_pass.output.new_confirmed}",
+            "playbook": "${parse_app_model.output.result.feature_exploitation_playbook}",
+            "operations": "${accumulate.output.result.operation_ledger}",
+            "deepen_states": "${accumulate.output.result.deepen_states}",
+            "cve_leads": "${dep_cve_scan.output.cve_leads}",
+            "adequacy": "${normalize_target.output.identity_adequacy}",
+            "capability_max": "${normalize_target.output.capability_max}",
+            "objective_focus": "${caps.output.result.objective_focus}",
+            "catalog_objectives": "${catalog_context.output.applicable}",
+            "sast_findings": "${surface_sub.output.findings}"
+          }
+        },
+        {
+          "name": "set_campaign_progress",
+          "taskReferenceName": "set_campaign_progress",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "attack_graph": "${campaign_progress.output.attack_graph}",
+            "chaining_context": "${campaign_progress.output.chaining_context}",
+            "feature_exercise": "${campaign_progress.output.feature_exercise}"
+          }
+        },
+        {
+          "name": "build_coverage",
+          "taskReferenceName": "coverage_pass",
+          "type": "SIMPLE",
+          "optional": true,
+          "inputParameters": {
+            "app_model": "${parse_app_model.output.result}",
+            "personas": "${build_personas.output.personas}",
+            "docs_digest": "${docs_sub.output.digest}",
+            "confirmed": "${accumulate.output.result.all_confirmed}",
+            "tried": "${accumulate.output.result.tried_signatures}",
+            "rejected": "${accumulate.output.result.all_rejected}",
+            "catalog_applicable": "${catalog_context.output.applicable}",
+            "catalog_not_applicable": "${catalog_context.output.not_applicable}",
+            "adequacy": "${normalize_target.output.identity_adequacy}"
+          }
+        },
+        {
+          "name": "reflect_pass",
+          "taskReferenceName": "reflect_sub",
+          "type": "SUB_WORKFLOW",
+          "subWorkflowParam": { "name": "reflect_pass", "version": 1 },
+          "inputParameters": {
+            "app_model": "${parse_app_model.output.result}",
+            "all_confirmed": "${accumulate.output.result.all_confirmed}",
+            "all_blind": "${accumulate.output.result.all_blind}",
+            "tried_signatures": "${accumulate.output.result.tried_signatures}",
+            "gaps": "${load_state.output.result.gaps}",
+            "coverage": "${coverage_pass.output.summary}",
+            "docs_digest": "${docs_sub.output.digest}",
+            "new_confirmed_count": "${accumulate.output.result.new_confirmed_count}",
+            "new_hypo_count": "${accumulate.output.result.new_hypo_count}",
+            "operation_ledger": "${accumulate.output.result.operation_ledger}",
+            "feature_exercise": "${campaign_progress.output.feature_exercise}",
+            "chaining_context": "${campaign_progress.output.chaining_context}",
+            "cve_leads": "${dep_cve_scan.output.cve_leads}",
+            "model": "${caps.output.result.analysis_model}",
+            "llm_provider": "${caps.output.result.analysis_provider}",
+            "think_analysis": "${caps.output.result.think_analysis}",
+            "analysis_temp": "${caps.output.result.analysis_temp}"
+          }
+        },
+        {
+          "name": "guard_keepgoing",
+          "taskReferenceName": "guard_keepgoing",
+          "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "kg": "${reflect_sub.output.keep_going}",
+            "nc": "${accumulate.output.result.new_confirmed_count}",
+            "nh": "${accumulate.output.result.new_hypo_count}",
+            "mandatory_complete": "${campaign_progress.output.feature_exercise.complete}",
+            "queryExpression": "((.mandatory_complete != true) or ((.kg == true) and (((.nc // 0) > 0) or ((.nh // 0) > 0))))"
+          }
+        },
+        {
+          "name": "merge_focus",
+          "taskReferenceName": "merge_focus",
+          "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "mandatory": "${campaign_progress.output.mandatory_focus}",
+            "reflect": "${reflect_sub.output.focus_directive}",
+            "queryExpression": "([.mandatory, .reflect] | map(select((. // \"\") != \"\")) | unique | join(\" \"))"
+          }
+        },
+        {
+          "name": "set_focus",
+          "taskReferenceName": "set_focus",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "focus_directive": "${merge_focus.output.result}",
+            "keep_going": "${guard_keepgoing.output.result}",
+            "gaps": "${reflect_sub.output.new_gaps}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "prep_cleanup",
+      "taskReferenceName": "prep_cleanup",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "ledger": "${workflow.variables.cleanup_ledger}",
+        "families": "${workflow.input.cleanup_families}",
+        "leave_evidence": "${caps.output.result.leave_evidence}",
+        "queryExpression": "(.leave_evidence == true or .leave_evidence == \"true\") as $leave | {leave_evidence:$leave, ledger:(if $leave then [] else (.ledger // []) end), families:(if $leave then [] else (.families // []) end), retained:(if $leave then (.ledger // []) else [] end)}"
+      }
+    },
+    {
+      "name": "cleanup_resources",
+      "taskReferenceName": "cleanup_resources",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "ledger": "${prep_cleanup.output.result.ledger}",
+        "identities": "${normalize_target.output.identities}",
+        "scope": "${normalize_target.output.scope}",
+        "base_url": "${normalize_target.output.base_url}"
+      }
+    },
+    {
+      "name": "sweep_resources",
+      "taskReferenceName": "sweep_resources",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "base_url": "${normalize_target.output.base_url}",
+        "identities": "${normalize_target.output.identities}",
+        "scope": "${normalize_target.output.scope}",
+        "prefix": "sc-pentest-",
+        "cleanup_families": "${prep_cleanup.output.result.families}"
+      }
+    },
+    {
+      "name": "merge_cleanup",
+      "taskReferenceName": "merge_cleanup",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "ledger": "${cleanup_resources.output}",
+        "sweep": "${sweep_resources.output}",
+        "plan": "${prep_cleanup.output.result}",
+        "queryExpression": "{ deleted: (((.ledger.deleted // []) | map(.url // .name)) + ((.sweep.swept // []) | map(\"\\(.type):\\(.name)\"))), residue: (((.ledger.residue // []) | map(.url // .name)) + ((.sweep.residue // []) | map(\"\\(.type):\\(.name) (\\(.reason // .status // .error // \"?\"))\"))), retained: ((.plan.retained // []) | map(.url // .name)), leave_evidence: (.plan.leave_evidence // false), summary: (if (.plan.leave_evidence // false) then \"leave-evidence enabled: tagged artifacts and executions retained\" else ((.ledger.summary // \"\") + \"; \" + (.sweep.summary // \"sweep skipped\")) end) }"
+      }
+    },
+    {
+      "name": "build_coverage",
+      "taskReferenceName": "coverage_final",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "app_model": "${parse_app_model.output.result}",
+        "personas": "${build_personas.output.personas}",
+        "docs_digest": "${docs_sub.output.digest}",
+        "confirmed": "${workflow.variables.all_confirmed}",
+        "tried": "${workflow.variables.tried_signatures}",
+        "rejected": "${workflow.variables.all_rejected}",
+        "catalog_applicable": "${catalog_context.output.applicable}",
+        "catalog_not_applicable": "${catalog_context.output.not_applicable}",
+        "adequacy": "${normalize_target.output.identity_adequacy}"
+      }
+    },
+    {
+      "name": "build_dossier",
+      "taskReferenceName": "build_dossier",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "manifest": "${normalize_target.output.manifest}",
+        "authz_reason": "${normalize_target.output.authz_reason}",
+        "fingerprint": "${normalize_target.output.fingerprint}",
+        "app_model": "${parse_app_model.output.result}",
+        "personas": "${build_personas.output.personas}",
+        "documented_invariants": "${docs_sub.output.digest.documented_invariants}",
+        "coverage": "${coverage_final.output.summary}",
+        "coverage_ledger": "${coverage_final.output.ledger}",
+        "confirmed": "${workflow.variables.all_confirmed}",
+        "rejected": "${workflow.variables.all_rejected}",
+        "blind": "${workflow.variables.all_blind}",
+        "cleanup": "${merge_cleanup.output.result}",
+        "attack_graph": "${workflow.variables.attack_graph}",
+        "operation_ledger": "${workflow.variables.operation_ledger}",
+        "feature_exercise": "${workflow.variables.feature_exercise}",
+        "feeds_as_of": "${dep_cve_scan.output.feeds_as_of}"
+      }
+    },
+    {
+      "name": "kb_query",
+      "taskReferenceName": "kb_query",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "confirmed": "${workflow.variables.all_confirmed}",
+        "surface": "${surface_sub.output.findings}",
+        "queryExpression": "([ ((.confirmed // []) + (.surface // []))[] | .title ] | unique | join(\"; \")) as $q | (if ($q | length) > 0 then $q else \"web application broken access control BOLA IDOR injection business logic race condition remediation\" end)"
+      }
+    },
+    {
+      "name": "kb_retrieve",
+      "taskReferenceName": "kb_retrieve",
+      "type": "LLM_SEARCH_INDEX",
+      "optional": true,
+      "inputParameters": {
+        "vectorDB": "pgvector",
+        "namespace": "kb",
+        "index": "sc",
+        "embeddingModelProvider": "${caps.output.result.embed_provider}",
+        "embeddingModel": "${caps.output.result.embed_model}",
+        "query": "${kb_query.output.result}",
+        "maxResults": 6
+      }
+    },
+    {
+      "name": "prep_triage",
+      "taskReferenceName": "prep_triage",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "confirmed": "${workflow.variables.all_confirmed}",
+        "surface": "${surface_sub.output.findings}",
+        "dep_cve": "${dep_cve_scan.output.findings}",
+        "app_model": "${parse_app_model.output.result}",
+        "blind": "${workflow.variables.all_blind}",
+        "kb": "${kb_retrieve.output.result}",
+        "target": "${normalize_target.output.target}",
+        "queryExpression": "{ target: .target, app_model: { purpose: (.app_model.purpose // \"\"), roles: (.app_model.roles // []), sensitive_operations: (.app_model.sensitive_operations // []) }, raw_findings: ((.confirmed // []) + (.surface // []) + (.dep_cve // [])), blind_leads: (.blind // []), remediation_kb: ([ (.kb // [])[] | .text ]) } | tojson"
+      }
+    },
+    {
+      "name": "triage",
+      "taskReferenceName": "triage",
+      "type": "LLM_CHAT_COMPLETE",
+      "retryCount": 2,
+      "retryDelaySeconds": 10,
+      "inputParameters": {
+        "llmProvider": "${caps.output.result.analysis_provider}",
+        "model": "${caps.output.result.model}",
+        "temperature": "${caps.output.result.analysis_temp}",
+        "maxTokens": 18000,
+        "thinkingTokenLimit": "${caps.output.result.think_analysis}",
+        "reasoningSummary": "detailed",
+        "jsonOutput": false,
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_TRIAGE" },
+          { "role": "user", "message": "Scan data (JSON):\n${prep_triage.output.result}" }
+        ]
+      }
+    },
+    {
+      "name": "parse_triage",
+      "taskReferenceName": "parse_triage",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "raw": "${triage.output.result}",
+        "queryExpression": ".raw as $r | (if ($r|type) == \"object\" then $r else (try ($r[ ($r|index(\"{\")) : (($r|rindex(\"}\"))+1) ] | fromjson) catch {risk_rating: \"Info\", findings: [], counts: {}}) end)"
+      }
+    },
+    {
+      "name": "prep_report",
+      "taskReferenceName": "prep_report",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "triage": "${parse_triage.output.result}",
+        "app_model": "${parse_app_model.output.result}",
+        "confirmed": "${workflow.variables.all_confirmed}",
+        "rejected": "${workflow.variables.all_rejected}",
+        "blind": "${workflow.variables.all_blind}",
+        "tried": "${workflow.variables.tried_signatures}",
+        "surface": "${surface_sub.output.surface}",
+        "passes": "${pass_loop.output.iteration}",
+        "cleanup": "${merge_cleanup.output.result}",
+        "target": "${normalize_target.output.target}",
+        "identities": "${normalize_target.output.identities}",
+        "personas": "${build_personas.output.personas}",
+        "coverage_ledger": "${coverage_final.output.summary}",
+        "residual_risk": "${build_dossier.output.residual_risk}",
+        "attack_graph": "${build_dossier.output.attack_graph}",
+        "compliance": "${build_dossier.output.compliance}",
+        "auth_verified": "${normalize_target.output.auth_verified}",
+        "auth_note": "${normalize_target.output.auth_note}",
+        "adequacy": "${normalize_target.output.identity_adequacy}",
+        "operation_ledger": "${workflow.variables.operation_ledger}",
+        "feature_exercise": "${workflow.variables.feature_exercise}",
+        "feeds_as_of": "${dep_cve_scan.output.feeds_as_of}",
+        "queryExpression": "((.identities // {}) | keys) as $ids | (($ids | map(select(. != \"anon\"))) | length) as $privids | { target: .target, triage: .triage, app_model: .app_model, personas: (.personas // []), confirmed_findings: (.confirmed // []), rejected_findings: (.rejected // []), blind_leads: (.blind // []), residual_risk: (.residual_risk // \"\"), attack_graph: (.attack_graph // {nodes:[],edges:[]}), operation_ledger: (.operation_ledger // []), product_feature_exercise: (.feature_exercise // {}), feeds_as_of: (.feeds_as_of // \"\"), compliance: (.compliance // {}), auth: { verified: (.auth_verified // \"unknown\"), note: (.auth_note // \"\") }, identity_adequacy: (.adequacy // {}), cleanup: { removed: ((.cleanup.deleted // []) | length), residue: (.cleanup.residue // []), retained: (.cleanup.retained // []), leave_evidence: (.cleanup.leave_evidence // false) }, coverage: { identities_tested: $ids, cross_tenant_testable: (.adequacy.cross_tenant // ($privids >= 2)), cross_tenant_note: (if $privids >= 2 then \"tested with \" + ($privids|tostring) + \" distinct identities\" else \"NOT tested for cross-tenant/BOLA isolation: only \" + ($privids|tostring) + \" privileged identity supplied (need >=2 distinct-tenant credentials)\" end), matrix: ((.coverage_ledger.by_dimension) // {}), status_totals: ((.coverage_ledger.by_status) // {}), untested: ((.coverage_ledger.untested_keys) // []) }, surface_stats: { urls: ((.surface.urls // []) | length), forms: ((.surface.forms // []) | length), endpoints: ((.surface.endpoints // []) | length), passes_run: (.passes // 1), hypotheses_tried: ((.tried // []) | length) } } | tojson"
+      }
+    },
+    {
+      "name": "report_md",
+      "taskReferenceName": "report_md",
+      "type": "LLM_CHAT_COMPLETE",
+      "retryCount": 2,
+      "retryDelaySeconds": 10,
+      "inputParameters": {
+        "llmProvider": "${caps.output.result.analysis_provider}",
+        "model": "${caps.output.result.model}",
+        "temperature": 0.2,
+        "maxTokens": 14000,
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_REPORT" },
+          { "role": "user", "message": "Report data (JSON):\n${prep_report.output.result}" }
+        ]
+      }
+    },
+    {
+      "name": "sanitize_md",
+      "taskReferenceName": "sanitize_md",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "md": "${report_md.output.result}",
+        "queryExpression": ".md | gsub(\"\\u2192\";\"->\") | gsub(\"\\u21d2\";\"=>\") | gsub(\"\\u2190\";\"<-\") | gsub(\"\\u2014\";\" -- \") | gsub(\"\\u2013\";\"-\") | gsub(\"\\u2026\";\"...\") | gsub(\"[^\\u0009\\u000a\\u000d\\u0020-\\u00ff]\";\"\")"
+      }
+    },
+    {
+      "name": "report_pdf",
+      "taskReferenceName": "report_pdf",
+      "type": "GENERATE_PDF",
+      "inputParameters": {
+        "markdown": "${sanitize_md.output.result}",
+        "pageSize": "A4",
+        "theme": "default",
+        "baseFontSize": 10,
+        "marginTop": 54,
+        "marginBottom": 54,
+        "marginLeft": 54,
+        "marginRight": 54,
+        "pdfMetadata": {
+          "title": "Deep Application Pentest Report",
+          "author": "security-conductor",
+          "subject": "${normalize_target.output.target}"
+        }
+      }
+    },
+    {
+      "name": "persist",
+      "taskReferenceName": "persist",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "scan_id": "${workflow.workflowId}",
+        "target": "${normalize_target.output.target}",
+        "findings": "${parse_triage.output.result}",
+        "surface": "${surface_sub.output.surface}",
+        "plan": "${parse_app_model.output.result}",
+        "active_findings": "${workflow.variables.all_confirmed}",
+        "report_md": "${report_md.output.result}",
+        "pdf_location": "${report_pdf.output.result.location}",
+        "dossier": "${build_dossier.output.dossier}"
+      }
+    },
+    {
+      "name": "memory_save",
+      "taskReferenceName": "memory_save",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "fingerprint": "${normalize_target.output.fingerprint}",
+        "host": "${normalize_target.output.host}",
+        "app_version": "${fp_version.output.result}",
+        "run_id": "${workflow.workflowId}",
+        "all_confirmed": "${workflow.variables.all_confirmed}",
+        "all_rejected": "${workflow.variables.all_rejected}",
+        "all_blind": "${workflow.variables.all_blind}",
+        "tried_signatures": "${workflow.variables.tried_signatures}",
+        "gaps": "${workflow.variables.gaps}",
+        "coverage": "${coverage_final.output.summary}",
+        "documented_invariants": "${docs_sub.output.digest.documented_invariants}",
+        "feature_exercise": "${workflow.variables.feature_exercise}",
+        "triage_signals": "${feature_triage.output.triage_signals}",
+        "deepen_states": "${workflow.variables.deepen_states}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "scan_id": "${workflow.workflowId}",
+    "target": "${normalize_target.output.target}",
+    "risk_rating": "${parse_triage.output.result.risk_rating}",
+    "counts": "${parse_triage.output.result.counts}",
+    "confirmed_findings": "${workflow.variables.all_confirmed}",
+    "rejected_findings": "${workflow.variables.all_rejected}",
+    "blind_leads": "${workflow.variables.all_blind}",
+    "tried_signatures": "${workflow.variables.tried_signatures}",
+    "passes_run": "${pass_loop.output.iteration}",
+    "cleanup": "${merge_cleanup.output.result}",
+    "report_dir": "${persist.output.report_dir}",
+    "pdf": "${report_pdf.output.result.location}",
+    "memory": "${memory_save.output.stats}",
+    "prior_runs": "${normalize_target.output.prior_state.runs}",
+    "personas": "${build_personas.output.personas}",
+    "coverage": "${coverage_final.output.summary}",
+    "attack_graph": "${build_dossier.output.attack_graph}",
+    "operation_ledger": "${workflow.variables.operation_ledger}",
+    "product_feature_exercise": "${workflow.variables.feature_exercise}",
+    "feeds_as_of": "${dep_cve_scan.output.feeds_as_of}",
+    "residual_risk": "${build_dossier.output.residual_risk}",
+    "dossier_file": "${build_dossier.output.written}"
+  }
+}

@@ -1,0 +1,374 @@
+# Security Objective Catalog — the spine of the harness (docs/ROADMAP.md#E0).
+#
+# Each entry is one testable security OBJECTIVE/INVARIANT. The catalog drives, in one
+# place: (1) hypothesis generation (every APPLICABLE objective must be considered),
+# (2) the coverage ledger (one cell per objective; honest tested/partial/untested/N-A),
+# (3) report/compliance mapping (owasp/asvs/cwe), and (4) the per-class benchmark.
+#
+# Fields:
+#   id               stable identifier (referenced by hypotheses + coverage cells)
+#   class            confidentiality|integrity|availability|infra|auth|authz|tenancy|logic|crypto|client|detection
+#   objective        attacker goal (1 line)
+#   invariant        the property that must hold (what we try to falsify)
+#   applicable_when  "always" | <fact> | [<fact>,...] (ALL) ; optional any_of: [<fact>,...]
+#   required_identities  human note on identities needed to PROVE it
+#   required_capability  1 read | 2 state-changing | resilience
+#   how_to_test      concrete approach for the agent
+#   impact_evidence  the bar the verifier must meet to CONFIRM (per-class evidence)
+#   coverage_dimension  grouping key for the coverage ledger
+#   refs             {owasp, asvs, cwe}
+
+# ───────────────────────── Confidentiality / data exposure ─────────────────────────
+- id: CONF-CROSS-TENANT-READ
+  class: tenancy
+  objective: "Read another tenant's data"
+  invariant: "A tenant principal cannot read/list/search another tenant's objects (DB, storage, search, cache, exports)"
+  applicable_when: multi_tenant
+  required_identities: ">=2 distinct-tenant identities"
+  required_capability: 1
+  how_to_test: "as tenantA, request/enumerate tenantB object ids across every interface and export path; then CASCADE — escalate from read to WRITE/mutate tenantB objects, and use tenantB's integrations/secrets/workflows (a single read is the floor, not the ceiling)"
+  impact_evidence: "response contains tenantB's classified data; cross-identity contrast (B's own request differs); or a tenantB write/integration use succeeds as tenantA"
+  coverage_dimension: tenant_isolation
+  refs: {owasp: "A01:2021", asvs: "V4.2", cwe: "CWE-639"}
+
+- id: CONF-BOLA-CROSS-USER
+  class: authz
+  objective: "Read another user's object within a tenant (IDOR/BOLA)"
+  invariant: "A user cannot read an object they do not own/aren't granted"
+  applicable_when: always
+  required_identities: ">=2 users"
+  required_capability: 1
+  how_to_test: "flip object ids in path/body/query as userA toward userB's resources, every interface"
+  impact_evidence: "userA receives userB's data; contrast vs userB's own access"
+  coverage_dimension: object_authz
+  refs: {owasp: "A01:2021", asvs: "V4.1", cwe: "CWE-639"}
+
+- id: CONF-EXCESSIVE-DATA
+  class: confidentiality
+  objective: "Obtain more fields/records than the role/UI should expose"
+  invariant: "APIs return only data the caller is authorized and intended to see"
+  applicable_when: always
+  required_identities: "1 user"
+  required_capability: 1
+  how_to_test: "compare API JSON fields vs UI/role need; GraphQL over-fetch/introspection; verbose objects"
+  impact_evidence: "sensitive/extra fields (tokens, internal flags, other-entity refs) returned beyond need"
+  coverage_dimension: data_exposure
+  refs: {owasp: "A01:2021", asvs: "V13.1", cwe: "CWE-213"}
+
+- id: CONF-SINK-LEAK
+  class: confidentiality
+  objective: "Find sensitive data leaking into a side sink"
+  invariant: "PII/secrets do not appear in logs, errors, exports, reports, notifications, caches, source maps"
+  applicable_when: always
+  required_capability: 1
+  how_to_test: "drive features that emit to sinks; inspect errors/exports/PDF/webhooks for classified data"
+  impact_evidence: "classified data (pii/phi/pci/secret) observed in a sink not gated to the owner"
+  coverage_dimension: data_exposure
+  refs: {owasp: "A09:2021", asvs: "V7.1", cwe: "CWE-532"}
+
+- id: CONF-ENUMERATION
+  class: confidentiality
+  objective: "Enumerate users/objects or bulk-extract"
+  invariant: "Identifiers are unguessable and bulk access is rate/authorization limited"
+  applicable_when: always
+  required_capability: 1
+  how_to_test: "sequential/guessable id probing; user-enumeration via differential responses; pagination abuse"
+  impact_evidence: "existence/ownership oracle or bulk records obtained without authorization"
+  coverage_dimension: data_exposure
+  refs: {owasp: "A01:2021", asvs: "V4.2", cwe: "CWE-200"}
+
+- id: CONF-STALE-ACCESS
+  class: authz
+  objective: "Access data after access should have been revoked"
+  invariant: "Revoking a share/role/session immediately removes data access"
+  applicable_when: always
+  required_identities: ">=2 users"
+  required_capability: 2
+  how_to_test: "grant then revoke a share/role; confirm prior grantee/session can no longer read"
+  impact_evidence: "data still readable after revocation (temporal contrast)"
+  coverage_dimension: object_authz
+  refs: {owasp: "A01:2021", asvs: "V4.3", cwe: "CWE-613"}
+
+# ───────────────────────── Integrity ─────────────────────────
+- id: INTEG-CROSS-WRITE
+  class: integrity
+  objective: "Modify/delete another user's or tenant's data"
+  invariant: "A principal cannot write to objects it doesn't own/isn't granted"
+  applicable_when: always
+  required_identities: ">=2 users (>=2 tenants for cross-tenant)"
+  required_capability: 2
+  how_to_test: "as userA, PUT/PATCH/DELETE userB/tenantB objects across interfaces"
+  impact_evidence: "a write to another principal's object persisted (observed by the victim identity)"
+  coverage_dimension: object_authz
+  refs: {owasp: "A01:2021", asvs: "V4.1", cwe: "CWE-639"}
+
+- id: INTEG-PRIVESC-MASSASSIGN
+  class: authz
+  objective: "Escalate privilege via mass-assignment / role write"
+  invariant: "Privilege/role/owner fields cannot be set by the caller"
+  applicable_when: always
+  required_capability: 2
+  how_to_test: "add role/isAdmin/ownerId/tenantId fields to create/update bodies"
+  impact_evidence: "a privileged attribute took effect (observed elevated capability)"
+  coverage_dimension: privilege
+  refs: {owasp: "A04:2021", asvs: "V1.2", cwe: "CWE-915"}
+
+- id: INTEG-FINANCIAL
+  class: integrity
+  objective: "Manipulate a financial/accounting outcome"
+  invariant: "Amounts/balances/refunds cannot be altered beyond captured/authorized values"
+  applicable_when: handles_payments
+  required_capability: 2
+  how_to_test: "refund>captured, negative qty, price/currency tamper, double-spend, coupon/credit reuse"
+  impact_evidence: "a value/balance changed in the attacker's favor and persisted"
+  coverage_dimension: business_logic
+  refs: {owasp: "A04:2021", asvs: "V11.1", cwe: "CWE-840"}
+
+- id: INTEG-WORKFLOW-STATE
+  class: logic
+  objective: "Force an illegal state transition / skip approval"
+  invariant: "State machines reject skipped/reordered/replayed steps and self-approval"
+  applicable_when: always
+  required_capability: 2
+  how_to_test: "skip/reorder/replay steps; act on a resource in the wrong state; approve own request"
+  impact_evidence: "an illegal state persisted or an unapproved action took effect"
+  coverage_dimension: business_logic
+  refs: {owasp: "A04:2021", asvs: "V11.1", cwe: "CWE-841"}
+
+- id: INTEG-REPLAY
+  class: integrity
+  objective: "Replay a signed/one-time request"
+  invariant: "Signed callbacks/one-time tokens cannot be replayed"
+  applicable_when: always
+  required_capability: 2
+  how_to_test: "replay webhooks/payment callbacks/one-time links; test idempotency keys"
+  impact_evidence: "a replayed request produced a second effect"
+  coverage_dimension: business_logic
+  refs: {owasp: "A08:2021", asvs: "V11.1", cwe: "CWE-294"}
+
+- id: INTEG-AUDIT-TAMPER
+  class: integrity
+  objective: "Tamper with immutable/audit records"
+  invariant: "Audit logs and completed transactions are immutable"
+  applicable_when: always
+  required_capability: 2
+  how_to_test: "attempt to edit/delete audit entries or completed transactions"
+  impact_evidence: "an append-only/immutable record was altered"
+  coverage_dimension: detection
+  refs: {owasp: "A09:2021", asvs: "V7.3", cwe: "CWE-285"}
+
+# ───────────────────────── Availability / abuse-of-cost (resilience tier) ─────────────────────────
+- id: AVAIL-COMPLEXITY
+  class: availability
+  objective: "Destabilize via expensive/unbounded operations"
+  invariant: "Endpoints bound work per request (complexity/pagination/query limits)"
+  applicable_when: always
+  required_capability: resilience
+  how_to_test: "bounded ramp on expensive endpoints; GraphQL depth/complexity; unbounded queries; measure latency/error derivative"
+  impact_evidence: "measured latency/error knee within the bounded envelope (NOT a sustained outage)"
+  coverage_dimension: resilience
+  refs: {owasp: "A05:2021", asvs: "V11.2", cwe: "CWE-400"}
+
+- id: AVAIL-REDOS
+  class: availability
+  objective: "Trigger catastrophic regex/parser backtracking"
+  invariant: "Inputs cannot cause super-linear CPU"
+  applicable_when: always
+  required_capability: resilience
+  how_to_test: "send crafted ReDoS/parser-bomb inputs to validated fields; measure single-request latency"
+  impact_evidence: "single-request latency explosion attributable to input"
+  coverage_dimension: resilience
+  refs: {owasp: "A05:2021", asvs: "V11.2", cwe: "CWE-1333"}
+
+- id: AVAIL-RATELIMIT
+  class: availability
+  objective: "Abuse missing rate limits (flood / lockout / OTP bombing)"
+  invariant: "Sensitive actions are rate-limited; lockout cannot be weaponized against others"
+  applicable_when: always
+  required_capability: resilience
+  how_to_test: "bounded burst on login/OTP/email/reset; check account-lockout-as-DoS"
+  impact_evidence: "no limit observed within envelope, or another user's account locked"
+  coverage_dimension: resilience
+  refs: {owasp: "A07:2021", asvs: "V2.2", cwe: "CWE-770"}
+
+- id: AVAIL-COST
+  class: availability
+  objective: "Denial-of-wallet (drive up the victim's cost)"
+  invariant: "Attacker cannot force disproportionate compute/egress/LLM cost"
+  applicable_when: has_outbound_fetch
+  required_capability: resilience
+  how_to_test: "amplify cost via outbound fetch/LLM/compute features within the bounded envelope"
+  impact_evidence: "measured cost-amplification ratio attributable to attacker input"
+  coverage_dimension: resilience
+  refs: {owasp: "A04:2021", asvs: "V11.2", cwe: "CWE-405"}
+
+- id: AVAIL-FAILOPEN
+  class: availability
+  objective: "Make a control fail OPEN under dependency stress"
+  invariant: "Controls fail closed when a dependency is slow/unavailable"
+  applicable_when: always
+  required_capability: resilience
+  how_to_test: "stress/slow a dependency boundary (within envelope) and re-test an authz/validation control"
+  impact_evidence: "a control that denied under normal load permitted under stress"
+  coverage_dimension: resilience
+  refs: {owasp: "A04:2021", asvs: "V1.2", cwe: "CWE-636"}
+
+# ───────────────────────── Infrastructure / secret extraction ─────────────────────────
+- id: INFRA-SSRF
+  class: infra
+  objective: "Reach internal services / cloud metadata / secret manager via SSRF"
+  invariant: "Outbound-fetch features cannot reach internal/metadata addresses"
+  applicable_when: has_outbound_fetch
+  required_capability: 2
+  how_to_test: "define+RUN an outbound-fetch feature (HTTP-task uri / webhook / import URL) pointed at internal targets, and walk the COMPLETE internal-target representation corpus — never one form. When the canonical 127.0.0.1/169.254.169.254 return the cluster egress block (403 'blocked in this cluster'), that is NOT 'not exploitable': try the IPv6 loopback [::1] and [0:0:0:0:0:0:0:1] (reaches the LOCAL backend), the AWS IPv6 IMDS [fd00:ec2::254], IPv4-mapped [::ffff:127.0.0.1], decimal 2130706433 / hex 0x7f000001 / octal forms, 0 / 0.0.0.0 / 127.1, userinfo (http://allowed@[::1]/), open-redirect chains, and alternate schemes (gopher/dict/file). Confirm internal REACH by a non-403 backend response (actuator/health body, IMDS fields, the internal OpenAPI spec, OR a backend-generated 401 INVALID_TOKEN that proves the request traversed) — or an OOB inbound hit for a blind fetch."
+  impact_evidence: "OOB inbound hit from target, OR an internal target reached past the egress filter (internal/metadata content, internal OpenAPI spec, or a backend auth error proving traversal) — distinguished from the cluster 403 block"
+  coverage_dimension: infra
+  refs: {owasp: "A10:2021", asvs: "V12.6", cwe: "CWE-918"}
+
+- id: INFRA-RCE-INJECTION
+  class: infra
+  objective: "Execute code / commands / templates / expressions server-side"
+  invariant: "User input never reaches an interpreter (shell/template/eval/deserializer)"
+  applicable_when: always
+  required_capability: 2
+  how_to_test: "for EACH reachable injection sink (code-eval/ScriptEngine, template/SSTI, expression, OS-command, deserializer, AND formatted/concatenated SQL in a data-access path) — including any sink a SAST/source finding flags — drive it to a RUNTIME oracle through the live endpoint that reaches it: for exec sinks craft a payload whose EXECUTED code fetches sc.oob('injection'); for SQL sinks inject metacharacters then escalate error->boolean->time-based and confirm via a DB error string / boolean / timing differential. A static 'potential injection' from SAST is NOT assurance — actively exploit it or DOWNGRADE the finding (no runtime PoC => not High)."
+  impact_evidence: "concrete exec/injection signal (OOB canary hit from the target, error oracle, or extracted data) — never a 200 or a reflected echo"
+  coverage_dimension: infra
+  refs: {owasp: "A03:2021", asvs: "V5.2", cwe: "CWE-94"}
+
+- id: INFRA-SECRET-SURFACE
+  class: infra
+  objective: "Harvest secrets/credentials from exposed surfaces"
+  invariant: "No secrets in config/debug endpoints, .git/.env/backups, stack traces, source maps"
+  applicable_when: always
+  required_capability: 1
+  how_to_test: "probe common secret/debug/backup paths; trigger verbose errors; read downstream creds; then CASCADE — USE any surfaced credential to authenticate and reach further (cross-tenant data, admin/secret APIs, an integration), proving the leak's real impact rather than stopping at retrieval"
+  impact_evidence: "a real credential/secret (DB string, API key, token) retrieved — and, where possible, demonstrated use of it to access something it should not"
+  coverage_dimension: infra
+  refs: {owasp: "A05:2021", asvs: "V14.3", cwe: "CWE-200"}
+
+- id: INFRA-PATH-TRAVERSAL
+  class: infra
+  objective: "Read arbitrary files (LFI / path traversal)"
+  invariant: "File/path parameters cannot escape their intended root"
+  applicable_when: always
+  required_capability: 1
+  how_to_test: "traversal sequences (incl. encoded/null-byte) in file/path/name params"
+  impact_evidence: "contents of a file outside the intended root returned"
+  coverage_dimension: infra
+  refs: {owasp: "A01:2021", asvs: "V12.3", cwe: "CWE-22"}
+
+- id: INFRA-SUPPLY-CHAIN
+  class: infra
+  objective: "Exploit a known-CVE dependency in the stack"
+  invariant: "No exploitable known-vulnerable components are deployed"
+  applicable_when: always
+  required_capability: 2
+  how_to_test: "extract dependencies from source manifests (or infer the stack from fingerprint) -> OSV.dev known-CVE lookup (the dep_cve_scan step provides cve_leads) -> for the most severe REACHABLE CVE, attempt the published exploit within scope/capability (OOB for blind), e.g. deserialization/SSTI/RCE payloads matching the vulnerable library"
+  impact_evidence: "a known-vulnerable component reached AND a concrete exploit signal (OOB hit, exec/error oracle, extracted data) -- not merely 'the version is old'"
+  coverage_dimension: infra
+  refs: {owasp: "A06:2021", asvs: "V14.2", cwe: "CWE-1104"}
+
+# ───────────────────────── Auth / identity / session / crypto ─────────────────────────
+- id: AUTH-TAKEOVER
+  class: auth
+  objective: "Take over an account"
+  invariant: "Recovery/enrollment/linking flows cannot be subverted to seize an account"
+  applicable_when: authenticated
+  required_capability: 2
+  how_to_test: "reset poisoning, OAuth redirect_uri/state/IdP confusion, MFA bypass, magic-link/OTP, identity-linking"
+  impact_evidence: "control of an account the attacker did not own"
+  coverage_dimension: identity
+  refs: {owasp: "A07:2021", asvs: "V2.1", cwe: "CWE-640"}
+
+- id: AUTH-SESSION-REVOKE
+  class: auth
+  objective: "Use a revoked/expired session or token"
+  invariant: "Revoked sessions/tokens are immediately rejected"
+  applicable_when: authenticated
+  required_capability: 1
+  how_to_test: "logout/revoke then reuse token; expired-token reuse; concurrent-session policy"
+  impact_evidence: "a revoked/expired credential still authorized an action"
+  coverage_dimension: identity
+  refs: {owasp: "A07:2021", asvs: "V3.3", cwe: "CWE-613"}
+
+- id: AUTH-JWT-FLAW
+  class: crypto
+  objective: "Forge/abuse a token (JWT/SAML)"
+  invariant: "Tokens are verified (alg, signature, audience, expiry, kid)"
+  applicable_when: authenticated
+  required_capability: 1
+  how_to_test: "alg:none/confusion, weak secret, kid injection, no-expiry, SAML signature-wrapping/audience"
+  impact_evidence: "a forged/modified token was accepted"
+  coverage_dimension: identity
+  refs: {owasp: "A02:2021", asvs: "V3.5", cwe: "CWE-347"}
+
+- id: CRYPTO-PREDICTABLE
+  class: crypto
+  objective: "Predict tokens/ids / abuse weak crypto"
+  invariant: "Security tokens/ids are unpredictable; signed/capability URLs are sound"
+  applicable_when: always
+  required_capability: 1
+  how_to_test: "sample reset/session/id tokens for low entropy/sequence; test signed-URL tampering"
+  impact_evidence: "a token/id predicted or a signed URL forged"
+  coverage_dimension: identity
+  refs: {owasp: "A02:2021", asvs: "V6.3", cwe: "CWE-330"}
+
+# ───────────────────────── Authorization breadth ─────────────────────────
+- id: AUTHZ-FUNCTION-LEVEL
+  class: authz
+  objective: "Invoke a privileged function as a low-priv user (vertical escalation)"
+  invariant: "Admin/privileged functions enforce role server-side"
+  applicable_when: always
+  required_identities: ">=1 low-priv + knowledge of privileged ops"
+  required_capability: 2
+  how_to_test: "call admin/privileged endpoints (from the spec) as a low-priv identity"
+  impact_evidence: "a privileged action took effect for a non-privileged caller"
+  coverage_dimension: privilege
+  refs: {owasp: "A01:2021", asvs: "V4.1", cwe: "CWE-862"}
+
+- id: AUTHZ-CROSS-INTERFACE
+  class: authz
+  objective: "Find an interface that skips an authz check another enforces"
+  invariant: "Authorization is consistent across REST/GraphQL/UI/import/v1-v2/mobile"
+  applicable_when: always
+  required_capability: 1
+  how_to_test: "run the same operation across every interface/protocol and compare enforcement"
+  impact_evidence: "one interface permits what another denies for the same principal+object"
+  coverage_dimension: object_authz
+  refs: {owasp: "A01:2021", asvs: "V4.1", cwe: "CWE-285"}
+
+- id: AUTHZ-NEGATIVE-SPACE
+  class: authz
+  objective: "Find operations with NO authorization decision at all"
+  invariant: "Every state-changing/sensitive op makes an explicit authz decision"
+  applicable_when: always
+  required_capability: 1
+  how_to_test: "exercise sensitive ops as anon/low-priv; look for success with no observable authz"
+  impact_evidence: "a sensitive op succeeds with no authorization gating"
+  coverage_dimension: privilege
+  refs: {owasp: "A01:2021", asvs: "V4.1", cwe: "CWE-862"}
+
+# ───────────────────────── Client-side ─────────────────────────
+- id: CLIENT-XSS-CSRF
+  class: client
+  objective: "Execute script / forge requests in a victim browser"
+  invariant: "Output is encoded; state-changing requests are CSRF-protected; CORS is strict"
+  applicable_when: has_browser_ui
+  required_capability: 2
+  how_to_test: "stored/reflected/DOM XSS, CSRF on state-changing routes, CORS-with-credentials, postMessage"
+  impact_evidence: "script execution in victim context or a forged cross-origin state change"
+  coverage_dimension: client
+  refs: {owasp: "A03:2021", asvs: "V5.3", cwe: "CWE-79"}
+
+# ───────────────────────── Detection / response (purple) ─────────────────────────
+- id: DETECT-COVERAGE
+  class: detection
+  objective: "Determine whether attacks are prevented/logged/alertable/attributable"
+  invariant: "Malicious actions are blocked or logged, attributable, and reconstructable; controls fail safe"
+  applicable_when: always
+  required_capability: 1
+  how_to_test: "for each confirmed finding, re-issue and check block status + any exposed audit/event records"
+  impact_evidence: "a confirmed malicious action with no prevention AND no observable log (detection gap)"
+  coverage_dimension: detection
+  refs: {owasp: "A09:2021", asvs: "V7.1", cwe: "CWE-778"}

@@ -1,0 +1,74 @@
+{
+  "_doc": "Adversarial near-miss corpus (design §19.2). NEGATIVES look like vulns but are not — the harness must NOT flag them (a match = a precision_failure). POSITIVES are subtle real issues that barely show — the harness must still find them. Together they keep precision AND recall under tension.",
+  "fixtures": [
+    {
+      "id": "neg-own-data-200", "kind": "negative", "class": "confidentiality",
+      "category": "data exposure", "keywords": ["returns the caller's own profile"],
+      "why": "A 200 returning the authenticated caller's OWN data is correct behavior, not a leak."
+    },
+    {
+      "id": "neg-generic-500", "kind": "negative", "class": "confidentiality",
+      "category": "information disclosure", "keywords": ["generic 500 error no stack trace"],
+      "why": "A generic 500 with no internal detail is not an info leak."
+    },
+    {
+      "id": "neg-encoded-reflection", "kind": "negative", "class": "client",
+      "category": "xss", "keywords": ["input reflected but html-entity encoded"],
+      "why": "Properly-encoded reflected input is not XSS."
+    },
+    {
+      "id": "neg-no-429-waf", "kind": "negative", "class": "availability",
+      "category": "rate limit", "keywords": ["no 429 observed but cdn/waf in front"],
+      "why": "Absence of a 429 is not absence of rate limiting (could be WAF/CDN) — not a finding."
+    },
+    {
+      "id": "pos-cross-tenant-in-list", "kind": "positive", "class": "tenancy",
+      "objective_id": "CONF-CROSS-TENANT-READ",
+      "category": "cross-tenant read", "keywords": ["other tenant", "paginated list", "tenantb email"],
+      "why": "Another tenant's record surfacing in a filtered list IS a cross-tenant leak, even if subtle."
+    },
+    {
+      "id": "pos-masked-but-leaked-key", "kind": "positive", "class": "confidentiality",
+      "objective_id": "CONF-EXCESSIVE-DATA",
+      "category": "secret exposure", "keywords": ["integration api_key returned unmasked"],
+      "why": "An integration credential returned in cleartext is a real secret leak."
+    },
+    {
+      "id": "neg-admin-403", "kind": "negative", "class": "authz",
+      "category": "function-level authz", "keywords": ["low-priv call to admin endpoint returns 403"],
+      "why": "A privileged endpoint that correctly denies a low-priv caller with 403 is the control WORKING, not a vuln."
+    },
+    {
+      "id": "neg-ssrf-allowlist-block", "kind": "negative", "class": "infra",
+      "category": "ssrf", "keywords": ["outbound fetch to internal ip blocked by allowlist"],
+      "why": "An outbound-fetch feature that refuses internal/metadata addresses via an allowlist is not SSRF."
+    },
+    {
+      "id": "neg-jwt-expired-rejected", "kind": "negative", "class": "crypto",
+      "category": "jwt", "keywords": ["expired jwt rejected with 401"],
+      "why": "Correctly rejecting an expired/forged token is the verifier WORKING, not a JWT flaw."
+    },
+    {
+      "id": "neg-revoked-session-401", "kind": "negative", "class": "auth",
+      "category": "session revocation", "keywords": ["revoked session token rejected after logout"],
+      "why": "A token that stops working after logout is correct revocation, not AUTH-SESSION-REVOKE."
+    },
+    {
+      "id": "neg-same-origin-redirect", "kind": "negative", "class": "client",
+      "category": "open redirect", "keywords": ["redirect only to same-origin relative path"],
+      "why": "A redirect restricted to same-origin relative paths is not an open redirect / not XSS."
+    },
+    {
+      "id": "pos-subtle-idor-numeric", "kind": "positive", "class": "authz",
+      "objective_id": "CONF-BOLA-CROSS-USER",
+      "category": "idor / bola", "keywords": ["sequential numeric id returns another user's record"],
+      "why": "Incrementing an object id and receiving another user's record IS BOLA, even when the status is a plain 200."
+    },
+    {
+      "id": "pos-redos-single-request", "kind": "positive", "class": "availability",
+      "objective_id": "AVAIL-REDOS",
+      "category": "redos", "keywords": ["single crafted input latency explosion regex"],
+      "why": "One crafted input causing a multi-second single-request latency spike is a real ReDoS, even without a flood."
+    }
+  ]
+}

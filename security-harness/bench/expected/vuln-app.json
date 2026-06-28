@@ -1,0 +1,18 @@
+{
+  "target": "examples/vuln-app",
+  "note": "Ground-truth weaknesses seeded in examples/vuln-app/server.js (SAST-detectable). `class` tags map to the Security Objective Catalog so the benchmark reports per-class recall (ROADMAP E10).",
+  "expected": [
+    {"id": "secret-aws", "class": "infra", "category": "hardcoded secret", "cwe": "CWE-798",
+     "keywords": ["aws", "access key", "AKIA", "secret"]},
+    {"id": "secret-github", "class": "infra", "category": "hardcoded secret", "cwe": "CWE-798",
+     "keywords": ["github", "token", "ghp_"]},
+    {"id": "sqli-search", "class": "infra", "category": "injection", "cwe": "CWE-89",
+     "keywords": ["sql injection", "sqli", "/search"]},
+    {"id": "cmdi-ping", "class": "infra", "category": "injection", "cwe": "CWE-78",
+     "keywords": ["command injection", "os command", "exec", "/ping"]},
+    {"id": "codei-calc", "class": "infra", "category": "injection", "cwe": "CWE-94",
+     "keywords": ["code injection", "eval", "/calc"]},
+    {"id": "bac-admin", "class": "authz", "category": "broken access control", "cwe": "CWE-862",
+     "keywords": ["authorization", "admin", "/admin/users", "missing auth"]}
+  ]
+}

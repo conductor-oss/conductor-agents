@@ -1,0 +1,16 @@
+# Browser worker image: playwright_crawl, playwright_login.
+# Uses the official Playwright image which ships Chromium + all system deps.
+FROM mcr.microsoft.com/playwright/python:v1.49.0-jammy
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && \
+    python -m playwright install chromium
+
+COPY . /app
+
+# Run only the browser tasks in this image.
+ENV WORKER_MODULES=browser
+CMD ["python", "main.py"]

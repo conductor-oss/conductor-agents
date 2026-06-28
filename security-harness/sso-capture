@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# security-conductor — capture an SSO browser session into an --id credential.
+#
+#   ./sso-capture <url> [--label NAME] [--scope h1,h2] [--out FILE] [--wait-seconds N]
+#
+# Opens a REAL browser; you complete the SSO login (Google/Okta/etc.); it captures the
+# resulting credential (sniffed bearer / localStorage JWT / session cookie) into
+# state/sessions/<label>.json and prints the ready `--id 'label=session:<file>'` line that
+# ./assess and ./scan consume. The harness never automates the IdP login itself.
+#
+# Example:
+#   ./sso-capture https://app.example.com --label userA
+#   ./assess https://app.example.com --authorized --id 'userA=session:state/sessions/userA.json'
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+PY="$ROOT/workers/.venv/bin/python"
+[ -x "$PY" ] || { echo "ERROR: worker venv missing ($PY). Run 'make venv' first." >&2; exit 1; }
+exec "$PY" "$ROOT/workers/sso_capture.py" "$@"

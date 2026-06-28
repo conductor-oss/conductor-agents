@@ -1,0 +1,133 @@
+{
+  "name": "surface",
+  "version": 1,
+  "description": "Shared attack-surface gathering: recon ∥ browser crawl ∥ API discovery ∥ optional SAST, plus an optional ReAct browser agent, merged into a single {findings, surface} model. Reused by the Understand phase of deep_assess (and available to security_scan).",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["base_url", "scope", "source_path", "login_url", "username", "password", "max_pages", "max_depth", "agent", "agent_steps", "auth"],
+  "tasks": [
+    {
+      "name": "surface_fork",
+      "taskReferenceName": "surface_fork",
+      "type": "FORK_JOIN",
+      "forkTasks": [
+        [
+          {
+            "name": "recon",
+            "taskReferenceName": "recon",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "base_url": "${workflow.input.base_url}",
+              "scope": "${workflow.input.scope}",
+              "auth": "${workflow.input.auth}"
+            }
+          }
+        ],
+        [
+          {
+            "name": "web_crawl",
+            "taskReferenceName": "crawl_sub",
+            "type": "SUB_WORKFLOW",
+            "subWorkflowParam": { "name": "web_crawl", "version": 1 },
+            "inputParameters": {
+              "base_url": "${workflow.input.base_url}",
+              "scope": "${workflow.input.scope}",
+              "login_url": "${workflow.input.login_url}",
+              "username": "${workflow.input.username}",
+              "password": "${workflow.input.password}",
+              "max_pages": "${workflow.input.max_pages}",
+              "max_depth": "${workflow.input.max_depth}",
+              "auth": "${workflow.input.auth}"
+            }
+          }
+        ],
+        [
+          {
+            "name": "api_discover",
+            "taskReferenceName": "api_discover",
+            "type": "SIMPLE",
+            "optional": true,
+            "inputParameters": {
+              "base_url": "${workflow.input.base_url}",
+              "scope": "${workflow.input.scope}",
+              "auth": "${workflow.input.auth}"
+            }
+          }
+        ],
+        [
+          {
+            "name": "sast_scan",
+            "taskReferenceName": "sast_sub",
+            "type": "SUB_WORKFLOW",
+            "optional": true,
+            "subWorkflowParam": { "name": "sast_scan", "version": 1 },
+            "inputParameters": { "source_path": "${workflow.input.source_path}" }
+          }
+        ]
+      ]
+    },
+    {
+      "name": "surface_join",
+      "taskReferenceName": "surface_join",
+      "type": "JOIN",
+      "joinOn": ["recon", "crawl_sub", "api_discover", "sast_sub"]
+    },
+    {
+      "name": "agent_gate",
+      "taskReferenceName": "agent_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "($.agent === true || $.agent === 'true') ? 'yes' : 'no'",
+      "inputParameters": { "agent": "${workflow.input.agent}" },
+      "decisionCases": {
+        "yes": [
+          {
+            "name": "browser_agent",
+            "taskReferenceName": "agent_sub",
+            "type": "SUB_WORKFLOW",
+            "optional": true,
+            "subWorkflowParam": { "name": "browser_agent", "version": 1 },
+            "inputParameters": {
+              "base_url": "${workflow.input.base_url}",
+              "scope": "${workflow.input.scope}",
+              "goal": "Explore the application to discover pages, forms, and functionality a simple link crawler would miss (menus, account/admin areas, multi-step flows).",
+              "max_steps": "${workflow.input.agent_steps}",
+              "storage_state": null,
+              "auth": "${workflow.input.auth}",
+              "llm_provider": "${workflow.input.llm_provider}",
+              "model": "${workflow.input.model}"
+            }
+          }
+        ]
+      },
+      "defaultCase": [
+        { "name": "no_agent", "taskReferenceName": "no_agent", "type": "NOOP" }
+      ]
+    },
+    {
+      "name": "merge_surface",
+      "taskReferenceName": "merge_surface",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "recon": "${recon.output}",
+        "crawl": "${crawl_sub.output}",
+        "agent": "${agent_sub.output}",
+        "sast": "${sast_sub.output}",
+        "api": "${api_discover.output}",
+        "base_url": "${workflow.input.base_url}",
+        "queryExpression": ". as $in | ((($in.sast.routes) // []) | map({url: ($in.base_url + .path), method: .method})) as $sastep | ((($in.api.endpoints) // []) | map({url: .url, method: .method})) as $apiep | { findings: (($in.recon.findings // []) + ($in.crawl.findings // []) + ($in.sast.findings // []) + ($in.api.findings // [])), surface: { meta: ($in.recon.meta // {}), urls: ((($in.crawl.surface.urls // []) + ($in.agent.discovered_urls // []) + ($sastep | map(.url)) + ($apiep | map(.url))) | unique), forms: ($in.crawl.surface.forms // []), endpoints: ((($in.crawl.surface.endpoints // []) + $apiep + $sastep) | unique), params: ($in.crawl.surface.params // []) }, crawl_meta: ($in.crawl.meta // {}), agent_steps: ($in.agent.steps // 0), source_routes: (($in.sast.routes // []) | length), api_specs: (($in.api.meta.specs // []) | length) }"
+      }
+    }
+  ],
+  "outputParameters": {
+    "findings": "${merge_surface.output.result.findings}",
+    "surface": "${merge_surface.output.result.surface}",
+    "crawl_meta": "${merge_surface.output.result.crawl_meta}",
+    "agent_steps": "${merge_surface.output.result.agent_steps}",
+    "source_routes": "${merge_surface.output.result.source_routes}",
+    "api_specs": "${merge_surface.output.result.api_specs}",
+    "pages_crawled": "${crawl_sub.output.meta.pages_crawled}"
+  }
+}

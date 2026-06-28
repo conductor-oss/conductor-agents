@@ -1,0 +1,104 @@
+# security-conductor — local infrastructure.
+#
+#   docker compose up -d juice-shop          # safe, deliberately-vulnerable test target
+#   docker compose --profile workers up -d   # also run the Dockerized base worker
+#
+# The Conductor server itself runs on the host via `conductor server start`
+# (see the Makefile `server` target), not here.
+services:
+  juice-shop:
+    image: bkimminich/juice-shop:latest
+    container_name: sc-juice-shop
+    ports:
+      - "3001:3000"
+    restart: unless-stopped
+
+  # Dockerized worker. In Phase 0 the base worker is light (pure Python) and is
+  # usually run on the host (`make workers`) so it can read the PDF artifact and
+  # write ./reports directly. The Docker path is the home for the heavier
+  # security-tool workers (nuclei/sqlmap/semgrep/...) added in later phases.
+  base-worker:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.base
+    container_name: sc-base-worker
+    environment:
+      CONDUCTOR_SERVER_URL: ${CONDUCTOR_SERVER_URL_IN_DOCKER:-http://host.docker.internal:8080/api}
+      REPORTS_DIR: /app/reports
+      WORKER_MODULES: ${WORKER_MODULES:-recon}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./reports:/app/reports
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    profiles: ["workers"]
+
+  # DAST worker with full tooling (nuclei, sqlmap, dalfox, ffuf). This is the
+  # Dockerized home for the active scanners. SC_IN_DOCKER rewrites localhost
+  # targets to host.docker.internal so it can reach a host-mapped target.
+  dast-worker:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.dast
+    container_name: sc-dast-worker
+    environment:
+      CONDUCTOR_SERVER_URL: ${CONDUCTOR_SERVER_URL_IN_DOCKER:-http://host.docker.internal:8080/api}
+      SC_IN_DOCKER: "1"
+      WORKER_MODULES: dast
+      REPORTS_DIR: /app/reports
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./reports:/app/reports
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    profiles: ["dast"]
+
+  # pgvector — vector store for RAG-grounded remediation (optional).
+  # Start with `make rag-db`; then restart the server with the vectordb env (make server-rag).
+  pgvector:
+    image: pgvector/pgvector:pg14
+    container_name: sc-pgvector
+    environment:
+      POSTGRES_USER: conductor
+      POSTGRES_PASSWORD: conductor
+      POSTGRES_DB: vectordb
+    ports:
+      - "5433:5432"
+    restart: unless-stopped
+    profiles: ["rag"]
+
+  # SAST worker with full tooling (semgrep, gitleaks, trivy). Source is mounted
+  # read-only at its SAME absolute host path (SC_SOURCE_ROOT) so an absolute
+  # --source path resolves identically inside the container. Defaults to the
+  # repo (covers examples/); set SC_SOURCE_ROOT to a parent dir for code elsewhere.
+  sast-worker:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.sast
+    container_name: sc-sast-worker
+    environment:
+      CONDUCTOR_SERVER_URL: ${CONDUCTOR_SERVER_URL_IN_DOCKER:-http://host.docker.internal:8080/api}
+      WORKER_MODULES: sast
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ${SC_SOURCE_ROOT:-/tmp}:${SC_SOURCE_ROOT:-/tmp}:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    profiles: ["sast"]
+
+  # Sandbox image for the code_exec worker (deep-pentest agent's "hands"). This
+  # service exists only to BUILD/tag the image (sc-codeexec:latest); it is not a
+  # long-running worker. The code_exec worker runs on the HOST (it needs the Docker
+  # socket to spawn one hardened, ephemeral `docker run --rm` per agent step).
+  #   docker compose --profile codeexec build code-exec-image
+  code-exec-image:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile.codeexec
+    image: sc-codeexec:latest
+    container_name: sc-codeexec-build
+    command: ["python", "-c", "print('sc-codeexec image built; the code_exec worker runs on the host and spawns this image per step')"]
+    profiles: ["codeexec"]

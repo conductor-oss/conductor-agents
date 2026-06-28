@@ -1,0 +1,68 @@
+{
+  "name": "reflect_pass",
+  "version": 1,
+  "description": "Reflection critic between deep-assess passes: reads accumulated state (app model, documented invariants, confirmed findings, tried hypotheses, last-pass counts) and decides whether to keep going and what the next pass should focus on. Its own sub-workflow so register.sh injects SYSTEM_PROMPT_REFLECT into the top-level reflect task.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["app_model", "all_confirmed", "all_blind", "tried_signatures", "gaps", "coverage", "docs_digest", "new_confirmed_count", "new_hypo_count", "operation_ledger", "feature_exercise", "chaining_context", "cve_leads", "model", "think_analysis", "analysis_temp"],
+  "tasks": [
+    {
+      "name": "prep_reflect",
+      "taskReferenceName": "prep_reflect",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "app_model": "${workflow.input.app_model}",
+        "all_confirmed": "${workflow.input.all_confirmed}",
+        "all_blind": "${workflow.input.all_blind}",
+        "tried": "${workflow.input.tried_signatures}",
+        "docs_digest": "${workflow.input.docs_digest}",
+        "gaps": "${workflow.input.gaps}",
+        "coverage": "${workflow.input.coverage}",
+        "ncc": "${workflow.input.new_confirmed_count}",
+        "nhc": "${workflow.input.new_hypo_count}",
+        "operation_ledger": "${workflow.input.operation_ledger}",
+        "feature_exercise": "${workflow.input.feature_exercise}",
+        "chaining_context": "${workflow.input.chaining_context}",
+        "cve_leads": "${workflow.input.cve_leads}",
+        "queryExpression": "{ app_model: { purpose: (.app_model.purpose // \"\"), sensitive_operations: (.app_model.sensitive_operations // []), feature_exploitation_playbook: (.app_model.feature_exploitation_playbook // {}) }, documented_invariants: ([ (.docs_digest.documented_invariants // [])[] | (.invariant // .) ]), confirmed_so_far: ([ (.all_confirmed // [])[] | (.title // \"\") ]), blind_leads: ([ (.all_blind // [])[] | (.title // \"\") ]), tried_count: ((.tried // []) | length), new_confirmed_count: (.ncc // 0), new_hypo_count: (.nhc // 0), gaps: (.gaps // []), coverage_gaps: ((.coverage.untested_keys // [])), coverage_summary: ((.coverage.by_status // {})), feature_exercise: (.feature_exercise // {}), operation_ledger: (.operation_ledger // []), chaining_context: (.chaining_context // {}), version_matched_cve_leads: (.cve_leads // []) } | tojson"
+      }
+    },
+    {
+      "name": "reflect",
+      "taskReferenceName": "reflect",
+      "type": "LLM_CHAT_COMPLETE",
+      "optional": true,
+      "retryCount": 2,
+      "retryDelaySeconds": 10,
+      "inputParameters": {
+        "llmProvider": "${workflow.input.llm_provider}",
+        "model": "${workflow.input.model}",
+        "temperature": "${workflow.input.analysis_temp}",
+        "maxTokens": 8000,
+        "thinkingTokenLimit": "${workflow.input.think_analysis}",
+        "reasoningSummary": "detailed",
+        "jsonOutput": false,
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_REFLECT" },
+          { "role": "user", "message": "Accumulated assessment state (JSON):\n${prep_reflect.output.result}" }
+        ]
+      }
+    },
+    {
+      "name": "parse_reflect",
+      "taskReferenceName": "parse_reflect",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "raw": "${reflect.output.result}",
+        "queryExpression": ".raw as $r | (if ($r|type) == \"object\" then $r else (try ($r[ ($r|index(\"{\")) : (($r|rindex(\"}\"))+1) ] | fromjson) catch {keep_going: false, focus_directive: \"\", new_gaps: []}) end)"
+      }
+    }
+  ],
+  "outputParameters": {
+    "focus_directive": "${parse_reflect.output.result.focus_directive}",
+    "keep_going": "${parse_reflect.output.result.keep_going}",
+    "new_gaps": "${parse_reflect.output.result.new_gaps}"
+  }
+}

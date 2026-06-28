@@ -1,0 +1,11 @@
+{
+  "name": "load_probe",
+  "description": "Resilience probe (ROADMAP E3): bounded ramped concurrency at one endpoint measuring the latency/error knee, self-aborting on degradation. Gated on the manifest 'resilience' class. Never floods.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 120,
+  "responseTimeoutSeconds": 90,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

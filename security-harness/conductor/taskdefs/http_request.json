@@ -1,0 +1,11 @@
+{
+  "name": "http_request",
+  "description": "Generic scope-enforced HTTP request executor for the pentest agent (any method/url/headers/body, chosen identity); returns redacted req + full resp as evidence.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 90,
+  "responseTimeoutSeconds": 60,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

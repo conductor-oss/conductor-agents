@@ -1,0 +1,8 @@
+# Keep the host virtualenv, caches, and bytecode out of worker images.
+.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+*.log

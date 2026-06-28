@@ -1,0 +1,233 @@
+_doc: "Exploitation TRADECRAFT as tunable data (\xA719 HC ratify-surface): the deepen technique ladders + the injection-classifier\
+  \ signatures. Overlays the in-code defaults (workers/common/deepen.py, features.py). HC may propose ratify-gated edits here\
+  \ (e.g. add a DB-error signature, add a ladder rung); never auto-applied."
+ladders:
+  sqli:
+  - family: error-based
+    idea: Break the query with a quote/type mismatch and read the DB error reflected in the response (or a 500 with a SQL
+      fragment).
+  - family: boolean-blind
+    idea: Inject AND 1=1 vs AND 1=2 and diff a stable response field (length/row/flag) to prove the predicate is evaluated.
+  - family: time-blind
+    idea: Conditional SLEEP/pg_sleep/WAITFOR/dbms_pipe; measure the latency delta vs a control to prove blind execution.
+  - family: union-based
+    idea: Once column count/types are known, UNION SELECT to read version()/current_user/a sibling table.
+  - family: stacked
+    idea: Stacked queries (semicolon) for a write/DDL where the driver allows it (MSSQL/Postgres multi-statement).
+  - family: oob-exfil
+    idea: Out-of-band exfil (load_file/UTL_HTTP/xp_dirtree/DNS) to an sc.oob() canary -- decisive for fully-blind sinks.
+  - family: waf-bypass
+    idea: Encoding/case/inline-comment/whitespace/CHAR() variants to defeat input filtering, then re-run the strongest rung
+      above.
+  js-sandbox-escape:
+  - family: direct-eval
+    idea: Confirm the expression is evaluated with a DISTINCTIVE arithmetic oracle (1337*1337 -> 1787569, not 7*7=49 which
+      occurs naturally) echoed back through the feature's output.
+  - family: global-recon
+    idea: Enumerate reachable bindings/globals from the script context (this, typeof Java, Polyglot, engine, load, quit) to
+      map the escape surface.
+  - family: reflection-breakout
+    idea: 'Java reflection from JS: java.lang.Runtime.getRuntime().exec / java.lang.ProcessBuilder, or Java.type(''java.lang.Runtime'')
+      on Nashorn/GraalJS host access.'
+  - family: constructor-chain
+    idea: Gadget via ''.getClass().forName(...) / the Function constructor / prototype pollution to reach a host class the
+      binding didn't expose directly.
+  - family: engine-api
+    idea: Abuse host objects exposed TO the engine (Polyglot Context, bindings, load()/loadWithNewGlobal, ScriptEngineManager)
+      for interop the policy forgot to close.
+  - family: rce-confirm
+    idea: Execute a benign command whose side effect hits the sc.oob() canary (curl/nslookup/wget the canary URL) -- decisive
+      proof of host RCE.
+  - family: fs-read
+    idea: Read a server file via host interop (java.nio.file.Files / FileReader on /proc/self/environ, app config, a secret)
+      and surface a distinctive value.
+  - family: encoding-bypass
+    idea: Unicode/charCode/String.fromCharCode/eval-string construction to bypass keyword filtering, then re-run reflection-breakout.
+  xss:
+  - family: reflect-probe
+    idea: Confirm the input reflects into the response and in WHICH context (HTML body / attribute / JS string / URL) -- send
+      a unique marker and locate it unencoded.
+  - family: context-breakout
+    idea: 'Break out of the reflection context: close the tag/attribute/quote/script as needed so an injected element/handler
+      actually parses (e.g. "><svg/onload=...>, ''-alert()-'', </script><script>).'
+  - family: filter-bypass
+    idea: 'Defeat encoding/sanitisation: event-handler variants, case/whitespace, HTML-entity/unicode, svg/math, javascript:
+      URIs, mutation-XSS.'
+  - family: stored-xss
+    idea: Persist the payload as identity A (profile name/comment/label/template), then RETRIEVE the resource as a DIFFERENT
+      identity/victim view -- a stored, cross-user hit is the high-severity prize.
+  - family: dom-sink
+    idea: If the value flows into a client-side sink (innerHTML, location, eval, template), craft a DOM-XSS that fires without
+      a server round-trip.
+  - family: oob-exfil
+    idea: Make the executed script beacon to an sc.oob() canary (fetch/img) -- a callback from a victim/admin context is decisive
+      proof the script ran out-of-band.
+  traversal:
+  - family: dotdot
+    idea: Climb out of the intended directory with ../ sequences toward a known file (/etc/passwd, app config, the BPMN/import
+      base dir).
+  - family: encoding-bypass
+    idea: 'Encoded traversal to defeat filters: %2e%2e%2f, double-encode %252e, ..%2f, unicode, backslash, leading-slash stripping.'
+  - family: absolute-path
+    idea: Supply an absolute path or a file:// URL where the field is treated as a path/URL.
+  - family: known-file
+    idea: Read a high-signal file and surface a distinctive line (root:x:0:0 from /etc/passwd, a secret from app config) as
+      proof.
+  - family: null-suffix
+    idea: Null-byte / suffix tricks to bypass an appended extension (file%00.png, path?.json), then re-run known-file.
+  - family: oob-exfil
+    idea: If reads are blind, confirm via an OOB-fetch of the traversed path or a timing/error oracle.
+  injection:
+  - family: syntactic
+    idea: Canonical payload for the most likely engine (SpEL ${...}, OGNL, Velocity, shell `;id`, SSTI {{1337*1337}} ->
+      distinctive product 1787569).
+  - family: alternate-engine
+    idea: If the canonical engine is wrong, try the other plausible ones -- the same field may feed SpEL OR OGNL OR a JS evaluator.
+  - family: reflection-breakout
+    idea: 'Pivot the expression engine to the host runtime: T(java.lang.Runtime)/ProcessBuilder/Runtime.exec for command execution.'
+  - family: encoding-bypass
+    idea: Encoding/escaping/concatenation variants to defeat filtering, then re-run the strongest rung.
+  - family: gadget-chain
+    idea: If a sink accepts serialized/structured input, a deserialization/gadget chain (ysoserial-style) toward exec.
+  - family: oob-exfil
+    idea: Blind confirmation via an sc.oob() canary the executed payload must fetch.
+  ssrf:
+  - family: canonical-internal
+    idea: "Point the outbound-fetch field (HTTP-task uri / webhook / import URL) at the canonical internal targets: http://127.0.0.1:8080/actuator/env, http://localhost:8080/actuator/health, http://169.254.169.254/latest/meta-data/. Establish the baseline: which return the cluster egress block (403 'blocked in this cluster') vs a backend response."
+  - family: loopback-forms
+    idea: "When 127.0.0.1/localhost are blocked, walk EVERY loopback representation: [::1], [0:0:0:0:0:0:0:1], 0.0.0.0, the bare 0, 127.1, 127.0.0.1.nip.io, a trailing-dot 127.0.0.1. — and the same paths on an internal port (8080 actuator, 6379 redis, 9090 metrics)."
+  - family: numeric-encoding
+    idea: "Numeric/encoded forms of the internal IP that string-match filters miss: decimal 2130706433 (127.0.0.1) / 2852039166 (169.254.169.254), hex 0x7f000001 / 0xA9FEA9FE, octal 0177.0.0.1, mixed, zero-padded. (Note: some resolvers reject octal/hex — record which the platform's HTTP client accepts.)"
+  - family: ipv6-bypass
+    idea: "IPv6 literals the IPv4-oriented filter ignores: the loopback [::1] (the decisive one when v4 is blocked), IPv4-mapped [::ffff:127.0.0.1] / [::ffff:169.254.169.254] / [::ffff:a9fe:a9fe], and the AWS IPv6 IMDS [fd00:ec2::254]. This is the netty-handler IpSubnetFilterRule class of bypass."
+  - family: metadata-pivot
+    idea: "Walk the full cloud-metadata corpus (substrates pack) with the REQUIRED header: AWS 169.254.169.254 + [fd00:ec2::254] (IMDSv2 PUT-token dance first), GCP metadata.google.internal (Metadata-Flavor: Google), Azure (Metadata: true), Alibaba 100.100.100.200 — read iam/security-credentials, instance-identity, the SA token."
+  - family: scheme-userinfo-redirect
+    idea: "Defeat host-based filters by structure, not address: a userinfo prefix (http://allowed-host@[::1]:8080/), an open-redirector or attacker page that 30x-redirects to the internal target, and alternate schemes the fetcher honours (gopher:// for raw TCP to redis, dict://, file:// for local read)."
+  - family: internal-port-scan
+    idea: "Once ANY internal reach lands, enumerate the internal topology: probe internal ports/paths (8080 /actuator/* /api-docs /api/admin, 6379 redis PING, 9090, k8s 6443/10250) and surface a distinctive internal-only body (org/tenant data, the internal OpenAPI spec, a config value) as the impact proof."
+  - family: oob-confirm
+    idea: "For a blind fetch (no response body returned), plant an sc.oob() canary as the target and trigger the flow — an inbound hit proves reach. In-band, the decisive oracle is the DIFFERENTIAL: the same internal target returns the cluster-block 403 for blocked forms but a backend response (2xx internal content, or a backend-generated 401/INVALID_TOKEN that proves the request traversed) for the bypass form."
+sql_signatures:
+- sql syntax
+- sqlstate
+- ora-0
+- ora-1
+- you have an error in your sql
+- unterminated quoted string
+- unclosed quotation
+- psqlexception
+- sqliteexception
+- sqlite_error
+- sqlite3
+- sqliteerror
+- sequelize
+- queryfailederror
+- sqlexception
+- odbc
+- jdbc
+- syntaxerrorexception
+- near "
+- mysqlsyntaxerror
+- syntax error at or near
+- 'warning: mysql'
+- syntax error
+# SSRF internal-target / egress-bypass CORPUS (deepen.INTERNAL_TARGET_CORPUS). The complete set of
+# internal-target representations the ssrf ladder walks every run, so a form like the IPv6 loopback
+# [::1] is never missed by ad-hoc recall. HC may propose ratify-gated additions when the ladder is
+# exhausted without a reach (e.g. a newly-seen encoding).
+egress_bypass:
+- 127.0.0.1
+- localhost
+- "[::1]"
+- "[0:0:0:0:0:0:0:1]"
+- 0.0.0.0
+- "0"
+- 127.1
+- 127.0.0.1.nip.io
+- "2130706433"
+- 0x7f000001
+- 0177.0.0.1
+- "[::ffff:127.0.0.1]"
+- 169.254.169.254
+- "[::ffff:169.254.169.254]"
+- "[::ffff:a9fe:a9fe]"
+- "[fd00:ec2::254]"
+- "2852039166"
+- 0xa9fea9fe
+- metadata.google.internal
+- 100.100.100.200
+# SSRF internal-reach ORACLE signatures (features._EGRESS_BLOCK / _INTERNAL_TARGET / _INTERNAL_REACH).
+# egress_block = the cluster denylist 403 (BLOCKED, not confirmation); internal_target = proof a form
+# inside was addressed; internal_reach = a SERVER-emitted signal the request reached the backend
+# (health/actuator/IMDS body, internal OpenAPI, or a backend auth error proving traversal).
+egress_block_signatures:
+- blocked in this cluster
+- calls to this domain are blocked
+internal_target_signatures:
+- 127.0.0.1
+- localhost
+- "[::1]"
+- 0:0:0:0:0:0:0:1
+- 169.254.169.254
+- "[fd00:ec2::254]"
+- "[::ffff:"
+- metadata.google.internal
+- 100.100.100.200
+- actuator
+- computemetadata
+- kubernetes.default
+- 2130706433
+- 0x7f
+internal_reach_signatures:
+- '"status":"up"'
+- '"status": "up"'
+- activeprofiles
+- propertysources
+- ami-id
+- instance-identity
+- iam/security-credentials
+- accesskeyid
+- metadata-flavor
+- computemetadata
+- invalid_token
+- token cannot be null
+- '"openapi"'
+- '"swagger"'
+file_signatures:
+- no such file
+- filenotfound
+- java.io.filenotfoundexception
+- enoent
+- failed to open stream
+- could not open
+- is a directory
+common_query_params:
+- q
+- query
+- search
+- s
+- term
+- keyword
+- filter
+- id
+- name
+- title
+- file
+- filename
+- path
+- dir
+- url
+- uri
+- redirect
+- return
+- next
+- callback
+- page
+- sort
+- order
+- category
+- lang
+- view
+- template
+- include

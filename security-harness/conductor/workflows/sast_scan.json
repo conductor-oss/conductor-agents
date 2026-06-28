@@ -1,0 +1,70 @@
+{
+  "name": "sast_scan",
+  "version": 1,
+  "description": "Static analysis of provided source: semgrep + gitleaks + trivy in parallel, plus framework-agnostic route extraction. Returns SAST findings and the routes used to seed the live scan.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 1900,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["source_path"],
+  "tasks": [
+    {
+      "name": "sast_fork",
+      "taskReferenceName": "sast_fork",
+      "type": "FORK_JOIN",
+      "forkTasks": [
+        [
+          {
+            "name": "sast_semgrep",
+            "taskReferenceName": "semgrep",
+            "type": "SIMPLE",
+            "inputParameters": { "source_path": "${workflow.input.source_path}" }
+          }
+        ],
+        [
+          {
+            "name": "sast_secrets",
+            "taskReferenceName": "secrets",
+            "type": "SIMPLE",
+            "inputParameters": { "source_path": "${workflow.input.source_path}" }
+          }
+        ],
+        [
+          {
+            "name": "sast_deps",
+            "taskReferenceName": "deps",
+            "type": "SIMPLE",
+            "inputParameters": { "source_path": "${workflow.input.source_path}" }
+          }
+        ],
+        [
+          {
+            "name": "route_extract",
+            "taskReferenceName": "routes",
+            "type": "SIMPLE",
+            "inputParameters": { "source_path": "${workflow.input.source_path}" }
+          }
+        ]
+      ]
+    },
+    {
+      "name": "sast_join",
+      "taskReferenceName": "sast_join",
+      "type": "JOIN",
+      "joinOn": ["semgrep", "secrets", "deps", "routes"]
+    },
+    {
+      "name": "collect_sast",
+      "taskReferenceName": "collect_sast",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "join": "${sast_join.output}",
+        "queryExpression": "{ findings: ((.join.semgrep.findings // []) + (.join.secrets.findings // []) + (.join.deps.findings // [])), routes: (.join.routes.routes // []) }"
+      }
+    }
+  ],
+  "outputParameters": {
+    "findings": "${collect_sast.output.result.findings}",
+    "routes": "${collect_sast.output.result.routes}"
+  }
+}

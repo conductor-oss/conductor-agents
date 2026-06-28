@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# One quality bar across all harnesses. Add a harness = add it to the matrix below; each entry
+# runs that harness's own lint + unit tests + JSON validation inside its directory.
+jobs:
+  test:
+    name: lint + unit tests (${{ matrix.harness }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        harness: [security-harness]
+    defaults:
+      run:
+        working-directory: ${{ matrix.harness }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Fail fast on malformed DAG / profile / benchmark JSON (the edits most likely to break a run).
+      - name: Validate workflow & config JSON
+        run: |
+          jq -e . conductor/workflows/*.json conductor/taskdefs/*.json \
+                  profiles/*.json bench/targets.json bench/expected/*.json > /dev/null
+          echo "all JSON valid"
+
+      - name: Lint (ruff)
+        run: make lint
+
+      - name: Unit tests
+        run: make test-ci
+
+      # Serverless regression guard for the §19 hill-climbing write-back loop.
+      - name: HC write-back selftest
+        run: workers/.venv/bin/python bench/hc_writeback.py --selftest

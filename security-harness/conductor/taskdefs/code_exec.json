@@ -1,0 +1,11 @@
+{
+  "name": "code_exec",
+  "description": "Run agent-authored Python in a hardened, ephemeral Docker sandbox (sc-codeexec image) so the deep-pentest agent can operate the target product end to end (drive documented multi-step flows via REST/SDK, capture object ids, plant OOB canaries) and abuse the resulting state. Scope-enforced via the sc helper; created resources ledgered for cleanup. retryCount 0: re-running side-effecting code would duplicate created resources.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 360,
+  "responseTimeoutSeconds": 300,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

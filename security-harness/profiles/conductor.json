@@ -1,0 +1,56 @@
+{
+  "name": "conductor",
+  "description": "Optional TARGET profile for Orkes Conductor / Netflix Conductor. The harness engine is fully generic without it; this file supplies platform-specific HINTS so testing and cleanup are sharper against a known Conductor target. Select with `--profile conductor`.",
+  "documentation": [
+    "https://orkes.io/content/"
+  ],
+  "auth": {
+    "header": "X-Authorization",
+    "scheme": "",
+    "token_exchange": { "body": { "keyId": "$KEY", "keySecret": "$SECRET" }, "token_field": "token" },
+    "probe_paths": [
+      "/api/metadata/taskdefs",
+      "/api/applications",
+      "/api/secrets",
+      "/api/workflow/search?size=1"
+    ]
+  },
+  "cleanup_families": [
+    { "type": "workflow_def", "list": "/api/metadata/workflow", "name_key": "name", "delete": "/api/metadata/workflow/{name}/{version}", "defaults": { "version": 1 } },
+    { "type": "secret",      "list": "/api/secrets",            "name_key": null,   "delete": "/api/secrets/{name}" },
+    { "type": "env_var",     "list": "/api/environment",        "name_key": null,   "delete": "/api/environment/{name}" },
+    { "type": "schedule",    "list": "/api/scheduler/schedules","name_key": "name", "delete": "/api/scheduler/schedules/{name}" },
+    { "type": "task_def",    "list": "/api/metadata/taskdefs",  "name_key": "name", "delete": "/api/metadata/taskdefs/{name}" },
+    { "type": "application", "list": "/api/applications",       "name_key": "name", "id_key": "id", "delete": "/api/applications/{id}" }
+  ],
+  "archetype": "workflow-orchestration-platform",
+  "feature_exploitation_playbook": {
+    "_doc": "The product's PRIMARY feature IS the attack surface (design §13-§17). Exploiting Conductor means DEFINING and RUNNING workflows whose task types are the weapons — not just calling the management API. The exploit agent MUST drive these via run_code (sc.api) and confirm via the OOB collaborator or task output. Register a def at POST /api/metadata/workflow, START it at POST /api/workflow/{name}, poll at GET /api/workflow/{executionId}.",
+    "define_and_run": {
+      "register_def": "POST /api/metadata/workflow",
+      "start_execution": "POST /api/workflow/{name}",
+      "poll_execution": "GET /api/workflow/{executionId}?includeTasks=true",
+      "tag_every_object": "sc.tag('workflow') / sc.created(...) so it is identifiable + auto-cleaned"
+    },
+    "primitives": [
+      { "task_type": "HTTP", "abuse": "SSRF / internal reach", "objective": "INFRA-SSRF",
+        "how": "define a workflow with an HTTP task whose uri = sc.oob('ssrf') or the cloud metadata endpoint (169.254.169.254 + provider header); RUN it; a collaborator inbound hit or returned metadata body CONFIRMS. Config-only (creating a gateway/queue config) does NOT confirm — you must RUN the flow." },
+      { "task_type": "INLINE", "abuse": "expression injection / RCE", "objective": "INFRA-RCE-INJECTION",
+        "how": "define a workflow with an INLINE (JavaScript) task or a JQ/expression that breaks out (e.g. accesses globals / executes); RUN it; the task output proves evaluation/exec." },
+      { "task_type": "SIMPLE/worker", "abuse": "task-queue hijack / poisoning", "objective": "INTEG-WORKFLOW-STATE",
+        "how": "poll another tenant's task queue or push a crafted task result; confirm cross-effect." },
+      { "task_type": "SUB_WORKFLOW / workflow & task reads", "abuse": "cross-tenant data reach", "objective": "CONF-CROSS-TENANT-READ",
+        "how": "as tenantA, reference or read a workflow/execution/secret created by tenantB (GET /api/workflow/{id}, secret refs in a def); CONFIRM only by reading tenantB's distinctive data." },
+      { "task_type": "EVENT / WEBHOOK", "abuse": "SSRF / injection via eventing", "objective": "INFRA-SSRF",
+        "how": "create an event handler / webhook whose sink is sc.oob(); trigger it; inbound hit confirms." },
+      { "task_type": "secret references in a def", "abuse": "secret exposure", "objective": "INFRA-SECRET-SURFACE",
+        "how": "reference ${workflow.secrets.X} in a def and run it so the value surfaces in task input/output you can read." }
+    ],
+    "must_exercise": ["INFRA-SSRF", "INFRA-RCE-INJECTION", "CONF-CROSS-TENANT-READ"]
+  },
+  "feature_operations": [
+    { "type": "workflow_registered", "method": "POST", "path": "/api/metadata/workflow", "capture": { "name_field": "name", "task_types": true } },
+    { "type": "workflow_started", "method": "POST", "path_regex": "/api/workflow/(?:execute/)?([^/]+)(?:/[^/]+)?", "capture": { "name_group": 1, "execution_id_response": true } },
+    { "type": "workflow_polled", "method": "GET", "path_regex": "/api/workflow/([^/]+)", "capture": { "execution_id_group": 1 } }
+  ]
+}

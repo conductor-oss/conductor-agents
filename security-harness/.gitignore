@@ -1,0 +1,36 @@
+# Scan artifacts
+/reports/*
+!/reports/.gitkeep
+
+# Persistent cross-run knowledge store
+/state/
+
+# Runtime state written by workers — per-target dossiers/traces, captured sessions, OOB tunnel
+# state. MAY CONTAIN LIVE TOKENS / PII from real targets; never commit.
+/workers/state/
+/workers/oob/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Env / secrets
+.env
+*.local
+
+# Conductor local-server embedded DB (created in cwd when the server starts here)
+c123.db*
+*.db
+*.db-shm
+*.db-wal
+
+# OS
+.DS_Store
+
+# Scratch
+.scratch/

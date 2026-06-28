@@ -1,0 +1,13 @@
+{
+  "name": "recon",
+  "description": "Passive reconnaissance: security headers, cookie flags, info disclosure, robots/sitemap, transport.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 10,
+  "timeoutSeconds": 300,
+  "responseTimeoutSeconds": 120,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

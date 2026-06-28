@@ -1,0 +1,11 @@
+{
+  "name": "build_feature_inventory",
+  "description": "Enumerate every input-bearing feature (surface + app_model + docs recipes) into a prioritised inventory — the denominator for the feature-complete exploitation sweep.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 120,
+  "responseTimeoutSeconds": 90,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "ALERT_ONLY",
+  "concurrentExecLimit": 0
+}

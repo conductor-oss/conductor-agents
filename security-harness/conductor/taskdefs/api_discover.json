@@ -1,0 +1,11 @@
+{
+  "name": "api_discover",
+  "description": "Probe for exposed OpenAPI/Swagger/GraphQL and extract declared endpoints.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "timeoutSeconds": 240,
+  "responseTimeoutSeconds": 180,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

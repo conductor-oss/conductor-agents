@@ -1,0 +1,13 @@
+{
+  "name": "memory_save",
+  "description": "Persist this run's confirmed/rejected/blind findings, tried-hypothesis signatures, gaps and coverage into the cross-run knowledge store keyed by deployment fingerprint (spec 13). Applies release-triggered invalidation; appends a run history record.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 120,
+  "responseTimeoutSeconds": 60,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

@@ -1,0 +1,231 @@
+{
+  "name": "explore_agent",
+  "version": 1,
+  "description": "Understanding agent: an LLM probes the live app one request at a time (http_request, multi-identity) to deepen the application model. Returns the observations/facts it learned (features, roles, sensitive ops, credentials, attack surface). System prompt injected from prompts/explore.md.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["base_url", "scope", "identities", "app_model", "surface", "max_steps", "docs_namespace", "docs_index", "docs_available", "focus_directive", "prior_confirmed", "manifest", "capability_max", "personas", "embed_provider", "embed_model"],
+  "variables": { "messages": [], "done": "", "notes": [], "browser_url": "", "browser_state": null },
+  "tasks": [
+    {
+      "name": "build_init",
+      "taskReferenceName": "build_init",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "app_model": "${workflow.input.app_model}",
+        "surface": "${workflow.input.surface}",
+        "base_url": "${workflow.input.base_url}",
+        "identities": "${workflow.input.identities}",
+        "docs_available": "${workflow.input.docs_available}",
+        "focus_directive": "${workflow.input.focus_directive}",
+        "prior_confirmed": "${workflow.input.prior_confirmed}",
+        "queryExpression": "{ msg: (\"Target: \" + (.base_url // \"\") + \"\\nIdentities available: \" + ((.identities // {} | keys) | join(\", \")) + (if (.docs_available == true or .docs_available == \"true\") then \"\\nDocs are indexed: you MAY use {\\\"action\\\":{\\\"type\\\":\\\"search_docs\\\",\\\"query\\\":\\\"...\\\"}} to look up how a feature is meant to be used.\" else \"\" end) + (if ((.focus_directive // \"\") | length) > 0 then (\"\\n\\nFOCUS THIS PASS ON:\\n\" + .focus_directive) else \"\" end) + (if ((.prior_confirmed // []) | length) > 0 then (\"\\n\\nAlready-confirmed findings (do not re-confirm; look for NEW/deeper issues):\\n\" + ([(.prior_confirmed // [])[] | (.title // \"\")] | join(\"; \"))) else \"\" end) + \"\\n\\nInitial application model:\\n\" + (.app_model | tojson) + \"\\n\\nKnown endpoints (sample):\\n\" + (((.surface.endpoints // [])[0:60]) | tojson) + \"\\n\\nProbe the app to deepen this model. Decide your first action.\") }"
+      }
+    },
+    {
+      "name": "explore_init",
+      "taskReferenceName": "explore_init",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_EXPLORE" },
+          { "role": "user", "message": "${build_init.output.result.msg}" }
+        ],
+        "done": "",
+        "notes": []
+      }
+    },
+    {
+      "name": "explore_loop",
+      "taskReferenceName": "explore_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ return $.explore_loop['iteration'] < $.max_steps && $.done === ''; })();",
+      "inputParameters": {
+        "explore_loop": "${explore_loop.output}",
+        "max_steps": "${workflow.input.max_steps}",
+        "done": "${workflow.variables.done}"
+      },
+      "loopOver": [
+        {
+          "name": "decide",
+          "taskReferenceName": "decide",
+          "type": "LLM_CHAT_COMPLETE",
+          "optional": true,
+          "retryCount": 2,
+          "retryDelaySeconds": 10,
+          "inputParameters": {
+            "llmProvider": "${workflow.input.llm_provider}",
+            "model": "${workflow.input.model}",
+            "temperature": 1,
+            "thinkingTokenLimit": 6000,
+            "maxTokens": 8000,
+            "jsonOutput": false,
+            "messages": "${workflow.variables.messages}"
+          }
+        },
+        {
+          "name": "parse_decide",
+          "taskReferenceName": "parse_decide",
+          "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "raw": "${decide.output.result}",
+            "queryExpression": ".raw as $r | (if ($r|type) == \"object\" then $r else (try ($r[ ($r|index(\"{\")) : (($r|rindex(\"}\"))+1) ] | fromjson) catch {reasoning: \"unparseable model output\", action: {type: \"none\"}}) end)"
+          }
+        },
+        {
+          "name": "route",
+          "taskReferenceName": "route",
+          "type": "SWITCH",
+          "evaluatorType": "graaljs",
+          "expression": "$.atype === 'done' ? 'done' : ($.atype === 'search_docs' ? 'search' : ($.atype === 'browse' ? 'browse' : 'act'))",
+          "inputParameters": { "atype": "${parse_decide.output.result.action.type}" },
+          "decisionCases": {
+            "done": [
+              {
+                "name": "mark_done",
+                "taskReferenceName": "mark_done",
+                "type": "SET_VARIABLE",
+                "inputParameters": { "done": "done" }
+              }
+            ],
+            "browse": [
+              {
+                "name": "prep_browse",
+                "taskReferenceName": "prep_browse",
+                "type": "JSON_JQ_TRANSFORM",
+                "inputParameters": {
+                  "action": "${parse_decide.output.result.action}",
+                  "identities": "${workflow.input.identities}",
+                  "queryExpression": "{ ba: (.action.browse_action // {type:\"observe\"}), identity: (.action.identity // \"anon\"), auth: ((.identities // {})[(.action.identity // \"anon\")] // {}) }"
+                }
+              },
+              {
+                "name": "playwright_action",
+                "taskReferenceName": "browse_act",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "base_url": "${workflow.input.base_url}",
+                  "scope": "${workflow.input.scope}",
+                  "url": "${workflow.variables.browser_url}",
+                  "storage_state": "${workflow.variables.browser_state}",
+                  "action": "${prep_browse.output.result.ba}",
+                  "auth": "${prep_browse.output.result.auth}",
+                  "capability_max": "${workflow.input.capability_max}"
+                }
+              },
+              {
+                "name": "build_turn_browse",
+                "taskReferenceName": "build_turn_browse",
+                "type": "JSON_JQ_TRANSFORM",
+                "inputParameters": {
+                  "messages": "${workflow.variables.messages}",
+                  "notes": "${workflow.variables.notes}",
+                  "action": "${parse_decide.output.result.action}",
+                  "state": "${browse_act.output}",
+                  "queryExpression": "{ messages: (.messages + [ {role:\"assistant\", message:(.action | tojson)}, {role:\"user\", message:(\"Browser action result.\\nURL: \" + (.state.url // \"\") + \"\\nTitle: \" + (.state.title // \"\") + \"\\nNote: \" + (.state.note // \"\") + \"\\nInteractive elements:\\n\" + ((.state.dom_summary // []) | tojson) + \"\\n\\nDecide the next action, or {\\\"action\\\":{\\\"type\\\":\\\"done\\\"}} when you understand the app.\")} ]), notes: ((.notes // []) + [(\"browsed: \" + (.state.url // \"\") + \" -- \" + (.state.title // \"\"))]) }"
+                }
+              },
+              {
+                "name": "update_state_browse",
+                "taskReferenceName": "update_state_browse",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "messages": "${build_turn_browse.output.result.messages}",
+                  "notes": "${build_turn_browse.output.result.notes}",
+                  "browser_url": "${browse_act.output.url}",
+                  "browser_state": "${browse_act.output.storage_state}"
+                }
+              }
+            ],
+            "search": [
+              {
+                "name": "docs_search",
+                "taskReferenceName": "docs_search",
+                "type": "LLM_SEARCH_INDEX",
+                "optional": true,
+                "inputParameters": {
+                  "vectorDB": "pgvector",
+                  "namespace": "${workflow.input.docs_namespace}",
+                  "index": "${workflow.input.docs_index}",
+                  "embeddingModelProvider": "${workflow.input.embed_provider}",
+                  "embeddingModel": "${workflow.input.embed_model}",
+                  "query": "${parse_decide.output.result.action.query}",
+                  "maxResults": 4
+                }
+              },
+              {
+                "name": "build_turn_docs",
+                "taskReferenceName": "build_turn_docs",
+                "type": "JSON_JQ_TRANSFORM",
+                "inputParameters": {
+                  "messages": "${workflow.variables.messages}",
+                  "notes": "${workflow.variables.notes}",
+                  "action": "${parse_decide.output.result.action}",
+                  "results": "${docs_search.output.result}",
+                  "queryExpression": "{ messages: (.messages + [ {role:\"assistant\", message:(.action | tojson)}, {role:\"user\", message:(\"Docs search results:\\n\" + (([ (.results // [])[] | (.text // .docId // \"\") ] | join(\"\\n---\\n\"))[0:3000] | if . == \"\" then \"(no matching docs)\" else . end) + \"\\n\\nUse this, then decide your next action.\")} ]), notes: (.notes // []) }"
+                }
+              },
+              {
+                "name": "update_state_docs",
+                "taskReferenceName": "update_state_docs",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "messages": "${build_turn_docs.output.result.messages}",
+                  "notes": "${build_turn_docs.output.result.notes}"
+                }
+              }
+            ],
+            "act": [
+              {
+                "name": "http_request",
+                "taskReferenceName": "act",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "method": "${parse_decide.output.result.action.method}",
+                  "url": "${parse_decide.output.result.action.url}",
+                  "headers": "${parse_decide.output.result.action.headers}",
+                  "json": "${parse_decide.output.result.action.json}",
+                  "identity": "${parse_decide.output.result.action.identity}",
+                  "identities": "${workflow.input.identities}",
+                  "scope": "${workflow.input.scope}",
+                  "manifest": "${workflow.input.manifest}",
+                  "capability_max": "${workflow.input.capability_max}"
+                }
+              },
+              {
+                "name": "build_turn",
+                "taskReferenceName": "build_turn",
+                "type": "JSON_JQ_TRANSFORM",
+                "inputParameters": {
+                  "messages": "${workflow.variables.messages}",
+                  "notes": "${workflow.variables.notes}",
+                  "learned": "${parse_decide.output.result.learned}",
+                  "action": "${parse_decide.output.result.action}",
+                  "result": "${act.output}",
+                  "queryExpression": "{ messages: (.messages + [ {role:\"assistant\", message:(.action | tojson)}, {role:\"user\", message:(\"Result: \" + (.result.summary // \"\") + \"\\nResponse body (excerpt):\\n\" + (.result.response.body_excerpt // .result.error // \"\") + \"\\n\\nDecide the next action, or {\\\"action\\\":{\\\"type\\\":\\\"done\\\"}} when you understand the app.\")} ]), notes: ((.notes // []) + ([.learned] | map(select(. != null and . != \"\"))) + [(\"observed: \" + (.result.summary // \"\"))]) }"
+                }
+              },
+              {
+                "name": "update_state",
+                "taskReferenceName": "update_state",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "messages": "${build_turn.output.result.messages}",
+                  "notes": "${build_turn.output.result.notes}"
+                }
+              }
+            ]
+          },
+          "defaultCase": []
+        }
+      ]
+    }
+  ],
+  "outputParameters": {
+    "observations": "${workflow.variables.notes}",
+    "steps": "${explore_loop.output.iteration}"
+  }
+}

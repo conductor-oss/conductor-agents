@@ -1,0 +1,20 @@
+# Lint config for `make lint` / CI.
+#
+# Intent: enforce real-correctness rules (pyflakes `F` — undefined names, unused imports/vars —
+# plus the critical `E9` syntax checks) while tolerating the codebase's intentional compact style.
+# The workers/prompts code deliberately uses grouped imports and semicolon-joined statements to keep
+# traceback line numbers aligned and prompt-injected files terse; those are style choices, not bugs.
+line-length = 120
+
+[lint]
+# Default select is E4/E7/E9/F. Drop the purely-stylistic members we don't want to fight.
+ignore = [
+    "E401",  # multiple imports on one line (grouped stdlib imports are intentional)
+    "E402",  # module import not at top (sys.path bootstrap before local imports; already # noqa'd)
+    "E701",  # multiple statements on one line (colon)
+    "E702",  # multiple statements on one line (semicolon)
+]
+
+[lint.per-file-ignores]
+# Tests construct deliberately-odd fixtures; don't lint their style.
+"tests/**" = ["F811", "F841"]

@@ -1,0 +1,11 @@
+{
+  "name": "build_coverage",
+  "description": "Build the multi-dimensional coverage ledger (spec 22): persona x invariant x sensitive-operation x object-id x interface, each classified tested/partial/untested.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 60,
+  "responseTimeoutSeconds": 30,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}
