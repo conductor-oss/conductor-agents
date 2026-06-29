@@ -21,6 +21,7 @@ The resolved secret value is never logged.
 """
 
 import logging
+from urllib.parse import urlparse
 
 import requests
 import urllib3
@@ -158,6 +159,100 @@ def _probe(base_url: str, auth: dict, scope: dict | None, probe_paths: list):
         except requests.RequestException:
             continue
     return False if saw_protected else None
+
+
+_STATIC_EXT = (".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".ico",
+               ".woff", ".woff2", ".ttf", ".map", ".gif", ".webp")
+
+
+def derive_probe_paths(surface: dict | None, scope: dict | None = None, limit: int = 30) -> list[str]:
+    """Auto-derive candidate protected paths from the DISCOVERED surface so auth can be
+    verified against the app's REAL endpoints instead of static/generic guesses.
+
+    Returns in-scope request paths (host stripped) from ``surface['endpoints']`` — API-looking
+    ones (``/api``, ``/v1``, ``/graphql`` …) first, then the rest, static assets dropped, capped
+    at ``limit``. These are only CANDIDATES: ``_probe`` still keeps only those that are 401/403
+    anon, so a generous list is safe."""
+    surface = surface or {}
+    eps = surface.get("endpoints") if isinstance(surface.get("endpoints"), list) else []
+    seen: set[str] = set()
+    api_paths: list[str] = []
+    other: list[str] = []
+    for e in eps:
+        url = (e.get("url") if isinstance(e, dict) else e) or ""
+        url = str(url)
+        if not url:
+            continue
+        if scope and not scope_mod.in_scope(url, scope):
+            continue
+        pr = urlparse(url if "://" in url else "//" + url, scheme="https")
+        path = pr.path or "/"
+        if pr.query:
+            path = f"{path}?{pr.query}"
+        if not path.startswith("/"):
+            path = "/" + path
+        if path in seen:
+            continue
+        seen.add(path)
+        low = path.lower().split("?", 1)[0]
+        if any(low.endswith(ext) for ext in _STATIC_EXT):
+            continue
+        if "/api" in low or "/v1" in low or "/v2" in low or "/graphql" in low:
+            api_paths.append(path)
+        else:
+            other.append(path)
+    return (api_paths + other)[:limit]
+
+
+def aggregate_verified(creds: list) -> tuple[str, str]:
+    """Collapse per-credential ``verified`` tri-states into one campaign verdict + note.
+
+    true  = a credential authenticated; false = a credential was rejected by a protected
+    path; unknown = couldn't confirm. Only ``false`` is the alarming case (a real "nothing
+    found" risk). No credentials -> trivially ``true`` (anonymous baseline only)."""
+    creds = [c for c in creds if isinstance(c, dict) and c.get("value")]
+    statuses = [str(c.get("verified") or "unknown") for c in creds]
+    if not creds:
+        verdict = "true"
+    elif "true" in statuses:
+        verdict = "true"
+    elif "false" in statuses:
+        verdict = "false"
+    else:
+        verdict = "unknown"
+    note = "; ".join(sorted({c.get("note", "") for c in creds if c.get("note")})) \
+        or "no credentials supplied (anonymous baseline only)"
+    return verdict, note
+
+
+def reverify(identities: dict | None, base_url: str, scope: dict | None = None,
+             probe_paths: list | None = None) -> dict:
+    """Re-probe each non-anon identity against ``probe_paths`` (typically the discovered
+    surface) and refine its ``verified``/``note``. Only UPGRADES certainty: a prior verified
+    ``true`` is never downgraded on a possibly-flaky re-probe; ``unknown`` becomes true/false
+    when the probe is decisive. Returns ``{identities, auth_verified, auth_note, probe_paths_used}``."""
+    identities = identities if isinstance(identities, dict) else {}
+    probe_paths = list(probe_paths or [])
+    out: dict = {}
+    for label, ident in identities.items():
+        if label == "anon" or not (isinstance(ident, dict) and ident.get("value")):
+            out[label] = ident
+            continue
+        new = dict(ident)
+        prev = str(ident.get("verified") or "unknown")
+        v = _probe(base_url, new, scope, probe_paths)
+        if v is True:
+            new["verified"] = "true"
+            new["note"] = f"verified via discovered protected endpoint ({new.get('header')})"
+        elif v is False and prev != "true":
+            new["verified"] = "false"
+            new["note"] = "no discovered protected endpoint accepted the credential (probe did NOT authenticate)"
+        # v is None (inconclusive) -> leave the prior verdict untouched
+        out[label] = new
+    creds = [v for k, v in out.items() if k != "anon" and isinstance(v, dict) and v.get("value")]
+    auth_verified, auth_note = aggregate_verified(creds)
+    return {"identities": out, "auth_verified": auth_verified, "auth_note": auth_note,
+            "probe_paths_used": probe_paths}
 
 
 def _pick(base_url: str, candidates: list[dict], scope: dict | None, probe_paths: list):
