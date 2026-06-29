@@ -146,6 +146,20 @@
       }
     },
     {
+      "name": "reverify_identities",
+      "taskReferenceName": "reverify_identities",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "identities": "${normalize_target.output.identities}",
+        "surface": "${surface_sub.output.surface}",
+        "base_url": "${normalize_target.output.base_url}",
+        "scope": "${normalize_target.output.scope}",
+        "auth_probe_paths": "${workflow.input.auth_probe_paths}",
+        "auth_verified": "${normalize_target.output.auth_verified}",
+        "auth_note": "${normalize_target.output.auth_note}"
+      }
+    },
+    {
       "name": "prep_appmodel",
       "taskReferenceName": "prep_appmodel",
       "type": "JSON_JQ_TRANSFORM",
@@ -188,14 +202,27 @@
       }
     },
     {
+      "name": "derive_profile",
+      "taskReferenceName": "derive_profile",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "host": "${normalize_target.output.host}",
+        "app_model": "${parse_app_model.output.result}",
+        "identities": "${reverify_identities.output.identities}",
+        "derived_probe_paths": "${reverify_identities.output.derived_probe_paths}",
+        "run_id": "${workflow.input.run_id}"
+      }
+    },
+    {
       "name": "catalog_context",
       "taskReferenceName": "catalog_context",
       "type": "SIMPLE",
       "optional": true,
       "inputParameters": {
         "app_model": "${parse_app_model.output.result}",
-        "identities": "${normalize_target.output.identities}",
-        "auth_verified": "${normalize_target.output.auth_verified}",
+        "identities": "${reverify_identities.output.identities}",
+        "auth_verified": "${reverify_identities.output.auth_verified}",
         "has_source": "${normalize_target.output.source_path}"
       }
     },
@@ -229,7 +256,7 @@
       "optional": true,
       "inputParameters": {
         "inventory": "${build_feature_inventory.output.inventory}",
-        "identities": "${normalize_target.output.identities}",
+        "identities": "${reverify_identities.output.identities}",
         "scope": "${normalize_target.output.scope}",
         "base_url": "${normalize_target.output.base_url}",
         "capability_max": "${normalize_target.output.capability_max}",
@@ -261,7 +288,7 @@
       "type": "SIMPLE",
       "optional": true,
       "inputParameters": {
-        "identities": "${normalize_target.output.identities}",
+        "identities": "${reverify_identities.output.identities}",
         "app_model": "${parse_app_model.output.result}",
         "manifest": "${normalize_target.output.manifest}"
       }
@@ -334,7 +361,7 @@
           "inputParameters": {
             "base_url": "${normalize_target.output.base_url}",
             "scope": "${normalize_target.output.scope}",
-            "identities": "${normalize_target.output.identities}",
+            "identities": "${reverify_identities.output.identities}",
             "app_model": "${parse_app_model.output.result}",
             "surface": "${surface_sub.output.surface}",
             "docs_namespace": "${docs_sub.output.namespace}",
@@ -536,7 +563,7 @@
       "optional": true,
       "inputParameters": {
         "ledger": "${prep_cleanup.output.result.ledger}",
-        "identities": "${normalize_target.output.identities}",
+        "identities": "${reverify_identities.output.identities}",
         "scope": "${normalize_target.output.scope}",
         "base_url": "${normalize_target.output.base_url}"
       }
@@ -548,7 +575,7 @@
       "optional": true,
       "inputParameters": {
         "base_url": "${normalize_target.output.base_url}",
-        "identities": "${normalize_target.output.identities}",
+        "identities": "${reverify_identities.output.identities}",
         "scope": "${normalize_target.output.scope}",
         "prefix": "sc-pentest-",
         "cleanup_families": "${prep_cleanup.output.result.families}"
@@ -690,14 +717,14 @@
         "passes": "${pass_loop.output.iteration}",
         "cleanup": "${merge_cleanup.output.result}",
         "target": "${normalize_target.output.target}",
-        "identities": "${normalize_target.output.identities}",
+        "identities": "${reverify_identities.output.identities}",
         "personas": "${build_personas.output.personas}",
         "coverage_ledger": "${coverage_final.output.summary}",
         "residual_risk": "${build_dossier.output.residual_risk}",
         "attack_graph": "${build_dossier.output.attack_graph}",
         "compliance": "${build_dossier.output.compliance}",
-        "auth_verified": "${normalize_target.output.auth_verified}",
-        "auth_note": "${normalize_target.output.auth_note}",
+        "auth_verified": "${reverify_identities.output.auth_verified}",
+        "auth_note": "${reverify_identities.output.auth_note}",
         "adequacy": "${normalize_target.output.identity_adequacy}",
         "operation_ledger": "${workflow.variables.operation_ledger}",
         "feature_exercise": "${workflow.variables.feature_exercise}",

@@ -34,6 +34,31 @@ from common import session as session_mod  # noqa: E402
 _AUTH_HEADERS = ("authorization", "x-authorization", "x-api-key", "x-auth-token")
 
 
+def _is_api_path(path: str) -> bool:
+    p = (path or "").lower()
+    return "/api" in p or "/v1" in p or "/v2" in p or "/graphql" in p
+
+
+def _validate_credential(cred: dict, target_url: str, sniffed_list: list) -> str:
+    """Probe the captured credential against the protected paths it was seen on (preferring
+    /api ones) to confirm it actually authenticates. Returns 'true'/'false'/'unknown'.
+    Best-effort — a probing error never blocks the capture."""
+    try:
+        from common import auth as auth_mod
+        pr = urlparse(target_url)
+        base = f"{pr.scheme}://{pr.netloc}"
+        scheme, token = cred.get("scheme") or "", cred.get("token") or ""
+        value = f"{scheme} {token}".strip() if scheme else token
+        authd = {"header": cred.get("header") or "Authorization", "value": value}
+        paths = [s.get("path") for s in sniffed_list if s.get("api") and s.get("path")] \
+            or [s.get("path") for s in sniffed_list if s.get("path")]
+        if not paths:
+            return "unknown"
+        return auth_mod._v(auth_mod._probe(base, authd, None, paths))
+    except Exception:
+        return "unknown"
+
+
 def _apex(host: str) -> str:
     parts = (host or "").split(".")
     return ".".join(parts[-2:]) if len(parts) >= 2 else host
@@ -69,7 +94,10 @@ def main(argv: list) -> int:
     target_host = (urlparse(args.url).hostname or "").lower()
     extra_hosts = {h.strip().lower() for h in args.scope.split(",") if h.strip()}
     headless = bool(os.environ.get("SC_CAPTURE_HEADLESS"))
-    sniffed: dict[str, str] = {}   # header(lower) -> latest value (freshest token wins)
+    # header(lower) -> {header, value, path, api}. An auth header observed on an /api request
+    # wins over one seen elsewhere (the id_token on an early /auth call must not shadow the
+    # real access token); among the same class the freshest wins.
+    sniffed: dict[str, dict] = {}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
@@ -79,10 +107,16 @@ def main(argv: list) -> int:
             try:
                 if not _in_target_domain(req.url, target_host, extra_hosts):
                     return
+                path = urlparse(req.url).path or "/"
+                is_api = _is_api_path(path)
                 hdrs = req.headers  # lowercased keys
                 for name in _AUTH_HEADERS:
-                    if hdrs.get(name):
-                        sniffed[name] = (name, hdrs[name])  # keep original-cased name + value
+                    if not hdrs.get(name):
+                        continue
+                    prev = sniffed.get(name)
+                    # overwrite unless we'd downgrade an API-seen value to a non-API one
+                    if prev is None or is_api or not prev.get("api"):
+                        sniffed[name] = {"header": name, "value": hdrs[name], "path": path, "api": is_api}
             except Exception:
                 pass
 
@@ -107,16 +141,20 @@ def main(argv: list) -> int:
         storage_state = context.storage_state()
         browser.close()
 
-    sniffed_list = [{"header": v[0], "value": v[1]} for v in sniffed.values()]
+    sniffed_list = list(sniffed.values())
     cred = session_mod.pick_credential(sniffed_list, storage_state, target_host)
     if cred.get("kind") == "none":
         print("✗ No credential captured. Did you finish login AND trigger an authenticated request "
               "(reload an in-app page) before capturing? Try again.", file=sys.stderr)
         return 2
 
+    # Validate the captured credential against the protected endpoints it was actually seen on,
+    # so we don't silently save an unusable token (e.g. an OIDC id_token the API rejects).
+    verified = _validate_credential(cred, args.url, sniffed_list)
+
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     doc = session_mod.build_session_doc(cred, label=args.label, target=args.url, captured_at=now,
-                                        storage_state=storage_state)
+                                        storage_state=storage_state, verified=verified)
     out = args.out or os.path.join(os.path.dirname(HERE), "state", "sessions", f"{args.label}.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w") as fh:
@@ -124,6 +162,13 @@ def main(argv: list) -> int:
 
     print(f"\n✓ captured {cred['kind']} credential for '{args.label}' "
           f"({doc['auth_header']}{'/' + doc['auth_scheme'] if doc['auth_scheme'] else ''}) → {out}")
+    if verified == "false":
+        print("⚠  the captured token did NOT authenticate against the app's protected endpoints —\n"
+              "    it may be an OIDC id_token rather than the API access token. Open an authenticated\n"
+              "    DATA view in the app (so it calls /api/*), then re-run ./sso-capture to refresh.",
+              file=sys.stderr)
+    elif verified == "true":
+        print("  ✓ token verified against a protected endpoint")
     print(f"  cookies: {len(storage_state.get('cookies') or [])} | "
           f"use it:\n    --id '{args.label}=session:{out}'")
     return 0

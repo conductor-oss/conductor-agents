@@ -65,3 +65,27 @@ def test_build_session_doc_shape():
     assert doc["auth_token"] == JWT and doc["auth_header"] == "X-Authorization" and doc["auth_scheme"] == ""
     assert doc["label"] == "orgA" and doc["credential_kind"] == "bearer-sniffed"
     assert doc["storage_state"]["cookies"]                      # full session retained for the browser hand
+
+
+# ── API-seen auth header preferred over an /auth (id_token) one ──────────────────
+def test_pick_credential_prefers_api_seen_token():
+    sniffed = [
+        {"header": "x-authorization", "value": "ID_TOKEN", "path": "/auth/callback", "api": False},
+        {"header": "x-authorization", "value": "API_TOKEN", "path": "/api/users/me", "api": True},
+    ]
+    cred = session.pick_credential(sniffed, {}, "app.example.com")
+    assert cred["kind"] == "bearer-sniffed"
+    assert cred["token"] == "API_TOKEN"        # the /api one, not the id_token from /auth
+    assert cred["header"] == "x-authorization"
+
+
+def test_pick_credential_sniffed_still_beats_localstorage():
+    sniffed = [{"header": "x-authorization", "value": "RAW", "path": "/api/x", "api": True}]
+    cred = session.pick_credential(sniffed, STORAGE, "app.example.com")
+    assert cred["kind"] == "bearer-sniffed" and cred["token"] == "RAW"
+
+
+def test_pick_credential_falls_back_when_no_api_flag():
+    # backward-compat: entries without an 'api' key still work (treated as non-API)
+    cred = session.pick_credential([{"header": "authorization", "value": "Bearer Z"}], {}, "h")
+    assert cred["kind"] == "bearer-sniffed" and cred["token"] == "Z" and cred["scheme"] == "Bearer"

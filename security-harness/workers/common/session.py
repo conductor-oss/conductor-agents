@@ -68,13 +68,18 @@ def _parse_sniffed(header: str, value: str) -> dict:
 
 def pick_credential(sniffed: list | None, storage_state: dict | None, host: str) -> dict:
     """Choose the strongest credential from a capture. ``sniffed`` is a list of
-    ``{header, value}`` auth headers seen on in-scope requests. Returns
+    ``{header, value, path?, api?}`` auth headers seen on in-scope requests. Returns
     ``{kind, header, scheme, token}`` (``token`` carries the cookie string when kind=='cookie'),
-    or ``{kind: 'none'}`` if nothing usable was captured."""
-    for s in sniffed or []:
-        hdr = str(s.get("header") or "")
-        if hdr.lower() in _AUTH_HEADERS and s.get("value"):
-            return {"kind": "bearer-sniffed", **_parse_sniffed(hdr, s["value"])}
+    or ``{kind: 'none'}`` if nothing usable was captured.
+
+    Auth headers observed on an actual ``/api/*`` request (``api: true``) are preferred over
+    ones seen elsewhere — on Auth0/OIDC SPAs an early ``/auth`` call carries the *id_token*,
+    while the real API access token rides on the product's ``/api`` requests."""
+    items = [s for s in (sniffed or [])
+             if str(s.get("header") or "").lower() in _AUTH_HEADERS and s.get("value")]
+    items.sort(key=lambda s: 0 if s.get("api") else 1)  # API-seen first; stable otherwise
+    for s in items:
+        return {"kind": "bearer-sniffed", **_parse_sniffed(str(s.get("header")), s["value"])}
 
     ls = token_from_local_storage(storage_state, host)
     if ls:
@@ -88,10 +93,11 @@ def pick_credential(sniffed: list | None, storage_state: dict | None, host: str)
 
 
 def build_session_doc(cred: dict, *, label: str, target: str, captured_at: str,
-                      storage_state: dict | None) -> dict:
+                      storage_state: dict | None, verified: str | None = None) -> dict:
     """The session file written by the capture tool and read by ``--id 'label=session:<file>'``.
     Carries the identity credential (consumed by ``auth.acquire_token`` as ``auth_token``) plus the
-    full ``storage_state`` for the browser/CDP hand."""
+    full ``storage_state`` for the browser/CDP hand. ``verified`` (true/false/unknown) records
+    whether the captured credential actually authenticated against a protected endpoint."""
     return {
         "label": label,
         "target": target,
@@ -100,5 +106,6 @@ def build_session_doc(cred: dict, *, label: str, target: str, captured_at: str,
         "auth_header": cred.get("header") or "",
         "auth_scheme": cred.get("scheme") or "",
         "auth_token": cred.get("token") or "",
+        "verified": verified or "unknown",
         "storage_state": storage_state or {},
     }
