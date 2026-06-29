@@ -25,6 +25,7 @@ SC_RUN_ID, SC_WORK (workspace dir).
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -40,6 +41,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 TARGET = os.environ.get("SC_TARGET", "").rstrip("/")
 target = TARGET  # lowercase alias: agent code / prompt examples use sc.target
 SCOPE = json.loads(os.environ.get("SC_SCOPE") or "{}")
+MANIFEST = json.loads(os.environ.get("SC_MANIFEST") or "{}")
 IDENTITIES = json.loads(os.environ.get("SC_IDENTITIES") or "{}")
 DEFAULT_IDENTITY = os.environ.get("SC_DEFAULT_IDENTITY") or "anon"
 OOB_BASE = (os.environ.get("SC_OOB_BASE") or "").rstrip("/")
@@ -86,13 +88,40 @@ class OutOfScope(Exception):
     pass
 
 
+class Forbidden(Exception):
+    pass
+
+
+def _forbids(method: str, url: str) -> bool:
+    """True iff ``method url`` matches a manifest forbidden_operations glob or touches a
+    protected_records token. A self-contained port of ``common.authz.forbids`` -- the
+    hardened sandbox container cannot import the common package, so this MUST stay in
+    sync with that canonical implementation."""
+    if not isinstance(MANIFEST, dict):
+        return False
+    m = (method or "GET").upper()
+    path = urlparse(url).path or url
+    candidates = (f"{m} {path}".lower(), f"{m} {url}".lower(), url.lower())
+    for pat in MANIFEST.get("forbidden_operations") or []:
+        p = str(pat).lower()
+        if any(fnmatch.fnmatch(c, p) for c in candidates):
+            return True
+    for rec in MANIFEST.get("protected_records") or []:
+        if str(rec).lower() in url.lower():
+            return True
+    return False
+
+
 class _ScopedSession(requests.Session):
     """A requests.Session that refuses any out-of-scope host -- the hard safety
-    boundary even though agent code is arbitrary."""
+    boundary even though agent code is arbitrary -- and any manifest-forbidden
+    operation / protected record."""
 
     def request(self, method, url, **kw):
         if not in_scope(url):
             raise OutOfScope(f"refusing out-of-scope request: {method} {url}")
+        if _forbids(method, url):
+            raise Forbidden(f"refusing manifest-forbidden operation: {method} {url}")
         kw.setdefault("timeout", 30)
         kw.setdefault("verify", False)
         kw.setdefault("allow_redirects", False)
@@ -133,7 +162,7 @@ def api(method: str, path_or_url: str, identity: str | None = None, **kw):
     s = session(identity)
     try:
         r = s.request(method.upper(), url, **kw)
-    except OutOfScope:
+    except (OutOfScope, Forbidden):
         raise
     body = r.text or ""
     try:

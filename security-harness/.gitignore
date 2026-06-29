@@ -8,7 +8,8 @@
 # Runtime state written by workers — per-target dossiers/traces, captured sessions, OOB tunnel
 # state. MAY CONTAIN LIVE TOKENS / PII from real targets; never commit.
 /workers/state/
-/workers/oob/
+# OOB worker: track the source, ignore only its runtime state (port/token info).
+/workers/oob/state.json
 
 # Python
 __pycache__/

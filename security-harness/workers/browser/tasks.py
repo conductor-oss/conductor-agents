@@ -39,6 +39,33 @@ def _launch(p):
     return p.chromium.launch(headless=True, args=LAUNCH_ARGS)
 
 
+def _apply_scoped_auth(router, auth, scope):
+    """Attach identity credentials at the REQUEST layer, only for in-scope hosts.
+
+    Setting ``extra_http_headers`` on the browser context/page leaks the credential to
+    every subresource the page loads — CDNs, analytics, and any third-party origin — not
+    just the target. Routing instead lets us add the auth header to in-scope requests and
+    keep it off everything else. ``router`` is a Playwright context or page (both expose
+    ``.route``). No-op when there is no credential, to avoid interception overhead."""
+    hdrs = auth_headers(auth)
+    if not hdrs:
+        return
+    drop = {k.lower() for k in hdrs}
+
+    def _handler(route):
+        req = route.request
+        headers = dict(req.headers)  # Playwright lowercases header names
+        if scope and scope_mod.in_scope(req.url, scope):
+            headers.update(hdrs)
+        else:
+            for k in list(headers):
+                if k.lower() in drop:
+                    headers.pop(k)
+        route.continue_(headers=headers)
+
+    router.route("**/*", _handler)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 @worker_task(task_definition_name="playwright_crawl")
 def playwright_crawl(task):
@@ -65,8 +92,9 @@ def playwright_crawl(task):
         context = browser.new_context(
             user_agent=USER_AGENT, ignore_https_errors=True,
             storage_state=storage_state,  # None → fresh/anonymous session
-            extra_http_headers=auth_headers(inp.get("auth")),
         )
+        # Credentials go only to in-scope hosts (never leak to third-party subresources).
+        _apply_scoped_auth(context, inp.get("auth"), scope)
 
         def _on_request(req):
             try:
@@ -394,8 +422,9 @@ def _do_action(url, scope, storage_state, action, atype, result, auth=None):
     with sync_playwright() as p:
         browser = _launch(p)
         context = browser.new_context(user_agent=USER_AGENT, ignore_https_errors=True,
-                                      storage_state=storage_state,
-                                      extra_http_headers=auth_headers(auth))
+                                      storage_state=storage_state)
+        # Credentials go only to in-scope hosts (never leak to third-party subresources).
+        _apply_scoped_auth(context, auth, scope)
         page = context.new_page()
         page.set_default_navigation_timeout(NAV_TIMEOUT)
         note = ""
@@ -424,8 +453,8 @@ def _do_action_cdp(cdp_url, url, scope, action, atype, result, auth=None):
         page = context.pages[0] if context.pages else context.new_page()
         page.set_default_navigation_timeout(NAV_TIMEOUT)
         try:
-            if auth_headers(auth):
-                page.set_extra_http_headers(auth_headers(auth))
+            # Credentials go only to in-scope hosts (never leak to third-party subresources).
+            _apply_scoped_auth(page, auth, scope)
         except Exception:
             pass
         note = ""

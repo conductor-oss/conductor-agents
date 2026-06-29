@@ -1,0 +1,11 @@
+{
+  "name": "filter_techniques",
+  "description": "Drop hypotheses whose technique category is not permitted by the manifest's allowed_techniques (spec 15.1), across both machine-seeded and LLM-generated hypotheses.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 60,
+  "responseTimeoutSeconds": 30,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

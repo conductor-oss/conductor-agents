@@ -670,6 +670,35 @@ def build_mandatory_hypotheses(task):
         return {"hypotheses": [], "count": 0, "error": str(exc)}
 
 
+@worker_task(task_definition_name="filter_techniques")
+def filter_techniques(task):
+    """Drop hypotheses whose technique category the manifest does not permit (spec 15.1
+    ``allowed_techniques``). Applied at hypothesis-selection time across BOTH the
+    machine-seeded and LLM-generated hypotheses, so a manifest that scopes the engagement
+    to e.g. only {ssrf, bola} cannot be widened by either source — including 'mandatory'
+    ones (authorization outranks coverage). When the manifest lists no allowed_techniques
+    the default is permissive (all allowed), via ``authz.technique_allowed``. Blocked
+    hypotheses are returned for honest coverage reporting. Never raises."""
+    inp = task.input_data or {}
+    hypotheses = inp.get("hypotheses") if isinstance(inp.get("hypotheses"), list) else []
+    manifest = inp.get("manifest") if isinstance(inp.get("manifest"), dict) else {}
+    allowed, blocked = [], []
+    for h in hypotheses:
+        cat = h.get("category") if isinstance(h, dict) else None
+        try:
+            ok = authz.technique_allowed(cat or "other", manifest)
+        except Exception:
+            ok = True  # an internal error must not silently drop a hypothesis
+        if ok:
+            allowed.append(h)
+        else:
+            blocked.append({"id": (h or {}).get("id") if isinstance(h, dict) else None,
+                            "category": cat,
+                            "reason": "technique not in manifest allowed_techniques"})
+    return {"hypotheses": allowed, "count": len(allowed),
+            "blocked": blocked, "blocked_count": len(blocked)}
+
+
 @worker_task(task_definition_name="build_feature_inventory")
 def build_feature_inventory(task):
     """Enumerate EVERY input-bearing feature from all available signal (live surface, app model,

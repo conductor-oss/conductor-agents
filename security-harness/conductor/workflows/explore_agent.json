@@ -6,7 +6,7 @@
   "ownerEmail": "security-conductor@local",
   "timeoutSeconds": 0,
   "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["base_url", "scope", "identities", "app_model", "surface", "max_steps", "docs_namespace", "docs_index", "docs_available", "focus_directive", "prior_confirmed", "manifest", "capability_max", "personas", "embed_provider", "embed_model"],
+  "inputParameters": ["base_url", "scope", "identities", "app_model", "surface", "max_steps", "docs_namespace", "docs_index", "docs_available", "focus_directive", "prior_confirmed", "manifest", "capability_max", "personas", "embed_provider", "embed_model", "run_id"],
   "variables": { "messages": [], "done": "", "notes": [], "browser_url": "", "browser_state": null },
   "tasks": [
     {
@@ -192,7 +192,8 @@
                   "identities": "${workflow.input.identities}",
                   "scope": "${workflow.input.scope}",
                   "manifest": "${workflow.input.manifest}",
-                  "capability_max": "${workflow.input.capability_max}"
+                  "capability_max": "${workflow.input.capability_max}",
+                  "run_id": "${workflow.input.run_id}"
                 }
               },
               {

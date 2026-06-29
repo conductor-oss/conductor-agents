@@ -23,6 +23,7 @@ from conductor.client.worker.worker_task import worker_task
 
 from common import auditlog
 from common import authz
+from common import budget as budget_mod
 from common import halt as halt_mod
 from common import loadknee
 from common import scope as scope_mod
@@ -87,6 +88,7 @@ def http_request(task):
     follow = inp.get("follow_redirects")
     follow = True if follow is None else bool(follow)
     manifest = inp.get("manifest") if isinstance(inp.get("manifest"), dict) else {}
+    run_id = str(inp.get("run_id") or "")
     # Conductor passes an absent numeric input as "" -> default, don't crash.
     try:
         capability_max = int(inp.get("capability_max")) if str(inp.get("capability_max") or "").strip() else 1
@@ -185,7 +187,8 @@ def http_request(task):
         })
         result["summary"] = (f"BURST x{burst} {method} {url} [{identity}] -> "
                              f"status_distribution={dist}, 2xx_successes={ok2xx}")
-        _maybe_halt(result, method, url, final_url, manifest, scope)
+        _maybe_halt(result, method, url, final_url, manifest, scope,
+                    run_id, req_count=burst, byte_count=sum(f[2] for f in fires))
         return result
 
     status, body, size, elapsed, final_url, rhdrs, err = _fire(method, target, kwargs)
@@ -212,7 +215,8 @@ def http_request(task):
     result["summary"] = (f"{method} {url} [{identity}] -> {status} ({size}b)"
                          + (f" SENSITIVE={list(sens['secrets']) + list(sens['pii'])}" if sens["found"] else ""))
     result["operation"]["status"] = status
-    _maybe_halt(result, method, url, final_url, manifest, scope)
+    _maybe_halt(result, method, url, final_url, manifest, scope,
+                run_id, req_count=1, byte_count=size)
     return result
 
 
@@ -222,11 +226,16 @@ def _host_of(url):
     return (netloc.split("@")[-1].split(":")[0] or "").lower()
 
 
-def _maybe_halt(result, method, url, final_url, manifest, scope):
+def _maybe_halt(result, method, url, final_url, manifest, scope,
+                run_id="", req_count=1, byte_count=0):
     """Evaluate spec-15.2 halt conditions on this action and, if tripped, set
     result['halt_requested'] = {reason}. The workflow's safety governor reads this
     flag and terminates the campaign at the next pass boundary. Also writes a
-    tamper-evident audit record for the action (best-effort)."""
+    tamper-evident audit record for the action (best-effort).
+
+    ``req_count``/``byte_count`` are this action's contribution to the campaign-wide
+    request/data-volume totals; they are accumulated per run so the manifest's
+    ``rate.max_requests`` / ``data_volume.max_bytes`` budgets actually enforce."""
     try:
         resp = result.get("response") or {}
         auditlog.append(_host_of(url), {
@@ -237,11 +246,15 @@ def _maybe_halt(result, method, url, final_url, manifest, scope):
     except Exception:
         pass
     try:
+        counters = budget_mod.bump(run_id, requests=req_count, bytes=byte_count)
+    except Exception:  # counting must never crash the action
+        counters = None
+    try:
         verdict = halt_mod.evaluate(
             {"method": method, "url": url,
              "final_url": (result.get("response") or {}).get("final_url") or final_url,
              "sensitive": (result.get("response") or {}).get("sensitive") or {}},
-            manifest, scope)
+            manifest, scope, counters)
         if verdict.get("halt"):
             result["halt_requested"] = {"reason": verdict.get("reason", "halt condition met")}
             result["summary"] += f"  [HALT REQUESTED: {verdict.get('reason')}]"
