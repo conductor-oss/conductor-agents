@@ -15,7 +15,8 @@
 !**/reports/.gitkeep
 **/state/
 **/workers/state/
-**/workers/oob/
+# OOB worker: track the source, ignore only its runtime state (port/token info).
+**/workers/oob/state.json
 
 # Conductor local-server embedded DB
 **/c123.db*

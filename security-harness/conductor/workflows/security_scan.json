@@ -179,8 +179,8 @@
       "taskReferenceName": "plan",
       "type": "LLM_CHAT_COMPLETE",
       "inputParameters": {
-        "llmProvider": "openai",
-        "model": "gpt-5.5",
+        "llmProvider": "anthropic",
+        "model": "claude-opus-4-8",
         "temperature": 0.2,
         "maxTokens": 8000,
         "jsonOutput": true,
@@ -270,8 +270,8 @@
       "taskReferenceName": "triage",
       "type": "LLM_CHAT_COMPLETE",
       "inputParameters": {
-        "llmProvider": "openai",
-        "model": "gpt-5.5",
+        "llmProvider": "anthropic",
+        "model": "claude-opus-4-8",
         "temperature": 0,
         "maxTokens": 12000,
         "jsonOutput": true,
@@ -299,8 +299,8 @@
       "taskReferenceName": "report_md",
       "type": "LLM_CHAT_COMPLETE",
       "inputParameters": {
-        "llmProvider": "openai",
-        "model": "gpt-5.5",
+        "llmProvider": "anthropic",
+        "model": "claude-opus-4-8",
         "temperature": 0.2,
         "maxTokens": 12000,
         "messages": [

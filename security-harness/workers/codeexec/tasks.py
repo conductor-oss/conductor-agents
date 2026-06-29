@@ -99,6 +99,7 @@ def code_exec(task):
 
     target = str(inp.get("target") or "").strip()
     scope = inp.get("scope") if isinstance(inp.get("scope"), dict) else {}
+    manifest = inp.get("manifest") if isinstance(inp.get("manifest"), dict) else {}
     identities = inp.get("identities") if isinstance(inp.get("identities"), dict) else {}
     default_identity = inp.get("identity") or next(
         (k for k, v in identities.items() if isinstance(v, dict) and v.get("value")), "anon")
@@ -135,6 +136,10 @@ def code_exec(task):
     env = {
         "SC_TARGET": target,
         "SC_SCOPE": json.dumps(scope),
+        # The authorization manifest: the in-sandbox sc helper enforces its
+        # forbidden_operations/protected_records per request (mirrors authz.forbids
+        # in the http_request worker, which the sandbox cannot import).
+        "SC_MANIFEST": json.dumps(manifest),
         "SC_IDENTITIES": json.dumps(identities),
         "SC_DEFAULT_IDENTITY": default_identity,
         "SC_OOB_BASE": oob_base,
@@ -223,6 +228,18 @@ def code_exec(task):
         result = {}
 
     created = result.get("created") if isinstance(result.get("created"), list) else []
+
+    # Count the sandbox's product interactions toward the campaign-wide request budget
+    # (spec 15.2). Best-effort and approximate: the sandbox records one operation per
+    # state-changing call it makes; per-request byte volume isn't surfaced from inside
+    # the container, so only the request count is accumulated here.
+    try:
+        ops = result.get("operations") if isinstance(result.get("operations"), list) else []
+        if ops:
+            from common import budget as budget_mod
+            budget_mod.bump(run_id, requests=len(ops))
+    except Exception:
+        pass
 
     # Tamper-evident audit record for this code-exec action (best-effort).
     try:

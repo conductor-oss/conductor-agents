@@ -69,7 +69,8 @@
         "llm_provider": "${workflow.input.loop_provider}",
         "model": "${workflow.input.loop_model}",
         "embed_provider": "${workflow.input.embed_provider}",
-        "embed_model": "${workflow.input.embed_model}"
+        "embed_model": "${workflow.input.embed_model}",
+        "run_id": "${workflow.input.run_id}"
       }
     },
     {
@@ -158,11 +159,20 @@
       }
     },
     {
+      "name": "filter_techniques",
+      "taskReferenceName": "filter_techniques",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "hypotheses": "${merge_hypotheses.output.result.hypotheses}",
+        "manifest": "${workflow.input.manifest}"
+      }
+    },
+    {
       "name": "dedupe_hypos",
       "taskReferenceName": "dedupe_hypos",
       "type": "JSON_JQ_TRANSFORM",
       "inputParameters": {
-        "hypotheses": "${merge_hypotheses.output.result.hypotheses}",
+        "hypotheses": "${filter_techniques.output.hypotheses}",
         "tried": "${workflow.input.tried_signatures}",
         "queryExpression": ". as $in | { hypotheses: [ ($in.hypotheses // [])[] | . as $h | (($h.category // \"other\") + \"|\" + (($h.target // \"\") | ascii_downcase | gsub(\"\\\\s+\";\"\")) + \"|\" + (($h.identities // []) | sort | join(\",\"))) as $sig | select(($h.mandatory // false) == true or (($in.tried // []) | index($sig) | not)) ] }"
       }
