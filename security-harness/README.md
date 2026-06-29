@@ -59,6 +59,26 @@ Without `--authorized`, the workflow stops at the authorization gate by design �
 ./scan http://localhost:3001 --authorized
 ```
 
+### Try it on the bundled vulnerable app
+
+A tiny deliberately-vulnerable Express app ships in `examples/vuln-app/` — the fastest way to smoke-test the
+harness end to end. It has **no authentication** and seeds OS command injection (`/ping`), code injection
+(`/calc`), a SQL-injection sink (`/search`), a no-authz `/admin/users` endpoint, and hardcoded secrets.
+
+```bash
+# Terminal 1 — launch the test app (serves on :3000)
+cd examples/vuln-app && npm install && node server.js
+
+# Terminal 2 — fast scan it (add --source to also run SAST over its code):
+./scan http://localhost:3000 --authorized --intrusive --source examples/vuln-app
+
+# …or a deeper agentic pass with the bundled profile (active exploitation of the injection flaws):
+./assess http://localhost:3000 --authorized --capability 2 --profile vuln-app --source examples/vuln-app
+```
+
+> ⚠️ It's intentionally insecure — bind it to localhost only and never expose it. The `--profile vuln-app`
+> hints the expected finding classes; the engine works without it.
+
 ---
 
 ## `./scan` vs `./assess`

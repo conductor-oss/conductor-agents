@@ -1,0 +1,20 @@
+{
+  "name": "vuln-app",
+  "description": "Bundled deliberately-vulnerable Express test app (examples/vuln-app), used to smoke-test the harness. Unauthenticated REST API with seeded flaws: OS command injection (GET /ping), code injection (POST /calc), a SQL-injection sink (GET /search), a broken-access-control endpoint (GET /admin/users), and hardcoded secrets in source. Select with `--profile vuln-app`.",
+  "documentation": [],
+  "auth": {
+    "header": "",
+    "scheme": "",
+    "probe_paths": []
+  },
+  "cleanup_families": [],
+  "archetype": "rest-api",
+  "expected_findings": [
+    { "endpoint": "GET /ping?host=", "class": "os-command-injection", "objective": "INFRA-RCE-INJECTION" },
+    { "endpoint": "POST /calc {expr}", "class": "code-injection", "objective": "INFRA-RCE-INJECTION" },
+    { "endpoint": "GET /search?q=", "class": "sql-injection", "objective": "INFRA-RCE-INJECTION" },
+    { "endpoint": "GET /admin/users", "class": "broken-access-control", "objective": "AUTHZ-FUNCTION-LEVEL" },
+    { "source": "server.js", "class": "hardcoded-secrets", "objective": "INFRA-SECRET-SURFACE" }
+  ],
+  "_note": "Test fixture. The app has no authentication, so auth.probe_paths is empty. Source lives at examples/vuln-app/server.js — pass --source examples/vuln-app to add SAST."
+}

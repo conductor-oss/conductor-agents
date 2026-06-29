@@ -24,6 +24,9 @@ venv/
 .env
 *.local
 
+# Local-only target profile (kept on disk, not shipped)
+/profiles/conductor.json
+
 # Conductor local-server embedded DB (created in cwd when the server starts here)
 c123.db*
 *.db
