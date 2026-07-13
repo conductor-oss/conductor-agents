@@ -1,0 +1,185 @@
+---
+name: conductor-coding-harness
+description: >-
+  Drive autonomous coding as durable Conductor workflows. Use when the user wants to
+  resolve a GitHub issue into a PR, review a pull request, address PR feedback, or make a
+  parallelized multi-part code change in a repo. Also use to register/update the harness
+  definitions or operate its TUI. Triggers Conductor workflows
+  (issue_to_pr, pr_review, address_pr, code_parallel) via the `conductor` CLI; coding runs
+  on Claude / Codex / Gemini backends in sandboxed git worktrees.
+---
+
+# Conductor Coding Harness
+
+A set of Conductor workflows that run coding agents autonomously and durably. You (the
+agent) don't write the code yourself — you **trigger the right workflow** and report the
+result (PR URL, review, cost). The harness handles planning, parallel coding in isolated
+worktrees, git/GitHub plumbing, guardrails, retries, and observability.
+
+## Choose a workflow
+
+| The user wants to… | Trigger workflow |
+|---|---|
+| Turn a GitHub issue into a pull request | `issue_to_pr` |
+| Review an open PR and post comments | `pr_review` |
+| Apply the review feedback on a PR | `address_pr` |
+| Make a multi-part code change in a local repo (no GitHub) | `code_parallel` |
+| Smoke-test GitHub connectivity (clone→change→PR) | `github_demo` |
+
+The natural loop: **`issue_to_pr` → `pr_review` → `address_pr`** (open, review, revise).
+
+## Before triggering (preflight)
+
+1. **Workers must be running and definitions registered.** Check the server is reachable
+   (`conductor workflow list`) and the workflow exists (`conductor workflow get <name>`).
+   If definitions are missing or changed, run `./workers/register.sh`; from the TUI use
+   `/register` in chat or `g` on the dashboard. Registration updates existing definitions,
+   creates missing ones, and verifies every referenced SIMPLE task has a registered task
+   definition. If workers are down, SIMPLE tasks will still queue and wait: start them with
+   `workers/.venv/bin/python workers/main.py`.
+   Registration requires both the `conductor` CLI and `jq`.
+2. **Auth must be in the worker's environment**, not yours: `gh auth login` (or `GH_TOKEN`)
+   for the GitHub workflows, and the chosen backend's key (`ANTHROPIC_API_KEY` /
+   `~/.codex/auth.json` / `GEMINI_API_KEY`). You can't fix these from here — surface them.
+3. **Pick a backend** only if the user cares; otherwise omit and it defaults to `claude`.
+   Mix with `planAgent`/`codeAgent` when asked (e.g. plan on claude, code on codex).
+4. **Choose the publication gate.** TUI launches default `pr_review.approve=true` and
+   `issue_to_pr.approvePr=true`, pausing before anything is posted/opened. Raw CLI/API runs
+   default both gates off unless explicitly supplied.
+
+## 60-second setup
+
+From the `coding-harness/` directory, assuming the prerequisites above are installed:
+
+```bash
+./run.sh
+```
+
+This starts a local server when needed, installs worker dependencies, registers definitions,
+runs the worker gate, and starts the worker fleet. Set `CONDUCTOR_SERVER_URL` first when using
+a remote server.
+
+Then, in another terminal:
+
+```bash
+export CONDUCTOR_SERVER_URL=http://localhost:8080/api
+conductor workflow start --workflow code_parallel --input \
+  '{"repoPath":"/absolute/path/to/repo","instruction":"Add a health endpoint and tests"}'
+```
+
+Use `./run.sh setup`, `./run.sh register`, or `./run.sh tui` for individual operations.
+
+## How to trigger
+
+```bash
+conductor workflow start --workflow <name> -i '<json>'
+```
+
+Then poll to completion and report the output:
+
+```bash
+conductor workflow get-execution <workflowId> -c    # status + tasks + output
+conductor workflow status <workflowId>              # quick status
+```
+
+Long runs are normal (minutes). Don't block tightly — check periodically. Every run reports
+`totalTokens`/`totalCostUsd` (or `tokenUsed`/`costUsd`); relay the PR/review URL and cost.
+
+## Workflow inputs (essentials)
+
+Only the **required** inputs must be set; everything else has sane defaults. Full tables in
+[`workers/README.md`](workers/README.md).
+
+- **`issue_to_pr`** — required: `repo` (URL or `owner/name`), `issueNumber`. Common:
+  `base` (`main`), `codeAgent`, `design` (`false`), `maxSubtasks` (`4`).
+  → outputs `prNumber`, `prUrl`.
+- **`pr_review`** — required: `repo`, `prNumber`. Common: `agent`.
+  → posts a formal review (inline comments + summary; COMMENT or REQUEST_CHANGES, never
+  APPROVE); outputs `reviewUrl`, `event`, `inlineCount`.
+- **`address_pr`** — required: `repo`, `prNumber`. Common: `engine` (`code_parallel` default,
+  or `coding_agent` for small feedback), `agent`. Pushes to the PR's own branch; re-runnable.
+  → outputs `pushed`, `replyUrl`.
+- **`code_parallel`** — required: `repoPath` (local dir), `instruction`. Common:
+  `changeBranch`, `design`, `maxSubtasks`, `planAgent`/`codeAgent`. Local only — no clone/push.
+  → outputs `changeBranch`, `merged`, `totalTokens`, `totalCostUsd`.
+- **`github_demo`** — required: `repoUrl`, `instruction`. Connectivity smoke test only;
+  clone → one coding session → push → PR.
+
+Internal workflows are `design_docs` and `code_subtask`; normally let `code_parallel`
+invoke them rather than starting them directly.
+
+Shared tuning knobs (all optional): `maxTurns`, `maxBudgetUsd`, `timeoutS`, `*Model` (`""` =
+backend default). Backends: `claude` (default) | `codex` | `gemini`, or inferred from a
+`*Model` id.
+
+**Prompt templates (optional).** To fully override an agent step's prompt with your own
+instructions (review focus, house style, domain rules), either pass a `*PromptTemplate` input
+(`reviewPromptTemplate`, `codePromptTemplate`, `planPromptTemplate`, `designPromptTemplate`,
+`fixPromptTemplate`) or commit a `.conductor/<key>.md` file in the target repo
+(`pr_review`/`code`/`plan`/`design`/`address_pr`) — the repo file applies automatically with no
+input, which is ideal for scheduled/CI runs. A `*PromptTemplate` input may also be `@repo/path`
+to read the prompt from a repo file. The canonical default prompts live in
+`workers/defaults/prompts/`.
+
+**Repo guide (`AGENTS.md`).** The worker auto-reads a repo guide — `AGENTS.md` → `AGENT.md` →
+`CLAUDE.md` (first at the repo root) — and injects it into every agent's prompt (coding, review,
+plan) across all backends, so it learns how to build/test/review with no payload. Put build/test
+commands + review priorities there. Toggle: `includeRepoGuide` / `CODING_AGENT_REPO_GUIDE=0`. Explicit input wins over the repo file. `{{diff}}`/`{{feedback}}`
+/`{{instruction}}`/`{{subtask}}` placeholders in the template are filled with runtime context;
+the output schema stays enforced (a custom `pr_review` template still yields a structured review).
+See `docs/CODING_AGENT_WORKER.md` §14.
+
+## Examples
+
+```bash
+# Resolve issue #42 into a PR
+conductor workflow start --workflow issue_to_pr \
+  -i '{"repo":"https://github.com/acme/app.git","issueNumber":42}'
+
+# Review PR #7
+conductor workflow start --workflow pr_review \
+  -i '{"repo":"acme/app","prNumber":7}'
+
+# Address the feedback on PR #7 (cheap single-session engine)
+conductor workflow start --workflow address_pr \
+  -i '{"repo":"acme/app","prNumber":7,"engine":"coding_agent"}'
+```
+
+## Guardrails you can rely on
+
+- Coding agents are sandboxed to the worktree (no escape, no network unless opened), with a
+  fixed tool allowlist and turn/budget/time caps. Reviewers are **read-only**.
+- `pr_review` never approves; destructive ops (`pr_merge`) are separate and opt-in.
+- The harness pushes to a change branch and opens/updates PRs — it does not merge or
+  force-push unless a workflow explicitly does so. Confirm with the user before merging.
+- Interactive TUI mutations require confirmation. Review/PR publication gates can be edited,
+  approved, rejected, or deferred before remote side effects happen.
+
+## TUI operations
+
+Install and launch from the repository root:
+
+```bash
+python3 -m venv tui/.venv
+tui/.venv/bin/pip install -q -r tui/requirements.txt
+CONDUCTOR_SERVER_URL=http://localhost:8080/api tui/.venv/bin/python -m tui
+```
+
+Important commands: `/dashboard`, `/open [workflowId]`, `/folder [workflowId]`,
+`/templates`, `/register`, `/sessions`, and `/help`. The dashboard uses `g` to register
+definitions. `ANTHROPIC_API_KEY` is needed for conversational chat, but forms/dashboard work
+without it.
+
+## Boundaries / gotchas
+
+- **Same-host filesystem**: the GitHub workflows clone into a temp folder and code/push there;
+  they assume one worker host (or a shared volume). Fine for a single-worker deployment.
+- **Same-repo PRs**: `issue_to_pr` / `address_pr` target repos you can push to; fork-based
+  contribution isn't wired yet.
+- **Large PRs**: `pr_review` caps the diff (~200 KB) — very large PRs get a partial review.
+- If a workflow **hangs in RUNNING** with no task progress, a SIMPLE task's worker isn't
+  polling (workers down, or `WORKER_MODULES` missing `coding_agent`/`gitops`) — check the
+  worker process, not the workflow.
+
+Full reference: [`docs/CODING_AGENT_WORKER.md`](docs/CODING_AGENT_WORKER.md). User guide with
+complete input tables: [`workers/README.md`](workers/README.md).

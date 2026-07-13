@@ -1,0 +1,11 @@
+{
+  "name": "git_pull",
+  "description": "Fetch + integrate a remote branch (rebase default; fail-soft on conflict). Input: repoPath, remote?, branch?, rebase?.",
+  "retryCount": 2,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 86400,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

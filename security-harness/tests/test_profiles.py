@@ -11,20 +11,21 @@ def test_load_missing_is_empty():
     assert profiles.load("does-not-exist") == {}
 
 
-def test_conductor_profile_loads():
-    p = profiles.load("conductor")
-    assert p.get("name") == "conductor"
-    assert p["auth"]["header"] == "X-Authorization"
-    assert any("metadata" in x for x in p["auth"]["probe_paths"])
-    assert any(f["type"] == "secret" for f in p["cleanup_families"])
-    assert any(url.startswith("https://") for url in p["documentation"])
-    playbook = p["feature_exploitation_playbook"]
-    assert {"INFRA-SSRF", "INFRA-RCE-INJECTION", "CONF-CROSS-TENANT-READ"} <= set(playbook["must_exercise"])
+def test_vuln_app_profile_loads():
+    p = profiles.load("vuln-app")
+    assert p.get("name") == "vuln-app"
+    assert p["auth"]["header"] == ""
+    assert p["auth"]["probe_paths"] == []
+    assert p["cleanup_families"] == []
+    assert {f["objective"] for f in p["expected_findings"]} == {
+        "INFRA-RCE-INJECTION",
+        "AUTHZ-FUNCTION-LEVEL",
+        "INFRA-SECRET-SURFACE",
+    }
 
 
-def test_conductor_knowledge_not_in_engine():
-    # The engine's generic probe set must not bake in Conductor endpoints; those live
-    # ONLY in the profile.
+def test_product_knowledge_not_in_engine():
+    # The engine's generic probe set must not bake in product-specific endpoints.
     assert all("metadata" not in x for x in auth._GENERIC_PROBE_PATHS)
 
 
@@ -89,7 +90,7 @@ def test_cleanup_resolves_relative_ledger_paths(monkeypatch):
     assert "app.example.com" in calls["url"]
 
 
-def test_repo_conductor_profile_is_valid_json():
+def test_repo_vuln_app_profile_is_valid_json():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    with open(os.path.join(here, "profiles", "conductor.json")) as fh:
+    with open(os.path.join(here, "profiles", "vuln-app.json")) as fh:
         json.load(fh)  # raises if invalid

@@ -1,0 +1,156 @@
+/* Harness TUI — one dark theme. */
+
+Screen {
+    background: $surface;
+}
+
+/* ---- Worker health strip (dashboard header) ---- */
+WorkerHealth {
+    height: 1;
+    padding: 0 1;
+    content-align: left middle;
+    background: $panel;
+}
+WorkerHealth.-down {
+    background: $error 30%;
+    color: $text;
+    text-style: bold;
+}
+
+/* ---- Dashboard ---- */
+#run_table {
+    height: 1fr;
+}
+#dash_hint {
+    height: 1;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+/* ---- Launcher ---- */
+#action_list {
+    height: auto;
+    max-height: 12;
+    border: round $primary;
+    margin: 1 2;
+}
+LauncherForm {
+    padding: 1 2;
+}
+LauncherForm .field-row {
+    height: auto;
+    margin-bottom: 1;
+}
+LauncherForm Label {
+    width: 18;
+    color: $text-muted;
+}
+LauncherForm .field-help {
+    color: $text-muted;
+    text-style: italic;
+}
+Preflight {
+    height: auto;
+    border-top: solid $panel;
+    padding: 1 0 0 0;
+    margin-top: 1;
+}
+Preflight.-ok  { color: $success; }
+Preflight.-bad { color: $error; }
+
+/* ---- Run detail ---- */
+#detail_body {
+    height: 1fr;
+}
+#task_tree {
+    width: 44%;
+    border-right: solid $panel;
+}
+#agent_pane {
+    width: 1fr;
+    padding: 0 1;
+}
+TurnLog {
+    height: 1fr;
+}
+ResultCard {
+    padding: 1 2;
+    height: auto;
+}
+ResultCard .rc-title { text-style: bold; }
+ResultCard .rc-link  { color: $accent; text-style: underline; }
+
+/* ---- modals ---- */
+ConfirmModal, LogsModal, NewTemplateModal, SaveTemplateModal, ApprovalModal {
+    align: center middle;
+}
+ConfirmModal > #box, LogsModal > #box, NewTemplateModal > #box,
+SaveTemplateModal > #box, ApprovalModal > #box {
+    width: 70%;
+    max-width: 100;
+    height: auto;
+    max-height: 80%;
+    border: round $primary;
+    background: $panel;
+    padding: 1 2;
+}
+NewTemplateModal #nt_scope, SaveTemplateModal .field-row { margin-top: 1; }
+
+#tpl_banner {
+    color: $accent;
+    background: $panel;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+LogsModal #log_body {
+    height: 1fr;
+    min-height: 10;
+}
+.modal-buttons {
+    height: auto;
+    align-horizontal: right;
+    margin-top: 1;
+}
+
+/* ---- chat ---- */
+#chat_header {
+    height: 1;
+    background: $panel;
+    padding: 0 1;
+}
+#transcript {
+    height: 1fr;
+    padding: 1 1 0 1;
+}
+#chat_input {
+    dock: bottom;
+    margin: 0 1 1 1;
+}
+.bubble {
+    height: auto;
+    margin-bottom: 1;
+}
+.bubble-tool { color: $text-muted; }
+.bubble-system { color: $text-muted; text-style: italic; }
+#session_list {
+    height: 1fr;
+    border: round $primary;
+    margin: 1 2;
+}
+
+/* ---- generic ---- */
+.banner-error {
+    background: $error;
+    color: $text;
+    text-style: bold;
+    padding: 1 2;
+}
+.muted { color: $text-muted; }
+
+#help_box {
+    width: auto;
+    height: auto;
+    border: round $primary;
+    background: $panel;
+    padding: 1 2;
+}

@@ -1,0 +1,11 @@
+{
+  "name": "prepare_repo",
+  "description": "Make a repo git-ready (init, local identity, initial commit) so worktree_add/commit won't fail. Idempotent. Input: repoPath.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 3600,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

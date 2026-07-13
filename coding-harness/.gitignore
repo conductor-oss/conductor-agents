@@ -1,0 +1,17 @@
+.DS_Store
+node_modules/
+spike/.work/
+**/.cc-tmp-*/
+.conductor-code/
+.cc-worktrees/
+openspec/
+/.idea
+.DS_Store
+.DS_Store
+/workers/common/__pycache__
+/workers/selfimprove
+/workers/test/__pycache__
+/workers/tests/__pycache__
+__pycache__
+examples/app-cache/
+uv.lock

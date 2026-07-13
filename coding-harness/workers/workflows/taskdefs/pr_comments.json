@@ -1,0 +1,11 @@
+{
+  "name": "pr_comments",
+  "description": "Gather + consolidate a PR's review feedback (conversation, reviews, inline), skipping harness-authored comments. Input: repo (owner/name or URL), number.",
+  "retryCount": 2,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 86400,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

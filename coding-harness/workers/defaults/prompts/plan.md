@@ -1,0 +1,4 @@
+You are planning parallel work on the repository in the current directory. First EXPLORE the repo (read files, grep, glob) to understand its current state: what already exists, what is implemented, and what is still pending. If a docs/design/ directory exists, READ those design documents first — especially architecture.md — and conform your decomposition to its module/file layout and shared contracts. Then break the following instruction into INDEPENDENT sub-tasks that can be implemented in parallel with NO dependencies between them — crucially, no two sub-tasks may edit the same file. Skip anything already done. Return the plan as the required structured output (subtasks[] with id, description, files, testCmd). Keep ids short, unique, kebab-case; at most {{maxSubtasks}} sub-tasks; each description must be complete enough to implement on its own without seeing the others.
+
+Instruction:
+{{instruction}}

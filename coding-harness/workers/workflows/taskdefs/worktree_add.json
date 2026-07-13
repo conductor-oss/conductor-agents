@@ -1,0 +1,11 @@
+{
+  "name": "worktree_add",
+  "description": "Create a group worktree + branch.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 86400,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

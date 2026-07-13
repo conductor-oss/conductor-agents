@@ -11,7 +11,22 @@ from rag import tasks as rag_tasks
 
 
 def _playbook():
-    return profiles.load("conductor")["feature_exploitation_playbook"]
+    profile = profiles.load("vuln-app")
+    objectives = list(dict.fromkeys(
+        finding["objective"] for finding in profile["expected_findings"]
+    ))
+    return {
+        "must_exercise": objectives,
+        "primitives": [
+            {
+                "objective": objective,
+                "task_type": "INLINE" if objective == "INFRA-RCE-INJECTION" else "HTTP",
+                "abuse": objective,
+                "how": "Exercise the corresponding vulnerable application endpoint.",
+            }
+            for objective in objectives
+        ],
+    }
 
 
 def _ops():
@@ -20,13 +35,13 @@ def _ops():
             "type": "workflow_registered",
             "workflow_name": "wf-http",
             "task_types": ["HTTP"],
-            "objective_id": "INFRA-SSRF",
+            "objective_id": "AUTHZ-FUNCTION-LEVEL",
         },
         {
             "type": "workflow_started",
             "workflow_name": "wf-http",
             "execution_id": "e-http",
-            "objective_id": "INFRA-SSRF",
+            "objective_id": "AUTHZ-FUNCTION-LEVEL",
         },
         {
             "type": "workflow_registered",
@@ -42,15 +57,15 @@ def _ops():
         },
         {
             "type": "workflow_registered",
-            "workflow_name": "wf-tenant",
-            "task_types": ["SUB_WORKFLOW"],
-            "objective_id": "CONF-CROSS-TENANT-READ",
+            "workflow_name": "wf-secret",
+            "task_types": ["SIMPLE"],
+            "objective_id": "INFRA-SECRET-SURFACE",
         },
         {
             "type": "workflow_started",
-            "workflow_name": "wf-tenant",
-            "execution_id": "e-tenant",
-            "objective_id": "CONF-CROSS-TENANT-READ",
+            "workflow_name": "wf-secret",
+            "execution_id": "e-secret",
+            "objective_id": "INFRA-SECRET-SURFACE",
         },
         {
             "type": "cve_attempt",
@@ -71,29 +86,29 @@ def test_feature_gate_requires_real_started_workflows_and_cve_attempt():
     )
     assert status["complete"] is True
     assert status["workflows_run"] == 3
-    assert {"HTTP", "INLINE", "SUB_WORKFLOW"} <= set(status["task_types_exercised"])
+    assert {"HTTP", "INLINE", "SIMPLE"} <= set(status["task_types_exercised"])
     assert status["cves_attempted"] == [{"cve_id": "CVE-TEST", "dependency": "pkg@1"}]
 
 
 def test_definition_without_execution_does_not_satisfy_gate():
     status = fx.evaluate(
         _playbook(),
-        [{"type": "workflow_registered", "workflow_name": "x", "task_types": ["HTTP"],
-          "objective_id": "INFRA-SSRF"}],
+        [{"type": "workflow_registered", "workflow_name": "x", "task_types": ["INLINE"],
+          "objective_id": "INFRA-RCE-INJECTION"}],
         [],
         {"cross_tenant": True},
         2,
     )
     assert status["complete"] is False
-    assert "INFRA-SSRF" in status["pending"]
+    assert "INFRA-RCE-INJECTION" in status["pending"]
 
 
 def test_capability_and_identity_gaps_are_blocked_not_silently_complete():
     status = fx.evaluate(_playbook(), [], [], {"cross_tenant": False}, 1)
     assert status["complete"] is True
     by_id = {x["id"]: x["reason"] for x in status["blocked"]}
-    assert "INFRA-SSRF" in by_id
-    assert "CONF-CROSS-TENANT-READ" in by_id
+    assert "INFRA-RCE-INJECTION" in by_id
+    assert "AUTHZ-FUNCTION-LEVEL" in by_id
 
 
 def test_mandatory_hypotheses_include_top_cve_and_product_primitives():
@@ -109,7 +124,7 @@ def test_mandatory_hypotheses_include_top_cve_and_product_primitives():
         {"admin": {"value": "x"}, "tenantB": {"value": "y"}},
     )
     assert {h["objective_id"] for h in hypotheses} >= {
-        "INFRA-SSRF", "INFRA-RCE-INJECTION", "CONF-CROSS-TENANT-READ",
+        "INFRA-RCE-INJECTION", "AUTHZ-FUNCTION-LEVEL", "INFRA-SECRET-SURFACE",
         "INFRA-SUPPLY-CHAIN",
     }
     cve = next(h for h in hypotheses if h["objective_id"] == "INFRA-SUPPLY-CHAIN")
@@ -174,19 +189,19 @@ def test_focused_objective_is_machine_required_until_exploit_agent_is_scheduled(
     assert complete["completed"] == ["CONF-BOLA-CROSS-USER"]
 
 
-def _conductor_feature_ops():
-    return json.load(open(os.path.join(REPO, "profiles", "conductor.json")))["feature_operations"]
+def _vuln_app_feature_ops():
+    return json.load(open(os.path.join(REPO, "profiles", "vuln-app.json"))).get(
+        "feature_operations", []
+    )
 
 
-def test_sandbox_records_workflow_definition_task_types_and_execution_id(monkeypatch):
+def test_sandbox_uses_generic_writes_without_profile_operation_rules(monkeypatch):
     monkeypatch.setattr(
         sandbox_sc,
         "_state",
         {"created": [], "evidence": [], "findings": [], "oob": [], "operations": []},
     )
-    # Classification is now DATA-DRIVEN: the Conductor profile's feature_operations supply the
-    # define/run/poll -> op-type mapping (the engine itself hardcodes no product API paths).
-    monkeypatch.setattr(sandbox_sc, "_FEATURE_OPS", _conductor_feature_ops())
+    monkeypatch.setattr(sandbox_sc, "_FEATURE_OPS", _vuln_app_feature_ops())
     definition = {
         "name": "sc-pentest-wf",
         "tasks": [{"name": "fetch", "taskReferenceName": "fetch", "type": "HTTP"}],
@@ -197,8 +212,12 @@ def test_sandbox_records_workflow_definition_task_types_and_execution_id(monkeyp
     sandbox_sc._record_api_operation(
         "POST", "https://target/api/workflow/sc-pentest-wf", {}, 200, "execution-123", "execution-123"
     )
-    assert sandbox_sc._state["operations"][0]["task_types"] == ["HTTP"]
-    assert sandbox_sc._state["operations"][1]["execution_id"] == "execution-123"
+    assert [op["type"] for op in sandbox_sc._state["operations"]] == [
+        "product_write", "product_write"
+    ]
+    assert [op["path"] for op in sandbox_sc._state["operations"]] == [
+        "/api/metadata/workflow", "/api/workflow/sc-pentest-wf"
+    ]
 
 
 def test_http_action_emits_secret_free_operation_record():
@@ -397,14 +416,14 @@ def test_sqli_hypothesis_routes_to_the_sql_deepen_ladder():
 
 # ── fix #2: operations are recorded at the SESSION layer (raw sc.session, not just sc.api) ──
 
-def test_raw_session_records_workflow_operations(monkeypatch):
+def test_raw_session_records_generic_write_operations(monkeypatch):
     import requests
     monkeypatch.setattr(sandbox_sc, "_state",
                         {"created": [], "evidence": [], "findings": [], "oob": [], "operations": []})
     monkeypatch.setattr(sandbox_sc, "SCOPE", {"in_scope_hosts": ["app.test"]})
     monkeypatch.setattr(sandbox_sc, "IDENTITIES", {"anon": {}})
     monkeypatch.setattr(sandbox_sc, "flush", lambda: None)
-    monkeypatch.setattr(sandbox_sc, "_FEATURE_OPS", _conductor_feature_ops())
+    monkeypatch.setattr(sandbox_sc, "_FEATURE_OPS", _vuln_app_feature_ops())
 
     class _R:
         def __init__(self, payload, text=""):
@@ -424,10 +443,12 @@ def test_raw_session_records_workflow_operations(monkeypatch):
     s = sandbox_sc.session("anon")                       # RAW session — NOT sc.api()
     s.post("https://app.test/api/metadata/workflow", json={"name": "sc-pentest-w", "tasks": [{"type": "INLINE"}]})
     s.post("https://app.test/api/workflow/sc-pentest-w", json={})
-    types = [o["type"] for o in sandbox_sc._state["operations"]]
-    assert "workflow_registered" in types and "workflow_started" in types
-    started = next(o for o in sandbox_sc._state["operations"] if o["type"] == "workflow_started")
-    assert started["execution_id"] == "exec-1"
+    assert [o["type"] for o in sandbox_sc._state["operations"]] == [
+        "product_write", "product_write"
+    ]
+    assert [o["path"] for o in sandbox_sc._state["operations"]] == [
+        "/api/metadata/workflow", "/api/workflow/sc-pentest-w"
+    ]
 
 
 def test_coverage_and_cve_completion_survive_a_truncated_ledger():

@@ -13,7 +13,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        harness: [security-harness]
+        include:
+          - harness: security-harness
+            python: "3.11"
+          - harness: coding-harness
+            python: "3.13"
     defaults:
       run:
         working-directory: ${{ matrix.harness }}
@@ -22,16 +26,26 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
 
       # Fail fast on malformed DAG / profile / benchmark JSON (the edits most likely to break a run).
       - name: Validate workflow & config JSON
+        if: matrix.harness == 'security-harness'
         run: |
           jq -e . conductor/workflows/*.json conductor/taskdefs/*.json \
                   profiles/*.json bench/targets.json bench/expected/*.json > /dev/null
           echo "all JSON valid"
 
+      - name: Validate coding-harness workflow JSON
+        if: matrix.harness == 'coding-harness'
+        run: make validate
+
       - name: Lint (ruff)
+        if: matrix.harness == 'security-harness'
+        run: make lint
+
+      - name: Lint coding harness
+        if: matrix.harness == 'coding-harness'
         run: make lint
 
       - name: Unit tests
@@ -39,4 +53,5 @@ jobs:
 
       # Serverless regression guard for the §19 hill-climbing write-back loop.
       - name: HC write-back selftest
+        if: matrix.harness == 'security-harness'
         run: workers/.venv/bin/python bench/hc_writeback.py --selftest

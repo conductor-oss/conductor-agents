@@ -1,0 +1,162 @@
+{
+  "name": "issue_to_pr",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "GitHub issue -> PR, end to end: fetch a GitHub issue, clone the repo into a temp folder, run code_parallel (decompose + parallel coding_agent forks + merge) to resolve it, push the change branch, and open a PR that closes the issue.",
+  "inputParameters": [
+    "repo",
+    "issueNumber",
+    "base",
+    "planAgent",
+    "codeAgent",
+    "designAgent",
+    "design",
+    "approvePr",
+    "planPromptTemplate",
+    "codePromptTemplate",
+    "maxSubtasks",
+    "maxTurns",
+    "maxBudgetUsd",
+    "timeoutS"
+  ],
+  "inputTemplate": {
+    "base": "main",
+    "planAgent": "claude",
+    "codeAgent": "claude",
+    "designAgent": "claude",
+    "design": false,
+    "approvePr": false,
+    "planPromptTemplate": "",
+    "codePromptTemplate": "",
+    "maxSubtasks": 4,
+    "maxTurns": 30,
+    "maxBudgetUsd": 2.0,
+    "timeoutS": 600
+  },
+  "tasks": [
+    {
+      "name": "issue_fetch",
+      "taskReferenceName": "issue",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repo": "${workflow.input.repo}",
+        "number": "${workflow.input.issueNumber}"
+      }
+    },
+    {
+      "name": "git_clone",
+      "taskReferenceName": "clone",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoUrl": "${workflow.input.repo}",
+        "dest": "/tmp/issue_${workflow.input.issueNumber}_${workflow.workflowId}"
+      }
+    },
+    {
+      "name": "code_parallel",
+      "taskReferenceName": "cp",
+      "type": "SUB_WORKFLOW",
+      "subWorkflowParam": {
+        "name": "code_parallel",
+        "version": 1
+      },
+      "inputParameters": {
+        "repoPath": "${clone.output.repoPath}",
+        "instruction": "Resolve the following GitHub issue in this repository. Make the minimal, focused change the issue asks for and nothing more.\n\nIssue #${workflow.input.issueNumber}: ${issue.output.title}\n\n${issue.output.body}",
+        "changeBranch": "harness/issue-${workflow.input.issueNumber}",
+        "design": "${workflow.input.design}",
+        "designAgent": "${workflow.input.designAgent}",
+        "planAgent": "${workflow.input.planAgent}",
+        "codeAgent": "${workflow.input.codeAgent}",
+        "planPromptTemplate": "${workflow.input.planPromptTemplate}",
+        "codePromptTemplate": "${workflow.input.codePromptTemplate}",
+        "maxSubtasks": "${workflow.input.maxSubtasks}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "timeoutS": "${workflow.input.timeoutS}"
+      }
+    },
+    {
+      "name": "approve_gate",
+      "taskReferenceName": "approve_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "approvePr",
+      "inputParameters": {
+        "approvePr": "${workflow.input.approvePr}"
+      },
+      "decisionCases": {
+        "true": [
+          {
+            "name": "pr_gate",
+            "taskReferenceName": "pr_gate",
+            "type": "HUMAN",
+            "inputParameters": {
+              "workflow": "issue_to_pr",
+              "issueNumber": "${workflow.input.issueNumber}",
+              "repoPath": "${clone.output.repoPath}",
+              "subtasks": "${cp.output.subtasks}",
+              "draft": {
+                "title": "Resolve #${workflow.input.issueNumber}: ${issue.output.title}",
+                "body": "Closes #${workflow.input.issueNumber}\n\nAutomated resolution by the Conductor coding harness (code_parallel).\n\n> ${issue.output.title}",
+                "base": "${workflow.input.base}",
+                "head": "harness/issue-${workflow.input.issueNumber}"
+              }
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "final_pr",
+      "taskReferenceName": "final_pr",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "approvePr": "${workflow.input.approvePr}",
+        "gatedTitle": "${pr_gate.output.title}",
+        "gatedBody": "${pr_gate.output.body}",
+        "autoTitle": "Resolve #${workflow.input.issueNumber}: ${issue.output.title}",
+        "autoBody": "Closes #${workflow.input.issueNumber}\n\nAutomated resolution by the Conductor coding harness (code_parallel).\n\n> ${issue.output.title}",
+        "queryExpression": "if (.approvePr == true or .approvePr == \"true\") then { title: .gatedTitle, body: .gatedBody } else { title: .autoTitle, body: .autoBody } end"
+      }
+    },
+    {
+      "name": "git_push",
+      "taskReferenceName": "push",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${clone.output.repoPath}",
+        "branch": "harness/issue-${workflow.input.issueNumber}",
+        "setUpstream": true
+      }
+    },
+    {
+      "name": "pr_create",
+      "taskReferenceName": "pr",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${clone.output.repoPath}",
+        "title": "${final_pr.output.result.title}",
+        "body": "${final_pr.output.result.body}",
+        "base": "${workflow.input.base}",
+        "head": "harness/issue-${workflow.input.issueNumber}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "issueNumber": "${issue.output.number}",
+    "issueTitle": "${issue.output.title}",
+    "repoPath": "${clone.output.repoPath}",
+    "changeBranch": "harness/issue-${workflow.input.issueNumber}",
+    "subtasks": "${cp.output.subtasks}",
+    "totalTokens": "${cp.output.totalTokens}",
+    "totalCostUsd": "${cp.output.totalCostUsd}",
+    "merged": "${cp.output.merged}",
+    "conflicts": "${cp.output.conflicts}",
+    "pushed": "${push.output.pushed}",
+    "prNumber": "${pr.output.number}",
+    "prUrl": "${pr.output.url}"
+  }
+}

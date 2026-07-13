@@ -1,0 +1,67 @@
+{
+  "name": "design_docs",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "Generate a coherent set of design docs for a change with a single coding_agent session (backend-selectable Claude/Codex; reads the repo), then commit them to the current branch. Used as a sub-workflow by code_parallel's optional design phase; also runnable standalone.",
+  "inputParameters": [
+    "repoPath",
+    "instruction",
+    "designDir",
+    "designAgent",
+    "designModel",
+    "designPromptTemplate",
+    "designMaxTurns",
+    "designMaxBudgetUsd",
+    "timeoutS"
+  ],
+  "inputTemplate": {
+    "designDir": "docs/design",
+    "designAgent": "claude",
+    "designModel": "",
+    "designPromptTemplate": "",
+    "designMaxTurns": 40,
+    "designMaxBudgetUsd": 1.5,
+    "timeoutS": 600
+  },
+  "tasks": [
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "design",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "worktreePath": "${workflow.input.repoPath}",
+        "agent": "${workflow.input.designAgent}",
+        "model": "${workflow.input.designModel}",
+        "maxTurns": "${workflow.input.designMaxTurns}",
+        "maxBudgetUsd": "${workflow.input.designMaxBudgetUsd}",
+        "timeoutS": "${workflow.input.timeoutS}",
+        "templateKey": "design",
+        "promptTemplate": "${workflow.input.designPromptTemplate}",
+        "promptContext": {
+          "instruction": "${workflow.input.instruction}",
+          "designDir": "${workflow.input.designDir}"
+        },
+        "prompt": "You are a senior software architect. Produce a set of detailed, MUTUALLY CONSISTENT design documents for the change described below, written as GitHub-flavored markdown files under the ${workflow.input.designDir}/ directory of the current repository.\n\nThe current file listing is already provided above — use it to see what exists; do NOT re-list the directory. Read AT MOST a couple of existing files if you genuinely need context, then design.\n\nCONVERGE — this is a bounded writing task, not an iterative one:\n- Write ${workflow.input.designDir}/architecture.md FIRST — the single source of truth: overview & tech stack, the COMPLETE module/file layout (every file to create and its responsibility), and the SHARED contracts (exact types, interfaces, data model, and naming conventions every component reuses verbatim).\n- Then write about 2 to 3 focused supporting docs as SEPARATE files ONLY where they add value (e.g. data-model.md, api.md, sdk.md, testing.md), each reusing architecture.md's names/types/layout exactly.\n- Write each document EXACTLY ONCE with the Write tool, in a single decisive pass. Do NOT re-open, re-read, or polish a document you have already written. When the set is written, STOP.\n\nWrite ONLY markdown design docs under ${workflow.input.designDir}/ — do NOT write any application/source code, and do not run build/test commands. Requirements:\n\n${workflow.input.instruction}"
+      }
+    },
+    {
+      "name": "commit",
+      "taskReferenceName": "commit_design",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "message": "design docs (${workflow.input.designDir})"
+      }
+    }
+  ],
+  "outputParameters": {
+    "filesChanged": "${design.output.filesChanged}",
+    "agent": "${design.output.agent}",
+    "costUsd": "${design.output.costUsd}",
+    "tokenUsed": "${design.output.tokenUsed}",
+    "sessionId": "${design.output.sessionId}",
+    "designCommit": "${commit_design.output.commit}"
+  }
+}

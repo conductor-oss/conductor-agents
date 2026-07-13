@@ -1,0 +1,106 @@
+{
+  "name": "github_demo",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "End-to-end remote demo: clone a GitHub repo, branch, make a coding_agent change, commit, push the branch, and open a PR. Shows the full local-change-to-PR loop using the new remote githops tasks.",
+  "inputParameters": [
+    "repoUrl",
+    "instruction",
+    "changeBranch",
+    "base",
+    "agent",
+    "model",
+    "prTitle",
+    "maxTurns",
+    "maxBudgetUsd",
+    "timeoutS"
+  ],
+  "inputTemplate": {
+    "changeBranch": "conductor-harness-change",
+    "base": "",
+    "agent": "claude",
+    "model": "",
+    "prTitle": "",
+    "maxTurns": 30,
+    "maxBudgetUsd": 2.0,
+    "timeoutS": 600
+  },
+  "tasks": [
+    {
+      "name": "git_clone",
+      "taskReferenceName": "clone",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoUrl": "${workflow.input.repoUrl}",
+        "dest": "/tmp/gh_demo_${workflow.workflowId}"
+      }
+    },
+    {
+      "name": "create_branch",
+      "taskReferenceName": "branch",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${clone.output.repoPath}",
+        "name": "${workflow.input.changeBranch}"
+      }
+    },
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "code",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "worktreePath": "${clone.output.repoPath}",
+        "prompt": "${workflow.input.instruction}",
+        "agent": "${workflow.input.agent}",
+        "model": "${workflow.input.model}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "timeoutS": "${workflow.input.timeoutS}"
+      }
+    },
+    {
+      "name": "commit",
+      "taskReferenceName": "cmt",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${clone.output.repoPath}",
+        "message": "${workflow.input.instruction}"
+      }
+    },
+    {
+      "name": "git_push",
+      "taskReferenceName": "push",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${clone.output.repoPath}",
+        "branch": "${workflow.input.changeBranch}",
+        "setUpstream": true
+      }
+    },
+    {
+      "name": "pr_create",
+      "taskReferenceName": "pr",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${clone.output.repoPath}",
+        "title": "${workflow.input.prTitle}",
+        "body": "Automated change by the Conductor coding harness.\n\nInstruction:\n${workflow.input.instruction}",
+        "base": "${workflow.input.base}",
+        "head": "${workflow.input.changeBranch}",
+        "fill": false
+      }
+    }
+  ],
+  "outputParameters": {
+    "repoPath": "${clone.output.repoPath}",
+    "branch": "${workflow.input.changeBranch}",
+    "filesChanged": "${code.output.filesChanged}",
+    "tokenUsed": "${code.output.tokenUsed}",
+    "costUsd": "${code.output.costUsd}",
+    "commit": "${cmt.output.commit}",
+    "pushed": "${push.output.pushed}",
+    "prNumber": "${pr.output.number}",
+    "prUrl": "${pr.output.url}"
+  }
+}

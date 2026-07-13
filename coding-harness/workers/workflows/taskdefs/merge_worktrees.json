@@ -1,0 +1,11 @@
+{
+  "name": "merge_worktrees",
+  "description": "Merge group branches into the change branch; agent resolves conflicts.",
+  "retryCount": 0,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 86400,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

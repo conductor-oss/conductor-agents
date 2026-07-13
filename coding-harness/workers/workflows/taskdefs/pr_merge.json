@@ -1,0 +1,11 @@
+{
+  "name": "pr_merge",
+  "description": "Merge a PR (gh pr merge; squash|rebase|merge). Destructive, opt-in, no retry. Input: repoPath, number, method?, deleteBranch?, auto?.",
+  "retryCount": 0,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 86400,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}
