@@ -30,7 +30,7 @@ In a second terminal, point the harness at any local checkout:
 ```bash
 export CONDUCTOR_SERVER_URL=http://localhost:8080/api
 conductor workflow start --workflow code_parallel --input \
-  '{"repoPath":"/absolute/path/to/repo","instruction":"Add a health endpoint and tests"}'
+  '{"repoPath":"/absolute/path/to/repo","instruction":"Add a health endpoint and tests","design":false}'
 ```
 
 The command returns a workflow ID. Watch it with
@@ -71,6 +71,10 @@ Ask chat to “register/update the workflows”, use `/register`, or press `g` o
 whenever definitions change. The TUI confirms the target server, updates the definitions, and
 runs the SIMPLE-task worker gate before reporting success. Chat starts at most one workflow per
 user message; when the requested action is ambiguous, it asks which workflow you want first.
+Before any `code_parallel` path starts, chat also asks whether you want design docs. Choosing
+design enables an iterative human review gate by default: approve to continue to coding, or give
+feedback for another design pass. You can opt into an automated read-only judge instead; its
+review and loop limits default to 5 and are configurable.
 
 ## How it works
 

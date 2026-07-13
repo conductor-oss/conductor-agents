@@ -69,8 +69,20 @@ async def test_start_injects_gate_default_unless_overridden():
     # A later user turn gets a fresh context; issue_to_pr gets approvePr by default.
     ctx, _ = _ctx(fc)
     await tools.dispatch("start_workflow",
-                         {"workflow": "issue_to_pr", "inputs": {"repo": "acme/app", "issueNumber": 3}}, ctx)
-    assert fc.started[-1] == ("issue_to_pr", {"repo": "acme/app", "issueNumber": 3, "approvePr": True})
+                         {"workflow": "issue_to_pr", "inputs": {"repo": "acme/app", "issueNumber": 3,
+                                                                  "design": False}}, ctx)
+    assert fc.started[-1] == ("issue_to_pr", {"repo": "acme/app", "issueNumber": 3,
+                                               "design": False, "approvePr": True})
+
+
+@pytest.mark.asyncio
+async def test_code_parallel_paths_require_explicit_design_choice():
+    fc = FakeClient()
+    ctx, _ = _ctx(fc)
+    out = await tools.dispatch("start_workflow", {"workflow": "code_parallel", "inputs": {"repoPath": "/tmp/repo", "instruction": "fix it"}}, ctx)
+    assert "design choice required" in out and not fc.started
+    out = await tools.dispatch("start_workflow", {"workflow": "code_parallel", "inputs": {"repoPath": "/tmp/repo", "instruction": "fix it", "design": False}}, ctx)
+    assert "started code_parallel" in out and fc.started[-1][1]["design"] is False
 
 
 @pytest.mark.asyncio
@@ -147,6 +159,7 @@ def test_prompt_mentions_workflows():
     assert "at most ONE workflow" in p
     assert "register_workflows" in p
     assert "ambiguous" in p
+    assert "explicitly ask whether the user wants design docs" in p
 
 
 # --------------------------------------------------------------------------- llm loop (stubbed)

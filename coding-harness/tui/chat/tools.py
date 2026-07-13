@@ -60,6 +60,8 @@ TOOLS = [
             "they want. Workflows and their REQUIRED inputs: "
             "pr_review{repo, prNumber}, issue_to_pr{repo, issueNumber}, "
             "address_pr{repo, prNumber}, code_parallel{repoPath, instruction}. "
+            "For code_parallel, issue_to_pr, and address_pr with engine=code_parallel, "
+            "inputs MUST include design:true or design:false after asking the user. "
             "Optional inputs (agent/backend, engine, design, maxSubtasks, model, base, …) "
             "may be included; anything omitted uses the workflow default. pr_review and "
             "issue_to_pr pause for human review by default when started here (the drafted "
@@ -209,6 +211,12 @@ async def _start(i: dict, ctx: ToolContext) -> str:
     inputs = i.get("inputs") or {}
     if wf not in catalog.CATALOG:
         return f"error: unknown workflow {wf!r}. Choose one of: {', '.join(_STARTABLE)}"
+    uses_code_parallel = wf in ("code_parallel", "issue_to_pr") or (
+        wf == "address_pr" and inputs.get("engine", "code_parallel") == "code_parallel"
+    )
+    if uses_code_parallel and not isinstance(inputs.get("design"), bool):
+        return (f"design choice required for {wf}: ask the user whether to create design "
+                "docs, then pass design:true or design:false. No workflow was started.")
     missing = [k for k in _required_inputs(wf) if k not in inputs or inputs.get(k) in (None, "")]
     if missing:
         return f"missing required inputs for {wf}: {', '.join(missing)} — ask the user for them."

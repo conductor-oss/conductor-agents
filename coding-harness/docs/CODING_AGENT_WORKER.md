@@ -597,7 +597,7 @@ requirements into a set of detailed design docs, **commits them to the change br
 planner + every coding fork read them — so the parallel work shares one coherent design.
 
 It's a `design_gate` SWITCH that runs the **`design_docs` sub-workflow**
-(`workers/workflows/design_docs.json`) — two tasks:
+(`workers/workflows/design_docs.json`). That workflow is a bounded `DO_WHILE` review loop:
 
 1. `design` (**`coding_agent`**, write mode) — a single agent session writes the whole doc set
    under `docs/design/`: `architecture.md` first (the single source of truth — file layout +
@@ -605,7 +605,12 @@ It's a `design_gate` SWITCH that runs the **`design_docs` sub-workflow**
    reuse those contracts. **One session authors them all, so they're mutually consistent** — no
    cross-doc reconciliation needed. Backend-selectable via `designAgent` (Claude or Codex), and
    it reads the existing repo (brownfield-aware).
-2. `commit_design` (`commit`) — commits `docs/design/` onto the change branch.
+2. Review the pass. With `designHumanApproval:true` (the default), a `HUMAN` task pauses the
+   workflow. Approval exits the loop; rejection completes the gate with actionable feedback and
+   the next authoring pass revises the docs. With human review disabled, a read-only
+   `coding_agent` judge (`Read`, `Grep`, `Glob` only) emits structured approval + feedback.
+3. `commit_design` (`commit`) — runs only after approval and commits `docs/design/` onto the
+   change branch. Exhausting the iteration cap fails closed and coding never starts.
 
 Because the docs are committed **before** the fork, each `code_subtask` worktree inherits them
 (git `worktree add` branches off HEAD) and the fork's `coding_agent` reads them — the plan and
@@ -618,14 +623,18 @@ plumbing.
 | `designAgent` | `claude` | Backend that authors the docs (`claude` or `codex`). |
 | `designModel` | `""` (backend default) | Model for the design agent; empty = the chosen backend's own default. |
 | `designDir` | `docs/design` | Committed directory the docs are written to. |
-| `designMaxTurns` | `25` | Turn cap for the design agent session. |
+| `designMaxTurns` | `40` | Turn cap for each design-author session. |
+| `designHumanApproval` | `true` | Pause for human approval/feedback after every pass. False uses the LLM judge. |
+| `designMaxIterations` | `5` | Maximum author/review passes; configurable higher. |
+| `designReviewAgent` / `designReviewModel` | `claude` / `""` | Backend/model used by the automated judge. |
+| `designReviewMaxTurns` | `5` | Tool-turn cap for each automated judge pass; configurable higher. |
 
 Notes:
 - Uses **`coding_agent`**, not `claude_code` — so design is backend-selectable and an all-Codex
   run (`designAgent`/`codeAgent`: `codex`) authors design on Codex too. `code_parallel` no longer
   needs the `claude_code` module; `WORKER_MODULES=coding_agent,gitops` suffices for every path.
-- Single-session authorship is the consistency mechanism (vs. generating docs in isolation, which
-  can diverge on names/types).
+- Single-session authorship within each pass plus feedback-driven revision is the consistency
+  mechanism (vs. generating docs in isolation, which can diverge on names/types).
 - Verified end-to-end: one Claude session wrote 5 consistent docs (architecture + api / data-model
   / testing / ui) where `architecture.md` declares itself the source of truth the others cite; all
   committed ahead of the fork and read by the planner + coders.

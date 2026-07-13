@@ -55,9 +55,13 @@ convenience (the working dir must be on the machine running the TUI); most usefu
 **code_parallel** (which has no PR) and **design_docs** (read/edit the generated markdown).
 GitHub-flow runs still review via the PR (`o`).
 
-**Design review loop.** `design_docs` is a launchable action: generate a set of markdown
-design docs into a repo, `e` to open and review/edit them in your editor, then run
-`code_parallel` (design off) which builds to them.
+**Design review loop.** Before chat starts `code_parallel` (directly or through a GitHub
+workflow), it asks whether you want design docs and waits for an explicit yes/no. If enabled,
+`design_docs` writes the docs and pauses at a human gate after each pass: **Approve** continues to
+coding; **Request changes** requires feedback and revises the docs in the next pass. Turn off
+human review to use a read-only LLM judge. Design iterations and judge tool turns both default to
+5 and can be raised in Advanced settings. The standalone `design_docs` launcher uses the same
+loop.
 
 **Prompt templates.** A *Prompt template* fully overrides an agent step's prompt (blank =
 built-in). When you launch a workflow, a **Prompt template** picker at the top of the form lists

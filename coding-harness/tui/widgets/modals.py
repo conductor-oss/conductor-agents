@@ -11,7 +11,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, RichLog, Static
+from textual.widgets import Button, Input, Label, RichLog, Static, TextArea
 
 
 class LogsModal(ModalScreen):
@@ -366,13 +366,21 @@ class ApprovalModal(ModalScreen):
             yield Label(self._heading())
             with VerticalScroll(id="approval_body"):
                 yield Static(self._draft_text(), id="approval_content")
-            yield Static("edit then Approve to post the edited version", classes="muted",
-                        id="approval_hint")
+                if self._workflow == "design_docs":
+                    yield Label("Feedback for the next design pass", classes="muted")
+                    yield TextArea("", id="design_feedback")
+            hint = ("Approve the design, or provide feedback and request another pass"
+                    if self._workflow == "design_docs"
+                    else "edit then Approve to post the edited version")
+            yield Static(hint, classes="muted", id="approval_hint")
             yield Static("", id="approval_error", classes="banner-error")
             with Horizontal(classes="modal-buttons"):
                 yield Button("Approve ✓", variant="success", id="approve")
-                yield Button("Edit ✎", id="edit")
-                yield Button("Reject ✗", variant="error", id="reject")
+                if self._workflow != "design_docs":
+                    yield Button("Edit ✎", id="edit")
+                reject_label = "Request changes ↻" if self._workflow == "design_docs" else "Reject ✗"
+                yield Button(reject_label, variant="warning" if self._workflow == "design_docs" else "error",
+                             id="reject")
                 yield Button("Later", id="defer")
 
     def on_mount(self) -> None:
@@ -380,6 +388,8 @@ class ApprovalModal(ModalScreen):
         self.query_one("#approve", Button).focus()
 
     def _heading(self) -> str:
+        if self._workflow == "design_docs":
+            return "Review the design before coding starts"
         if self._workflow == "issue_to_pr":
             tgt = f" for issue #{self._issue_number}" if self._issue_number else ""
             return f"Review the pull request{tgt} before it opens"
@@ -389,7 +399,18 @@ class ApprovalModal(ModalScreen):
     def _draft_text(self) -> Text:
         d = self._draft
         t = Text()
-        if self._workflow == "issue_to_pr":
+        if self._workflow == "design_docs":
+            t.append("Design directory: ", style="bold")
+            t.append(str(d.get("designDir", "docs/design")) + "\n")
+            files = d.get("filesChanged") or []
+            t.append("Files changed: ", style="bold")
+            t.append(", ".join(str(x) for x in files) if isinstance(files, list) else str(files))
+            t.append("\n\nAgent summary:\n", style="bold")
+            t.append(str(d.get("summary", "")).strip() + "\n")
+            return t
+        if self._workflow == "design_docs":
+            output = {"approved": True, "feedback": ""}
+        elif self._workflow == "issue_to_pr":
             t.append("Title: ", style="bold"); t.append(f"{d.get('title', '')}\n")
             if d.get("base") or d.get("head"):
                 t.append("Branch: ", style="bold")
@@ -463,6 +484,13 @@ class ApprovalModal(ModalScreen):
         self._decide("COMPLETED", output)
 
     def action_reject(self) -> None:
+        if self._workflow == "design_docs":
+            feedback = self.query_one("#design_feedback", TextArea).text.strip()
+            if not feedback:
+                self._error("Add actionable feedback before requesting another design pass.")
+                return
+            self._decide("COMPLETED", {"approved": False, "feedback": feedback})
+            return
         self._decide("FAILED_WITH_TERMINAL_ERROR", {"approved": False})
 
     def action_edit(self) -> None:

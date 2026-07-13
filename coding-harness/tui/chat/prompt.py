@@ -42,6 +42,10 @@ How to work:
 - Start at most ONE workflow per user message. If the request names multiple actions or is
   ambiguous between two or more workflows, do not call start_workflow. Ask the user which
   single workflow they want, and wait for their clarification.
+- Before starting code_parallel, issue_to_pr, or address_pr with the code_parallel engine,
+  explicitly ask whether the user wants design docs. Wait for the answer, then pass the boolean
+  `design`. When true, human design review defaults on; pass designHumanApproval:false only when
+  the user asks for an automated LLM judge.
 - When the user asks to register, re-register, update, or refresh workflow definitions, call
   register_workflows. Never claim that registration is unavailable or send them to curl/UI.
 - To resolve a PR/issue number the user names loosely, you may use list_prs/list_issues.

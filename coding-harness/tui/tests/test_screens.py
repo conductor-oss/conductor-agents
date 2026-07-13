@@ -335,6 +335,13 @@ def _pr_review_gate_execution() -> dict:
     }
 
 
+def _design_gate_execution() -> dict:
+    return {"workflowId": "wf-design-gate", "workflowType": "design_docs", "status": "RUNNING", "startTime": 1000,
+            "input": {"repoPath": "/tmp/app", "instruction": "Design the change"},
+            "tasks": [{"referenceTaskName": "design", "taskDefName": "coding_agent", "taskType": "SIMPLE", "status": "COMPLETED", "taskId": "d1", "outputData": {"filesChanged": ["docs/design/architecture.md"]}},
+                      {"referenceTaskName": "design_review", "taskType": "HUMAN", "status": "IN_PROGRESS", "taskId": "design-review-1", "inputData": {"workflow": "design_docs", "draft": {"designDir": "docs/design", "filesChanged": ["docs/design/architecture.md"], "summary": "Initial design"}}}]}
+
+
 def test_pending_gate_detection():
     run, tasks = api.parse_execution(_pr_review_gate_execution())
     d = api.RunDetail(run=run, tasks=tasks)
@@ -378,6 +385,23 @@ async def test_run_detail_gate_reject_fails_run():
         _, ref, status, output = fc.signals[-1]
         assert ref == "review_gate" and status == "FAILED_WITH_TERMINAL_ERROR"
         assert output["approved"] is False
+
+
+@pytest.mark.asyncio
+async def test_design_gate_requests_changes_with_feedback_and_keeps_loop_alive():
+    fc = FakeClient(execution=_design_gate_execution())
+    app = _app(fc)
+    async with app.run_test(size=(140, 45)) as pilot:
+        from textual.widgets import TextArea
+        from tui.screens.run_detail import RunDetail
+        from tui.widgets.modals import ApprovalModal
+        await pilot.pause(0.2); app.push_screen(RunDetail("wf-design-gate")); await pilot.pause(0.6)
+        assert isinstance(app.screen, ApprovalModal)
+        app.screen.query_one("#design_feedback", TextArea).text = "Specify rollback semantics."
+        await pilot.click("#reject"); await pilot.pause(0.5)
+        _, ref, status, output = fc.signals[-1]
+        assert ref == "design_review" and status == "COMPLETED"
+        assert output == {"approved": False, "feedback": "Specify rollback semantics."}
 
 
 @pytest.mark.asyncio
