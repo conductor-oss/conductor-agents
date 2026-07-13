@@ -49,7 +49,7 @@ conductor workflow start --workflow issue_to_pr -i '{
 ```
 
 If no server is running, start one first with `conductor server start` (Java 21+).
-After definitions change, rerun `./workers/register.sh`, or use `/register` in TUI chat /
+After definitions change, rerun `./workers/register.sh`, ask TUI chat to register them, use `/register`, or
 `g` on the dashboard. Registration updates definitions and verifies the SIMPLE-task worker gate.
 
 Watch progress in the Conductor UI or with `conductor workflow status <id>` — the coding
@@ -91,7 +91,10 @@ on a **local path** (`repoPath`); it doesn't clone or push (the GitHub workflows
 | `repoPath` | **required** | Local directory to work in. Need not be a git repo — it's initialized if needed. |
 | `instruction` | **required** | The coding goal to decompose and implement. |
 | `changeBranch` | `code-parallel` | Branch the parallel work merges into. |
-| `design` | `false` | If true, first generate design docs (`design_docs` sub-workflow) the coders conform to. |
+| `design` | `false` | Explicit choice: if true, generate and approve design docs before coding. The TUI always asks. |
+| `designHumanApproval` | `true` | Pause after each design pass for approval or actionable feedback. False uses the read-only LLM judge. |
+| `designMaxIterations` | `5` | Maximum design/review passes before the workflow fails closed; may be raised. |
+| `designReviewMaxTurns` | `5` | Tool-turn cap for each automated judge pass; may be raised. |
 | `maxSubtasks` | `6` | Upper bound on the parallel fan-out. |
 | `planAgent` / `codeAgent` / `designAgent` | `claude` | Backend for the planner / coders / design step. |
 | `planModel` / `codeModel` / `designModel` | `""` | Model id; empty = the backend's default. |
@@ -123,7 +126,9 @@ branch, and open a PR whose body closes the issue.
 | `repo` | **required** | Repo URL or `owner/name`. |
 | `issueNumber` | **required** | Issue to resolve. |
 | `base` | `main` | Base branch for the PR. |
-| `design` | `false` | Generate design docs first (for larger issues). |
+| `design` | `false` | Explicit choice: generate and approve design docs before coding. The TUI always asks. |
+| `designHumanApproval` | `true` | Human review each pass; false selects the automated read-only judge. |
+| `designMaxIterations` / `designReviewMaxTurns` | `5` / `5` | Bounded design passes and judge tool turns; both are configurable. |
 | `maxSubtasks` | `4` | Parallel fan-out cap. |
 | `planAgent` / `codeAgent` / `designAgent` | `claude` | Backends. |
 | `maxTurns` / `maxBudgetUsd` / `timeoutS` | `30` / `2.0` / `600` | Per-agent caps. |
@@ -206,9 +211,12 @@ edit, commit, push, open a PR. Good for smoke-testing GitHub connectivity.
 
 ### Internal sub-workflows
 
-- **`design_docs`** — one `coding_agent` session writes a consistent set of design docs under
-  `docs/design/` and commits them. Invoked by `code_parallel` when `design:true`; runnable
-  standalone (`repoPath`, `instruction`, `designDir`, `designAgent`/`designModel`, caps).
+- **`design_docs`** — iteratively writes a consistent set of design docs under `docs/design/`,
+  reviews each pass, and commits only an approved design. Human review is the default: approve to
+  exit, or submit feedback that drives the next pass. With `humanApproval:false`, a read-only
+  `coding_agent` judge reviews instead. Both `designMaxIterations` and
+  `designReviewMaxTurns` default to 5 and can be raised. Invoked by `code_parallel` when
+  `design:true`; also runnable standalone.
 - **`code_subtask`** — one parallel unit of `code_parallel` (`worktree_add → coding_agent →
   commit`). Driven by the dynamic fork; not called directly.
 

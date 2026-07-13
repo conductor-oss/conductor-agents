@@ -75,3 +75,28 @@ def test_target_and_result_helpers():
     card = catalog.result_for("pr_review", {"reviewUrl": "http://x/pull/7", "event": "COMMENT", "inlineCount": 2})
     assert card and card.primary_url == "http://x/pull/7"
     assert catalog.short_repo("git@github.com:acme/app.git") == "acme/app"
+
+
+def test_design_docs_is_bounded_review_loop():
+    wf = _load("design_docs")
+    assert wf["inputTemplate"]["humanApproval"] is True
+    assert wf["inputTemplate"]["designMaxIterations"] == 5
+    assert wf["inputTemplate"]["designReviewMaxTurns"] == 5
+    loop = wf["tasks"][0]
+    assert loop["type"] == "DO_WHILE" and loop["evaluatorType"] == "graaljs"
+    assert "$.design_loop['iteration'] < $.max_iterations" in loop["loopCondition"]
+    review = next(t for t in loop["loopOver"] if t["taskReferenceName"] == "review_mode")
+    assert any(t["type"] == "HUMAN" for t in review["decisionCases"]["true"])
+    judge = next(t for t in review["defaultCase"] if t["taskReferenceName"] == "design_judge")
+    assert judge["inputParameters"]["maxTurns"] == "${workflow.input.designReviewMaxTurns}"
+
+
+@pytest.mark.parametrize("wf_name", ["code_parallel", "issue_to_pr", "address_pr"])
+def test_code_parallel_paths_forward_design_review_controls(wf_name):
+    wf = _load(wf_name)
+    template = wf["inputTemplate"]
+    assert template["design"] is False and template["designHumanApproval"] is True
+    assert template["designMaxIterations"] == 5 and template["designReviewMaxTurns"] == 5
+    serialized = json.dumps(wf)
+    for key in ("designHumanApproval", "designMaxIterations", "designReviewMaxTurns"):
+        assert f"${{workflow.input.{key}}}" in serialized

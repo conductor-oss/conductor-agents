@@ -108,6 +108,14 @@ Only the **required** inputs must be set; everything else has sane defaults. Ful
 Internal workflows are `design_docs` and `code_subtask`; normally let `code_parallel`
 invoke them rather than starting them directly.
 
+Before starting `code_parallel`, `issue_to_pr`, or `address_pr` with its default
+`code_parallel` engine, explicitly ask whether the user wants design docs and pass `design:true`
+or `design:false`. Never infer the choice. When enabled, human design review is the default:
+approval exits the bounded design loop, while feedback triggers a revision. Set
+`designHumanApproval:false` only when the user wants the read-only LLM judge. The defaults are
+five design iterations and five judge tool turns; use `designMaxIterations` and
+`designReviewMaxTurns` when the user requests higher limits.
+
 Shared tuning knobs (all optional): `maxTurns`, `maxBudgetUsd`, `timeoutS`, `*Model` (`""` =
 backend default). Backends: `claude` (default) | `codex` | `gemini`, or inferred from a
 `*Model` id.
@@ -169,6 +177,11 @@ Important commands: `/dashboard`, `/open [workflowId]`, `/folder [workflowId]`,
 `/templates`, `/register`, `/sessions`, and `/help`. The dashboard uses `g` to register
 definitions. `ANTHROPIC_API_KEY` is needed for conversational chat, but forms/dashboard work
 without it.
+
+Chat may start at most one workflow per user message. If a request could map to multiple
+workflows, it asks the user to choose one before starting anything. Natural-language requests
+to register, re-register, update, or refresh definitions invoke the same confirmed registration
+flow as `/register`, including the SIMPLE-task worker gate.
 
 ## Boundaries / gotchas
 

@@ -165,8 +165,12 @@ class RunDetail(Screen):
     async def signal_gate(self, gate: TaskNode, status: str, output: dict) -> None:
         try:
             await self.app.client.signal_task(self._id, gate.ref, status, output)
-            self.notify("approved — posting…" if status == "COMPLETED"
-                        else "rejected — the run will fail")
+            if gate.input.get("workflow") == "design_docs" and status == "COMPLETED":
+                self.notify("design approved — continuing…" if output.get("approved")
+                            else "feedback submitted — revising the design…")
+            else:
+                self.notify("approved — posting…" if status == "COMPLETED"
+                            else "rejected — the run will fail")
         except ConductorError as e:
             self._gate_prompted.discard(gate.task_id)   # let them retry the decision
             self.notify(f"could not submit decision: {e}", severity="error")

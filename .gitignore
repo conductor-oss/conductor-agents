@@ -39,3 +39,5 @@
 **/.scratch/
 /.idea
 /security-harness/manifests
+/site
+/security-harness/blog
