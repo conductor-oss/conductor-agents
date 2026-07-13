@@ -1,0 +1,67 @@
+{
+  "name": "sast_hunt_core",
+  "version": 1,
+  "description": "Reusable source-code hunt: seed focused leads (entry points / dependency CVEs / objective sweeps), fan out one sast_hunt_agent per lead, and collect + dedupe the emitted attack hypotheses. Output is a hypotheses[] list in the standard hypothesis schema (usable for source-only reporting AND as live exploit-loop fuel).",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 3600,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["source_path", "routes", "cve_leads", "catalog_objectives", "identities", "max_steps", "max_leads", "oob_available"],
+  "tasks": [
+    {
+      "name": "build_hunt_leads",
+      "taskReferenceName": "build_hunt_leads",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "routes": "${workflow.input.routes}",
+        "cve_leads": "${workflow.input.cve_leads}",
+        "catalog_objectives": "${workflow.input.catalog_objectives}",
+        "max_leads": "${workflow.input.max_leads}"
+      }
+    },
+    {
+      "name": "build_hunt_jobs",
+      "taskReferenceName": "build_hunt_jobs",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "leads": "${build_hunt_leads.output.leads}",
+        "source_path": "${workflow.input.source_path}",
+        "max_steps": "${workflow.input.max_steps}",
+        "catalog_objectives": "${workflow.input.catalog_objectives}",
+        "cve_leads": "${workflow.input.cve_leads}",
+        "identities": "${workflow.input.identities}",
+        "oob_available": "${workflow.input.oob_available}",
+        "queryExpression": ". as $in | ($in.leads // []) | to_entries | { forkTasks: map({ name: \"sast_hunt_agent\", taskReferenceName: (\"hunt_\" + (.key|tostring)), type: \"SUB_WORKFLOW\", optional: true, subWorkflowParam: {name:\"sast_hunt_agent\", version:1} }), forkTasksInputs: (map({ key: (\"hunt_\" + (.key|tostring)), value: { lead: .value, source_path: $in.source_path, max_steps: ($in.max_steps // 10), catalog_objectives: $in.catalog_objectives, cve_leads: $in.cve_leads, identities: $in.identities, oob_available: $in.oob_available } }) | from_entries), count: length }"
+      }
+    },
+    {
+      "name": "hunt_scan",
+      "taskReferenceName": "hunt_scan",
+      "type": "FORK_JOIN_DYNAMIC",
+      "dynamicForkTasksParam": "forkTasks",
+      "dynamicForkTasksInputParamName": "forkTasksInputs",
+      "inputParameters": {
+        "forkTasks": "${build_hunt_jobs.output.result.forkTasks}",
+        "forkTasksInputs": "${build_hunt_jobs.output.result.forkTasksInputs}"
+      }
+    },
+    {
+      "name": "hunt_join",
+      "taskReferenceName": "hunt_join",
+      "type": "JOIN"
+    },
+    {
+      "name": "collect_hypotheses",
+      "taskReferenceName": "collect_hypotheses",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "join": "${hunt_join.output}",
+        "queryExpression": ". as $in | ([ $in.join[]? | select(type==\"object\") | (.hypotheses // [])[] | select(type==\"object\") ]) as $all | ($all | unique_by(((.category // \"other\") + \"|\" + (.target // \"\") + \"|\" + ((.identities // []) | sort | join(\",\"))))) as $ded | ([\"high\",\"medium\",\"low\"]) as $ord | (($ded | sort_by((.self_confidence // \"low\") as $sc | (($ord | index($sc)) // 3)))[0:8]) as $top | { hypotheses: ($top | to_entries | map(.value + {id: (\"H-hunt-\" + ((.key+1)|tostring)), source: \"hunter\"})) }"
+      }
+    }
+  ],
+  "outputParameters": {
+    "hypotheses": "${collect_hypotheses.output.result.hypotheses}",
+    "lead_counts": "${build_hunt_leads.output.counts}"
+  }
+}

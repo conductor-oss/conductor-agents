@@ -1,0 +1,229 @@
+{
+  "name": "sast_deep_report",
+  "version": 1,
+  "description": "Source-only DEEP assessment: run sast_scan + triage, VERIFY each scanner finding (reachability), and independently HUNT the source for exploitable attack chains the scanners miss (sast_hunt_core), adversarially refute each hunter hypothesis, then merge both streams (dropping false positives) into one report.md + report.pdf + findings.json + report.sarif. No live target required.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 7200,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["source_path", "target", "max_steps"],
+  "tasks": [
+    {
+      "name": "sast_scan",
+      "taskReferenceName": "sast_sub",
+      "type": "SUB_WORKFLOW",
+      "subWorkflowParam": { "name": "sast_scan", "version": 1 },
+      "inputParameters": { "source_path": "${workflow.input.source_path}" }
+    },
+    {
+      "name": "dep_cve_scan",
+      "taskReferenceName": "dep_cve_scan",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "source_path": "${workflow.input.source_path}",
+        "app_model": {}
+      }
+    },
+    {
+      "name": "catalog_context",
+      "taskReferenceName": "catalog_context",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "app_model": {},
+        "identities": {},
+        "has_source": "${workflow.input.source_path}"
+      }
+    },
+    {
+      "name": "prep_triage",
+      "taskReferenceName": "prep_triage",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "sast": "${sast_sub.output}",
+        "target": "${workflow.input.target}",
+        "queryExpression": "{target: .target, raw_findings: (.sast.findings // []), remediation_kb: []} | tojson"
+      }
+    },
+    {
+      "name": "triage",
+      "taskReferenceName": "triage",
+      "type": "LLM_CHAT_COMPLETE",
+      "inputParameters": {
+        "llmProvider": "anthropic",
+        "model": "claude-opus-4-8",
+        "temperature": 0,
+        "maxTokens": 12000,
+        "jsonOutput": true,
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_TRIAGE" },
+          { "role": "user", "message": "Scan data (JSON):\n${prep_triage.output.result}" }
+        ]
+      }
+    },
+    {
+      "name": "build_verify_jobs",
+      "taskReferenceName": "build_verify_jobs",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "triage": "${triage.output.result}",
+        "source_path": "${workflow.input.source_path}",
+        "max_steps": "${workflow.input.max_steps}",
+        "queryExpression": ". as $in | ($in.triage.findings // []) | to_entries | { forkTasks: map({ name: \"sast_verify_agent\", taskReferenceName: (\"verify_\" + (.key|tostring)), type: \"SUB_WORKFLOW\", optional: true, subWorkflowParam: {name:\"sast_verify_agent\", version:1} }), forkTasksInputs: (map({ key: (\"verify_\" + (.key|tostring)), value: { finding: .value, source_path: $in.source_path, max_steps: ($in.max_steps // 10) } }) | from_entries), count: length }"
+      }
+    },
+    {
+      "name": "verify_scan",
+      "taskReferenceName": "verify_scan",
+      "type": "FORK_JOIN_DYNAMIC",
+      "dynamicForkTasksParam": "forkTasks",
+      "dynamicForkTasksInputParamName": "forkTasksInputs",
+      "inputParameters": {
+        "forkTasks": "${build_verify_jobs.output.result.forkTasks}",
+        "forkTasksInputs": "${build_verify_jobs.output.result.forkTasksInputs}"
+      }
+    },
+    { "name": "verify_join", "taskReferenceName": "verify_join", "type": "JOIN" },
+    {
+      "name": "collect_verify",
+      "taskReferenceName": "collect_verify",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "join": "${verify_join.output}",
+        "triage": "${triage.output.result}",
+        "queryExpression": ". as $in | ([ $in.join[]? | select(type==\"object\") ]) as $vals | ([ $vals[] | ((.finding // {}) as $f | (.conclusion // {}) as $c | ($f + { severity: ($c.severity // $f.severity // \"Info\"), false_positive: ((($c.verdict // \"\") == \"false_positive\") or ($f.false_positive // false)), verified: ($c.verdict // \"not-run\"), reachable: ($c.reachable // \"unclear\"), confidence: ($c.confidence // $f.confidence // \"low\"), verification: ($c.reasoning // \"\"), source_tool: \"scanner\" })) ]) as $f | { executive_summary: ($in.triage.executive_summary // \"\"), risk_rating: ($in.triage.risk_rating // \"\"), findings: $f }"
+      }
+    },
+    {
+      "name": "hunt_core",
+      "taskReferenceName": "hunt_core",
+      "type": "SUB_WORKFLOW",
+      "optional": true,
+      "subWorkflowParam": { "name": "sast_hunt_core", "version": 1 },
+      "inputParameters": {
+        "source_path": "${workflow.input.source_path}",
+        "routes": "${sast_sub.output.routes}",
+        "cve_leads": "${dep_cve_scan.output.cve_leads}",
+        "catalog_objectives": "${catalog_context.output.applicable}",
+        "identities": [],
+        "max_steps": "${workflow.input.max_steps}",
+        "max_leads": 12,
+        "oob_available": false
+      }
+    },
+    {
+      "name": "build_hunt_verify_jobs",
+      "taskReferenceName": "build_hunt_verify_jobs",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "hypotheses": "${hunt_core.output.hypotheses}",
+        "source_path": "${workflow.input.source_path}",
+        "max_steps": "${workflow.input.max_steps}",
+        "queryExpression": ". as $in | ($in.hypotheses // []) | to_entries | { forkTasks: map({ name: \"sast_verify_agent\", taskReferenceName: (\"hv_\" + (.key|tostring)), type: \"SUB_WORKFLOW\", optional: true, subWorkflowParam: {name:\"sast_verify_agent\", version:1} }), forkTasksInputs: (map({ key: (\"hv_\" + (.key|tostring)), value: { finding: { title: (.value.title // \"?\"), description: (.value.rationale // \"\"), location: (((.value.evidence // [])[0].file // \"\") + \":\" + ((((.value.evidence // [])[0].line) // 0)|tostring)), evidence: ([ (.value.evidence // [])[] | (.file + \":\" + ((.line // 0)|tostring) + \"  \" + (.snippet // \"\")) ] | join(\"\\n\")), severity_hint: (.value.severity // \"Medium\"), category: (.value.category // \"other\"), owasp: (.value.owasp // \"\"), source_tool: \"hunter\", hypothesis: .value }, source_path: $in.source_path, max_steps: ($in.max_steps // 10) } }) | from_entries), count: length }"
+      }
+    },
+    {
+      "name": "hunt_verify_scan",
+      "taskReferenceName": "hunt_verify_scan",
+      "type": "FORK_JOIN_DYNAMIC",
+      "dynamicForkTasksParam": "forkTasks",
+      "dynamicForkTasksInputParamName": "forkTasksInputs",
+      "inputParameters": {
+        "forkTasks": "${build_hunt_verify_jobs.output.result.forkTasks}",
+        "forkTasksInputs": "${build_hunt_verify_jobs.output.result.forkTasksInputs}"
+      }
+    },
+    { "name": "hunt_verify_join", "taskReferenceName": "hunt_verify_join", "type": "JOIN" },
+    {
+      "name": "collect_hunt_verify",
+      "taskReferenceName": "collect_hunt_verify",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "join": "${hunt_verify_join.output}",
+        "queryExpression": ". as $in | { findings: [ $in.join[]? | select(type==\"object\") | { f: (.finding // {}), c: (.conclusion // {}) } | select((.c.verdict // \"uncertain\") != \"false_positive\") | (.f.hypothesis // {}) as $h | { id: ($h.id // \"H-hunt\"), title: ($h.title // .f.title // \"?\"), severity: (.c.severity // $h.severity // .f.severity_hint // \"Medium\"), false_positive: false, confidence: (.c.confidence // $h.self_confidence // \"low\"), verified: (.c.verdict // \"uncertain\"), reachable: (.c.reachable // \"unclear\"), cwe: ($h.owasp // \"\"), owasp: ($h.owasp // \"\"), objective_id: ($h.objective_id // \"\"), location: (((($h.evidence // [])[0].file) // .f.location // \"\")), description: ($h.rationale // \"\"), evidence: (.f.evidence // \"\"), validation: (.c.reasoning // \"\"), remediation: \"\", test_plan: ($h.test_plan // []), expected_evidence: ($h.expected_evidence // \"\"), source_tool: \"hunter\" } ] }"
+      }
+    },
+    {
+      "name": "merge_all_findings",
+      "taskReferenceName": "merge_all_findings",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "scanner": "${collect_verify.output.result}",
+        "hunter": "${collect_hunt_verify.output.result.findings}",
+        "queryExpression": ". as $in | (((.scanner.findings // []) + (.hunter // []))) as $f | { executive_summary: (.scanner.executive_summary // \"\"), risk_rating: (.scanner.risk_rating // \"\"), counts: { critical: ([$f[]|select(.severity==\"Critical\" and (.false_positive != true))]|length), high: ([$f[]|select(.severity==\"High\" and (.false_positive != true))]|length), medium: ([$f[]|select(.severity==\"Medium\" and (.false_positive != true))]|length), low: ([$f[]|select(.severity==\"Low\" and (.false_positive != true))]|length), false_positive: ([$f[]|select(.false_positive == true)]|length) }, findings: $f }"
+      }
+    },
+    {
+      "name": "prep_report",
+      "taskReferenceName": "prep_report",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "verified": "${merge_all_findings.output.result}",
+        "sast": "${sast_sub.output}",
+        "target": "${workflow.input.target}",
+        "queryExpression": ". as $in | { target: $in.target, assessment_mode: \"Static analysis (SAST) with source-verified reachability + source-code hunting -- scanner findings were verified in code and independent source->sink attack chains were hunted and adversarially refuted; unreachable/false items were dropped\", triage: $in.verified, attack_surface: { routes: ($in.sast.routes // []) }, surface_stats: { urls: 0, forms: 0, endpoints: (($in.sast.routes // []) | length), active_checks_run: 0 } } | tojson"
+      }
+    },
+    {
+      "name": "report_md",
+      "taskReferenceName": "report_md",
+      "type": "LLM_CHAT_COMPLETE",
+      "inputParameters": {
+        "llmProvider": "anthropic",
+        "model": "claude-opus-4-8",
+        "temperature": 0.2,
+        "maxTokens": 12000,
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_REPORT" },
+          { "role": "user", "message": "Report data (JSON):\n${prep_report.output.result}" }
+        ]
+      }
+    },
+    {
+      "name": "sanitize_md",
+      "taskReferenceName": "sanitize_md",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "md": "${report_md.output.result}",
+        "queryExpression": ".md | gsub(\"\\u2192\";\"->\") | gsub(\"\\u21d2\";\"=>\") | gsub(\"\\u2190\";\"<-\") | gsub(\"\\u2014\";\" -- \") | gsub(\"\\u2013\";\"-\") | gsub(\"\\u2026\";\"...\") | gsub(\"[^\\u0009\\u000a\\u000d\\u0020-\\u00ff]\";\"\")"
+      }
+    },
+    {
+      "name": "report_pdf",
+      "taskReferenceName": "report_pdf",
+      "type": "GENERATE_PDF",
+      "inputParameters": {
+        "markdown": "${sanitize_md.output.result}",
+        "pageSize": "A4",
+        "theme": "default",
+        "baseFontSize": 10,
+        "marginTop": 54, "marginBottom": 54, "marginLeft": 54, "marginRight": 54,
+        "pdfMetadata": {
+          "title": "Static Analysis (SAST) Report -- source-verified + hunted",
+          "author": "security-conductor",
+          "subject": "${workflow.input.target}"
+        }
+      }
+    },
+    {
+      "name": "persist",
+      "taskReferenceName": "persist",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "scan_id": "${workflow.workflowId}",
+        "target": "${workflow.input.target}",
+        "findings": "${merge_all_findings.output.result}",
+        "report_md": "${report_md.output.result}",
+        "pdf_location": "${report_pdf.output.result.location}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "report_dir": "${persist.output.report_dir}",
+    "files": "${persist.output.files}",
+    "findings": "${merge_all_findings.output.result}",
+    "hunter_hypotheses": "${hunt_core.output.hypotheses}",
+    "routes_extracted": "${sast_sub.output.routes}"
+  }
+}

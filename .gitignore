@@ -28,6 +28,9 @@
 **/.env
 *.local
 
+# MkDocs build output
+/site/
+
 # OS / scratch
 .DS_Store
 **/.scratch/

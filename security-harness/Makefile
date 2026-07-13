@@ -43,7 +43,7 @@ $(PY):
 workers: venv ## Run workers on the host (recon + browser; foreground, ctrl-c to stop)
 	@cd $(ROOT)/workers && REPORTS_DIR=$(REPORTS_DIR) WORKER_MODULES=$(WORKER_MODULES) $(PY) main.py
 
-WORKER_MODULES ?= recon,browser,dast,sast,api,rag,httptool,codeexec,oob,safety,hc
+WORKER_MODULES ?= recon,browser,dast,sast,codenav,api,rag,httptool,codeexec,oob,safety,hc
 
 codeexec-image: ## Build the code_exec sandbox image (deep-pentest agent's Docker hands)
 	@docker compose --profile codeexec build code-exec-image
@@ -87,6 +87,10 @@ scan: ## Run a scan: make scan URL=http://localhost:3000
 	@test -n "$(URL)" || { echo "usage: make scan URL=<target> [ARGS='--source ./x']"; exit 1; }
 	@$(ROOT)/scan "$(URL)" --authorized $(ARGS)
 
+sast-report: ## Source-only report (no live site): make sast-report SRC=./code -> reports/<id>/report.{md,pdf}
+	@test -n "$(SRC)" || { echo "usage: make sast-report SRC=<source-dir> [ARGS='--target label']"; exit 1; }
+	@$(ROOT)/sast "$(SRC)" $(ARGS)
+
 schedule: ## Schedule recurring scans: make schedule URL=http://x [CRON='0 0 2 * * ?']
 	@test -n "$(URL)" || { echo "usage: make schedule URL=<target> [CRON='0 0 2 * * ?'] [SRC=./code]"; exit 1; }
 	@bash $(ROOT)/conductor/schedule.sh "$(URL)" "$(CRON)" "$(SRC)"
@@ -128,4 +132,4 @@ retest: venv ## Re-test a prior dossier's PoCs (remediation verification): make 
 clean: ## Remove scan artifacts and the worker venv
 	@rm -rf $(ROOT)/reports/* $(VENV) && echo "cleaned"
 
-.PHONY: help server server-stop server-logs up down venv venv-ci lint test-ci workers workers-docker dast sast chrome rag register scan schedule test bench bench-live retest clean
+.PHONY: help server server-stop server-logs up down venv venv-ci lint test-ci workers workers-docker dast sast sast-report chrome rag register scan schedule test bench bench-live retest clean

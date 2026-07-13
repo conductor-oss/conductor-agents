@@ -39,6 +39,7 @@
     "chaining_context",
     "objective_focus",
     "sast_findings",
+    "sast_hypotheses",
     "feature_inventory",
     "triage_signals"
   ],
@@ -155,7 +156,8 @@
       "inputParameters": {
         "mandatory": "${mandatory_hypotheses.output.hypotheses}",
         "generated": "${parse_hypothesize.output.result.hypotheses}",
-        "queryExpression": "{ hypotheses: (((.mandatory // []) + (.generated // [])) | unique_by(.id // ((.category // \"other\") + \"|\" + (.target // \"\")))) }"
+        "hunter": "${workflow.input.sast_hypotheses}",
+        "queryExpression": "{ hypotheses: (((.mandatory // []) + ((.hunter // []) | map(. + {mandatory:true, mandatory_kind:\"source_hunt\"})) + (.generated // [])) | unique_by(.id // ((.category // \"other\") + \"|\" + (.target // \"\")))) }"
       }
     },
     {
