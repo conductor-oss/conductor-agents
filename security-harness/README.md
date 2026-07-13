@@ -84,17 +84,40 @@ cd examples/vuln-app && npm install && node server.js
 
 ---
 
-## `./scan` vs `./assess`
+## `./sast` vs `./scan` vs `./assess`
 
-Two entry points for different testing depths. (`./run.sh <url> [flags]` is a convenience alias that forwards to one of these.)
+Three entry points for different testing depths. (`./run.sh <url> [flags]` is a convenience alias that forwards to `./scan`/`./assess`.)
 
-| | `./scan` — `security_scan` workflow | `./assess` — `deep_assess` workflow |
-|---|---|---|
-| **Purpose** | Fast surface scan: crawl → plan → DAST → triage → report | Deep agentic pentest: understand → hypothesize → **actively exploit** → adversarially verify, over iterative-deepening passes |
-| **Confirms bugs?** | Reports candidates (+ active DAST hits) | **Yes** — re-runs each PoC and confirms blind bugs out-of-band; multi-identity cross-tenant testing |
-| **Typical time** | ~3–5 min | Tens of minutes |
-| **Authorization** | `--authorized` for quick tests; `--manifest` for real engagements | Same; `--manifest` recommended for anything beyond local demo |
-| **Capability** | read / active DAST (`--intrusive`) | 0–4; product-feature exploitation needs `--capability 2` |
+| | `./sast` — `sast_report` workflow | `./scan` — `security_scan` workflow | `./assess` — `deep_assess` workflow |
+|---|---|---|---|
+| **Needs a live site?** | **No** — source code only | Yes | Yes |
+| **Purpose** | Source-only static analysis: SAST (semgrep/gitleaks/trivy) + route extraction → triage → report | Fast surface scan: crawl → plan → DAST → triage → report | Deep agentic pentest: understand → hypothesize → **actively exploit** → adversarially verify, over iterative-deepening passes |
+| **Confirms bugs?** | No live target — reports **triaged** static findings (LLM cuts false positives; no active/out-of-band confirmation) | Reports candidates (+ active DAST hits) | **Yes** — re-runs each PoC and confirms blind bugs out-of-band; multi-identity cross-tenant testing |
+| **Typical time** | ~1–2 min | ~3–5 min | Tens of minutes |
+| **Authorization** | None needed (reads local source only; no network requests) | `--authorized` for quick tests; `--manifest` for real engagements | Same; `--manifest` recommended for anything beyond local demo |
+| **Capability** | n/a (no active requests) | read / active DAST (`--intrusive`) | 0–4; product-feature exploitation needs `--capability 2` |
+| **Outputs** | `report.md` + `report.pdf` + `findings.json` + `report.sarif` | same | same + `dossier.json` |
+
+### `./sast` examples
+
+Point it at code on disk — no server, no target, no `--authorized` (it only reads local files):
+
+```bash
+# Fast single-pass triage (~1-2 min) → reports/<scan-id>/report.{md,pdf} + findings.json + report.sarif
+./sast ./path/to/repo
+
+# --deep: a code-reading agent investigates EACH candidate (reads/greps the source to judge
+# reachability, refute-by-default) — cuts false positives hard. Slower, more LLM calls.
+./sast ./path/to/repo --deep
+
+# Label the run and use an already-running stack:
+./sast ./path/to/repo --target "acme-api @ abcd123" --no-bootstrap
+
+# Or via make:
+make sast-report SRC=./path/to/repo            # add ARGS='--deep' for the verified pass
+```
+
+> **`./sast` is static only.** It runs the analyzers and an LLM triage pass (which cuts false positives), but it does **not** crawl, actively exploit, or confirm anything against a running app — there's no live target. With `--deep`, a per-finding agent reads the code to judge whether each candidate is reachable from untrusted input (dropping dead/test/sanitized findings) — the same "prove it or drop it" discipline as the live scan, applied statically. When you also have the app running, use `./scan --source` or `./assess --source`, which fold the same SAST + route extraction into a live, exploit-and-verify run.
 
 ### `./scan` examples
 
@@ -130,6 +153,10 @@ Two entry points for different testing depths. (`./run.sh <url> [flags]` is a co
 
 # Pin to a specific objective:
 ./assess https://app.example.com --authorized --capability 2 --objective INFRA-SSRF
+
+# Hunt the source for exploitable chains, then DYNAMICALLY CONFIRM them against the live app:
+./assess https://app.example.com --authorized --capability 2 --source ./code --hunt \
+  --id 'userA=token:...' --oob <collaborator>
 ```
 
 > **Capability-2 prerequisites:** build the sandbox image once with `make codeexec-image`. For blind SSRF/RCE/exfil confirmation, start an OOB collaborator with `make oob`. `./assess` preflights and refuses a cap-2 run if the sandbox image is missing.
@@ -212,6 +239,7 @@ LLM reasoning runs in native `LLM_CHAT_COMPLETE` tasks (Anthropic). Security too
 | `prompts/` | LLM system prompts (triage, report, exploit, verify) — injected at register time |
 | `catalog/` | Security-objective catalog + substrate pack (the data spine) |
 | `bench/` | Benchmark/oracle harness → `reports/BENCH.md` |
+| `sast` | Entry point: source-only static assessment (`sast_report` workflow) — no live site |
 | `scan` | Entry point: fast surface scan (`security_scan` workflow) |
 | `assess` | Entry point: deep agentic pentest (`deep_assess` workflow) |
 | `sso-capture` | Capture an SSO browser session → an `--id` credential |

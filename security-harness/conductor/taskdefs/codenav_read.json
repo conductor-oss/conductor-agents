@@ -1,0 +1,11 @@
+{
+  "name": "codenav_read",
+  "description": "Read-only code navigation (codenav_read) for the source-only deepening agent; path-jailed to source_path.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "timeoutSeconds": 120,
+  "responseTimeoutSeconds": 60,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

@@ -28,6 +28,12 @@
 **/.env
 *.local
 
+# MkDocs build output
+/site/
+
+# Blog drafts — kept local, not versioned
+**/blog/
+
 # OS / scratch
 .DS_Store
 **/.scratch/

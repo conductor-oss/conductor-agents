@@ -53,8 +53,12 @@ inject_prompts() {
     --rawfile verify "$PROMPTS/verify.md" \
     --rawfile docsdigest "$PROMPTS/docs_digest.md" \
     --rawfile reflect "$PROMPTS/reflect.md" \
-    --rawfile purple "$PROMPTS/purple.md" '
+    --rawfile purple "$PROMPTS/purple.md" \
+    --rawfile sastverify "$PROMPTS/sast_verify.md" \
+    --rawfile sasthunt "$PROMPTS/sast_hunt.md" '
       (.tasks[]? | select(.taskReferenceName=="triage").inputParameters.messages[0].message) = ($guard + $triage + "\n\n---\n" + $kb)
+      | (.tasks[]? | select(.taskReferenceName=="sv_init").inputParameters.messages[0].message) = ($guard + $sastverify)
+      | (.tasks[]? | select(.taskReferenceName=="sh_init").inputParameters.messages[0].message) = ($guard + $sasthunt)
       | (.tasks[]? | select(.taskReferenceName=="report_md").inputParameters.messages[0].message) = ($guard + $report)
       | (.tasks[]? | select(.taskReferenceName=="plan").inputParameters.messages[0].message) = ($guard + $plan)
       | (.tasks[]? | select(.taskReferenceName=="agent_init").inputParameters.messages[0].message) = ($guard + $agent)
@@ -76,7 +80,7 @@ for wf in "$WORKFLOWS"/*.json; do
   built="$BUILD/$(basename "$wf")"
   # Only the main scan workflow carries triage/report/plan prompts; the jq
   # filter is a no-op for workflows that lack those task refs.
-  if [ -f "$PROMPTS/_guardrail.md" ] && [ -f "$PROMPTS/triage.md" ] && [ -f "$PROMPTS/report.md" ] && [ -f "$PROMPTS/plan.md" ] && [ -f "$PROMPTS/agent.md" ] && [ -f "$KB" ] && [ -f "$PROMPTS/app_model.md" ] && [ -f "$PROMPTS/explore.md" ] && [ -f "$PROMPTS/hypothesize.md" ] && [ -f "$PROMPTS/exploit.md" ] && [ -f "$PROMPTS/exploit_deepen.md" ] && [ -f "$PROMPTS/verify.md" ] && [ -f "$PROMPTS/docs_digest.md" ] && [ -f "$PROMPTS/reflect.md" ] && [ -f "$PROMPTS/purple.md" ]; then
+  if [ -f "$PROMPTS/_guardrail.md" ] && [ -f "$PROMPTS/triage.md" ] && [ -f "$PROMPTS/report.md" ] && [ -f "$PROMPTS/plan.md" ] && [ -f "$PROMPTS/agent.md" ] && [ -f "$KB" ] && [ -f "$PROMPTS/app_model.md" ] && [ -f "$PROMPTS/explore.md" ] && [ -f "$PROMPTS/hypothesize.md" ] && [ -f "$PROMPTS/exploit.md" ] && [ -f "$PROMPTS/exploit_deepen.md" ] && [ -f "$PROMPTS/verify.md" ] && [ -f "$PROMPTS/docs_digest.md" ] && [ -f "$PROMPTS/reflect.md" ] && [ -f "$PROMPTS/purple.md" ] && [ -f "$PROMPTS/sast_verify.md" ] && [ -f "$PROMPTS/sast_hunt.md" ]; then
     inject_prompts "$wf" "$built"
   else
     cp "$wf" "$built"

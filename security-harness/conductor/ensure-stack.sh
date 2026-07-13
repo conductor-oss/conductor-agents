@@ -18,7 +18,7 @@
 _SC_ROOT="${SC_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
 _SC_BASE="${CONDUCTOR_SERVER_URL:-http://localhost:8080/api}"; _SC_BASE="${_SC_BASE%/api}"
 _SC_PY="$_SC_ROOT/workers/.venv/bin/python"
-_SC_WORKER_MODULES="${WORKER_MODULES:-recon,browser,dast,sast,api,rag,httptool,codeexec,oob,safety,hc}"
+_SC_WORKER_MODULES="${WORKER_MODULES:-recon,browser,dast,sast,codenav,api,rag,httptool,codeexec,oob,safety,hc}"
 _SC_WORKER_LOG="${SC_WORKER_LOG:-/tmp/sc-workers.log}"
 _SC_SERVER_LOG="${SC_SERVER_LOG:-/tmp/sc-conductor-server.log}"
 

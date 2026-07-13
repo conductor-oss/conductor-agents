@@ -6,8 +6,9 @@
   "ownerEmail": "security-conductor@local",
   "timeoutSeconds": 0,
   "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["target", "scope", "authorized", "manifest", "kill_switch", "purple", "source_path", "docs", "identities", "login_url", "username", "password", "max_pages", "max_depth", "agent", "agent_steps", "max_explore_steps", "max_hypotheses", "max_exploit_steps", "max_passes", "reasoning", "model", "oob_base", "auth_token", "auth_key", "auth_secret", "token_url", "auth_header", "auth_scheme", "auth_probe_paths", "token_exchange", "cleanup_families", "target_profile", "leave_evidence", "objective_focus", "initial_focus"],
+  "inputParameters": ["target", "scope", "authorized", "manifest", "kill_switch", "purple", "source_path", "docs", "identities", "login_url", "username", "password", "max_pages", "max_depth", "agent", "agent_steps", "max_explore_steps", "max_hypotheses", "max_exploit_steps", "max_passes", "reasoning", "model", "oob_base", "auth_token", "auth_key", "auth_secret", "token_url", "auth_header", "auth_scheme", "auth_probe_paths", "token_exchange", "cleanup_families", "target_profile", "leave_evidence", "objective_focus", "initial_focus", "hunt"],
   "variables": {
+    "hunt_hypotheses": [],
     "all_confirmed": [],
     "all_rejected": [],
     "all_blind": [],
@@ -294,6 +295,45 @@
       }
     },
     {
+      "name": "hunt_gate",
+      "taskReferenceName": "hunt_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "($.source_path && $.source_path !== '' && ($.hunt === true || $.hunt === 'true')) ? 'go' : 'skip'",
+      "inputParameters": {
+        "source_path": "${workflow.input.source_path}",
+        "hunt": "${workflow.input.hunt}"
+      },
+      "decisionCases": {
+        "go": [
+          {
+            "name": "hunt_core",
+            "taskReferenceName": "hunt_core",
+            "type": "SUB_WORKFLOW",
+            "optional": true,
+            "subWorkflowParam": { "name": "sast_hunt_core", "version": 1 },
+            "inputParameters": {
+              "source_path": "${workflow.input.source_path}",
+              "routes": "${surface_sub.output.surface.endpoints}",
+              "cve_leads": "${dep_cve_scan.output.cve_leads}",
+              "catalog_objectives": "${catalog_context.output.applicable}",
+              "identities": "${reverify_identities.output.identities}",
+              "max_steps": "${workflow.input.max_explore_steps}",
+              "max_leads": 12,
+              "oob_available": true
+            }
+          },
+          {
+            "name": "set_hunt",
+            "taskReferenceName": "set_hunt",
+            "type": "SET_VARIABLE",
+            "inputParameters": { "hunt_hypotheses": "${hunt_core.output.hypotheses}" }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
       "name": "pass_loop",
       "taskReferenceName": "pass_loop",
       "type": "DO_WHILE",
@@ -354,6 +394,16 @@
           }
         },
         {
+          "name": "hunt_inject",
+          "taskReferenceName": "hunt_inject",
+          "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "iteration": "${pass_loop.output.iteration}",
+            "hyps": "${workflow.variables.hunt_hypotheses}",
+            "queryExpression": "if ((.iteration // 1) <= 1) then (.hyps // []) else [] end"
+          }
+        },
+        {
           "name": "assess_pass",
           "taskReferenceName": "assess_pass",
           "type": "SUB_WORKFLOW",
@@ -399,7 +449,8 @@
             "identity_adequacy": "${normalize_target.output.identity_adequacy}",
             "chaining_context": "${load_state.output.result.chaining_context}",
             "objective_focus": "${caps.output.result.objective_focus}",
-            "sast_findings": "${surface_sub.output.findings}"
+            "sast_findings": "${surface_sub.output.findings}",
+            "sast_hypotheses": "${hunt_inject.output.result}"
           }
         },
         {

@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# security-conductor — run a SOURCE-ONLY static assessment (no live target).
+#
+#   ./sast <source-path> [options]
+#
+# Runs the sast_report workflow: semgrep + gitleaks + trivy + route extraction over
+# the provided source, then LLM triage, and writes a full report set to
+# reports/<scan-id>/ — report.md, report.pdf, findings.json, report.sarif.
+#
+# This needs NO running site: it analyzes code on disk only. (Use ./scan or ./assess
+# when you also have a live target to crawl and actively test.)
+#
+# Options:
+#   --deep             Deep source audit: (1) verify each scanner finding in code
+#                      (reachability, refute-by-default) AND (2) HUNT the source for
+#                      exploitable attack chains the scanners miss (untrusted input ->
+#                      dangerous sink, incl. dependency/Log4Shell-class), each hunter
+#                      hypothesis adversarially refuted. Slower, more LLM calls.
+#   --max-steps <n>    Max investigation actions per finding/lead in --deep mode (default 10).
+#   --target <label>   Label for the assessment (default: the source path).
+#   --no-wait          Start and return immediately; don't wait for completion.
+#   --no-bootstrap     Don't auto-start the local server / workers; assume they're
+#                      running (also via SC_NO_BOOTSTRAP=1).
+#   -h, --help         Show this help.
+#
+# Examples:
+#   ./sast ./my-repo                       # fast single-pass triage (~1-2 min)
+#   ./sast ./my-repo --deep                # per-finding code-verified reachability
+#   ./sast /path/to/code --target "acme-api @ abcd123"
+set -euo pipefail
+
+WF="sast_report"
+SOURCE=""; TARGET=""; WAIT=true; NO_BOOTSTRAP=false; DEEP=false; MAX_STEPS="10"
+
+usage() { sed -n '/^# /,/^set -/p' "$0" | sed 's/^# \{0,1\}//; /^set -/d'; exit "${1:-0}"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --deep)         DEEP=true ;;
+    --max-steps)    MAX_STEPS="${2:-10}"; shift ;;
+    --target)       TARGET="${2:-}"; shift ;;
+    --no-wait)      WAIT=false ;;
+    --no-bootstrap) NO_BOOTSTRAP=true ;;
+    -h|--help)      usage 0 ;;
+    -*)             echo "unknown option: $1" >&2; usage 1 ;;
+    *)              if [ -z "$SOURCE" ]; then SOURCE="$1"; else echo "unexpected arg: $1" >&2; usage 1; fi ;;
+  esac
+  shift
+done
+
+$DEEP && WF="sast_deep_report"
+
+[ -n "$SOURCE" ] || { echo "ERROR: source path required" >&2; usage 1; }
+command -v conductor >/dev/null || { echo "ERROR: conductor CLI not found" >&2; exit 1; }
+command -v jq >/dev/null || { echo "ERROR: jq required" >&2; exit 1; }
+
+ABS="$(cd "$SOURCE" 2>/dev/null && pwd)" || true
+[ -n "$ABS" ] || { echo "ERROR: source path is not a directory: $SOURCE" >&2; exit 1; }
+SOURCE="$ABS"
+[ -n "$TARGET" ] || TARGET="source: $SOURCE"
+
+# Bring the stack up (server + workflows + worker fleet) unless told not to. Idempotent.
+if ! $NO_BOOTSTRAP; then
+  export SC_REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+  source "$SC_REPO_ROOT/conductor/ensure-stack.sh"
+  sc_ensure_stack "$WF"
+fi
+
+input=$(jq -n --arg src "$SOURCE" --arg t "$TARGET" --argjson ms "$MAX_STEPS" \
+  '{source_path: $src, target: $t} + (if $ms then {max_steps: $ms} else {} end)')
+
+echo "→ starting $WF (source-only$( $DEEP && echo ", --deep" )) over $SOURCE"
+# The conductor CLI may emit an update-available notice on stdout; extract just the
+# workflow-id UUID rather than trusting the whole line.
+_start_out=$(conductor workflow start -w "$WF" -i "$input" 2>&1 || true)
+WID=$(printf '%s' "$_start_out" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)
+[ -n "$WID" ] || { echo "ERROR: could not parse workflow id from:" >&2; printf '%s\n' "$_start_out" >&2; exit 1; }
+echo "  workflow id: $WID"
+
+BASE_URL="${CONDUCTOR_SERVER_URL:-http://localhost:8080/api}"; BASE_URL="${BASE_URL%/api}"
+echo "  UI: $BASE_URL/execution/$WID"
+
+if ! $WAIT; then exit 0; fi
+
+echo -n "  waiting"
+for _ in $(seq 1 240); do
+  J=$(conductor workflow get-execution "$WID" 2>/dev/null || true)
+  ST=$(printf '%s' "$J" | jq -r '.status // empty' 2>/dev/null || true)
+  case "$ST" in
+    COMPLETED) echo " ✓ COMPLETED"
+      printf '%s' "$J" | jq -r '"  report: \(.output.report_dir // "n/a")"'
+      exit 0 ;;
+    FAILED|TERMINATED|TIMED_OUT) echo " ✗ $ST"
+      printf '%s' "$J" | jq -r '"  reason: \(.reasonForIncompletion // "see UI")"'
+      exit 1 ;;
+    *) echo -n "." ; ping -c 2 127.0.0.1 >/dev/null 2>&1 || true ;;
+  esac
+done
+echo " (still running — check the UI)"
