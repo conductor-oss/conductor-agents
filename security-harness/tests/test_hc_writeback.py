@@ -21,7 +21,7 @@ FORGET_AFTER = [{"recall": r, "fp_rate": .05, "cost": 1.0, "per_class": {"infra"
 
 def _ch(surface, *, objective_id="INFRA-SSRF", after=None, path=None):
     return {"id": "ch1", "surface": surface, "objective_id": objective_id,
-            "path": path or {"prompt": "prompts/exploit.md", "profile": "profiles/conductor.json",
+            "path": path or {"prompt": "prompts/exploit.md", "profile": "profiles/vuln-app.json",
                              "catalog": "catalog/objectives.yaml", "evidence_bar": "prompts/verify.md"}.get(surface, "x"),
             "diagnosis": "technique weak for class", "content": "new edited content",
             "before_runs": GENUINE_BEFORE, "after_runs": after or GENUINE_AFTER}

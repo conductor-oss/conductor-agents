@@ -50,8 +50,8 @@ def test_provenance_pins_and_benchmark_scores_round_trip():
 
 def test_parent_links_successive_editions():
     store = []
-    r1 = cl.commit(store, surface="profile", path="profiles/conductor.json", content="p1", as_of=T0)
-    r2 = cl.commit(store, surface="profile", path="profiles/conductor.json", content="p2", as_of=T0)
+    r1 = cl.commit(store, surface="profile", path="profiles/vuln-app.json", content="p1", as_of=T0)
+    r2 = cl.commit(store, surface="profile", path="profiles/vuln-app.json", content="p2", as_of=T0)
     assert r2["parent_content_hash"] == r1["content_hash"]
 
 
@@ -70,7 +70,7 @@ def test_chain_verifies_and_detects_tampering():
     store = []
     cl.commit(store, surface="catalog", path="catalog/objectives.yaml", content="c1", as_of=T0)
     cl.commit(store, surface="prompt", path="prompts/reflect.md", content="r1", as_of=T0)
-    cl.commit(store, surface="profile", path="profiles/conductor.json", content="p1", as_of=T0)
+    cl.commit(store, surface="profile", path="profiles/vuln-app.json", content="p1", as_of=T0)
     assert cl.verify_chain(store) == {"ok": True, "entries": 3, "broken_at": None}
     # Silently edit a committed edition's content_hash -> the chain must break at that entry.
     store[1]["content_hash"] = "deadbeef"
