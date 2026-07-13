@@ -84,10 +84,15 @@ class ChatEngine:
             tool_uses = [b for b in final.content if b.type == "tool_use"]
             if final.stop_reason != "tool_use" or not tool_uses:
                 break
+            start_count = sum(tu.name == "start_workflow" for tu in tool_uses)
             results = []
             for tu in tool_uses:
                 on_tool_start(tu.name, tu.input)
-                out = await run_tool(tu.name, tu.input)
+                if tu.name == "start_workflow" and start_count > 1:
+                    out = ("error: ambiguous request produced multiple workflow starts; no workflow "
+                           "was started. Ask the user which single workflow they want.")
+                else:
+                    out = await run_tool(tu.name, tu.input)
                 on_tool_done(tu.name, out)
                 results.append({"type": "tool_result", "tool_use_id": tu.id, "content": out})
             messages.append({"role": "user", "content": results})

@@ -187,9 +187,13 @@ class Chat(Screen):
             snippet = out if len(out) <= 200 else out[:200] + "…"
             self._bubble("tool", f"  → {snippet}")
 
+        # One context per user turn: its start guard survives every tool-use round trip the
+        # model emits, so the host can enforce at most one workflow start for this turn.
+        ctx = tools.ToolContext(client=self.app.client, confirm=self._confirm,
+                                on_run_started=self._on_run_started,
+                                server_url=self.app.settings.server_url)
+
         async def run_tool(name: str, inp: dict) -> str:
-            ctx = tools.ToolContext(client=self.app.client, confirm=self._confirm,
-                                    on_run_started=self._on_run_started)
             return await tools.dispatch(name, inp, ctx)
 
         try:

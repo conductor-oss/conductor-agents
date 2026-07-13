@@ -67,9 +67,10 @@ CONDUCTOR_SERVER_URL=http://localhost:8080/api tui/.venv/bin/python -m tui      
 CONDUCTOR_SERVER_URL=http://localhost:8080/api tui/.venv/bin/python -m tui --dashboard  # forms
 ```
 
-Use `/register` in chat or press `g` on the dashboard whenever task/workflow definitions
-change. The TUI confirms the target server, updates the definitions, and runs the SIMPLE-task
-worker gate before reporting success.
+Ask chat to “register/update the workflows”, use `/register`, or press `g` on the dashboard
+whenever definitions change. The TUI confirms the target server, updates the definitions, and
+runs the SIMPLE-task worker gate before reporting success. Chat starts at most one workflow per
+user message; when the requested action is ambiguous, it asks which workflow you want first.
 
 ## How it works
 

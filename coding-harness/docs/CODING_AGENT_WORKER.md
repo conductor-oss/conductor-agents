@@ -183,7 +183,7 @@ The pre-approved surface. Everything else falls through to `dontAsk` → denied.
 ["Read", "Write", "Edit", "Glob", "Grep",
  "Bash(python *)", "Bash(python3 *)", "Bash(node *)", "Bash(npm *)",
  "Bash(npx *)", "Bash(cat *)", "Bash(ls *)", "Bash(pytest *)",
- "Bash(go *)", "Bash(git status*)", "Bash(git diff*)", "Bash(git log*)",
+ "Bash(go *)", "Bash(cargo *)", "Bash(git status*)", "Bash(git diff*)", "Bash(git log*)",
  # file move/delete/reorg — no built-in tool exists for these
  "Bash(git mv *)", "Bash(git rm *)", "Bash(mv *)", "Bash(rm *)",
  "Bash(mkdir *)", "Bash(cp *)", "Bash(touch *)"]
@@ -443,9 +443,10 @@ Both drive the Claude Agent SDK; they differ in posture and scope enforcement:
 
 ## 10. Extending / customizing guardrails
 
-Guardrails live in `common/coding_agent.py`, not in task inputs. To change them:
+Guardrails live in `common/coding_agent.py` and `common/tool_policy.py`, not in task inputs.
+To change them:
 
-- **Add a language/toolchain** (e.g. Rust): add `"Bash(cargo *)"` to
+- **Add a language/toolchain** not already present: add its scoped `Bash(...)` rule to
   `DEFAULT_ALLOWED_TOOLS`.
 - **Tighten or loosen the standing instructions**: edit `WORKER_SYSTEM_APPEND`.
 - **Per-task tool surfaces**: `run_coding_agent` already accepts `allowed_tools` /
@@ -459,7 +460,7 @@ Guardrails live in `common/coding_agent.py`, not in task inputs. To change them:
 
 Known gaps to be aware of:
 
-- The allowlist is Python/Node/Go-centric; other toolchains need their `Bash(...)` verb
+- The allowlist covers Python/Node/Go/Rust; other toolchains need their `Bash(...)` verb
   added before the agent can run them.
 - The OS sandbox is macOS/Linux only. On other platforms (or with `sandbox_enabled=False`)
   the worktree guard hook covers only `Write`/`Edit`/`NotebookEdit`, not writes performed

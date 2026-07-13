@@ -54,6 +54,7 @@ from common.progress import ProgressReporter
 from common.results import cap, fail, ok
 from common.session_store import store_from_env
 from common.templating import resolve_prompt
+from common.tool_policy import denied_without_changes
 
 # Operator knob (doc §10 item 5): which filesystem settings load. Default "project"
 # loads the repo's CLAUDE.md conventions but also its .claude/settings.json
@@ -208,6 +209,16 @@ async def coding_agent():
             "costUsd": res.get("cost_usd", 0.0),
             "denials": res.get("denials") or [],
         }
+
+        # A model can end its turn normally after reporting that a required command was denied.
+        # The SDK marks that as ok even though no work was produced. Fail closed so parent
+        # workflows cannot commit/push a partial PR fix and announce that all feedback was
+        # addressed (the PR #6 regression).
+        if denied_without_changes(changed, out["denials"]):
+            err = "agent made no changes after one or more tool denials"
+            logs.append(f"[coding_agent] error: {err}")
+            out["retryable"] = False
+            return fail(task, "coding_agent", err, logs, output=out)
 
         if not res["ok"]:
             err = res.get("error") or f"agent ended with status={res['status']}"

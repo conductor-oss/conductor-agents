@@ -170,6 +170,11 @@ Important commands: `/dashboard`, `/open [workflowId]`, `/folder [workflowId]`,
 definitions. `ANTHROPIC_API_KEY` is needed for conversational chat, but forms/dashboard work
 without it.
 
+Chat may start at most one workflow per user message. If a request could map to multiple
+workflows, it asks the user to choose one before starting anything. Natural-language requests
+to register, re-register, update, or refresh definitions invoke the same confirmed registration
+flow as `/register`, including the SIMPLE-task worker gate.
+
 ## Boundaries / gotchas
 
 - **Same-host filesystem**: the GitHub workflows clone into a temp folder and code/push there;

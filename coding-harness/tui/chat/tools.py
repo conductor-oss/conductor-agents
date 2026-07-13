@@ -54,8 +54,10 @@ TOOLS = [
     {
         "name": "start_workflow",
         "description": (
-            "Start a harness workflow. Requires confirmation from the user (the host "
-            "enforces it). Workflows and their REQUIRED inputs: "
+            "Start exactly one harness workflow for the current user turn. Requires "
+            "confirmation from the user (the host enforces it). If the user's request is "
+            "ambiguous between workflows, do not call this tool; ask which single workflow "
+            "they want. Workflows and their REQUIRED inputs: "
             "pr_review{repo, prNumber}, issue_to_pr{repo, issueNumber}, "
             "address_pr{repo, prNumber}, code_parallel{repoPath, instruction}. "
             "Optional inputs (agent/backend, engine, design, maxSubtasks, model, base, …) "
@@ -72,6 +74,15 @@ TOOLS = [
             },
             "required": ["workflow", "inputs"],
         },
+    },
+    {
+        "name": "register_workflows",
+        "description": (
+            "Register or update all harness task and workflow definitions on the selected "
+            "Conductor server, then run the SIMPLE-task worker gate. Use this when the user "
+            "asks to register, re-register, update, or refresh workflows. Requires confirmation."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "terminate_run",
@@ -105,7 +116,7 @@ TOOLS = [
     },
 ]
 
-MUTATIONS = {"start_workflow", "terminate_run", "retry_run"}
+MUTATIONS = {"start_workflow", "register_workflows", "terminate_run", "retry_run"}
 
 
 @dataclass
@@ -113,6 +124,8 @@ class ToolContext:
     client: ConductorClient
     confirm: Callable[[str, str], Awaitable[bool]]   # (title, message) -> confirmed?
     on_run_started: Callable[[str], None]            # register a launched workflow id
+    server_url: str = ""
+    workflow_started: bool = False                   # host-enforced: max one per user turn
 
 
 async def dispatch(name: str, tool_input: dict, ctx: ToolContext) -> str:
@@ -132,6 +145,8 @@ async def _run(name: str, i: dict, ctx: ToolContext) -> str:
         return await _get_run(i, ctx)
     if name == "start_workflow":
         return await _start(i, ctx)
+    if name == "register_workflows":
+        return await _register(ctx)
     if name == "terminate_run":
         return await _terminate(i, ctx)
     if name == "retry_run":
@@ -187,6 +202,9 @@ async def _get_run(i: dict, ctx: ToolContext) -> str:
 
 
 async def _start(i: dict, ctx: ToolContext) -> str:
+    if ctx.workflow_started:
+        return ("error: one workflow has already been started for this user turn. "
+                "Do not start another; ask the user which single workflow they want next.")
     wf = i.get("workflow")
     inputs = i.get("inputs") or {}
     if wf not in catalog.CATALOG:
@@ -205,6 +223,9 @@ async def _start(i: dict, ctx: ToolContext) -> str:
     ok = await ctx.confirm(f"Start {wf}", f"{target}\ninputs: {pretty}")
     if not ok:
         return "user declined to start the workflow."
+    # Set this before the network call. If the response is interrupted after Conductor accepts
+    # the request, a second tool call must not create a duplicate run.
+    ctx.workflow_started = True
     wid = await ctx.client.start(wf, inputs)
     ctx.on_run_started(wid)
     gated = (wf == "pr_review" and inputs.get("approve")) or \
@@ -213,6 +234,22 @@ async def _start(i: dict, ctx: ToolContext) -> str:
             "open it with `o` to approve, edit, or reject." if gated
             else " Tell the user they can open it with `o`.")
     return f"started {wf} — workflow id {wid} (target {target}).{hint}"
+
+
+async def _register(ctx: ToolContext) -> str:
+    if not ctx.server_url:
+        return "error: selected Conductor server URL is unavailable."
+    ok = await ctx.confirm(
+        "Update workflow definitions",
+        f"Register all harness task and workflow definitions on\n{ctx.server_url}?",
+    )
+    if not ok:
+        return "user declined workflow registration."
+    from ..registration import register_definitions
+    result = await register_definitions(ctx.server_url)
+    if result.ok:
+        return f"workflow registration complete.\n{result.output}"
+    return f"workflow registration failed.\n{result.output}"
 
 
 async def _terminate(i: dict, ctx: ToolContext) -> str:

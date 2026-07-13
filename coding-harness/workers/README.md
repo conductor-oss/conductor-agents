@@ -49,7 +49,7 @@ conductor workflow start --workflow issue_to_pr -i '{
 ```
 
 If no server is running, start one first with `conductor server start` (Java 21+).
-After definitions change, rerun `./workers/register.sh`, or use `/register` in TUI chat /
+After definitions change, rerun `./workers/register.sh`, ask TUI chat to register them, use `/register`, or
 `g` on the dashboard. Registration updates definitions and verifies the SIMPLE-task worker gate.
 
 Watch progress in the Conductor UI or with `conductor workflow status <id>` — the coding

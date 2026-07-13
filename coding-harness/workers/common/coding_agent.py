@@ -33,6 +33,8 @@ import os
 import subprocess
 from typing import Any
 
+from common.tool_policy import DEFAULT_ALLOWED_TOOLS, DEFAULT_DISALLOWED_TOOLS
+
 import claude_agent_sdk as sdk
 
 from .cost import usage_tokens
@@ -117,32 +119,6 @@ def _is_write_surface(tools: list[str] | None) -> bool:
     if not tools:
         return True
     return not set(tools).issubset(_READ_ONLY_TOOLS)
-
-# The coding surface an unattended worker gets. Read/search/edit + a scoped set of
-# safe Bash verbs. Note the scoped Bash rules approve ONLY matching commands; any
-# other Bash call falls through to dontAsk and is denied (doc §5).
-DEFAULT_ALLOWED_TOOLS = [
-    "Read", "Write", "Edit", "Glob", "Grep",
-    "Bash(python *)", "Bash(python3 *)", "Bash(node *)", "Bash(npm *)",
-    "Bash(npx *)", "Bash(cat *)", "Bash(ls *)", "Bash(pytest *)",
-    "Bash(go *)", "Bash(git status*)", "Bash(git diff*)", "Bash(git log*)",
-    # File move/delete/reorg: Claude Code has no delete/move tool, and Write/Edit can
-    # only create/modify — so "move X" / "delete file" tasks need these shell verbs.
-    # mkdir/cp/touch are here too because the agent chains them (e.g.
-    # `mkdir -p sub && mv a sub/`), and Claude Code requires EVERY sub-command of a
-    # compound command to be allowed. Bounded by the OS sandbox (writes confined to the
-    # worktree); the deny list still blocks `rm -rf`/`sudo` (deny wins over allow).
-    "Bash(git mv *)", "Bash(git rm *)", "Bash(mv *)", "Bash(rm *)",
-    "Bash(mkdir *)", "Bash(cp *)", "Bash(touch *)",
-]
-
-# Bare names remove the tool from Claude's context entirely (doc §6). Scoped git
-# deny rules block mutation even if a Bash allow rule would otherwise match.
-DEFAULT_DISALLOWED_TOOLS = [
-    "WebSearch", "WebFetch",
-    "Bash(git push*)", "Bash(git commit*)", "Bash(git reset*)",
-    "Bash(rm -rf *)", "Bash(sudo *)",
-]
 
 WORKER_SYSTEM_APPEND = (
     "You are an unattended conductor-code worker. There is no human to answer "

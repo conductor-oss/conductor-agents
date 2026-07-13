@@ -66,7 +66,8 @@ async def test_start_injects_gate_default_unless_overridden():
                          {"workflow": "pr_review",
                           "inputs": {"repo": "acme/app", "prNumber": 7, "approve": False}}, ctx)
     assert fc.started[-1] == ("pr_review", {"repo": "acme/app", "prNumber": 7, "approve": False})
-    # issue_to_pr gets approvePr injected on by default
+    # A later user turn gets a fresh context; issue_to_pr gets approvePr by default.
+    ctx, _ = _ctx(fc)
     await tools.dispatch("start_workflow",
                          {"workflow": "issue_to_pr", "inputs": {"repo": "acme/app", "issueNumber": 3}}, ctx)
     assert fc.started[-1] == ("issue_to_pr", {"repo": "acme/app", "issueNumber": 3, "approvePr": True})
@@ -79,6 +80,45 @@ async def test_start_workflow_declined():
     out = await tools.dispatch("start_workflow",
                                {"workflow": "pr_review", "inputs": {"repo": "acme/app", "prNumber": 7}}, ctx)
     assert "declined" in out and not fc.started
+
+
+@pytest.mark.asyncio
+async def test_start_workflow_allows_only_one_per_user_turn():
+    fc = FakeClient()
+    ctx, started = _ctx(fc)
+    first = await tools.dispatch(
+        "start_workflow",
+        {"workflow": "pr_review", "inputs": {"repo": "acme/app", "prNumber": 7}},
+        ctx,
+    )
+    second = await tools.dispatch(
+        "start_workflow",
+        {"workflow": "address_pr", "inputs": {"repo": "acme/app", "prNumber": 7}},
+        ctx,
+    )
+    assert "started pr_review" in first
+    assert "already been started" in second
+    assert len(fc.started) == 1
+    assert started == ["wf-new-123"]
+
+
+@pytest.mark.asyncio
+async def test_register_workflows_uses_selected_server(monkeypatch):
+    from tui import registration
+
+    seen = {}
+
+    async def fake_register(server_url):
+        seen["server_url"] = server_url
+        return registration.RegistrationResult(True, "registered=all worker_gate=ok")
+
+    monkeypatch.setattr(registration, "register_definitions", fake_register)
+    fc = FakeClient()
+    ctx, _ = _ctx(fc)
+    ctx.server_url = "http://selected:8080/api"
+    out = await tools.dispatch("register_workflows", {}, ctx)
+    assert "registration complete" in out
+    assert seen == {"server_url": "http://selected:8080/api"}
 
 
 @pytest.mark.asyncio
@@ -104,6 +144,9 @@ def test_prompt_mentions_workflows():
     for wf in ("pr_review", "issue_to_pr", "address_pr", "code_parallel"):
         assert wf in p
     assert "localhost:8080" in p
+    assert "at most ONE workflow" in p
+    assert "register_workflows" in p
+    assert "ambiguous" in p
 
 
 # --------------------------------------------------------------------------- llm loop (stubbed)
@@ -173,6 +216,28 @@ class _StartStub:
     def messages(self): return _StartStub._Messages(self)
 
 
+class _AmbiguousStartStub:
+    """First turn requests two starts; the engine must execute neither."""
+    def __init__(self): self._calls = 0
+    class _Messages:
+        def __init__(self, outer): self._outer = outer
+        def stream(self, **kw):
+            c = self._outer._calls
+            self._outer._calls += 1
+            if c == 0:
+                starts = [
+                    _Blk(type="tool_use", id="s1", name="start_workflow",
+                         input={"workflow": "pr_review", "inputs": {}}),
+                    _Blk(type="tool_use", id="s2", name="start_workflow",
+                         input={"workflow": "address_pr", "inputs": {}}),
+                ]
+                return _Stream([], _FinalMsg(starts, "tool_use", _Usage(5, 5)))
+            return _Stream(["Which one?"], _FinalMsg([_Blk(type="text", text="Which one?")],
+                                                     "end_turn", _Usage(3, 3)))
+    @property
+    def messages(self): return _AmbiguousStartStub._Messages(self)
+
+
 def _chat_app(conductor_client, llm_stub):
     from tui.app import HarnessApp
     from tui.config import Settings
@@ -239,3 +304,25 @@ async def test_llm_loop_dispatches_tool_then_finishes():
     assert messages[2]["content"][0]["type"] == "tool_result"
     assert res["tokens"] == 10 + 5 + 8 + 12
     assert res["cost"] > 0
+
+
+@pytest.mark.asyncio
+async def test_llm_loop_rejects_ambiguous_multi_start_batch():
+    eng = llm.ChatEngine(_AmbiguousStartStub(), "claude-sonnet-4-6", "sys")
+    messages = [{"role": "user", "content": "review and address this PR"}]
+    executed = []
+
+    async def run_tool(name, inp):
+        executed.append((name, inp))
+        return "should not run"
+
+    await eng.run(
+        messages, run_tool=run_tool,
+        on_text=lambda text: None,
+        on_tool_start=lambda name, inp: None,
+        on_tool_done=lambda name, out: None,
+    )
+    assert executed == []
+    results = messages[2]["content"]
+    assert len(results) == 2
+    assert all("no workflow was started" in result["content"] for result in results)
