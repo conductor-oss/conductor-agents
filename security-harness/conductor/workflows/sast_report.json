@@ -1,0 +1,118 @@
+{
+  "name": "sast_report",
+  "version": 1,
+  "description": "Source-only assessment: run sast_scan (semgrep + gitleaks + trivy + route extraction) over provided source, then triage (LLM), write a markdown report, render a PDF, and persist report.md + report.pdf + findings.json + report.sarif. No live target required.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 2400,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["source_path", "target"],
+  "tasks": [
+    {
+      "name": "sast_scan",
+      "taskReferenceName": "sast_sub",
+      "type": "SUB_WORKFLOW",
+      "subWorkflowParam": { "name": "sast_scan", "version": 1 },
+      "inputParameters": { "source_path": "${workflow.input.source_path}" }
+    },
+    {
+      "name": "prep_triage",
+      "taskReferenceName": "prep_triage",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "sast": "${sast_sub.output}",
+        "target": "${workflow.input.target}",
+        "queryExpression": "{target: .target, raw_findings: (.sast.findings // []), remediation_kb: []} | tojson"
+      }
+    },
+    {
+      "name": "triage",
+      "taskReferenceName": "triage",
+      "type": "LLM_CHAT_COMPLETE",
+      "inputParameters": {
+        "llmProvider": "anthropic",
+        "model": "claude-opus-4-8",
+        "temperature": 0,
+        "maxTokens": 12000,
+        "jsonOutput": true,
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_TRIAGE" },
+          { "role": "user", "message": "Scan data (JSON):\n${prep_triage.output.result}" }
+        ]
+      }
+    },
+    {
+      "name": "prep_report",
+      "taskReferenceName": "prep_report",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "triage": "${triage.output.result}",
+        "sast": "${sast_sub.output}",
+        "target": "${workflow.input.target}",
+        "queryExpression": "{target: .target, triage: .triage, assessment_mode: \"Static analysis (SAST) -- source only; no live testing performed\", attack_surface: {routes: (.sast.routes // [])}, surface_stats: {urls: 0, forms: 0, endpoints: ((.sast.routes // []) | length), active_checks_run: 0}} | tojson"
+      }
+    },
+    {
+      "name": "report_md",
+      "taskReferenceName": "report_md",
+      "type": "LLM_CHAT_COMPLETE",
+      "inputParameters": {
+        "llmProvider": "anthropic",
+        "model": "claude-opus-4-8",
+        "temperature": 0.2,
+        "maxTokens": 12000,
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_REPORT" },
+          { "role": "user", "message": "Report data (JSON):\n${prep_report.output.result}" }
+        ]
+      }
+    },
+    {
+      "name": "sanitize_md",
+      "taskReferenceName": "sanitize_md",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "md": "${report_md.output.result}",
+        "queryExpression": ".md | gsub(\"\\u2192\";\"->\") | gsub(\"\\u21d2\";\"=>\") | gsub(\"\\u2190\";\"<-\") | gsub(\"\\u2014\";\" -- \") | gsub(\"\\u2013\";\"-\") | gsub(\"\\u2026\";\"...\") | gsub(\"[^\\u0009\\u000a\\u000d\\u0020-\\u00ff]\";\"\")"
+      }
+    },
+    {
+      "name": "report_pdf",
+      "taskReferenceName": "report_pdf",
+      "type": "GENERATE_PDF",
+      "inputParameters": {
+        "markdown": "${sanitize_md.output.result}",
+        "pageSize": "A4",
+        "theme": "default",
+        "baseFontSize": 10,
+        "marginTop": 54,
+        "marginBottom": 54,
+        "marginLeft": 54,
+        "marginRight": 54,
+        "pdfMetadata": {
+          "title": "Static Analysis (SAST) Report",
+          "author": "security-conductor",
+          "subject": "${workflow.input.target}"
+        }
+      }
+    },
+    {
+      "name": "persist",
+      "taskReferenceName": "persist",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "scan_id": "${workflow.workflowId}",
+        "target": "${workflow.input.target}",
+        "findings": "${triage.output.result}",
+        "report_md": "${report_md.output.result}",
+        "pdf_location": "${report_pdf.output.result.location}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "report_dir": "${persist.output.report_dir}",
+    "files": "${persist.output.files}",
+    "findings": "${triage.output.result}",
+    "routes_extracted": "${sast_sub.output.routes}"
+  }
+}

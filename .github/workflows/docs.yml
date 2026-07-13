@@ -1,0 +1,59 @@
+name: Docs
+
+# Build the MkDocs catalog site and publish it to GitHub Pages on push to main.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "**/mkdocs.yml"
+      - "mkdocs.yml"
+      - "requirements-docs.txt"
+      - "*/docs/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "**/mkdocs.yml"
+      - "mkdocs.yml"
+      - "requirements-docs.txt"
+      - "*/docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-docs.txt
+      # --strict fails the build on broken nav / links.
+      - run: mkdocs build --clean --strict
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: deploy to Pages
+    # Only publish from main; PRs just validate the build above.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

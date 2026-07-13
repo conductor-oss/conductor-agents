@@ -1,0 +1,11 @@
+{
+  "name": "build_hunt_leads",
+  "description": "Assemble focused hunt leads (entry-point clusters, dependency CVEs, objective sweeps) for the source-code hunter fan-out.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "timeoutSeconds": 120,
+  "responseTimeoutSeconds": 60,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 0
+}

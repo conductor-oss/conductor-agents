@@ -42,6 +42,9 @@
 #   --leave-evidence        Validation-only: retain tagged product artifacts/executions so the
 #                           operator can inspect them. Default remains leave-clean.
 #   --source <path>         Path to the target's source code (enriches understanding; optional).
+#   --hunt                  With --source: hunt the source for exploitable attack chains
+#                           (source->sink, incl. dependency/Log4Shell-class) and feed them into
+#                           the live exploit->verify loop for dynamic (OOB) confirmation.
 #   --scope <h1,h2,...>     Hosts in scope (default: the target's host).
 #   --id '<label>=<spec>'   Add a test identity (REPEATABLE; >=2 enables BOLA/privesc).
 #                           spec is comma-separated key:value pairs:
@@ -102,7 +105,7 @@ MAX_EXPLORE=""; MAX_HYPOS=""; MAX_EXPLOIT=""; MAXPASSES=""; REASONING=""; MODEL=
 LOOP_MODEL=""; PROVIDER=""; LOOP_PROVIDER=""; EMBED_PROVIDER=""; EMBED_MODEL=""
 IDS_JSON="[]"; FIRST_TOKEN=""; FIRST_HEADER=""; FIRST_SCHEME=""; NID=0
 DOCS_JSON="[]"
-MANIFEST_PATH=""; CAPABILITY=""; KILL_SWITCH=""; PURPLE=false; PROFILE=""; REQUIRE_TENANTS=""; RESILIENCE=false
+MANIFEST_PATH=""; CAPABILITY=""; KILL_SWITCH=""; PURPLE=false; PROFILE=""; REQUIRE_TENANTS=""; RESILIENCE=false; HUNT=false
 LEAVE_EVIDENCE=false; OBJECTIVES_JSON="[]"; INITIAL_FOCUS=""
 
 # Pre-pass: an optional TARGET profile (profiles/<name>.json or a path) supplies
@@ -204,6 +207,7 @@ while [ $# -gt 0 ]; do
     --require-tenants) REQUIRE_TENANTS="${2:-}"; shift ;;
     --resilience) RESILIENCE=true ;;
     --purple)     PURPLE=true ;;
+    --hunt)       HUNT=true ;;
     --no-wait)    WAIT=false ;;
     --agent)      AGENT=true ;;
     --source)     SOURCE="${2:-}"; shift ;;
@@ -280,6 +284,9 @@ fi
 if [ -n "$SOURCE" ]; then
   ABS="$(cd "$SOURCE" 2>/dev/null && pwd)"; [ -n "$ABS" ] && SOURCE="$ABS" || echo "⚠  --source '$SOURCE' not a dir; SAST skipped."
 fi
+if $HUNT && [ -z "$SOURCE" ]; then
+  echo "⚠  --hunt has no effect without --source (nothing to read); ignoring." >&2; HUNT=false
+fi
 if [ -z "$INITIAL_FOCUS" ] && [ "$(jq 'length' <<<"$OBJECTIVES_JSON")" -gt 0 ]; then
   INITIAL_FOCUS="Prioritize these catalog objectives until attempted or explicitly blocked: $(jq -r 'join(\", \")' <<<"$OBJECTIVES_JSON")"
 fi
@@ -346,7 +353,7 @@ input=$(jq -n \
   --arg eprov "$EMBED_PROVIDER" --arg emodel "$EMBED_MODEL" \
   --arg atoken "$FIRST_TOKEN" --arg aheader "$FIRST_HEADER" --arg ascheme "$FIRST_SCHEME" \
   --arg ks "$KILL_SWITCH" --arg focus "$INITIAL_FOCUS" \
-  --argjson manifest "$MANIFEST_JSON" --argjson purple "$PURPLE" \
+  --argjson manifest "$MANIFEST_JSON" --argjson purple "$PURPLE" --argjson hunt "$HUNT" \
   --argjson leave "$LEAVE_EVIDENCE" --argjson objectives "$OBJECTIVES_JSON" \
   --argjson profile "$PROFILE_JSON" \
   --argjson app "${AUTH_PROBE_PATHS_JSON:-[]}" \
@@ -356,6 +363,7 @@ input=$(jq -n \
   + (if ($manifest | length) == 0 then {} else {manifest: $manifest} end)
   + (if $ks == "" then {} else {kill_switch: $ks} end)
   + (if $purple then {purple: true} else {} end)
+  + (if $hunt then {hunt: true} else {} end)
   + ((($app // []) + (($profile.auth.probe_paths) // []) | unique) as $pp | if ($pp|length)>0 then {auth_probe_paths:$pp} else {} end)
   + (($profile.auth.token_exchange) as $te | if ($te|type)=="object" then {token_exchange:$te} else {} end)
   + (($profile.cleanup_families) as $cf | if ($cf|type)=="array" and ($cf|length)>0 then {cleanup_families:$cf} else {} end)
@@ -384,7 +392,9 @@ input=$(jq -n \
   + (if $ascheme == "" then {} else {auth_scheme: $ascheme} end)')
 
 echo "→ starting $WF against $URL (authorized=$AUTH, identities=$NID + anon)"
-WID=$(conductor workflow start -w "$WF" -i "$input" 2>&1 | tr -d '[:space:]')
+_start_out=$(conductor workflow start -w "$WF" -i "$input" 2>&1 || true)
+WID=$(printf '%s' "$_start_out" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)
+[ -n "$WID" ] || { echo "ERROR: could not parse workflow id from:" >&2; printf '%s\n' "$_start_out" >&2; exit 1; }
 echo "  workflow id: $WID"
 BASE_URL="${CONDUCTOR_SERVER_URL:-http://localhost:8080/api}"; BASE_URL="${BASE_URL%/api}"
 echo "  UI: $BASE_URL/execution/$WID"

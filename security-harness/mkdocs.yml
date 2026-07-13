@@ -1,0 +1,12 @@
+# Included into the top-level site via the monorepo plugin (see /mkdocs.yml).
+# `site_name` becomes the URL namespace for these pages (→ /security-harness/…).
+site_name: security-harness
+nav:
+  - Overview: index.md
+  - Quickstart: quickstart.md
+  - Sast, Scan & Assess: scan-vs-assess.md
+  - Authentication & SSO: authentication.md
+  - Authorization & capabilities: authorization.md
+  - Architecture: architecture.md
+  - Outputs: outputs.md
+  - Deployment modes: deployment.md

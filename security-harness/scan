@@ -140,7 +140,11 @@ input=$(jq -n \
   + (if $ascheme == "" then {} else {auth_scheme: $ascheme} end)')
 
 echo "→ starting $WF against $URL (authorized=$AUTH)"
-WID=$(conductor workflow start -w "$WF" -i "$input" 2>&1 | tr -d '[:space:]')
+# The conductor CLI may emit an update-available notice on stdout; extract just the
+# workflow-id UUID rather than trusting the whole line.
+_start_out=$(conductor workflow start -w "$WF" -i "$input" 2>&1 || true)
+WID=$(printf '%s' "$_start_out" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)
+[ -n "$WID" ] || { echo "ERROR: could not parse workflow id from:" >&2; printf '%s\n' "$_start_out" >&2; exit 1; }
 echo "  workflow id: $WID"
 
 BASE_URL="${CONDUCTOR_SERVER_URL:-http://localhost:8080/api}"; BASE_URL="${BASE_URL%/api}"

@@ -1,0 +1,286 @@
+{
+  "name": "sast_hunt_agent",
+  "version": 1,
+  "description": "Source-code hunter: investigates ONE lead (entry-point cluster, dependency CVE, or objective sweep) by reading/grepping the source, traces untrusted input to dangerous sinks, and emits exploitable attack hypotheses (standard schema + code citations) via a note action. Read-only, path-jailed. System prompt injected from prompts/sast_hunt.md.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "inputParameters": ["lead", "source_path", "max_steps", "catalog_objectives", "cve_leads", "identities", "oob_available"],
+  "variables": { "messages": [], "done": "", "hypotheses": [] },
+  "tasks": [
+    {
+      "name": "build_init",
+      "taskReferenceName": "build_init",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "lead": "${workflow.input.lead}",
+        "catalog_objectives": "${workflow.input.catalog_objectives}",
+        "cve_leads": "${workflow.input.cve_leads}",
+        "identities": "${workflow.input.identities}",
+        "oob_available": "${workflow.input.oob_available}",
+        "queryExpression": "{ msg: (\"You are hunting ONE lead for exploitable vulnerabilities.\\n\\nLEAD:\\n\" + (.lead | tojson) + \"\\n\\nApplicable objective catalog (hunt to cover these; set each hypothesis objective_id to one of these ids):\\n\" + ((.catalog_objectives // []) | tojson) + (if ((.cve_leads // []) | length) > 0 then (\"\\n\\nDependency CVE leads (for supply-chain / Log4Shell-class reasoning):\\n\" + (.cve_leads | tojson)) else \"\" end) + \"\\n\\nIdentity labels for test_plan/identities: \" + ((((.identities // []) | if type==\"object\" then (keys) else . end) | if length>0 then join(\", \") else \"(none -- use \\\"untrusted-user\\\")\" end)) + \"\\nOOB collaborator available for blind confirmation: \" + ((.oob_available // false) | tostring) + \"\\n\\nInvestigate the code (read/grep/list), note hypotheses as you find them, then conclude. Decide your first action.\") }"
+      }
+    },
+    {
+      "name": "sh_init",
+      "taskReferenceName": "sh_init",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "messages": [
+          { "role": "system", "message": "SYSTEM_PROMPT_SAST_HUNT" },
+          { "role": "user", "message": "${build_init.output.result.msg}" }
+        ],
+        "done": "",
+        "hypotheses": []
+      }
+    },
+    {
+      "name": "hunt_loop",
+      "taskReferenceName": "hunt_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ return $.hunt_loop['iteration'] < $.max_steps && $.done === ''; })();",
+      "inputParameters": {
+        "hunt_loop": "${hunt_loop.output}",
+        "max_steps": "${workflow.input.max_steps}",
+        "done": "${workflow.variables.done}"
+      },
+      "loopOver": [
+        {
+          "name": "decide",
+          "taskReferenceName": "decide",
+          "type": "LLM_CHAT_COMPLETE",
+          "optional": true,
+          "retryCount": 2,
+          "retryDelaySeconds": 10,
+          "inputParameters": {
+            "llmProvider": "anthropic",
+            "model": "claude-opus-4-8",
+            "temperature": 1,
+            "thinkingTokenLimit": 4000,
+            "maxTokens": 8000,
+            "jsonOutput": false,
+            "messages": "${workflow.variables.messages}"
+          }
+        },
+        {
+          "name": "parse_decide",
+          "taskReferenceName": "parse_decide",
+          "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "raw": "${decide.output.result}",
+            "queryExpression": ".raw as $r | (if ($r|type) == \"object\" then $r else (try ($r[ ($r|index(\"{\")) : (($r|rindex(\"}\"))+1) ] | fromjson) catch {reasoning: \"unparseable model output\", action: {type: \"none\"}}) end)"
+          }
+        },
+        {
+          "name": "route",
+          "taskReferenceName": "route",
+          "type": "SWITCH",
+          "evaluatorType": "graaljs",
+          "expression": "$.atype === 'conclude' ? 'conclude' : ($.atype === 'read' ? 'read' : ($.atype === 'grep' ? 'grep' : ($.atype === 'list' ? 'list' : ($.atype === 'note' ? 'note' : 'other'))))",
+          "inputParameters": { "atype": "${parse_decide.output.result.action.type}" },
+          "decisionCases": {
+            "conclude": [
+              {
+                "name": "mark_done",
+                "taskReferenceName": "mark_done",
+                "type": "SET_VARIABLE",
+                "inputParameters": { "done": "done" }
+              }
+            ],
+            "note": [
+              {
+                "name": "build_turn_note",
+                "taskReferenceName": "build_turn_note",
+                "type": "JSON_JQ_TRANSFORM",
+                "inputParameters": {
+                  "messages": "${workflow.variables.messages}",
+                  "hypotheses": "${workflow.variables.hypotheses}",
+                  "action": "${parse_decide.output.result.action}",
+                  "queryExpression": "{ messages: (.messages + [ {role:\"assistant\", message:(.action | tojson)}, {role:\"user\", message:\"Hypothesis noted. Keep hunting this lead (read/grep/list/note) or conclude.\"} ]), hypotheses: ((.hypotheses // []) + (if (.action.hypothesis | type) == \"object\" then [ .action.hypothesis ] else [] end)) }"
+                }
+              },
+              {
+                "name": "update_state_note",
+                "taskReferenceName": "update_state_note",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "messages": "${build_turn_note.output.result.messages}",
+                  "hypotheses": "${build_turn_note.output.result.hypotheses}"
+                }
+              }
+            ],
+            "read": [
+              {
+                "name": "codenav_read",
+                "taskReferenceName": "cn_read",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "source_path": "${workflow.input.source_path}",
+                  "path": "${parse_decide.output.result.action.path}",
+                  "start_line": "${parse_decide.output.result.action.start_line}",
+                  "end_line": "${parse_decide.output.result.action.end_line}"
+                }
+              },
+              {
+                "name": "build_turn_read",
+                "taskReferenceName": "build_turn_read",
+                "type": "JSON_JQ_TRANSFORM",
+                "inputParameters": {
+                  "messages": "${workflow.variables.messages}",
+                  "action": "${parse_decide.output.result.action}",
+                  "result": "${cn_read.output}",
+                  "queryExpression": "{ messages: (.messages + [ {role:\"assistant\", message:(.action | tojson)}, {role:\"user\", message:(if (.result.ok // false) then (\"File \" + (.result.path // \"\") + \" (lines \" + ((.result.start_line // 1)|tostring) + \"-\" + ((.result.end_line // 0)|tostring) + \" of \" + ((.result.total_lines // 0)|tostring) + (if (.result.truncated // false) then \", truncated\" else \"\" end) + \"):\\n\" + (.result.content // \"\") + \"\\n\\nContinue or conclude.\") else (\"read error: \" + (.result.error // \"unknown\") + \"\\n\\nTry another path, or conclude.\") end)} ]) }"
+                }
+              },
+              {
+                "name": "update_state_read",
+                "taskReferenceName": "update_state_read",
+                "type": "SET_VARIABLE",
+                "inputParameters": { "messages": "${build_turn_read.output.result.messages}" }
+              }
+            ],
+            "grep": [
+              {
+                "name": "codenav_grep",
+                "taskReferenceName": "cn_grep",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "source_path": "${workflow.input.source_path}",
+                  "pattern": "${parse_decide.output.result.action.pattern}",
+                  "glob": "${parse_decide.output.result.action.glob}",
+                  "path": "${parse_decide.output.result.action.path}"
+                }
+              },
+              {
+                "name": "build_turn_grep",
+                "taskReferenceName": "build_turn_grep",
+                "type": "JSON_JQ_TRANSFORM",
+                "inputParameters": {
+                  "messages": "${workflow.variables.messages}",
+                  "action": "${parse_decide.output.result.action}",
+                  "result": "${cn_grep.output}",
+                  "queryExpression": "{ messages: (.messages + [ {role:\"assistant\", message:(.action | tojson)}, {role:\"user\", message:(if (.result.ok // false) then (\"grep \\\"\" + (.result.pattern // \"\") + \"\\\" -> \" + ((.result.matches // []) | length | tostring) + \" match(es)\" + (if (.result.truncated // false) then \" (truncated)\" else \"\" end) + \":\\n\" + (([ (.result.matches // [])[] | (.file + \":\" + (.line|tostring) + \"  \" + .text) ] | join(\"\\n\"))[0:3500]) + \"\\n\\nContinue or conclude.\") else (\"grep error: \" + (.result.error // \"unknown\")) end)} ]) }"
+                }
+              },
+              {
+                "name": "update_state_grep",
+                "taskReferenceName": "update_state_grep",
+                "type": "SET_VARIABLE",
+                "inputParameters": { "messages": "${build_turn_grep.output.result.messages}" }
+              }
+            ],
+            "list": [
+              {
+                "name": "codenav_list",
+                "taskReferenceName": "cn_list",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "source_path": "${workflow.input.source_path}",
+                  "path": "${parse_decide.output.result.action.path}"
+                }
+              },
+              {
+                "name": "build_turn_list",
+                "taskReferenceName": "build_turn_list",
+                "type": "JSON_JQ_TRANSFORM",
+                "inputParameters": {
+                  "messages": "${workflow.variables.messages}",
+                  "action": "${parse_decide.output.result.action}",
+                  "result": "${cn_list.output}",
+                  "queryExpression": "{ messages: (.messages + [ {role:\"assistant\", message:(.action | tojson)}, {role:\"user\", message:(if (.result.ok // false) then (\"dir \" + (.result.path // \".\") + \":\\n\" + (([ (.result.entries // [])[] | (if .dir then (.name + \"/\") else .name end) ] | join(\"  \"))[0:2500]) + \"\\n\\nContinue or conclude.\") else (\"list error: \" + (.result.error // \"unknown\")) end)} ]) }"
+                }
+              },
+              {
+                "name": "update_state_list",
+                "taskReferenceName": "update_state_list",
+                "type": "SET_VARIABLE",
+                "inputParameters": { "messages": "${build_turn_list.output.result.messages}" }
+              }
+            ]
+          },
+          "defaultCase": [
+            {
+              "name": "build_turn_nudge",
+              "taskReferenceName": "build_turn_nudge",
+              "type": "JSON_JQ_TRANSFORM",
+              "inputParameters": {
+                "messages": "${workflow.variables.messages}",
+                "parsed": "${parse_decide.output.result}",
+                "queryExpression": "{ messages: (.messages + [ {role:\"assistant\", message:(.parsed | tojson)}, {role:\"user\", message:\"That was not a valid action. Respond with exactly one JSON object: a read/grep/list/note action, or conclude.\"} ]) }"
+              }
+            },
+            {
+              "name": "update_state_nudge",
+              "taskReferenceName": "update_state_nudge",
+              "type": "SET_VARIABLE",
+              "inputParameters": { "messages": "${build_turn_nudge.output.result.messages}" }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "finalize_gate",
+      "taskReferenceName": "finalize_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "$.done === '' ? 'force' : 'ok'",
+      "inputParameters": { "done": "${workflow.variables.done}" },
+      "decisionCases": {
+        "force": [
+          {
+            "name": "build_force",
+            "taskReferenceName": "build_force",
+            "type": "JSON_JQ_TRANSFORM",
+            "inputParameters": {
+              "messages": "${workflow.variables.messages}",
+              "queryExpression": "{ messages: (.messages + [ {role:\"user\", message:\"You have used your full investigation budget. Flush any remaining exploitable hypotheses NOW as one JSON object {\\\"hypotheses\\\":[ ... ]} using the hypothesis schema (each with cited evidence file:line). If you have nothing further, respond {\\\"hypotheses\\\":[]}.\"} ]) }"
+            }
+          },
+          {
+            "name": "force_flush",
+            "taskReferenceName": "force_flush",
+            "type": "LLM_CHAT_COMPLETE",
+            "optional": true,
+            "retryCount": 1,
+            "inputParameters": {
+              "llmProvider": "anthropic",
+              "model": "claude-opus-4-8",
+              "temperature": 0,
+              "maxTokens": 6000,
+              "jsonOutput": false,
+              "messages": "${build_force.output.result.messages}"
+            }
+          },
+          {
+            "name": "parse_force",
+            "taskReferenceName": "parse_force",
+            "type": "JSON_JQ_TRANSFORM",
+            "inputParameters": {
+              "raw": "${force_flush.output.result}",
+              "existing": "${workflow.variables.hypotheses}",
+              "queryExpression": ".raw as $r | ((if ($r|type) == \"object\" then $r else (try ($r[ ($r|index(\"{\")) : (($r|rindex(\"}\"))+1) ] | fromjson) catch {}) end)) as $o | ((.existing // []) + (($o.hypotheses // []) | if type == \"array\" then . else [] end))"
+            }
+          },
+          {
+            "name": "set_force",
+            "taskReferenceName": "set_force",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "hypotheses": "${parse_force.output.result}",
+              "done": "forced"
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    }
+  ],
+  "outputParameters": {
+    "lead": "${workflow.input.lead}",
+    "hypotheses": "${workflow.variables.hypotheses}",
+    "steps": "${hunt_loop.output.iteration}"
+  }
+}

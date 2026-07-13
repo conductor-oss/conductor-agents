@@ -1,0 +1,90 @@
+site_name: Conductor Agents
+site_description: A catalog of production-grade, long-running AI agents built and running on Conductor.
+site_url: https://conductor-oss.github.io/conductor-agents/
+repo_url: https://github.com/conductor-oss/conductor-agents
+repo_name: conductor-oss/conductor-agents
+edit_uri: edit/main/
+copyright: >-
+  Conductor Agents — agents &amp; harnesses on Conductor · Apache-2.0
+
+docs_dir: docs
+
+theme:
+  name: material
+  logo: assets/orkes-purple.svg
+  favicon: assets/orkes-purple.svg
+  font:
+    text: Inter
+    code: IBM Plex Mono
+  palette:
+    - scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
+    - navigation.top
+    - navigation.sections
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+
+extra_css:
+  - stylesheets/extra.css
+extra_javascript:
+  - javascripts/catalog.js
+
+plugins:
+  - search
+  - monorepo
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - toc:
+      permalink: true
+      title: On this page
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/conductor-oss/conductor
+    - icon: fontawesome/brands/discord
+      link: https://discord.gg/conductor
+  generator: false
+
+nav:
+  - Catalog: index.md
+  - Agents:
+      - Security Harness: "!include ./security-harness/mkdocs.yml"
+      - Coding Agent: agents/coding-agent.md
+      - Deep Research: agents/deep-research.md
+      - Customer Support: agents/customer-support.md
+  - Add your agent: contributing.md
+  - Why Conductor: why-conductor.md
