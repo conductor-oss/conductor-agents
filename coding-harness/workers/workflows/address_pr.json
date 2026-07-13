@@ -1,0 +1,171 @@
+{
+  "name": "address_pr",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "Address review feedback on an open PR: consolidate the PR's comments (conversation + reviews + inline, skipping the harness's own), clone + check out the PR branch, do the coding work (code_parallel by default, or a single coding_agent session), commit, push to the same branch (updating the PR), and reply with a summary.",
+  "inputParameters": [
+    "repo",
+    "prNumber",
+    "engine",
+    "agent",
+    "model",
+    "fixPromptTemplate",
+    "maxSubtasks",
+    "maxTurns",
+    "maxBudgetUsd",
+    "timeoutS"
+  ],
+  "inputTemplate": {
+    "engine": "code_parallel",
+    "agent": "claude",
+    "model": "",
+    "fixPromptTemplate": "",
+    "maxSubtasks": 4,
+    "maxTurns": 20,
+    "maxBudgetUsd": 2.0,
+    "timeoutS": 600
+  },
+  "tasks": [
+    {
+      "name": "pr_comments",
+      "taskReferenceName": "fb",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repo": "${workflow.input.repo}",
+        "number": "${workflow.input.prNumber}"
+      }
+    },
+    {
+      "name": "feedback_gate",
+      "taskReferenceName": "feedback_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "hasFeedback",
+      "inputParameters": {
+        "hasFeedback": "${fb.output.hasFeedback}"
+      },
+      "decisionCases": {
+        "true": [
+          {
+            "name": "git_clone",
+            "taskReferenceName": "clone",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "repoUrl": "${fb.output.headRepoUrl}",
+              "dest": "/tmp/pr_${workflow.input.prNumber}_${workflow.workflowId}"
+            }
+          },
+          {
+            "name": "pr_checkout",
+            "taskReferenceName": "co",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "repoPath": "${clone.output.repoPath}",
+              "number": "${workflow.input.prNumber}"
+            }
+          },
+          {
+            "name": "engine_gate",
+            "taskReferenceName": "engine_gate",
+            "type": "SWITCH",
+            "evaluatorType": "value-param",
+            "expression": "engine",
+            "inputParameters": {
+              "engine": "${workflow.input.engine}"
+            },
+            "decisionCases": {
+              "coding_agent": [
+                {
+                  "name": "coding_agent",
+                  "taskReferenceName": "code",
+                  "type": "SIMPLE",
+                  "inputParameters": {
+                    "worktreePath": "${clone.output.repoPath}",
+                    "prompt": "You are addressing review feedback on an open pull request. Make the minimal changes needed to address ALL of the feedback below; do not do unrelated work. When done, briefly state what you changed.\n\n${fb.output.feedback}",
+                    "templateKey": "address_pr",
+                    "promptTemplate": "${workflow.input.fixPromptTemplate}",
+                    "promptContext": {
+                      "feedback": "${fb.output.feedback}"
+                    },
+                    "agent": "${workflow.input.agent}",
+                    "model": "${workflow.input.model}",
+                    "maxTurns": "${workflow.input.maxTurns}",
+                    "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+                    "timeoutS": "${workflow.input.timeoutS}"
+                  }
+                },
+                {
+                  "name": "commit",
+                  "taskReferenceName": "cmt",
+                  "type": "SIMPLE",
+                  "inputParameters": {
+                    "repoPath": "${clone.output.repoPath}",
+                    "message": "Address PR #${workflow.input.prNumber} review feedback"
+                  }
+                }
+              ]
+            },
+            "defaultCase": [
+              {
+                "name": "code_parallel",
+                "taskReferenceName": "cp",
+                "type": "SUB_WORKFLOW",
+                "subWorkflowParam": {
+                  "name": "code_parallel",
+                  "version": 1
+                },
+                "inputParameters": {
+                  "repoPath": "${clone.output.repoPath}",
+                  "instruction": "Address the following review feedback on an open pull request. Make the minimal changes needed to address ALL of it; do not do unrelated work.\n\n${fb.output.feedback}",
+                  "changeBranch": "${fb.output.head}",
+                  "design": false,
+                  "planAgent": "${workflow.input.agent}",
+                  "codeAgent": "${workflow.input.agent}",
+                  "codePromptTemplate": "${workflow.input.fixPromptTemplate}",
+                  "maxSubtasks": "${workflow.input.maxSubtasks}",
+                  "maxTurns": "${workflow.input.maxTurns}",
+                  "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+                  "timeoutS": "${workflow.input.timeoutS}"
+                }
+              }
+            ]
+          },
+          {
+            "name": "git_push",
+            "taskReferenceName": "push",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "repoPath": "${clone.output.repoPath}",
+              "branch": "${fb.output.head}",
+              "setUpstream": true
+            }
+          },
+          {
+            "name": "pr_comment",
+            "taskReferenceName": "reply",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "repoPath": "${clone.output.repoPath}",
+              "number": "${workflow.input.prNumber}",
+              "body": "Addressed the review feedback on this PR.\n\n- Engine: `${workflow.input.engine}`\n- Branch: `${fb.output.head}`\n\nSee the latest commits for the changes."
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    }
+  ],
+  "outputParameters": {
+    "prNumber": "${fb.output.number}",
+    "head": "${fb.output.head}",
+    "engine": "${workflow.input.engine}",
+    "commentCount": "${fb.output.commentCount}",
+    "hasFeedback": "${fb.output.hasFeedback}",
+    "agentResult": "${code.output.result}",
+    "subtasks": "${cp.output.subtasks}",
+    "totalTokens": "${cp.output.totalTokens}",
+    "pushed": "${push.output.pushed}",
+    "replyUrl": "${reply.output.url}"
+  }
+}

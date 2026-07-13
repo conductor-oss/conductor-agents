@@ -1,0 +1,11 @@
+{
+  "name": "pr_status",
+  "description": "Read a PR's review/merge state + CI checks (gh pr view/checks). Input: repoPath, number?.",
+  "retryCount": 2,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 86400,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

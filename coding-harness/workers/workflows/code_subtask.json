@@ -1,0 +1,74 @@
+{
+  "name": "code_subtask",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "One parallel sub-task of code_parallel: create a git worktree/branch, run the coding_agent in it, and commit the changes on that branch so merge_worktrees can merge it back.",
+  "inputParameters": [
+    "repoPath",
+    "name",
+    "prompt",
+    "promptTemplate",
+    "templateKey",
+    "promptContext",
+    "model",
+    "agent",
+    "maxTurns",
+    "maxBudgetUsd",
+    "timeoutS"
+  ],
+  "inputTemplate": {
+    "promptTemplate": "",
+    "templateKey": "code",
+    "promptContext": {}
+  },
+  "tasks": [
+    {
+      "name": "worktree_add",
+      "taskReferenceName": "wt",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "name": "${workflow.input.name}"
+      }
+    },
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "code",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "worktreePath": "${wt.output.worktreePath}",
+        "prompt": "${workflow.input.prompt}",
+        "promptTemplate": "${workflow.input.promptTemplate}",
+        "templateKey": "${workflow.input.templateKey}",
+        "promptContext": "${workflow.input.promptContext}",
+        "model": "${workflow.input.model}",
+        "agent": "${workflow.input.agent}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "timeoutS": "${workflow.input.timeoutS}"
+      }
+    },
+    {
+      "name": "commit",
+      "taskReferenceName": "cmt",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${wt.output.worktreePath}",
+        "message": "code_subtask ${workflow.input.name}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "status": "${code.output.status}",
+    "agent": "${code.output.agent}",
+    "model": "${code.output.model}",
+    "filesChanged": "${code.output.filesChanged}",
+    "costUsd": "${code.output.costUsd}",
+    "tokenUsed": "${code.output.tokenUsed}",
+    "numTurns": "${code.output.numTurns}",
+    "turns": "${code.output.turns}",
+    "branch": "${wt.output.branch}",
+    "commit": "${cmt.output.commit}"
+  }
+}

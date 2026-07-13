@@ -1,0 +1,241 @@
+"""Chat foundation tests — session store, tool dispatcher, and the llm loop (stubbed)."""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from tui import api
+from tui.chat import llm, prompt, tools
+from tui.chat.session import Session, SessionStore
+from tui.tests.test_screens import FakeClient
+
+
+# --------------------------------------------------------------------------- session
+
+def test_session_roundtrip(tmp_path):
+    store = SessionStore(tmp_path)
+    s = Session.new("claude-sonnet-4-6")
+    s.set_title_from("review PR 7 on acme/app")
+    s.messages.append({"role": "user", "content": "hi"})
+    s.messages.append({"role": "assistant", "content": [{"type": "text", "text": "ok"}]})
+    s.add_run("wf-1"); s.add_run("wf-1")  # dedupe
+    store.save(s)
+    loaded = store.load(s.id)
+    assert loaded.title == "review PR 7 on acme/app"
+    assert loaded.messages == s.messages
+    assert loaded.runs == ["wf-1"]
+    assert store.list()[0].id == s.id
+    assert store.latest().id == s.id
+
+
+# --------------------------------------------------------------------------- tools
+
+def _ctx(client, confirm_result=True, started=None):
+    started = started if started is not None else []
+    async def confirm(title, message):
+        return confirm_result
+    return tools.ToolContext(client=client, confirm=confirm,
+                             on_run_started=lambda wid: started.append(wid)), started
+
+
+@pytest.mark.asyncio
+async def test_start_workflow_requires_inputs_then_confirms():
+    fc = FakeClient()
+    ctx, started = _ctx(fc)
+    # missing required prNumber
+    out = await tools.dispatch("start_workflow", {"workflow": "pr_review", "inputs": {"repo": "acme/app"}}, ctx)
+    assert "missing required inputs" in out and "prNumber" in out
+    assert not fc.started
+    # complete → confirmed → started
+    out = await tools.dispatch("start_workflow",
+                               {"workflow": "pr_review", "inputs": {"repo": "acme/app", "prNumber": 7}}, ctx)
+    assert "started pr_review" in out and "wf-new-123" in out
+    # chat launches pr_review with the review gate on by default (approve injected)
+    assert fc.started == [("pr_review", {"repo": "acme/app", "prNumber": 7, "approve": True})]
+    assert started == ["wf-new-123"]
+
+
+@pytest.mark.asyncio
+async def test_start_injects_gate_default_unless_overridden():
+    fc = FakeClient()
+    ctx, _ = _ctx(fc)
+    # explicit approve=False is respected (unattended run)
+    await tools.dispatch("start_workflow",
+                         {"workflow": "pr_review",
+                          "inputs": {"repo": "acme/app", "prNumber": 7, "approve": False}}, ctx)
+    assert fc.started[-1] == ("pr_review", {"repo": "acme/app", "prNumber": 7, "approve": False})
+    # issue_to_pr gets approvePr injected on by default
+    await tools.dispatch("start_workflow",
+                         {"workflow": "issue_to_pr", "inputs": {"repo": "acme/app", "issueNumber": 3}}, ctx)
+    assert fc.started[-1] == ("issue_to_pr", {"repo": "acme/app", "issueNumber": 3, "approvePr": True})
+
+
+@pytest.mark.asyncio
+async def test_start_workflow_declined():
+    fc = FakeClient()
+    ctx, _ = _ctx(fc, confirm_result=False)
+    out = await tools.dispatch("start_workflow",
+                               {"workflow": "pr_review", "inputs": {"repo": "acme/app", "prNumber": 7}}, ctx)
+    assert "declined" in out and not fc.started
+
+
+@pytest.mark.asyncio
+async def test_terminate_confirms():
+    fc = FakeClient()
+    ctx, _ = _ctx(fc)
+    out = await tools.dispatch("terminate_run", {"workflow_id": "w9"}, ctx)
+    assert "terminated w9" in out and fc.terminated == [("w9", "terminated from chat")]
+
+
+@pytest.mark.asyncio
+async def test_list_runs_shape():
+    runs = [api.Run(id="a" * 8, workflow="pr_review", status="COMPLETED", start_ms=1, end_ms=2,
+                    input={"repo": "acme/app", "prNumber": 7})]
+    fc = FakeClient(runs=runs)
+    ctx, _ = _ctx(fc)
+    out = await tools.dispatch("list_runs", {}, ctx)
+    assert "pr_review" in out and "COMPLETED" in out
+
+
+def test_prompt_mentions_workflows():
+    p = prompt.system_prompt("http://localhost:8080/api")
+    for wf in ("pr_review", "issue_to_pr", "address_pr", "code_parallel"):
+        assert wf in p
+    assert "localhost:8080" in p
+
+
+# --------------------------------------------------------------------------- llm loop (stubbed)
+
+class _Blk:
+    def __init__(self, **kw): self.__dict__.update(kw)
+
+
+class _Usage:
+    def __init__(self, i, o): self.input_tokens, self.output_tokens = i, o
+
+
+class _FinalMsg:
+    def __init__(self, content, stop_reason, usage):
+        self.content, self.stop_reason, self.usage = content, stop_reason, usage
+
+
+class _Stream:
+    def __init__(self, texts, final):
+        self._texts, self._final = texts, final
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+    @property
+    def text_stream(self):
+        async def gen():
+            for t in self._texts:
+                yield t
+        return gen()
+    async def get_final_message(self): return self._final
+
+
+class _StubClient:
+    """Two-call script: first a tool_use turn, then a text turn."""
+    def __init__(self): self._calls = 0
+    class _Messages:
+        def __init__(self, outer): self._outer = outer
+        def stream(self, **kw):
+            c = self._outer._calls
+            self._outer._calls += 1
+            if c == 0:
+                final = _FinalMsg(
+                    [_Blk(type="tool_use", id="t1", name="list_runs", input={})],
+                    "tool_use", _Usage(10, 5))
+                return _Stream([], final)
+            final = _FinalMsg([_Blk(type="text", text="Here are your runs.")],
+                              "end_turn", _Usage(8, 12))
+            return _Stream(["Here are ", "your runs."], final)
+    @property
+    def messages(self): return _StubClient._Messages(self)
+
+
+class _StartStub:
+    """First turn calls start_workflow(pr_review), then a text turn."""
+    def __init__(self): self._calls = 0
+    class _Messages:
+        def __init__(self, outer): self._outer = outer
+        def stream(self, **kw):
+            c = self._outer._calls
+            self._outer._calls += 1
+            if c == 0:
+                tu = _Blk(type="tool_use", id="s1", name="start_workflow",
+                          input={"workflow": "pr_review", "inputs": {"repo": "acme/app", "prNumber": 7}})
+                return _Stream([], _FinalMsg([tu], "tool_use", _Usage(5, 5)))
+            return _Stream(["Started it."], _FinalMsg([_Blk(type="text", text="Started it.")],
+                                                      "end_turn", _Usage(3, 3)))
+    @property
+    def messages(self): return _StartStub._Messages(self)
+
+
+def _chat_app(conductor_client, llm_stub):
+    from tui.app import HarnessApp
+    from tui.config import Settings
+    app = HarnessApp(Settings(server_url="http://x/api", notify=False), client=conductor_client)
+    app.llm_client = llm_stub
+    return app
+
+
+@pytest.mark.asyncio
+async def test_chat_readonly_turn_no_confirm():
+    from tui.tests.test_screens import FakeClient
+    runs = [api.Run(id="r" * 8, workflow="pr_review", status="COMPLETED", start_ms=1, end_ms=2,
+                    input={"repo": "acme/app", "prNumber": 7})]
+    fc = FakeClient(runs=runs)
+    app = _chat_app(fc, _StubClient())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0.2)
+        app.screen.query_one("#chat_input").value = "list my runs"
+        await pilot.press("enter")
+        await pilot.pause(1.0)
+        roles = [m["role"] for m in app.session.messages]
+        assert roles == ["user", "assistant", "user", "assistant"]  # user, tool_use, tool_result, text
+        assert type(app.screen).__name__ == "Chat"  # no modal (read-only)
+        assert fc.started == []
+
+
+@pytest.mark.asyncio
+async def test_chat_start_workflow_confirms_and_starts():
+    from tui.tests.test_screens import FakeClient
+    from textual.widgets import Button
+    fc = FakeClient()
+    app = _chat_app(fc, _StartStub())
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0.2)
+        app.screen.query_one("#chat_input").value = "review PR 7 on acme/app"
+        await pilot.press("enter")
+        await pilot.pause(0.6)
+        # a confirm modal should be up
+        assert type(app.screen).__name__ == "ConfirmModal"
+        await pilot.click("#ok")
+        await pilot.pause(0.8)
+        assert fc.started == [("pr_review", {"repo": "acme/app", "prNumber": 7, "approve": True})]
+        assert app.session.runs == ["wf-new-123"]
+
+
+@pytest.mark.asyncio
+async def test_llm_loop_dispatches_tool_then_finishes():
+    eng = llm.ChatEngine(_StubClient(), "claude-sonnet-4-6", "sys")
+    messages = [{"role": "user", "content": "list my runs"}]
+    texts, tool_calls, tool_dones = [], [], []
+    async def run_tool(name, inp):
+        tool_calls.append((name, inp))
+        return "run-1 COMPLETED pr_review acme/app"
+    res = await eng.run(
+        messages, run_tool=run_tool,
+        on_text=texts.append,
+        on_tool_start=lambda n, i: None,
+        on_tool_done=lambda n, o: tool_dones.append((n, o)),
+    )
+    assert tool_calls == [("list_runs", {})]
+    assert "".join(texts) == "Here are your runs."
+    # messages now: user, assistant(tool_use), user(tool_result), assistant(text)
+    assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
+    assert messages[2]["content"][0]["type"] == "tool_result"
+    assert res["tokens"] == 10 + 5 + 8 + 12
+    assert res["cost"] > 0

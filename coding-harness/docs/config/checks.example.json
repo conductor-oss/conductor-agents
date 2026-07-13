@@ -1,0 +1,41 @@
+{
+  "_about": "conductor-code verification suite: WHAT to run, WHEN, HOW it feeds the hill-climb score, and the test ENVIRONMENT. Copied to .conductor-code/checks.json by `adopt`; project-specific. This is how the harness verifies real runtime behavior (concurrency, distributed correctness), not just a green unit build.",
+  "version": 1,
+
+  "environment": {
+    "_about": "How the `provision_env` worker stands up the system under test for checks marked needsEnv. `up` before, `down` after; ready when readyCheck passes.",
+    "up": "docker compose -f test/cluster.yml up -d --wait",
+    "down": "docker compose -f test/cluster.yml down -v",
+    "nodes": 3,
+    "readyCheck": "scripts/wait-healthy.sh",
+    "_alt": "k8s/kind, testcontainers, or a remote cluster are equally valid — only up/down/readyCheck change."
+  },
+
+  "checks": {
+    "_about": "Each check: kind, cmd, `when` it runs (per-round | per-wave | final), `blocking`, `weight` within the verification signal, `needsEnv`, and non-determinism handling (`nonDeterministic` + `reruns`). Altitudes keep expensive distributed checks out of the per-round hill-climb.",
+    "unit":            { "kind": "unit",            "cmd": "make test-unit",         "when": "per-round", "blocking": true,  "weight": 0.20 },
+    "typecheck":       { "kind": "typecheck",       "cmd": "make typecheck",         "when": "per-round", "blocking": true,  "weight": 0.10 },
+    "lint":            { "kind": "lint",            "cmd": "make lint",              "when": "per-round", "blocking": false, "weight": 0.05 },
+    "build":           { "kind": "build",           "cmd": "make build",             "when": "per-round", "blocking": true,  "weight": 0.10 },
+    "race":            { "kind": "race",            "cmd": "go test -race ./...",    "when": "per-round", "blocking": true,  "weight": 0.10 },
+    "integration":     { "kind": "integration",     "cmd": "make test-integration",  "when": "per-wave",  "blocking": true,  "weight": 0.10, "needsEnv": true },
+    "property":        { "kind": "property",        "cmd": "make test-property",     "when": "per-wave",  "blocking": true,  "weight": 0.10, "nonDeterministic": true, "reruns": 3 },
+    "linearizability": { "kind": "consistency",     "cmd": "make jepsen",            "when": "final",     "blocking": true,  "weight": 0.10, "needsEnv": true, "nonDeterministic": true, "reruns": 5 },
+    "chaos":           { "kind": "fault-injection", "cmd": "make chaos",             "when": "final",     "blocking": true,  "weight": 0.10, "needsEnv": true, "nonDeterministic": true, "reruns": 5 },
+    "load":            { "kind": "load",            "cmd": "make soak DURATION=10m", "when": "final",     "blocking": false, "weight": 0.05, "needsEnv": true },
+    "security":        { "kind": "security",        "cmd": "make sec-scan",          "when": "final",     "blocking": true,  "weight": 0.00 }
+  },
+
+  "invariants": {
+    "_about": "System-wide properties the change MUST preserve; each maps to the check(s) that prove it. Verified at the walking skeleton (DESIGN §4.2), per-wave, and the final review. A failing invariant bounces back to DESIGN, not just implement.",
+    "linearizable-writes":       { "desc": "client-observed writes are linearizable",          "checks": ["linearizability"] },
+    "no-loss-on-single-failure": { "desc": "no acknowledged write lost if one node dies",       "checks": ["chaos"] },
+    "idempotent-retries":        { "desc": "duplicate delivery is side-effect-free",            "checks": ["property", "integration"] }
+  },
+
+  "flake": {
+    "_about": "Non-deterministic checks are re-run `reruns` times; a result is a pass only if pass-rate >= passRate. The score uses the pass-rate, and deltas within noiseBand do NOT count as score improvement — so flaky results can't fool keep-best or plateau detection. Keep reviewLoop.plateau.minImprovement >= noiseBand.",
+    "passRate": 0.8,
+    "noiseBand": 0.05
+  }
+}

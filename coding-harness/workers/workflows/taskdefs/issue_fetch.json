@@ -1,0 +1,11 @@
+{
+  "name": "issue_fetch",
+  "description": "Fetch a GitHub issue's title/body/labels via gh. Input: repo (owner/name or URL), number.",
+  "retryCount": 2,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 86400,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

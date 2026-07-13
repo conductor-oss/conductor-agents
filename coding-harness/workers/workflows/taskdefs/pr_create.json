@@ -1,0 +1,11 @@
+{
+  "name": "pr_create",
+  "description": "Open a GitHub PR from the change branch (gh pr create). Input: repoPath, title, body?, base?, head?, draft?, fill?.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 86400,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

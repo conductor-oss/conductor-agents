@@ -1,0 +1,166 @@
+{
+  "name": "pr_review",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "Review a pull request and post a formal review: fetch PR metadata + prior discussion, clone + check out the PR, compute the diff, run a read-only coding_agent to produce structured findings, and post them as a GitHub review (inline comments + summary + verdict). Never approves.",
+  "inputParameters": [
+    "repo",
+    "prNumber",
+    "agent",
+    "model",
+    "approve",
+    "reviewPromptTemplate",
+    "maxTurns",
+    "maxBudgetUsd",
+    "timeoutS"
+  ],
+  "inputTemplate": {
+    "agent": "claude",
+    "model": "",
+    "approve": false,
+    "reviewPromptTemplate": "",
+    "maxTurns": 20,
+    "maxBudgetUsd": 1.5,
+    "timeoutS": 600
+  },
+  "tasks": [
+    {
+      "name": "pr_comments",
+      "taskReferenceName": "fb",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repo": "${workflow.input.repo}",
+        "number": "${workflow.input.prNumber}"
+      }
+    },
+    {
+      "name": "git_clone",
+      "taskReferenceName": "clone",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoUrl": "${fb.output.headRepoUrl}",
+        "dest": "/tmp/review_${workflow.input.prNumber}_${workflow.workflowId}"
+      }
+    },
+    {
+      "name": "pr_checkout",
+      "taskReferenceName": "co",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${clone.output.repoPath}",
+        "number": "${workflow.input.prNumber}"
+      }
+    },
+    {
+      "name": "pr_diff",
+      "taskReferenceName": "diff",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repo": "${workflow.input.repo}",
+        "number": "${workflow.input.prNumber}",
+        "repoPath": "${clone.output.repoPath}"
+      }
+    },
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "review",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "worktreePath": "${clone.output.repoPath}",
+        "agent": "${workflow.input.agent}",
+        "model": "${workflow.input.model}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "timeoutS": "${workflow.input.timeoutS}",
+        "tools": ["Read", "Grep", "Glob"],
+        "templateKey": "pr_review",
+        "promptTemplate": "${workflow.input.reviewPromptTemplate}",
+        "promptContext": {
+          "diff": "${diff.output.diff}",
+          "feedback": "${fb.output.feedback}"
+        },
+        "schema": {
+          "type": "object",
+          "required": ["summary", "verdict", "comments"],
+          "properties": {
+            "summary": {"type": "string", "description": "overall review summary (markdown)"},
+            "verdict": {"type": "string", "enum": ["comment", "request_changes"], "description": "request_changes ONLY if there are blocking correctness/security issues; otherwise comment"},
+            "comments": {
+              "type": "array",
+              "description": "specific inline comments, each anchored to a file + line in the NEW version",
+              "items": {
+                "type": "object",
+                "required": ["path", "line", "body"],
+                "properties": {
+                  "path": {"type": "string", "description": "repo-relative file path"},
+                  "line": {"type": "integer", "description": "line number in the file's NEW (post-change) version"},
+                  "severity": {"type": "string", "enum": ["blocking", "suggestion", "nit", "question"]},
+                  "body": {"type": "string", "description": "the comment"}
+                }
+              }
+            }
+          }
+        },
+        "prompt": "You are a senior code reviewer. Review the changes in this pull request and produce a focused, high-signal review as the required structured output.\n\nGuidelines:\n- Comment on REAL issues: correctness bugs, security problems, missing/incorrect error handling, missing tests for new behavior, and clear design problems. Do NOT nitpick formatting or style.\n- Read the surrounding code (Read/Grep/Glob) for context before judging — check callers, related files, and whether a change breaks something elsewhere.\n- Anchor each inline comment to a file `path` + `line` number in the file's NEW (post-change) version.\n- Set verdict to `request_changes` ONLY if there is at least one blocking issue; otherwise `comment`.\n- If the PR looks good, return an empty comments array and a brief approving summary (verdict `comment`).\n\nThe unified diff of this PR:\n\n${diff.output.diff}\n\nPrior discussion on the PR (may be empty):\n\n${fb.output.feedback}"
+      }
+    },
+    {
+      "name": "approve_gate",
+      "taskReferenceName": "approve_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "approve",
+      "inputParameters": {
+        "approve": "${workflow.input.approve}"
+      },
+      "decisionCases": {
+        "true": [
+          {
+            "name": "review_gate",
+            "taskReferenceName": "review_gate",
+            "type": "HUMAN",
+            "inputParameters": {
+              "workflow": "pr_review",
+              "prNumber": "${workflow.input.prNumber}",
+              "repoPath": "${clone.output.repoPath}",
+              "draft": "${review.output.structured}"
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "final_review",
+      "taskReferenceName": "final_review",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "approve": "${workflow.input.approve}",
+        "gated": "${review_gate.output.review}",
+        "auto": "${review.output.structured}",
+        "queryExpression": "if (.approve == true or .approve == \"true\") then .gated else .auto end"
+      }
+    },
+    {
+      "name": "pr_submit_review",
+      "taskReferenceName": "submit",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repo": "${workflow.input.repo}",
+        "number": "${workflow.input.prNumber}",
+        "structured": "${final_review.output.result}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "prNumber": "${fb.output.number}",
+    "event": "${submit.output.event}",
+    "inlineCount": "${submit.output.inlineCount}",
+    "postedInline": "${submit.output.inline}",
+    "reviewUrl": "${submit.output.url}",
+    "tokenUsed": "${review.output.tokenUsed}",
+    "costUsd": "${review.output.costUsd}",
+    "changedFiles": "${diff.output.changedFiles}"
+  }
+}

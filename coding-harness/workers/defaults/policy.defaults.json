@@ -1,0 +1,17 @@
+{
+  "_about": "Default guardrail + budget policy, copied to .conductor-code/policy.json by `adopt`; user-editable. Enforced pre-flight by every side-effecting worker (cc_agent write modes, write_artifact, git_ops). Violations route the workflow to a HUMAN escalation gate.",
+  "version": 1,
+  "guardrails": {
+    "protectedPaths": ["infra/**", ".github/**", "deploy/**", "**/*.lock", "**/Dockerfile", "**/.env*"],
+    "secretPatterns": ["(?i)api[_-]?key", "(?i)secret", "(?i)password", "BEGIN (RSA|EC|OPENSSH) PRIVATE KEY", "AKIA[0-9A-Z]{16}"],
+    "destructiveCommands": ["rm -rf", "git push --force", "git push -f", "git reset --hard", "DROP TABLE", "DROP DATABASE", "TRUNCATE"],
+    "blastRadius": { "maxFilesPerGroup": 25, "maxDiffLines": 1500 },
+    "branch": { "neverEditDefault": true, "defaultBranches": ["main", "master"] },
+    "readOnlyModes": ["explore", "clarify", "design", "plan", "root_cause", "scope", "analyze", "review", "acceptance", "dedupe_rank", "scan"]
+  },
+  "budgets": {
+    "perRun": { "maxCostUsd": 50, "maxWallClockMin": 60, "maxIterations": 40 },
+    "perGroup": { "maxCostUsd": 12, "maxRounds": 8 }
+  },
+  "escalation": { "onGuardrailViolation": "humanGate", "onBudgetBreach": "humanGate" }
+}

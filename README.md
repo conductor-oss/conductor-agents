@@ -19,7 +19,7 @@ Clone one, read it, run it in minutes.
 | Harness | What it does | Conductor features | Status |
 |---|---|---|---|
 | **[security-harness](security-harness/)** | Autonomous web-app & API **penetration tester** — crawls, reasons about the attack surface, **actively exploits** (multi-identity, out-of-band-confirmed), triages false positives, and writes a report + SARIF + an attack-graph dossier. Machine-enforceable authorization + capability gating. | `FORK_JOIN_DYNAMIC` (parallel scanners/exploit agents) · `DO_WHILE` + `LLM_CHAT_COMPLETE` (ReAct browser & exploit agents) · iterative-deepening passes · durable multi-hour runs · `GENERATE_PDF` | ✅ **Ready** |
-| coding-agent | Autonomous coding agent — plan, edit, run, and verify changes across a repo. | `DO_WHILE` agent loop · sub-workflows per task | 🚧 Coming soon |
+| **[coding-harness](coding-harness/)** | Autonomous coding across local repos, GitHub issues, and pull requests — plan, implement in isolated worktrees, review, revise, and publish with optional human gates. | `FORK_JOIN_DYNAMIC` (parallel coding) · durable sub-workflows · worker progress/heartbeats · `HUMAN` review gates · retryable Git/GitHub operations | ✅ **Ready** |
 | deep-research | Multi-source research agent — fan out searches, read, synthesize, cite. | `FORK_JOIN_DYNAMIC` (parallel research) · synthesis | 🚧 Coming soon |
 | customer-support | Tool-using support agent — triage, retrieve, act, escalate. | ReAct loop · tool tasks · human-in-the-loop | 🚧 Coming soon |
 
@@ -31,9 +31,9 @@ Each harness is self-contained. Clone the repo, `cd` into a harness, and follow 
 
 ```bash
 git clone https://github.com/conductor-oss/conductor-agents
-cd conductor-agents/security-harness
-cat README.md          # hero + "run in ~30s" quickstart
-./run.sh               # auto-boots the stack and runs the bundled local demo
+cd conductor-agents/coding-harness
+cat README.md          # hero + 60-second quickstart
+./run.sh               # auto-boots Conductor, registers definitions, starts workers
 ```
 
 ---

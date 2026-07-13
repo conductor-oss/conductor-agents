@@ -1,0 +1,85 @@
+{
+  "_about": "conductor-code model/agent tier configuration. Copied to .conductor-code/models.json by `adopt`; user-editable. PLACEHOLDER values (oss model id, thinkingTokens, prices) should be set to your real values.",
+  "version": 1,
+
+  "agents": {
+    "_about": "The CLI coding agents available as workers. Both are run with stdin CLOSED (codex exec otherwise blocks 'Reading additional input from stdin'). Both support schema-enforced structured output. Validated in Phase 0.",
+    "claude": {
+      "cli": "claude",
+      "invoke": "claude -p {prompt} --output-format json --json-schema {inlineSchema} --model {model} [--add-dir {repo} --permission-mode acceptEdits for write modes]",
+      "auth": "login",
+      "supportsThinking": true
+    },
+    "codex": {
+      "cli": "codex",
+      "invoke": "codex exec {prompt} -C {repo} --skip-git-repo-check -s {read-only|workspace-write} --output-schema {schemaFile} -o {outFile} -m {model}",
+      "auth": "OPENAI_API_KEY",
+      "supportsThinking": false
+    }
+  },
+
+  "tiers": {
+    "_about": "Named rungs. Each binds an agent + model + effort/thinking + per-invocation caps. Roles and the escalation ladder reference these by name.",
+    "oss":      { "agent": "codex",  "model": "PLACEHOLDER-oss-model", "effort": "low",    "thinkingTokens": 0,     "caps": { "maxTokens": 60000,  "maxCostUsd": 0.5 } },
+    "haiku":    { "agent": "claude", "model": "claude-haiku-4-5",      "effort": "low",    "thinkingTokens": 0,     "caps": { "maxTokens": 80000,  "maxCostUsd": 0.5 } },
+    "sonnet":   { "agent": "claude", "model": "claude-sonnet-4-6",     "effort": "medium", "thinkingTokens": 4000,  "caps": { "maxTokens": 150000, "maxCostUsd": 3 } },
+    "opus":     { "agent": "claude", "model": "claude-opus-4-8",       "effort": "high",   "thinkingTokens": 16000, "caps": { "maxTokens": 250000, "maxCostUsd": 10 } },
+    "opus-max": { "agent": "claude", "model": "claude-opus-4-8",       "effort": "max",    "thinkingTokens": 32000, "caps": { "maxTokens": 500000, "maxCostUsd": 25 } }
+  },
+
+  "roles": {
+    "_about": "Each phase runs under a role; the role resolves to a tier. `builder` also has an escalation `ladder` (ordered tier names) for the hill-climbing loop. `reviewer` is pinned to a different agent than the builder for cross-agent diversity.",
+    "architect": { "tier": "opus-max" },
+    "builder":   { "tier": "sonnet", "ladder": ["sonnet", "opus", "opus-max"] },
+    "reviewer":  { "tier": "opus", "differentAgentThan": "builder" },
+    "scribe":    { "tier": "haiku" }
+  },
+
+  "profiles": {
+    "_about": "Per-profile overrides of role tiers (resolution precedence: run-input > profile > this file's roles > shipped defaults).",
+    "trivial":  { "roles": { "architect": { "tier": "sonnet" }, "builder": { "tier": "oss", "ladder": ["oss", "sonnet"] } } },
+    "standard": { "roles": {} },
+    "full":     { "roles": { "architect": { "tier": "opus-max" }, "builder": { "tier": "sonnet", "ladder": ["sonnet", "opus", "opus-max"] } } }
+  },
+
+  "reviewLoop": {
+    "_about": "The group-level build<->review HILL CLIMB. Each round: builder edits -> checks + reviewer score -> keep only if score improved; escalate the builder up its ladder on a plateau (local optimum); stop at the target (peak), or hand to a human when the ladder/budget is exhausted.",
+    "score": {
+      "_about": "Weighted scalar in [0,1]; higher = closer to done. `checks` aggregates the verification suite from checks.json (weighted by each check's own weight), scoped to the current altitude.",
+      "signals": {
+        "checks":        { "weight": 0.55, "_def": "weighted pass-rate over the checks scheduled at this altitude (checks.json); non-deterministic checks use their rerun pass-rate" },
+        "reviewClean":   { "weight": 0.30, "_def": "1 - (severity-weighted count of blocking findings), clamped to [0,1]" },
+        "acceptanceMet": { "weight": 0.15 }
+      },
+      "target": 1.0,
+      "altitudes": {
+        "_about": "Which checks run when — cheap/deterministic per-round in the group hill-climb; expensive distributed checks per-wave and final.",
+        "perRound": "group hill-climb",
+        "perWave": "after each integrate",
+        "final": "verify_workflow (includes chaos / linearizability / load)"
+      },
+      "blockingSeverities": ["critical", "major"],
+      "_nonBlocking": ["minor", "nit"]
+    },
+    "keepBest": true,
+    "acceptRegression": false,
+    "maxRounds": 8,
+    "plateau": { "rounds": 2, "minImprovement": 0.05, "_note": "keep >= checks.json flake.noiseBand so flaky deltas aren't counted as progress", "action": "escalateTier" },
+    "onConverged": "exitGroup",
+    "onLadderExhausted": "humanGate",
+    "onBudgetExhausted": "humanGate"
+  },
+
+  "budgets": {
+    "_about": "Aggregate caps. Per-group usage is summed at the parallel JOIN (branches never write shared variables).",
+    "perRun":   { "maxCostUsd": 50, "maxWallClockMin": 60 },
+    "perGroup": { "maxCostUsd": 12, "maxFiles": 25 }
+  },
+
+  "prices": {
+    "_about": "USD per 1M tokens — PLACEHOLDER values; set to your contracted rates. Used for costUsd accounting + budget caps.",
+    "claude-opus-4-8":   { "input": 15,  "output": 75 },
+    "claude-sonnet-4-6": { "input": 3,   "output": 15 },
+    "claude-haiku-4-5":  { "input": 0.8, "output": 4 }
+  }
+}

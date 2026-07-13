@@ -1,0 +1,11 @@
+{
+  "name": "coding_agent",
+  "description": "Run one locked-down Claude Agent SDK coding session in a worktree (dontAsk + worktree-escape guard). Input: prompt, worktreePath.",
+  "retryCount": 3,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
+  "retryDelaySeconds": 10,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 86400,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}
