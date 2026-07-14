@@ -1,0 +1,8 @@
+{
+  "baseRefName": "main",
+  "files": [
+    { "path": "workers/common/git.py", "additions": 24, "deletions": 3 },
+    { "path": "workers/gitops/tasks.py", "additions": 6, "deletions": 1 },
+    { "path": "workers/tests/test_gitops.py", "additions": 41, "deletions": 0 }
+  ]
+}

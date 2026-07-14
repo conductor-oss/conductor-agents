@@ -12,7 +12,7 @@ help: ## List available targets
 
 $(DEPS):
 	@test -x $(PY) || $(PYTHON) -m venv $(VENV)
-	@$(VENV)/bin/pip install -q -r tui/requirements.txt pytest pytest-asyncio
+	@$(VENV)/bin/pip install -q -r tui/requirements.txt -r workers/requirements.txt pytest pytest-asyncio
 	@touch $(DEPS)
 
 validate: ## Validate workflow and task-definition JSON

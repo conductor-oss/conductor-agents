@@ -1,11 +1,6 @@
 """Safety and capability policy regression tests for unattended coding sessions."""
 
-import pathlib
-import sys
-
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-
-from common.tool_policy import DEFAULT_ALLOWED_TOOLS, denied_without_changes  # noqa: E402
+from common.tool_policy import DEFAULT_ALLOWED_TOOLS, denied_without_changes
 
 
 def test_cargo_commands_are_available_to_unattended_agents():

@@ -1,0 +1,31 @@
+{
+  "number": 42,
+  "title": "Add retry with backoff to git_push",
+  "headRefName": "fix/git-push-retry",
+  "baseRefName": "main",
+  "url": "https://github.com/conductor-oss/conductor-agents/pull/42",
+  "headRepositoryOwner": { "login": "conductor-oss" },
+  "headRepository": { "name": "conductor-agents" },
+  "comments": [
+    {
+      "author": { "login": "reviewer-a" },
+      "body": "Please add a test covering the backoff path."
+    },
+    {
+      "author": { "login": "conductor-code" },
+      "body": "<!-- conductor-harness --> Automated review posted by the harness."
+    }
+  ],
+  "reviews": [
+    {
+      "author": { "login": "reviewer-a" },
+      "state": "CHANGES_REQUESTED",
+      "body": "The backoff has no upper cap; a flaky remote could block indefinitely."
+    },
+    {
+      "author": { "login": "reviewer-b" },
+      "state": "APPROVED",
+      "body": ""
+    }
+  ]
+}
