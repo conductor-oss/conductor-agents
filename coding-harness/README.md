@@ -119,5 +119,9 @@ that core with issue, PR, review, and push operations.
 - For GitHub workflows: authenticated `gh` CLI (`gh auth login` or a valid `GH_TOKEN`).
 - The target repository's own build/test toolchain.
 
+Copy [`.env.example`](.env.example) to `.env` for the full, documented list of
+configuration variables (Conductor connection, backend keys, GitHub, logging,
+tuning). `./run.sh` auto-loads `.env`; `.env` is gitignored.
+
 Full setup details and every workflow input are in
 [`workers/README.md`](workers/README.md#prerequisites).

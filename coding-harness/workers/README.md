@@ -72,6 +72,11 @@ and watch agents work live — see [`../tui/README.md`](../tui/README.md).
   git-over-HTTPS uses gh's credentials — no tokens in URLs.
 - The **target toolchain** for whatever the agents build (node, go, etc.).
 
+Every configuration variable — Conductor connection, backend keys, GitHub, logging,
+and tuning knobs — is documented in [`../.env.example`](../.env.example). Copy it to
+`.env` (gitignored); `../run.sh` auto-loads it, or `set -a; . ../.env; set +a` before
+running `main.py` / `run_workers.sh` directly.
+
 ---
 
 ## Workflows

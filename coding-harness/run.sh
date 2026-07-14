@@ -9,6 +9,14 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")" && pwd)
 cd "$ROOT"
 
+# Load operator config from .env if present (see .env.example).
+if [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$ROOT/.env"
+  set +a
+fi
+
 export CONDUCTOR_SERVER_URL="${CONDUCTOR_SERVER_URL:-http://localhost:8080/api}"
 WORKER_PY="workers/.venv/bin/python"
 TUI_PY="tui/.venv/bin/python"
