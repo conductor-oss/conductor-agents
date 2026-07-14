@@ -54,6 +54,10 @@ Coding runs on any backend per task (`claude` default, `codex`, `gemini` — or 
 the model id), mixable within a run. Full input tables, examples, and prerequisites:
 **[`workers/README.md`](workers/README.md)**.
 
+Runtime deadlines are owned exclusively by Conductor task definitions. Workflow inputs and
+workers do not impose a second agent wall-clock timeout; adjust `responseTimeoutSeconds`,
+`timeoutSeconds`, and `timeoutPolicy` on the applicable task definition instead.
+
 ## Terminal UI
 
 The optional terminal interface opens into a **chat** where an agent
@@ -62,7 +66,7 @@ failed?"); forms and a live dashboard are a slash-command away:
 
 ```bash
 cd tui && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && cd ..
-# run from the repo root (ANTHROPIC_API_KEY needed for chat):
+# run from coding-harness/ (ANTHROPIC_API_KEY needed for chat):
 CONDUCTOR_SERVER_URL=http://localhost:8080/api tui/.venv/bin/python -m tui        # chat
 CONDUCTOR_SERVER_URL=http://localhost:8080/api tui/.venv/bin/python -m tui --dashboard  # forms
 ```
@@ -73,8 +77,9 @@ runs the SIMPLE-task worker gate before reporting success. Chat starts at most o
 user message; when the requested action is ambiguous, it asks which workflow you want first.
 Before any `code_parallel` path starts, chat also asks whether you want design docs. Choosing
 design enables an iterative human review gate by default: approve to continue to coding, or give
-feedback for another design pass. You can opt into an automated read-only judge instead; its
-review and loop limits default to 5 and are configurable.
+feedback for another design pass. You can opt into an automated structured judge instead; its
+read-only review uses the `coding_agent` worker. The design loop is capped at five passes by
+default and can be raised with `designMaxIterations`.
 
 ## How it works
 
@@ -98,6 +103,7 @@ that core with issue, PR, review, and push operations.
 | [`workers/README.md`](workers/README.md) | **User guide** — install, run, the full workflow catalog with inputs & examples. |
 | [`tui/README.md`](tui/README.md) | **Terminal UI** — the interactive interface: launch runs, watch agents live, manage them. |
 | [`SKILL.md`](SKILL.md) | **Agents** — how a Claude Code / LLM agent drives the harness (when to use which workflow, how to trigger, gotchas). |
+| [`docs/index.md`](docs/index.md) | **Documentation site** — overview, quickstart, workflow selection, and reference navigation. |
 | [`docs/CODING_AGENT_WORKER.md`](docs/CODING_AGENT_WORKER.md) | **Reference** — the `coding_agent` worker, all workflows, backends, guardrails, remote git/GitHub. |
 | [`docs/CLAUDE_AGENT_SDK.md`](docs/CLAUDE_AGENT_SDK.md) | Claude Agent SDK deep-dive (features, interception, gotchas). |
 | [`docs/SPEC.md`](docs/SPEC.md) · [`docs/DESIGN.md`](docs/DESIGN.md) | **Historical** — the original spec-driven design, since superseded. |

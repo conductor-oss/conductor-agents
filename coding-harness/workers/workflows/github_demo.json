@@ -13,8 +13,7 @@
     "model",
     "prTitle",
     "maxTurns",
-    "maxBudgetUsd",
-    "timeoutS"
+    "maxBudgetUsd"
   ],
   "inputTemplate": {
     "changeBranch": "conductor-harness-change",
@@ -22,9 +21,8 @@
     "agent": "claude",
     "model": "",
     "prTitle": "",
-    "maxTurns": 30,
-    "maxBudgetUsd": 2.0,
-    "timeoutS": 600
+    "maxTurns": 300,
+    "maxBudgetUsd": 50.0
   },
   "tasks": [
     {
@@ -55,8 +53,7 @@
         "agent": "${workflow.input.agent}",
         "model": "${workflow.input.model}",
         "maxTurns": "${workflow.input.maxTurns}",
-        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-        "timeoutS": "${workflow.input.timeoutS}"
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}"
       }
     },
     {

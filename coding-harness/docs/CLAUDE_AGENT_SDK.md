@@ -70,8 +70,8 @@ const q = query({
     cwd: "/work/task-worktree",
     allowedTools: ["Read", "Edit", "Write", "Bash", "Glob", "Grep"],
     permissionMode: "dontAsk",
-    maxTurns: 40,
-    maxBudgetUsd: 5.0,
+    maxTurns: 50,
+    maxBudgetUsd: 50.0,
     effort: "high",
   },
 });
@@ -446,7 +446,7 @@ agents: {
     disallowedTools: ["Agent"],            // prevent nested spawning
     model: "sonnet",                       // per-agent model override
     effort: "high",
-    maxTurns: 20,
+    maxTurns: 25,
     background: false,
     permissionMode: "dontAsk",             // ignored if parent mode is bypass/acceptEdits/auto
   },
@@ -687,8 +687,8 @@ Misc
 
 ## 16. Hard limitations
 
-- **No built-in wall-clock timeout** at session or subagent level — bound by turns/budget or
-  kill externally.
+- **No built-in wall-clock timeout** at session or subagent level. In this harness, runtime
+  deadlines are configured only on the Conductor task definition; the worker does not add one.
 - Memory grows over long sessions; recycle subprocesses periodically.
 - One subprocess per session bounds per-host concurrency by RAM.
 - Wide parallel subagent fanouts hit API rate limits.
@@ -759,9 +759,9 @@ async function runCodingTask(worktree: string, taskPrompt: string) {
         }] }],
       },
 
-      // Circuit breakers (no wall-clock timeout exists — enforce that externally)
+      // Agent limits; the Conductor task definition owns runtime deadlines
       maxTurns: 50,
-      maxBudgetUsd: 5.0,
+      maxBudgetUsd: 50.0,
 
       // Machine-readable result — no output parsing
       outputFormat: { type: "json_schema", schema: z.toJSONSchema(TaskResult) },
@@ -797,8 +797,8 @@ Design notes for the harness:
   the same worktree with higher limits — the agent keeps everything it already learned.
   Because sessions key on cwd, keep the worktree alive across retries or the resume will
   silently start fresh (gotcha #9).
-- **External deadline.** Wrap each run in the harness's own timeout and call `q.close()` /
-  abort — the SDK will not time out on its own.
+- **Runtime deadline.** Configure it only on the Conductor task definition. The harness does
+  not wrap agent sessions in a second wall-clock timeout.
 - **Planner/reviewer stages** map naturally to `permissionMode: "plan"` + structured output
   (plan JSON), then a second query in `acceptEdits`/`dontAsk` to execute the approved plan —
   or to subagent definitions inside one session when context sharing matters.

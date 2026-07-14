@@ -38,6 +38,7 @@ def test_parse_execution_has_subworkflow_node():
     subs = [t for t in tasks if t.type == "SUB_WORKFLOW"]
     assert subs, "expected a SUB_WORKFLOW task (code_parallel) in issue_to_pr"
     assert subs[0].sub_workflow_id, "SUB_WORKFLOW task must carry subWorkflowId for recursion"
+    assert all(t.workflow_id == run.id for t in tasks)
 
 
 def test_tokens_cost_prefers_terminal_totals():

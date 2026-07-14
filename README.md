@@ -14,27 +14,33 @@ Clone one, read it, run it in minutes.
 
 ---
 
-## Agent Catalog
+## Harness Catalog
 
-| Harness | What it does | Conductor features | Status |
+The repository-level README is an index, not an operating guide for any one agent. Each ready
+harness owns its setup, safety requirements, workflows, and examples in its directory.
+
+| Harness | Category | Status | Start here |
 |---|---|---|---|
-| **[security-harness](security-harness/)** | Autonomous web-app & API **penetration tester** — crawls, reasons about the attack surface, **actively exploits** (multi-identity, out-of-band-confirmed), triages false positives, and writes a report + SARIF + an attack-graph dossier. Machine-enforceable authorization + capability gating. | `FORK_JOIN_DYNAMIC` (parallel scanners/exploit agents) · `DO_WHILE` + `LLM_CHAT_COMPLETE` (ReAct browser & exploit agents) · iterative-deepening passes · durable multi-hour runs · `GENERATE_PDF` | ✅ **Ready** |
-| **[coding-harness](coding-harness/)** | Autonomous coding across local repos, GitHub issues, and pull requests — plan, implement in isolated worktrees, review, revise, and publish with optional human gates. | `FORK_JOIN_DYNAMIC` (parallel coding) · durable sub-workflows · worker progress/heartbeats · `HUMAN` review gates · retryable Git/GitHub operations | ✅ **Ready** |
-| deep-research | Multi-source research agent — fan out searches, read, synthesize, cite. | `FORK_JOIN_DYNAMIC` (parallel research) · synthesis | 🚧 Coming soon |
-| customer-support | Tool-using support agent — triage, retrieve, act, escalate. | ReAct loop · tool tasks · human-in-the-loop | 🚧 Coming soon |
+| **[security-harness](security-harness/)** | Security testing | ✅ Ready | [README](security-harness/README.md) · [Agent skill](security-harness/SKILL.md) |
+| **[coding-harness](coding-harness/)** | Software delivery | ✅ Ready | [README](coding-harness/README.md) · [Agent skill](coding-harness/SKILL.md) |
+| deep-research | Research | 🚧 Coming soon | — |
+| customer-support | Customer operations | 🚧 Coming soon | — |
 
 ---
 
-## Quickstart
+## Get Started
 
-Each harness is self-contained. Clone the repo, `cd` into a harness, and follow its README:
+Each harness is self-contained and may have different prerequisites, safety gates, and entry
+points. Choose one from the catalog and follow that harness's README; do not assume commands from
+one harness apply to another.
 
 ```bash
 git clone https://github.com/conductor-oss/conductor-agents
-cd conductor-agents/coding-harness
-cat README.md          # hero + 60-second quickstart
-./run.sh               # auto-boots Conductor, registers definitions, starts workers
+cd conductor-agents/<harness>
+cat README.md
 ```
+
+If an AI assistant is operating the harness, point it at that directory's `SKILL.md`.
 
 ---
 
@@ -67,13 +73,14 @@ Got a production-grade agent running on Conductor? **We want it here.**
 A new harness needs:
 
 - A top-level directory with a `README.md` (hero line + a "run in ~30s" quickstart block)
+- A concise `SKILL.md` with `name` and `description` frontmatter plus safe operating instructions
 - A `run.sh` entrypoint that auto-boots the stack
 - Conductor workflow JSON definitions
 - Worker source in any language
 
 Then:
 
-1. Add a row to the [Agent Catalog](#agent-catalog) table above.
+1. Add a row to the [Harness Catalog](#harness-catalog) table above.
 2. Add a matrix entry in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) so it runs under the shared quality bar (lint + tests).
 3. Open a PR.
 

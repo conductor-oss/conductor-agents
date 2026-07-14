@@ -92,13 +92,12 @@ on a **local path** (`repoPath`); it doesn't clone or push (the GitHub workflows
 | `instruction` | **required** | The coding goal to decompose and implement. |
 | `changeBranch` | `code-parallel` | Branch the parallel work merges into. |
 | `design` | `false` | Explicit choice: if true, generate and approve design docs before coding. The TUI always asks. |
-| `designHumanApproval` | `true` | Pause after each design pass for approval or actionable feedback. False uses the read-only LLM judge. |
+| `designHumanApproval` | `true` | Pause after each design pass for approval or actionable feedback. False uses the read-only `coding_agent` judge. |
 | `designMaxIterations` | `5` | Maximum design/review passes before the workflow fails closed; may be raised. |
-| `designReviewMaxTurns` | `5` | Tool-turn cap for each automated judge pass; may be raised. |
 | `maxSubtasks` | `6` | Upper bound on the parallel fan-out. |
 | `planAgent` / `codeAgent` / `designAgent` | `claude` | Backend for the planner / coders / design step. |
 | `planModel` / `codeModel` / `designModel` | `""` | Model id; empty = the backend's default. |
-| `maxTurns` / `maxBudgetUsd` / `timeoutS` | `40` / `2.0` / `600` | Per-agent caps (tool-use rounds / USD / wall-clock seconds). |
+| `maxTurns` / `maxBudgetUsd` | `500` / `50.0` | Per-agent turn and spend caps. The planner also defaults to 500 turns. Runtime timeouts come from the Conductor task definition. |
 
 ```bash
 conductor workflow start --workflow code_parallel -i '{
@@ -128,10 +127,10 @@ branch, and open a PR whose body closes the issue.
 | `base` | `main` | Base branch for the PR. |
 | `design` | `false` | Explicit choice: generate and approve design docs before coding. The TUI always asks. |
 | `designHumanApproval` | `true` | Human review each pass; false selects the automated read-only judge. |
-| `designMaxIterations` / `designReviewMaxTurns` | `5` / `5` | Bounded design passes and judge tool turns; both are configurable. |
+| `designMaxIterations` | `5` | Maximum design/review passes before the workflow fails closed. |
 | `maxSubtasks` | `4` | Parallel fan-out cap. |
 | `planAgent` / `codeAgent` / `designAgent` | `claude` | Backends. |
-| `maxTurns` / `maxBudgetUsd` / `timeoutS` | `30` / `2.0` / `600` | Per-agent caps. |
+| `maxTurns` / `maxBudgetUsd` | `300` / `50.0` | Per-agent turn and spend caps. Runtime timeouts come from the Conductor task definition. |
 
 ```bash
 conductor workflow start --workflow issue_to_pr -i '{
@@ -158,7 +157,7 @@ can only comment, never modify the PR.
 | `prNumber` | **required** | PR to review. |
 | `agent` | `claude` | Backend for the reviewer. |
 | `model` | `""` | Model id; empty = backend default. |
-| `maxTurns` / `maxBudgetUsd` / `timeoutS` | `20` / `1.5` / `600` | Caps. |
+| `maxTurns` / `maxBudgetUsd` | `250` / `50.0` | Turn and spend caps. Runtime timeouts come from the Conductor task definition. |
 
 ```bash
 conductor workflow start --workflow pr_review -i '{
@@ -183,7 +182,7 @@ skipped, and it no-ops when there's no outstanding feedback.
 | `prNumber` | **required** | PR whose feedback to address. |
 | `engine` | `code_parallel` | How to code: `code_parallel` (decompose+parallel) or `coding_agent` (single session, cheaper for small feedback). |
 | `agent` | `claude` | Backend. |
-| `maxSubtasks` / `maxTurns` / `maxBudgetUsd` / `timeoutS` | `4` / `20` / `2.0` / `600` | Caps (`maxSubtasks` used only by the `code_parallel` engine). |
+| `maxSubtasks` / `maxTurns` / `maxBudgetUsd` | `4` / `250` / `50.0` | Parallelism, turn, and spend caps (`maxSubtasks` is used only by the `code_parallel` engine). Runtime timeouts come from the Conductor task definition. |
 
 ```bash
 conductor workflow start --workflow address_pr -i '{
@@ -214,9 +213,8 @@ edit, commit, push, open a PR. Good for smoke-testing GitHub connectivity.
 - **`design_docs`** — iteratively writes a consistent set of design docs under `docs/design/`,
   reviews each pass, and commits only an approved design. Human review is the default: approve to
   exit, or submit feedback that drives the next pass. With `humanApproval:false`, a read-only
-  `coding_agent` judge reviews instead. Both `designMaxIterations` and
-  `designReviewMaxTurns` default to 5 and can be raised. Invoked by `code_parallel` when
-  `design:true`; also runnable standalone.
+  `coding_agent` judge reads and reviews the design documents instead. `designMaxIterations` defaults to
+  5 and can be raised. Invoked by `code_parallel` when `design:true`; also runnable standalone.
 - **`code_subtask`** — one parallel unit of `code_parallel` (`worktree_add → coding_agent →
   commit`). Driven by the dynamic fork; not called directly.
 

@@ -5,6 +5,7 @@ Got a production-grade agent running on Conductor? **We want it here.** The cata
 ## What a new harness needs
 
 - A top-level directory with a `README.md` — a hero line plus a "run in ~30s" quickstart block.
+- A concise `SKILL.md` — valid `name` and `description` frontmatter plus operating instructions for AI assistants.
 - A `run.sh` entrypoint that auto-boots the stack.
 - Conductor workflow JSON definitions.
 - Worker source in any language.

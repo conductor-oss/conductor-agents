@@ -14,17 +14,12 @@
     "design",
     "designHumanApproval",
     "designMaxIterations",
-    "designReviewAgent",
-    "designReviewModel",
-    "designReviewMaxTurns",
-    "designReviewMaxBudgetUsd",
     "approvePr",
     "planPromptTemplate",
     "codePromptTemplate",
     "maxSubtasks",
     "maxTurns",
-    "maxBudgetUsd",
-    "timeoutS"
+    "maxBudgetUsd"
   ],
   "inputTemplate": {
     "base": "main",
@@ -34,17 +29,12 @@
     "design": false,
     "designHumanApproval": true,
     "designMaxIterations": 5,
-    "designReviewAgent": "claude",
-    "designReviewModel": "",
-    "designReviewMaxTurns": 5,
-    "designReviewMaxBudgetUsd": 0.75,
     "approvePr": false,
     "planPromptTemplate": "",
     "codePromptTemplate": "",
     "maxSubtasks": 4,
-    "maxTurns": 30,
-    "maxBudgetUsd": 2.0,
-    "timeoutS": 600
+    "maxTurns": 300,
+    "maxBudgetUsd": 50.0
   },
   "tasks": [
     {
@@ -81,18 +71,13 @@
         "designAgent": "${workflow.input.designAgent}",
         "designHumanApproval": "${workflow.input.designHumanApproval}",
         "designMaxIterations": "${workflow.input.designMaxIterations}",
-        "designReviewAgent": "${workflow.input.designReviewAgent}",
-        "designReviewModel": "${workflow.input.designReviewModel}",
-        "designReviewMaxTurns": "${workflow.input.designReviewMaxTurns}",
-        "designReviewMaxBudgetUsd": "${workflow.input.designReviewMaxBudgetUsd}",
         "planAgent": "${workflow.input.planAgent}",
         "codeAgent": "${workflow.input.codeAgent}",
         "planPromptTemplate": "${workflow.input.planPromptTemplate}",
         "codePromptTemplate": "${workflow.input.codePromptTemplate}",
         "maxSubtasks": "${workflow.input.maxSubtasks}",
         "maxTurns": "${workflow.input.maxTurns}",
-        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-        "timeoutS": "${workflow.input.timeoutS}"
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}"
       }
     },
     {

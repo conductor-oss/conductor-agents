@@ -4,12 +4,10 @@
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
   "description": "Iteratively create and review coherent design docs before coding. Approval ends the loop; feedback drives the next pass; the bounded loop fails closed if no design is approved.",
-  "inputParameters": ["repoPath", "instruction", "designDir", "designAgent", "designModel", "designPromptTemplate", "designMaxTurns", "designMaxBudgetUsd", "humanApproval", "designMaxIterations", "designReviewAgent", "designReviewModel", "designReviewMaxTurns", "designReviewMaxBudgetUsd", "timeoutS"],
+  "inputParameters": ["repoPath", "instruction", "designDir", "designAgent", "designModel", "designPromptTemplate", "designMaxTurns", "designMaxBudgetUsd", "humanApproval", "designMaxIterations"],
   "inputTemplate": {
     "designDir": "docs/design", "designAgent": "claude", "designModel": "", "designPromptTemplate": "",
-    "designMaxTurns": 40, "designMaxBudgetUsd": 1.5, "humanApproval": true, "designMaxIterations": 5,
-    "designReviewAgent": "claude", "designReviewModel": "", "designReviewMaxTurns": 5,
-    "designReviewMaxBudgetUsd": 0.75, "timeoutS": 600
+    "designMaxTurns": 500, "designMaxBudgetUsd": 50.0, "humanApproval": true, "designMaxIterations": 5
   },
   "variables": {
     "designApproved": false, "designFeedback": "", "designReview": "", "lastFilesChanged": [],
@@ -28,7 +26,7 @@
           "name": "coding_agent", "taskReferenceName": "design", "type": "SIMPLE",
           "inputParameters": {
             "worktreePath": "${workflow.input.repoPath}", "agent": "${workflow.input.designAgent}", "model": "${workflow.input.designModel}",
-            "maxTurns": "${workflow.input.designMaxTurns}", "maxBudgetUsd": "${workflow.input.designMaxBudgetUsd}", "timeoutS": "${workflow.input.timeoutS}",
+            "maxTurns": "${workflow.input.designMaxTurns}", "maxBudgetUsd": "${workflow.input.designMaxBudgetUsd}",
             "templateKey": "design", "promptTemplate": "${workflow.input.designPromptTemplate}",
             "promptContext": {"instruction": "${workflow.input.instruction}", "designDir": "${workflow.input.designDir}", "feedback": "${workflow.variables.designFeedback}"},
             "prompt": "You are a senior software architect. Create or revise mutually consistent GitHub-flavored markdown design documents under ${workflow.input.designDir}/. Read existing design docs first. architecture.md is the source of truth for complete file layout, shared contracts, exact types, interfaces, data model, and naming conventions. Write only markdown design docs; do not write application code.\n\nRequested change:\n${workflow.input.instruction}\n\nPrevious review feedback (empty on first pass):\n${workflow.variables.designFeedback}\n\nAddress every feedback item, then summarize the design and files changed."
@@ -63,16 +61,26 @@
             {
               "name": "coding_agent", "taskReferenceName": "design_judge", "type": "SIMPLE",
               "inputParameters": {
-                "worktreePath": "${workflow.input.repoPath}", "agent": "${workflow.input.designReviewAgent}", "model": "${workflow.input.designReviewModel}",
-                "maxTurns": "${workflow.input.designReviewMaxTurns}", "maxBudgetUsd": "${workflow.input.designReviewMaxBudgetUsd}", "timeoutS": "${workflow.input.timeoutS}",
+                "worktreePath": "${workflow.input.repoPath}",
+                "agent": "${workflow.input.designAgent}",
+                "model": "${workflow.input.designModel}",
+                "maxTurns": "${workflow.input.designMaxTurns}",
+                "maxBudgetUsd": "${workflow.input.designMaxBudgetUsd}",
                 "tools": ["Read", "Grep", "Glob"],
-                "schema": {"type": "object", "required": ["approved", "feedback"], "properties": {"approved": {"type": "boolean"}, "feedback": {"type": "string"}}},
-                "prompt": "Act as the design-review judge. Read markdown under ${workflow.input.designDir}, especially architecture.md, and assess completeness, consistency, implementability, and sufficiency for parallel coding. Return structured approved=true with concise feedback when ready, or approved=false with actionable feedback. Do not edit files.\n\nRequested change:\n${workflow.input.instruction}"
+                "schema": {
+                  "type": "object",
+                  "required": ["approved", "feedback"],
+                  "properties": {
+                    "approved": {"type": "boolean"},
+                    "feedback": {"type": "string"}
+                  }
+                },
+                "prompt": "Act as a read-only software design judge. Read the design documents under ${workflow.input.designDir}/, especially architecture.md, and compare them with the requested change below. Judge whether the design is complete, internally consistent, implementable, testable, and ready for parallel coding. Approve only when shared contracts, exact types, file layout, data model, APIs, failure handling, migration/compatibility concerns, and testing are sufficiently specified. Return the required structured output with approved (boolean) and concise actionable feedback (string). Do not edit any files.\n\nRequested change:\n${workflow.input.instruction}\n\nAuthor summary:\n${design.output.result}"
               }
             },
             {
               "name": "set_judge_review", "taskReferenceName": "set_judge_review", "type": "SET_VARIABLE",
-              "inputParameters": {"designApproved": "${design_judge.output.structured.approved}", "designFeedback": "${design_judge.output.structured.feedback}", "designReview": "llm"}
+              "inputParameters": {"designApproved": "${design_judge.output.structured.approved}", "designFeedback": "${design_judge.output.structured.feedback}", "designReview": "agent"}
             }
           ]
         }
@@ -91,6 +99,5 @@
     "approved": "${workflow.variables.designApproved}", "reviewMode": "${workflow.variables.designReview}", "feedback": "${workflow.variables.designFeedback}",
     "iterations": "${design_loop.output.iteration}", "filesChanged": "${workflow.variables.lastFilesChanged}", "agent": "${workflow.variables.lastAgent}",
     "costUsd": "${workflow.variables.lastCostUsd}", "tokenUsed": "${workflow.variables.lastTokenUsed}", "sessionId": "${workflow.variables.lastSessionId}", "designCommit": "${commit_design.output.commit}"
-  },
-  "timeoutSeconds": 3600, "timeoutPolicy": "TIME_OUT_WF"
+  }
 }

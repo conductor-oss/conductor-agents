@@ -115,7 +115,8 @@ def merge_worktrees(task):
                     "Keep both sides' changes where possible. Remove every conflict marker "
                     "(<<<<<<<, =======, >>>>>>>). Edit only the conflicted files."
                 )
-                res = run_agent(prompt, cwd=repo, model=model, write=True, timeout=300)
+                res = run_agent(prompt, cwd=repo, model=model, write=True,
+                                max_budget_usd=float(i.get("maxBudgetUsd") or 50.0))
                 total_tokens += res["tokens"]
                 total_cost += res["cost_usd"]
                 if res["ok"]:

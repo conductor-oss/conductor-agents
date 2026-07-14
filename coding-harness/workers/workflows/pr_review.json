@@ -12,17 +12,15 @@
     "approve",
     "reviewPromptTemplate",
     "maxTurns",
-    "maxBudgetUsd",
-    "timeoutS"
+    "maxBudgetUsd"
   ],
   "inputTemplate": {
     "agent": "claude",
     "model": "",
     "approve": false,
     "reviewPromptTemplate": "",
-    "maxTurns": 20,
-    "maxBudgetUsd": 1.5,
-    "timeoutS": 600
+    "maxTurns": 250,
+    "maxBudgetUsd": 50.0
   },
   "tasks": [
     {
@@ -72,7 +70,6 @@
         "model": "${workflow.input.model}",
         "maxTurns": "${workflow.input.maxTurns}",
         "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-        "timeoutS": "${workflow.input.timeoutS}",
         "tools": ["Read", "Grep", "Glob"],
         "templateKey": "pr_review",
         "promptTemplate": "${workflow.input.reviewPromptTemplate}",

@@ -69,7 +69,7 @@ Every option maps to a doc §17 recommendation:
 | `PreToolUse` worktree-escape hook | the only check that runs on **every** tool call; denies writes outside the worktree (§5, §7.1) |
 | `system_prompt` = `claude_code` preset + `append` + `exclude_dynamic_sections` | CLI-equivalent coding behavior; fleet-wide prompt-cache sharing (§12) |
 | `setting_sources=["project"]` + `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` | reproducible: only repo config loads, no host machine leakage (§10) |
-| `max_turns` / `max_budget_usd` + external `timeout_s` | circuit breakers; the SDK has no wall-clock timeout of its own (§13, §16) |
+| `max_turns` / `max_budget_usd` | agent turn and spend circuit breakers; runtime timeouts are owned by the Conductor task definition (§13, §16) |
 | optional `output_format` | force a validated JSON result instead of prose (§11) |
 
 ---
@@ -135,8 +135,7 @@ Set on `task.input_data`. Only `prompt` and `worktreePath` are required.
 | `allowedDomains` | string[] \| CSV | none | Network hosts the OS sandbox may reach (e.g. `registry.npmjs.org`). Default: **no network** from sandboxed Bash. |
 | `effort` | string | model default | `low` \| `medium` \| `high` \| `xhigh` \| `max` — reasoning depth vs cost. |
 | `maxTurns` | int | `50` | Tool-use round-trip cap before the agent stops (`error_max_turns`). |
-| `maxBudgetUsd` | float | `5.0` | Spend cap before the agent stops (`error_max_budget_usd`). |
-| `timeoutS` | float | none | **External** wall-clock cap. On expiry the run is abandoned and `sessionId` is returned for resume. The SDK has no timeout of its own. |
+| `maxBudgetUsd` | float | `50.0` | Spend cap before the agent stops (`error_max_budget_usd`). |
 | `resumeSessionId` | string | none | Resume a prior session (retry-as-resume, §7). **Must** use the same `worktreePath` it was created in, or it silently starts fresh (unless a shared session store is configured — see §11). |
 | `schema` | dict \| JSON string | none | JSON Schema forcing a validated `structured` result instead of prose (§11 output). |
 | `settingSources` | list \| CSV \| `"none"` | env or `["project"]` | Which filesystem config loads. `"none"`/`""`/`[]` loads nothing (untrusted-repo lockdown); overrides the `CODING_AGENT_SETTING_SOURCES` env default. |
@@ -244,7 +243,7 @@ never raises for an agent that merely didn't finish):
 
 | Field | Type | Meaning |
 |---|---|---|
-| `status` | string | SDK result subtype: `success`, `error_max_turns`, `error_max_budget_usd`, `error_during_execution`, `error_max_structured_output_retries`, `timeout`. |
+| `status` | string | SDK result subtype: `success`, `error_max_turns`, `error_max_budget_usd`, `error_during_execution`, or `error_max_structured_output_retries`. |
 | `filesChanged` | string[] | Files created/modified in the worktree (git status diff before→after). |
 | `result` | string | The agent's final text (capped), when not using a schema. |
 | `structured` | object \| null | Validated JSON when `schema` was passed. |
@@ -254,14 +253,14 @@ never raises for an agent that merely didn't finish):
 | `tokenUsed` | int | Total tokens (input + output + cache r/w). |
 | `costUsd` | float | Session cost in USD. |
 | `denials` | string[] | Tool calls blocked by the guard/permission layers. |
-| `retryable` | bool | (on failure) true for `error_max_turns` / `error_max_budget_usd` / `timeout` — resume instead of restart. |
+| `retryable` | bool | (on failure) true for `error_max_turns` / `error_max_budget_usd` — resume instead of restart. |
 | `stderr` | string | (on failure) tail of the subprocess's stderr, for diagnosing opaque failures. |
 
 ---
 
 ## 7. Retry-as-resume
 
-When the agent hits a limit (`error_max_turns`, `error_max_budget_usd`, `timeout`), the
+When the agent hits a limit (`error_max_turns` or `error_max_budget_usd`), the
 task fails with `retryable: true` and a `sessionId`. To continue, re-invoke with the
 **same `worktreePath`** and that `sessionId` plus a raised limit — the agent keeps
 everything it already read and did, rather than starting from scratch:
@@ -380,9 +379,8 @@ Set on the worker process (not per task):
     "prompt": "Implement a JSON-to-YAML converter in Python...\n\nRequirements:...\n\nDone when: `python convert.py in.json` writes in.yaml.",
     "model": "claude-sonnet-4-6",
     "effort": "high",
-    "maxTurns": 40,
-    "maxBudgetUsd": 3.0,
-    "timeoutS": 900
+    "maxTurns": 50,
+    "maxBudgetUsd": 50.0
   }
 }
 ```
@@ -412,7 +410,7 @@ from common.coding_agent import run_coding_agent
 res = run_coding_agent(
     "Write hello.py that prints 'Hello, World!'. Just write the one file.",
     worktree="/tmp/wt",
-    max_turns=10, max_budget_usd=1.0, timeout_s=180,
+    max_turns=10, max_budget_usd=50.0,
 )
 print(res["status"], res["num_turns"], res["cost_usd"], res["session_id"])
 # res also has: ok, result, structured, tokens, denials, turn_log, error
@@ -526,10 +524,10 @@ everything else reuses existing tasks:
 | `instruction` | — (required) | The overall coding goal to decompose. |
 | `changeBranch` | `code-parallel` | Branch the sub-task branches merge into. |
 | `planModel` | `""` (backend default) | Model the agentic planner uses; empty = the chosen backend's own default. |
-| `planMaxTurns` | `15` | Turn cap for the planner's repo exploration. |
+| `planMaxTurns` | `500` | Turn cap for the planner's repo exploration. |
 | `codeModel` | `""` (backend default) | Model each `coding_agent` fork uses; empty = the chosen backend's own default. |
 | `maxSubtasks` | `6` | Upper bound on the fan-out (guardrail). |
-| `maxTurns` / `maxBudgetUsd` / `timeoutS` | `40` / `2.0` / `600` | Per-fork `coding_agent` limits. |
+| `maxTurns` / `maxBudgetUsd` | `500` / `50.0` | Per-fork turn and spend limits. Runtime timeouts come from the Conductor task definition. |
 
 Output: `changeBranch`, `groupIds`, `subtasks`, `merged`, `conflicts`, `mergeCostUsd`,
 **`totalTokens`**, **`totalCostUsd`**, and `summary` (per-sub-task status/files/tokens/cost
@@ -608,7 +606,7 @@ It's a `design_gate` SWITCH that runs the **`design_docs` sub-workflow**
 2. Review the pass. With `designHumanApproval:true` (the default), a `HUMAN` task pauses the
    workflow. Approval exits the loop; rejection completes the gate with actionable feedback and
    the next authoring pass revises the docs. With human review disabled, a read-only
-   `coding_agent` judge (`Read`, `Grep`, `Glob` only) emits structured approval + feedback.
+   `coding_agent` judge reads the design documents in read-only mode and emits structured approval + feedback.
 3. `commit_design` (`commit`) — runs only after approval and commits `docs/design/` onto the
    change branch. Exhausting the iteration cap fails closed and coding never starts.
 
@@ -623,11 +621,9 @@ plumbing.
 | `designAgent` | `claude` | Backend that authors the docs (`claude` or `codex`). |
 | `designModel` | `""` (backend default) | Model for the design agent; empty = the chosen backend's own default. |
 | `designDir` | `docs/design` | Committed directory the docs are written to. |
-| `designMaxTurns` | `40` | Turn cap for each design-author session. |
-| `designHumanApproval` | `true` | Pause for human approval/feedback after every pass. False uses the LLM judge. |
+| `designMaxTurns` | `500` | Turn cap for each design-author session. |
+| `designHumanApproval` | `true` | Pause for human approval/feedback after every pass. False uses the read-only `coding_agent` judge. |
 | `designMaxIterations` | `5` | Maximum author/review passes; configurable higher. |
-| `designReviewAgent` / `designReviewModel` | `claude` / `""` | Backend/model used by the automated judge. |
-| `designReviewMaxTurns` | `5` | Tool-turn cap for each automated judge pass; configurable higher. |
 
 Notes:
 - Uses **`coding_agent`**, not `claude_code` — so design is backend-selectable and an all-Codex

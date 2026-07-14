@@ -151,9 +151,10 @@ These wrap *every* phase; mechanics in §4.9.
   any write/command: protected-path globs, secret patterns, a destructive-command
   denylist, blast-radius cap, and **read-only enforcement** for reason/scan modes. A
   violation routes the workflow to an escalation gate.
-- **Budgets** — per-run caps (iterations, tokens, wall-clock, files, $cost) in
+- **Budgets** — per-run caps (iterations, tokens, files, $cost) in
   `workflow.variables`, bumped after each step; loop conditions + post-phase
-  `SWITCH`es check them and escalate on breach.
+  `SWITCH`es check them and escalate on breach. Runtime deadlines live only on
+  Conductor task definitions.
 - **Reproducibility** — each `agent` invocation returns `{agent, model, version,
   tokens}`; `git_ops` records the commit sha — all in the Conductor audit. Re-run via
   `conductor workflow rerun`.

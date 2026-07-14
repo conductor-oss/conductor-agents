@@ -15,8 +15,8 @@ UNATTENDED worker:
     fleet of workers shares one prompt-cache entry (doc §12).
   * ``setting_sources`` pinned + auto-memory disabled for reproducibility (doc §10).
   * optional forced JSON via ``output_format`` (doc §11).
-  * circuit breakers (``max_turns`` / ``max_budget_usd``) plus an EXTERNAL
-    wall-clock timeout, because the SDK has none of its own (doc §13, §16).
+  * circuit breakers (``max_turns`` / ``max_budget_usd``); runtime deadlines are
+    owned exclusively by the Conductor task definition.
   * retry == resume: on ``error_max_turns`` / ``error_max_budget_usd`` the caller
     resumes ``session_id`` from the SAME ``cwd`` with raised limits (doc §17).
 
@@ -57,7 +57,7 @@ def _file_tree(root: str, *, max_files: int = 400, max_chars: int = 8000) -> str
     try:
         r = subprocess.run(
             ["git", "-C", root, "ls-files", "--cached", "--others", "--exclude-standard"],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True, text=True,
         )
         if r.returncode == 0:
             files = [f for f in r.stdout.splitlines() if f.strip()]
@@ -292,8 +292,7 @@ async def run_coding_agent(
     fallback_model: str | None = None,
     effort: str | None = None,
     max_turns: int = 50,
-    max_budget_usd: float | None = 5.0,
-    timeout_s: float | None = None,
+    max_budget_usd: float | None = 50.0,
     resume_session_id: str | None = None,
     output_schema: dict | None = None,
     tools: list[str] | None = None,
@@ -316,9 +315,9 @@ async def run_coding_agent(
     threads via ``asyncio.to_thread`` and everything else awaits natively.
 
     ``worktree`` is both the working directory AND the write boundary enforced by
-    the guard hook. ``timeout_s`` is an external wall-clock cap (the SDK has none);
-    on expiry the query is abandoned and ``session_id`` is returned so the caller
-    can resume. ``resume_session_id`` MUST be paired with the same ``worktree`` it
+    the guard hook. Runtime limits are owned by the Conductor task definition;
+    this worker does not impose a separate wall-clock deadline.
+    ``resume_session_id`` MUST be paired with the same ``worktree`` it
     was created in, or the resume silently starts fresh (doc §10 #1 bug).
 
     ``sandbox_enabled`` (default True) wraps every Bash command in the OS sandbox
@@ -379,7 +378,7 @@ async def run_coding_agent(
     # (system prompt, hooks, session store, effort, allowed_domains, tool allow/deny
     # lists) don't apply to them — see the parity matrix in docs/CODING_AGENT_WORKER.md.
     # Both are blocking subprocess drivers (can run for minutes) — a worker thread,
-    # not the shared event loop; each enforces timeout_s itself.
+    # not the shared event loop. Conductor task definitions own runtime limits.
     be = _infer_backend(backend, model)
     # Cross-backend model guard: an explicit `agent` often arrives with another
     # backend's model id (e.g. code_parallel's default codeModel is a claude-* id
@@ -410,7 +409,7 @@ async def run_coding_agent(
             prompt, worktree=worktree_abs, model=model,
             write=_is_write_surface(tools), effort=effort,
             output_schema=output_schema, resume_session_id=resume_session_id,
-            timeout_s=timeout_s, on_turn=on_turn,
+            on_turn=on_turn,
         )
     if be == "gemini":
         from .gemini import run_gemini_agent
@@ -420,7 +419,7 @@ async def run_coding_agent(
             prompt, worktree=worktree_abs, model=model,
             write=_is_write_surface(tools),
             output_schema=output_schema, resume_session_id=resume_session_id,
-            timeout_s=timeout_s, on_turn=on_turn,
+            on_turn=on_turn,
         )
         res.setdefault("model", model or "")
         return res
@@ -490,13 +489,7 @@ async def run_coding_agent(
     err_base = {"result": "", "structured": None, "num_turns": 0, "turns": [],
                 "tokens": 0, "cost_usd": 0.0, "denials": [], "turn_log": []}
     try:
-        coro = _drive(prompt, options, on_turn=on_turn)
-        if timeout_s:
-            return _attach(await asyncio.wait_for(coro, timeout=timeout_s))
-        return _attach(await coro)
-    except asyncio.TimeoutError:
-        return _attach({"ok": False, "status": "timeout", "session_id": resume_session_id,
-                        "error": f"agent exceeded external timeout of {timeout_s}s", **err_base})
+        return _attach(await _drive(prompt, options, on_turn=on_turn))
     except sdk.ClaudeSDKError as e:
         return _attach({"ok": False, "status": "sdk_error", "session_id": resume_session_id,
                         "error": f"{type(e).__name__}: {e}", **err_base})

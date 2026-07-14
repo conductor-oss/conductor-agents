@@ -104,7 +104,7 @@ Every field shows its default and inline validation. Example (`issue_to_pr`):
 │ Backend       (•) claude  ( ) codex  ( ) gemini                  │
 │ Design docs   [ ] generate design docs first (larger changes)    │
 │ Parallelism   [4] max sub-tasks                                   │
-│ ▸ Advanced (models, turns, budget $2.00, timeout 600s)           │
+│ ▸ Advanced (models, turns, budget $50.00)                        │
 │                                                                   │
 │ Preflight  ✓ server  ✓ workflow registered  ✓ workers polling    │
 │                                                    [ Start ▶ ]   │

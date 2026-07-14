@@ -15,10 +15,6 @@
     "designMaxTurns",
     "designHumanApproval",
     "designMaxIterations",
-    "designReviewAgent",
-    "designReviewModel",
-    "designReviewMaxTurns",
-    "designReviewMaxBudgetUsd",
     "planAgent",
     "planModel",
     "planMaxTurns",
@@ -28,8 +24,7 @@
     "codePromptTemplate",
     "maxSubtasks",
     "maxTurns",
-    "maxBudgetUsd",
-    "timeoutS"
+    "maxBudgetUsd"
   ],
   "inputTemplate": {
     "changeBranch": "code-parallel",
@@ -37,24 +32,19 @@
     "designAgent": "claude",
     "designModel": "",
     "designDir": "docs/design",
-    "designMaxTurns": 40,
+    "designMaxTurns": 500,
     "designHumanApproval": true,
     "designMaxIterations": 5,
-    "designReviewAgent": "claude",
-    "designReviewModel": "",
-    "designReviewMaxTurns": 5,
-    "designReviewMaxBudgetUsd": 0.75,
     "planAgent": "claude",
     "planModel": "",
-    "planMaxTurns": 15,
+    "planMaxTurns": 500,
     "planPromptTemplate": "",
     "codeAgent": "claude",
     "codeModel": "",
     "codePromptTemplate": "",
     "maxSubtasks": 6,
-    "maxTurns": 40,
-    "maxBudgetUsd": 2.0,
-    "timeoutS": 600
+    "maxTurns": 500,
+    "maxBudgetUsd": 50.0
   },
   "tasks": [
     {
@@ -101,12 +91,7 @@
               "designModel": "${workflow.input.designModel}",
               "designMaxTurns": "${workflow.input.designMaxTurns}",
               "humanApproval": "${workflow.input.designHumanApproval}",
-              "designMaxIterations": "${workflow.input.designMaxIterations}",
-              "designReviewAgent": "${workflow.input.designReviewAgent}",
-              "designReviewModel": "${workflow.input.designReviewModel}",
-              "designReviewMaxTurns": "${workflow.input.designReviewMaxTurns}",
-              "designReviewMaxBudgetUsd": "${workflow.input.designReviewMaxBudgetUsd}",
-              "timeoutS": "${workflow.input.timeoutS}"
+              "designMaxIterations": "${workflow.input.designMaxIterations}"
             }
           }
         ]
@@ -122,8 +107,7 @@
         "model": "${workflow.input.planModel}",
         "agent": "${workflow.input.planAgent}",
         "maxTurns": "${workflow.input.planMaxTurns}",
-        "maxBudgetUsd": 1.0,
-        "timeoutS": 300,
+        "maxBudgetUsd": 50.0,
         "tools": ["Read", "Grep", "Glob"],
         "templateKey": "plan",
         "promptTemplate": "${workflow.input.planPromptTemplate}",
@@ -165,8 +149,7 @@
         "codePromptTemplate": "${workflow.input.codePromptTemplate}",
         "maxTurns": "${workflow.input.maxTurns}",
         "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-        "timeoutS": "${workflow.input.timeoutS}",
-        "queryExpression": ".repoPath as $r | .codeModel as $m | .codeAgent as $ag | .codePromptTemplate as $ct | .maxTurns as $mt | .maxBudgetUsd as $mb | .timeoutS as $ts | .result.subtasks as $subs | {dynamicTasks: [$subs[] | {name:\"code_subtask\", taskReferenceName:.id, type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"code_subtask\", version:1}}], dynamicTasksInput: (reduce $subs[] as $s ({}; . + ((($s.files // []) | join(\", \")) as $files | ($s.description + \"\\nTarget files: \" + $files + (if $s.testCmd then \"\\nYour check: \" + $s.testCmd else \"\" end)) as $desc | {($s.id): {repoPath:$r, name:$s.id, model:$m, agent:$ag, maxTurns:$mt, maxBudgetUsd:$mb, timeoutS:$ts, prompt:($desc + \"\\n\\nDesign docs (if present) are under docs/design/ in your working directory — read architecture.md first and conform to its shared types/names/file-layout, then the doc(s) for your slice, before implementing.\"), promptTemplate:$ct, templateKey:\"code\", promptContext:{subtask:$desc}}}))), groupIds: ([$subs[].id] | join(\",\"))}"
+        "queryExpression": ".repoPath as $r | .codeModel as $m | .codeAgent as $ag | .codePromptTemplate as $ct | .maxTurns as $mt | .maxBudgetUsd as $mb | .result.subtasks as $subs | {dynamicTasks: [$subs[] | {name:\"code_subtask\", taskReferenceName:.id, type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"code_subtask\", version:1}}], dynamicTasksInput: (reduce $subs[] as $s ({}; . + ((($s.files // []) | join(\", \")) as $files | ($s.description + \"\\nTarget files: \" + $files + (if $s.testCmd then \"\\nYour check: \" + $s.testCmd else \"\" end)) as $desc | {($s.id): {repoPath:$r, name:$s.id, model:$m, agent:$ag, maxTurns:$mt, maxBudgetUsd:$mb, prompt:($desc + \"\\n\\nDesign docs (if present) are under docs/design/ in your working directory — read architecture.md first and conform to its shared types/names/file-layout, then the doc(s) for your slice, before implementing.\"), promptTemplate:$ct, templateKey:\"code\", promptContext:{subtask:$desc}}}))), groupIds: ([$subs[].id] | join(\",\"))}"
       }
     },
     {
@@ -192,7 +175,8 @@
       "inputParameters": {
         "repoPath": "${workflow.input.repoPath}",
         "groupIds": "${build_forks.output.result.groupIds}",
-        "modelBuilder": "${workflow.input.codeModel}"
+        "modelBuilder": "${workflow.input.codeModel}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}"
       }
     },
     {

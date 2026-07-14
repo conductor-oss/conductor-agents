@@ -108,18 +108,13 @@ def _tool_summary(stats: dict[str, Any]) -> tuple[int, list[str]]:
     return calls, lines
 
 
-def _run_once(args: list[str], worktree: str, timeout_s: float | None):
-    """Run the CLI once; return (rc, stdout, stderr_tail) or raise TimeoutExpired."""
+def _run_once(args: list[str], worktree: str):
+    """Run the CLI once and return (rc, stdout, stderr_tail)."""
     proc = subprocess.Popen(
         args, cwd=worktree, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.communicate()
-        raise
+    stdout, stderr = proc.communicate()
     return proc.returncode, stdout or "", (stderr or "")[-4000:]
 
 
@@ -131,7 +126,6 @@ def run_gemini_agent(
     write: bool = True,
     output_schema: dict | None = None,
     resume_session_id: str | None = None,
-    timeout_s: float | None = None,
     on_turn=None,
 ) -> dict[str, Any]:
     """Run one headless Gemini CLI session to completion; return the uniform dict.
@@ -163,13 +157,10 @@ def run_gemini_agent(
         args += ["--resume", resume_session_id]
 
     try:
-        rc, stdout, stderr_tail = _run_once(args, worktree, timeout_s)
+        rc, stdout, stderr_tail = _run_once(args, worktree)
     except FileNotFoundError:
         return {"ok": False, "status": "gemini_error",
                 "error": f"gemini CLI not found (looked for '{GEMINI_BIN}')", **err_base}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "status": "timeout",
-                "error": f"gemini exceeded {timeout_s}s", **err_base}
     except Exception as ex:  # noqa: BLE001
         return {"ok": False, "status": "gemini_error",
                 "error": f"{type(ex).__name__}: {ex}", **err_base}
@@ -236,7 +227,7 @@ def run_gemini_agent(
                               "--resume", str(session_id)]
                 if model:
                     retry_args += ["-m", model]
-                rc2, stdout2, _ = _run_once(retry_args, worktree, timeout_s)
+                rc2, stdout2, _ = _run_once(retry_args, worktree)
                 doc2 = _extract_json(stdout2) if stdout2.strip() else None
                 if rc2 == 0 and isinstance(doc2, dict):
                     retry_resp = (doc2.get("response") or "").strip()

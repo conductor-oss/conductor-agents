@@ -59,8 +59,10 @@ workflow = one catalog entry; screens/widgets stay generic.
 ## 2. Conductor REST API (verified against OSS 3.x on this server)
 
 Base URL = `CONDUCTOR_SERVER_URL` (default `http://localhost:8080/api`). All JSON unless noted.
-`ConductorClient` wraps one `httpx.AsyncClient(base_url=...)`, ~10s timeout, and raises a typed
-`ConductorError` on non-2xx (surfaced as the "server unreachable" screen for connect errors).
+`ConductorClient` wraps one `httpx.AsyncClient(base_url=...)`, with a short HTTP request timeout,
+and raises a typed `ConductorError` on non-2xx (surfaced as the "server unreachable" screen for
+connect errors). This client request guard is unrelated to worker/task runtime: execution
+deadlines are configured only on Conductor task definitions.
 
 | Purpose | Call | Notes |
 |---|---|---|
@@ -113,20 +115,18 @@ LAUNCHABLE = ["pr_review", "issue_to_pr", "address_pr", "code_parallel"]  # laun
 §7). Reference values from the workflow JSONs:
 
 - **`pr_review`** — `repo`* (text), `prNumber`* (gh_pr), `agent` enum[claude,codex,gemini]=claude,
-  `model` (text, adv, ""), `maxTurns` int=20 (adv), `maxBudgetUsd` float=1.5 (adv), `timeoutS` int=600 (adv).
+  `model` (text, adv, ""), `maxTurns` int=250 (adv), `maxBudgetUsd` float=50.0 (adv).
 - **`issue_to_pr`** — `repo`* (text), `issueNumber`* (gh_issue), `base` text=main,
   `planAgent`/`codeAgent`/`designAgent` enum=claude, `design` bool=false, `maxSubtasks` int=4,
-  `maxTurns` int=30 (adv), `maxBudgetUsd` float=2.0 (adv), `timeoutS` int=600 (adv).
+  `maxTurns` int=300 (adv), `maxBudgetUsd` float=50.0 (adv).
   *(Expose a single `Backend` selector that sets `planAgent`+`codeAgent` together; put the
   individual agents under Advanced.)*
 - **`address_pr`** — `repo`* (text), `prNumber`* (gh_pr), `engine` enum[code_parallel,coding_agent]=code_parallel,
-  `agent` enum=claude, `maxSubtasks` int=4 (adv), `maxTurns` int=20 (adv), `maxBudgetUsd` float=2.0 (adv),
-  `timeoutS` int=600 (adv).
+  `agent` enum=claude, `maxSubtasks` int=4 (adv), `maxTurns` int=250 (adv), `maxBudgetUsd` float=50.0 (adv).
 - **`code_parallel`** — `repoPath`* (text — a local dir), `instruction`* (text, multiline),
   `changeBranch` text=code-parallel, `design` bool=false, `maxSubtasks` int=6,
   `planAgent`/`codeAgent` enum=claude (backend selector as above), `designAgent` enum=claude (adv),
-  `planModel`/`codeModel`/`designModel` (adv, ""), `maxTurns` int=40 (adv), `maxBudgetUsd` float=2.0 (adv),
-  `timeoutS` int=600 (adv).
+  `planModel`/`codeModel`/`designModel` (adv, ""), `maxTurns` int=500 (adv), `maxBudgetUsd` float=50.0 (adv).
 
 Omit any input left at its default from the start payload (send only what the user set/changed)
 — the workflows apply their own `inputTemplate` defaults server-side.
@@ -170,7 +170,7 @@ class TaskNode:
 
 @dataclass
 class AgentSnapshot:            # from a coding_agent task's outputData (live or final)
-    status: str                 # IN_PROGRESS | success | error_* | timeout
+    status: str                 # IN_PROGRESS | success | error_*
     num_turns: int; tokens: int; cost: float
     turns: list[dict]           # each: {turn, commands[], tools[], text, tokens}
     running: bool; elapsed_s: float | None

@@ -41,7 +41,6 @@ def main() -> int:
             worktree=wt,
             max_turns=10,
             max_budget_usd=1.0,
-            timeout_s=180,
         ))
 
         print("[smoke] --- result ---")

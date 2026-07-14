@@ -35,7 +35,6 @@ import logging
 import os
 import subprocess
 import tempfile
-import time
 from typing import Any
 
 from .cost import price_usage
@@ -110,7 +109,6 @@ async def _run_codex_sdk(
     effort: str | None,
     output_schema: dict | None,
     resume_session_id: str | None,
-    timeout_s: float | None,
     on_turn,
 ) -> dict[str, Any]:
     """Drive one turn via the openai-codex SDK, consuming the notification stream
@@ -209,39 +207,7 @@ async def _run_codex_sdk(
                         cur_cmds = []
                         _fire()
 
-            # Timeout via a WATCHDOG that interrupts the turn server-side, NOT by
-            # cancelling the stream: the SDK waits for notifications with a blocking
-            # queue.get on a to_thread executor thread, and cancelling that await
-            # abandons the thread mid-block (it then stalls loop shutdown for ~300s).
-            # After interrupt() the server emits turn/completed(aborted), so the
-            # stream ends naturally and no thread is ever left behind.
-            timed_out = False
-
-            async def _watchdog():
-                nonlocal timed_out
-                await asyncio.sleep(timeout_s)
-                timed_out = True
-                try:
-                    await handle.interrupt()
-                except Exception:  # noqa: BLE001
-                    pass
-
-            wd = asyncio.ensure_future(_watchdog()) if timeout_s else None
-            try:
-                if timeout_s:
-                    # Last-resort cap for a server that ignores the interrupt —
-                    # accepts the leaked-thread cost only in that pathological case.
-                    await asyncio.wait_for(_consume(), timeout=timeout_s + 60)
-                else:
-                    await _consume()
-            finally:
-                if wd:
-                    wd.cancel()
-            if timed_out:
-                return {"ok": False, "status": "timeout",
-                        "error": f"codex exceeded {timeout_s}s",
-                        **{**err_base, "turns": _live_turns(), "session_id": session_id,
-                           "tokens": _tokens(usage_total), "turn_log": turn_log}}
+            await _consume()
     except FileNotFoundError as ex:
         return {"ok": False, "status": "codex_error",
                 "error": f"codex runtime not found: {ex}", **err_base}
@@ -295,7 +261,6 @@ def _run_codex_cli(
     write: bool = True,
     output_schema: dict | None = None,
     resume_session_id: str | None = None,
-    timeout_s: float | None = None,
     on_turn=None,
 ) -> dict[str, Any]:
     """Legacy driver: run one `codex exec` to completion, streaming its JSONL.
@@ -344,12 +309,7 @@ def _run_codex_cli(
             args, cwd=worktree, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
-        deadline = (time.monotonic() + timeout_s) if timeout_s else None
         for line in proc.stdout:  # streams as Codex emits JSONL
-            if deadline and time.monotonic() > deadline:
-                proc.kill()
-                return {"ok": False, "status": "timeout", "error": f"codex exceeded {timeout_s}s",
-                        **{**err_base, "turns": turns, "session_id": session_id}}
             line = line.strip()
             if not line:
                 continue
@@ -393,7 +353,7 @@ def _run_codex_cli(
             elif t in ("error", "turn.failed"):
                 msg = e.get("message") or (e.get("error") or {}).get("message") or "codex error"
                 errors.append(str(msg)[:500])
-        proc.wait(timeout=30)
+        proc.wait()
         stderr_tail = (proc.stderr.read() or "")[-4000:] if proc.stderr else ""
         # Read the structured output file BEFORE the finally cleans up its temp dir.
         if out_file and os.path.exists(out_file):
@@ -468,7 +428,6 @@ async def run_codex_agent(
     effort: str | None = None,
     output_schema: dict | None = None,
     resume_session_id: str | None = None,
-    timeout_s: float | None = None,
     on_turn=None,
 ) -> dict[str, Any]:
     """Run one Codex session to completion; return the uniform coding_agent dict.
@@ -482,11 +441,11 @@ async def run_codex_agent(
         return await _run_codex_sdk(
             prompt, worktree=worktree, model=model, write=write, effort=effort,
             output_schema=output_schema, resume_session_id=resume_session_id,
-            timeout_s=timeout_s, on_turn=on_turn)
+            on_turn=on_turn)
     log.info("codex driver: CLI fallback (%s)",
              "CODEX_DRIVER=cli" if CODEX_DRIVER == "cli" else "openai_codex not installed")
     return await asyncio.to_thread(
         _run_codex_cli,
         prompt, worktree=worktree, model=model, write=write,
         output_schema=output_schema, resume_session_id=resume_session_id,
-        timeout_s=timeout_s, on_turn=on_turn)
+        on_turn=on_turn)

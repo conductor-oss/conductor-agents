@@ -1,0 +1,9 @@
+# Included into the top-level site via the monorepo plugin (see /mkdocs.yml).
+site_name: coding-harness
+nav:
+  - Overview: index.md
+  - Quickstart: quickstart.md
+  - Workflows: workflows.md
+  - Worker & backends: CODING_AGENT_WORKER.md
+  - Claude Agent SDK: CLAUDE_AGENT_SDK.md
+

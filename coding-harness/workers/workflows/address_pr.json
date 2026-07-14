@@ -13,15 +13,10 @@
     "design",
     "designHumanApproval",
     "designMaxIterations",
-    "designReviewAgent",
-    "designReviewModel",
-    "designReviewMaxTurns",
-    "designReviewMaxBudgetUsd",
     "fixPromptTemplate",
     "maxSubtasks",
     "maxTurns",
-    "maxBudgetUsd",
-    "timeoutS"
+    "maxBudgetUsd"
   ],
   "inputTemplate": {
     "engine": "code_parallel",
@@ -30,15 +25,10 @@
     "design": false,
     "designHumanApproval": true,
     "designMaxIterations": 5,
-    "designReviewAgent": "claude",
-    "designReviewModel": "",
-    "designReviewMaxTurns": 5,
-    "designReviewMaxBudgetUsd": 0.75,
     "fixPromptTemplate": "",
     "maxSubtasks": 4,
-    "maxTurns": 20,
-    "maxBudgetUsd": 2.0,
-    "timeoutS": 600
+    "maxTurns": 250,
+    "maxBudgetUsd": 50.0
   },
   "tasks": [
     {
@@ -105,8 +95,7 @@
                     "agent": "${workflow.input.agent}",
                     "model": "${workflow.input.model}",
                     "maxTurns": "${workflow.input.maxTurns}",
-                    "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-                    "timeoutS": "${workflow.input.timeoutS}"
+                    "maxBudgetUsd": "${workflow.input.maxBudgetUsd}"
                   }
                 },
                 {
@@ -137,17 +126,12 @@
                   "designAgent": "${workflow.input.agent}",
                   "designHumanApproval": "${workflow.input.designHumanApproval}",
                   "designMaxIterations": "${workflow.input.designMaxIterations}",
-                  "designReviewAgent": "${workflow.input.designReviewAgent}",
-                  "designReviewModel": "${workflow.input.designReviewModel}",
-                  "designReviewMaxTurns": "${workflow.input.designReviewMaxTurns}",
-                  "designReviewMaxBudgetUsd": "${workflow.input.designReviewMaxBudgetUsd}",
                   "planAgent": "${workflow.input.agent}",
                   "codeAgent": "${workflow.input.agent}",
                   "codePromptTemplate": "${workflow.input.fixPromptTemplate}",
                   "maxSubtasks": "${workflow.input.maxSubtasks}",
                   "maxTurns": "${workflow.input.maxTurns}",
-                  "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-                  "timeoutS": "${workflow.input.timeoutS}"
+                  "maxBudgetUsd": "${workflow.input.maxBudgetUsd}"
                 }
               }
             ]

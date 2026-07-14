@@ -385,7 +385,10 @@ class ApprovalModal(ModalScreen):
 
     def on_mount(self) -> None:
         self.query_one("#approval_error", Static).display = False
-        self.query_one("#approve", Button).focus()
+        if self._workflow == "design_docs":
+            self.query_one("#design_feedback", TextArea).focus()
+        else:
+            self.query_one("#approve", Button).focus()
 
     def _heading(self) -> str:
         if self._workflow == "design_docs":
@@ -408,9 +411,7 @@ class ApprovalModal(ModalScreen):
             t.append("\n\nAgent summary:\n", style="bold")
             t.append(str(d.get("summary", "")).strip() + "\n")
             return t
-        if self._workflow == "design_docs":
-            output = {"approved": True, "feedback": ""}
-        elif self._workflow == "issue_to_pr":
+        if self._workflow == "issue_to_pr":
             t.append("Title: ", style="bold"); t.append(f"{d.get('title', '')}\n")
             if d.get("base") or d.get("head"):
                 t.append("Branch: ", style="bold")
@@ -476,7 +477,9 @@ class ApprovalModal(ModalScreen):
         draft = self._final_draft()
         if draft is None:
             return
-        if self._workflow == "issue_to_pr":
+        if self._workflow == "design_docs":
+            output = {"approved": True, "feedback": ""}
+        elif self._workflow == "issue_to_pr":
             output = {"approved": True, "title": draft.get("title", ""),
                       "body": draft.get("body", "")}
         else:

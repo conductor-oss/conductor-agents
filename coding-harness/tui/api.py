@@ -166,6 +166,7 @@ class TaskNode:
     status: str
     task_id: str
     output: dict
+    workflow_id: str = ""
     input: dict = field(default_factory=dict)
     sub_workflow_id: str | None = None
     children: list["TaskNode"] = field(default_factory=list)
@@ -310,6 +311,7 @@ def parse_execution(d: dict) -> tuple[Run, list[TaskNode]]:
             status=t.get("status", "?"),
             task_id=t.get("taskId", ""),
             output=t.get("outputData") or {},
+            workflow_id=run.id,
             input=t.get("inputData") or {},
             sub_workflow_id=t.get("subWorkflowId"),
             reason=t.get("reasonForIncompletion"),

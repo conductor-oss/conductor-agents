@@ -1,4 +1,4 @@
-# security-harness
+# Conductor Security Harness
 
 > Part of **[conductor-agents](../README.md)** — a catalog of production-grade AI agents orchestrated by Conductor.
 
@@ -17,6 +17,20 @@ Optionally point it at the **source code** too, and it mines the code (SAST + ro
 > See [Authorization & capability levels](#authorization--capability-levels) for machine-enforceable controls.
 
 ---
+
+## Documentation
+
+| Document | Start here when… |
+|---|---|
+| [`SKILL.md`](SKILL.md) | An AI assistant will operate, register, or monitor the harness. |
+| [`docs/quickstart.md`](docs/quickstart.md) | You want the shortest path to a safe local scan. |
+| [`docs/scan-vs-assess.md`](docs/scan-vs-assess.md) | You need to choose source-only SAST, a surface scan, or a deep assessment. |
+| [`docs/authorization.md`](docs/authorization.md) | You are defining scope, capability, manifests, or mutation boundaries. |
+| [`docs/authentication.md`](docs/authentication.md) | The target requires API credentials, bearer tokens, or SSO. |
+| [`docs/deployment.md`](docs/deployment.md) | You are choosing host, Docker, browser, SAST/DAST, or RAG workers. |
+
+The README is the complete user overview. The documentation site splits the same operating model
+into task-focused pages; `SKILL.md` is intentionally concise and procedural for AI assistants.
 
 ## Prerequisites
 

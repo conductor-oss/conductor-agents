@@ -392,16 +392,45 @@ async def test_design_gate_requests_changes_with_feedback_and_keeps_loop_alive()
     fc = FakeClient(execution=_design_gate_execution())
     app = _app(fc)
     async with app.run_test(size=(140, 45)) as pilot:
-        from textual.widgets import TextArea
         from tui.screens.run_detail import RunDetail
         from tui.widgets.modals import ApprovalModal
         await pilot.pause(0.2); app.push_screen(RunDetail("wf-design-gate")); await pilot.pause(0.6)
         assert isinstance(app.screen, ApprovalModal)
-        app.screen.query_one("#design_feedback", TextArea).text = "Specify rollback semantics."
+        assert app.focused is app.screen.query_one("#design_feedback")
+        await pilot.press(*"rollback")
         await pilot.click("#reject"); await pilot.pause(0.5)
         _, ref, status, output = fc.signals[-1]
         assert ref == "design_review" and status == "COMPLETED"
-        assert output == {"approved": False, "feedback": "Specify rollback semantics."}
+        assert output == {"approved": False, "feedback": "rollback"}
+
+
+@pytest.mark.asyncio
+async def test_nested_design_gate_approves_owning_subworkflow():
+    class NestedGateClient(FakeClient):
+        async def get_run(self, wid, recurse=True, only_running=False):
+            _, children = api.parse_execution(_design_gate_execution())
+            parent = api.TaskNode(
+                ref="design", def_name="design_docs", type="SUB_WORKFLOW",
+                status="IN_PROGRESS", task_id="parent-design", output={},
+                workflow_id="wf-parent", sub_workflow_id="wf-design-gate",
+                children=children,
+            )
+            run = api.Run(id="wf-parent", workflow="code_parallel", status="RUNNING",
+                          start_ms=1000, end_ms=None)
+            return api.RunDetail(run=run, tasks=[parent])
+
+    fc = NestedGateClient(execution=_design_gate_execution())
+    app = _app(fc)
+    async with app.run_test(size=(140, 45)) as pilot:
+        from tui.screens.run_detail import RunDetail
+        from tui.widgets.modals import ApprovalModal
+        await pilot.pause(0.2); app.push_screen(RunDetail("wf-parent")); await pilot.pause(0.6)
+        assert isinstance(app.screen, ApprovalModal)
+        await pilot.click("#approve"); await pilot.pause(0.5)
+        wid, ref, status, output = fc.signals[-1]
+        assert wid == "wf-design-gate" and ref == "design_review"
+        assert status == "COMPLETED"
+        assert output == {"approved": True, "feedback": ""}
 
 
 @pytest.mark.asyncio

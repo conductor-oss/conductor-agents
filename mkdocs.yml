@@ -83,7 +83,7 @@ nav:
   - Catalog: index.md
   - Agents:
       - Security Harness: "!include ./security-harness/mkdocs.yml"
-      - Coding Agent: agents/coding-agent.md
+      - Coding Harness: "!include ./coding-harness/mkdocs.yml"
       - Deep Research: agents/deep-research.md
       - Customer Support: agents/customer-support.md
   - Add your agent: contributing.md

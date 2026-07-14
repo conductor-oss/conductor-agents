@@ -12,7 +12,7 @@ hide:
   <h1 class="dc-hero__title">Production-grade AI agents,<br><span class="dc-hero__hl">built on Conductor</span></h1>
   <p class="dc-hero__sub">A community catalog of long-running agent harnesses — each a self-contained, runnable project that shows how to build a serious agent on Conductor primitives. Clone one, read it, run it in minutes.</p>
   <div class="dc-actions">
-    <a class="dc-btn dc-btn--primary" href="security-harness/">Explore the Security Harness →</a>
+    <a class="dc-btn dc-btn--primary" href="#catalog">Browse ready harnesses →</a>
     <a class="dc-btn dc-btn--ghost" href="https://github.com/conductor-oss/conductor-agents">View on GitHub</a>
   </div>
   <div class="dc-repo-wrap">
@@ -52,11 +52,11 @@ hide:
   <span class="dc-card__desc">Autonomous web-app &amp; API penetration tester — crawls, reasons about the attack surface, actively exploits, triages false positives, and writes a report + SARIF + attack-graph dossier.</span>
   <span class="dc-card__more">View agent →</span>
 </a>
-<a class="dc-card acc-devops" href="agents/coding-agent/" data-cat="DevOps" data-text="coding agent plan edit run verify repo code review">
-  <span class="dc-card__tag">DevOps · Coming soon</span>
-  <span class="dc-card__name">Coding Agent</span>
-  <span class="dc-card__desc">Autonomous coding agent — plan, edit, run, and verify changes across a repo, with a durable agent loop and sub-workflows per task.</span>
-  <span class="dc-card__more">Preview →</span>
+<a class="dc-card acc-devops" href="coding-harness/" data-cat="DevOps" data-text="coding harness github issue pull request parallel worktree code review">
+  <span class="dc-card__tag">DevOps · Ready</span>
+  <span class="dc-card__name">Coding Harness</span>
+  <span class="dc-card__desc">Autonomous coding across local repositories, GitHub issues, and pull requests with parallel worktrees, durable sub-workflows, and human publication gates.</span>
+  <span class="dc-card__more">View agent →</span>
 </a>
 <a class="dc-card acc-research" href="agents/deep-research/" data-cat="Research" data-text="deep research multi-source search read synthesize cite fork join">
   <span class="dc-card__tag">Research · Coming soon</span>

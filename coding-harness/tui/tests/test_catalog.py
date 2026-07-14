@@ -81,14 +81,41 @@ def test_design_docs_is_bounded_review_loop():
     wf = _load("design_docs")
     assert wf["inputTemplate"]["humanApproval"] is True
     assert wf["inputTemplate"]["designMaxIterations"] == 5
-    assert wf["inputTemplate"]["designReviewMaxTurns"] == 5
     loop = wf["tasks"][0]
     assert loop["type"] == "DO_WHILE" and loop["evaluatorType"] == "graaljs"
     assert "$.design_loop['iteration'] < $.max_iterations" in loop["loopCondition"]
     review = next(t for t in loop["loopOver"] if t["taskReferenceName"] == "review_mode")
     assert any(t["type"] == "HUMAN" for t in review["decisionCases"]["true"])
     judge = next(t for t in review["defaultCase"] if t["taskReferenceName"] == "design_judge")
-    assert judge["inputParameters"]["maxTurns"] == "${workflow.input.designReviewMaxTurns}"
+    assert judge["type"] == "SIMPLE" and judge["name"] == "coding_agent"
+    assert judge["inputParameters"]["tools"] == ["Read", "Grep", "Glob"]
+    assert judge["inputParameters"]["maxTurns"] == "${workflow.input.designMaxTurns}"
+    assert judge["inputParameters"]["maxBudgetUsd"] == "${workflow.input.designMaxBudgetUsd}"
+    assert set(judge["inputParameters"]["schema"]["required"]) == {"approved", "feedback"}
+    assert "${design.output.result}" in judge["inputParameters"]["prompt"]
+    set_review = next(t for t in review["defaultCase"] if t["taskReferenceName"] == "set_judge_review")
+    assert set_review["inputParameters"]["designApproved"] == "${design_judge.output.structured.approved}"
+    assert set_review["inputParameters"]["designFeedback"] == "${design_judge.output.structured.feedback}"
+    assert set_review["inputParameters"]["designReview"] == "agent"
+
+
+def test_no_llm_chat_complete_tasks_remain():
+    found = []
+
+    def visit(value):
+        if isinstance(value, dict):
+            if value.get("type") == "LLM_CHAT_COMPLETE":
+                found.append(value)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    for path in WF_DIR.glob("*.json"):
+        visit(json.loads(path.read_text()))
+
+    assert not found
 
 
 @pytest.mark.parametrize("wf_name", ["code_parallel", "issue_to_pr", "address_pr"])
@@ -96,7 +123,51 @@ def test_code_parallel_paths_forward_design_review_controls(wf_name):
     wf = _load(wf_name)
     template = wf["inputTemplate"]
     assert template["design"] is False and template["designHumanApproval"] is True
-    assert template["designMaxIterations"] == 5 and template["designReviewMaxTurns"] == 5
+    assert template["designMaxIterations"] == 5
     serialized = json.dumps(wf)
-    for key in ("designHumanApproval", "designMaxIterations", "designReviewMaxTurns"):
+    for key in ("designHumanApproval", "designMaxIterations"):
         assert f"${{workflow.input.{key}}}" in serialized
+
+
+@pytest.mark.parametrize(
+    ("wf_name", "budget_key"),
+    [
+        ("address_pr", "maxBudgetUsd"),
+        ("code_parallel", "maxBudgetUsd"),
+        ("code_subtask", "maxBudgetUsd"),
+        ("design_docs", "designMaxBudgetUsd"),
+        ("github_demo", "maxBudgetUsd"),
+        ("issue_to_pr", "maxBudgetUsd"),
+        ("pr_review", "maxBudgetUsd"),
+    ],
+)
+def test_all_workflow_agent_budget_defaults_are_fifty(wf_name, budget_key):
+    assert _load(wf_name)["inputTemplate"][budget_key] == 50.0
+
+
+@pytest.mark.parametrize(
+    ("wf_name", "turn_key", "expected"),
+    [
+        ("address_pr", "maxTurns", 250),
+        ("code_parallel", "designMaxTurns", 500),
+        ("code_parallel", "planMaxTurns", 500),
+        ("code_parallel", "maxTurns", 500),
+        ("code_subtask", "maxTurns", 250),
+        ("design_docs", "designMaxTurns", 500),
+        ("github_demo", "maxTurns", 300),
+        ("issue_to_pr", "maxTurns", 300),
+        ("pr_review", "maxTurns", 250),
+    ],
+)
+def test_workflow_agent_turn_defaults(wf_name, turn_key, expected):
+    value = _load(wf_name)["inputTemplate"][turn_key]
+    assert value == expected
+    assert value >= 25
+
+
+def test_code_parallel_internal_agent_budgets_are_fifty():
+    wf = _load("code_parallel")
+    plan = next(t for t in wf["tasks"] if t["taskReferenceName"] == "plan")
+    merge = next(t for t in wf["tasks"] if t["taskReferenceName"] == "merge")
+    assert plan["inputParameters"]["maxBudgetUsd"] == 50.0
+    assert merge["inputParameters"]["maxBudgetUsd"] == "${workflow.input.maxBudgetUsd}"

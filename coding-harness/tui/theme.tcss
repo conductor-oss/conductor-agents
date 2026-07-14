@@ -111,6 +111,12 @@ LogsModal #log_body {
     align-horizontal: right;
     margin-top: 1;
 }
+ApprovalModal #design_feedback {
+    height: 6;
+    min-height: 4;
+    margin-top: 1;
+    border: round $primary;
+}
 
 /* ---- chat ---- */
 #chat_header {

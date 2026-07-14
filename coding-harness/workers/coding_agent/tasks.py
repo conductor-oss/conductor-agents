@@ -14,8 +14,7 @@ Inputs (task.input_data):
   fallbackModel     (optional) model to fall back to when the primary is overloaded
   effort            (optional) low|medium|high|xhigh|max
   maxTurns          (optional) tool-use round-trip cap (default 50)
-  maxBudgetUsd      (optional) spend cap (default 5.0)
-  timeoutS          (optional) EXTERNAL wall-clock cap; SDK has none of its own
+  maxBudgetUsd      (optional) spend cap (default 50.0)
   resumeSessionId   (optional) resume a prior session — MUST use the same worktree
   schema            (optional) JSON Schema (dict or JSON string) forcing structured output
   allowedDomains    (optional) network domains the OS sandbox may reach (list or
@@ -143,8 +142,7 @@ async def coding_agent():
                 fallback_model=i.get("fallbackModel") or None,
                 effort=i.get("effort") or None,
                 max_turns=int(i.get("maxTurns") or 50),
-                max_budget_usd=(float(i["maxBudgetUsd"]) if i.get("maxBudgetUsd") is not None else 5.0),
-                timeout_s=(float(i["timeoutS"]) if i.get("timeoutS") else None),
+                max_budget_usd=(float(i["maxBudgetUsd"]) if i.get("maxBudgetUsd") is not None else 50.0),
                 resume_session_id=i.get("resumeSessionId") or None,
                 output_schema=_parse_schema(i.get("schema")),
                 allowed_domains=domains or None,
@@ -232,7 +230,7 @@ async def coding_agent():
                 logs.append(f"[coding_agent] stderr tail: {cap(res['stderr'], 2000)}")
             # error_max_turns / error_max_budget_usd are retryable via resume — surface
             # the session id and let the workflow decide, rather than hard-failing.
-            out["retryable"] = res["status"] in ("error_max_turns", "error_max_budget_usd", "timeout")
+            out["retryable"] = res["status"] in ("error_max_turns", "error_max_budget_usd")
             out["stderr"] = cap(res.get("stderr"), 2000)
             return fail(task, "coding_agent", err, logs, output=out)
 

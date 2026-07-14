@@ -14,13 +14,14 @@
     "model",
     "agent",
     "maxTurns",
-    "maxBudgetUsd",
-    "timeoutS"
+    "maxBudgetUsd"
   ],
   "inputTemplate": {
     "promptTemplate": "",
     "templateKey": "code",
-    "promptContext": {}
+    "promptContext": {},
+    "maxTurns": 250,
+    "maxBudgetUsd": 50.0
   },
   "tasks": [
     {
@@ -45,8 +46,7 @@
         "model": "${workflow.input.model}",
         "agent": "${workflow.input.agent}",
         "maxTurns": "${workflow.input.maxTurns}",
-        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-        "timeoutS": "${workflow.input.timeoutS}"
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}"
       }
     },
     {

@@ -62,17 +62,10 @@ async def _drive(prompt: str, options: sdk.ClaudeAgentOptions,
 
 
 def _anthropic_client():
-    """Anthropic client with a bounded per-read timeout + SDK-level retries.
-
-    read=60s: a dead/stalled socket (e.g. a dropped connection or a laptop that
-    slept mid-stream) errors within a minute instead of hanging for ~35 min. During
-    active streaming, tokens arrive far more often than every 60s, so this never
-    cuts a healthy generation. max_retries covers connection setup for non-streaming
-    calls; streaming is retried explicitly by _stream_with_retry."""
+    """Anthropic client with no client-side deadline; Conductor owns timeouts."""
     import anthropic
     import httpx
-    return anthropic.Anthropic(timeout=httpx.Timeout(600.0, read=60.0, connect=15.0),
-                               max_retries=4)
+    return anthropic.Anthropic(timeout=httpx.Timeout(None), max_retries=4)
 
 
 # Exceptions worth retrying: transient network faults, connection resets, stalls.
@@ -204,16 +197,14 @@ def run_agent(prompt: str, *, cwd: str | None = None, model: str | None = None,
               write: bool = False, add_dirs: list[str] | None = None,
               max_turns: int | None = None, resume_session_id: str | None = None,
               schema: dict | None = None, allowed_tools: list[str] | None = None,
-              timeout: float | None = None) -> dict[str, Any]:
+              max_budget_usd: float | None = 50.0) -> dict[str, Any]:
     """Run a Claude Agent SDK session to completion (sync wrapper).
 
     write=True grants ``acceptEdits`` + the working dir as an editable root;
     write=False restricts to read-only tools (review / diagnosis).
     resume_session_id continues a prior session (keeps context — big token saver).
     schema: JSON Schema dict — passed as --json-schema for structured output.
-    timeout: wall-clock cap in seconds; None = no cap (default for coding groups —
-             the Anthropic client's 60s read-timeout handles dead sockets; do not
-             add a hard cap here or complex groups get killed before finishing)."""
+    Runtime deadlines are owned exclusively by the Conductor task definition."""
     import json as _json
     opts: dict[str, Any] = {
         "model": model or None,
@@ -233,6 +224,8 @@ def run_agent(prompt: str, *, cwd: str | None = None, model: str | None = None,
         opts["allowed_tools"] = allowed_tools or READ_ONLY_TOOLS
     if max_turns is not None:
         opts["max_turns"] = max_turns
+    if max_budget_usd is not None:
+        opts["max_budget_usd"] = max_budget_usd
     if resume_session_id:
         opts["resume"] = resume_session_id
     if schema:
@@ -243,11 +236,6 @@ def run_agent(prompt: str, *, cwd: str | None = None, model: str | None = None,
 
     err_base = {"text": "", "structured": None, "cost_usd": 0.0, "tokens": 0, "num_turns": 0, "session_id": None, "turn_log": []}
     try:
-        coro = _drive(prompt, options)
-        if timeout:
-            return asyncio.run(asyncio.wait_for(coro, timeout=timeout))
-        return asyncio.run(coro)
-    except asyncio.TimeoutError:
-        return {"ok": False, "error": f"agent timed out after {timeout}s", **err_base}
+        return asyncio.run(_drive(prompt, options))
     except sdk.ClaudeSDKError as e:  # CLI not found, connection, JSON decode, process error
         return {"ok": False, "error": f"{type(e).__name__}: {e}", **err_base}

@@ -164,7 +164,10 @@ class RunDetail(Screen):
     @work(group="mutate")
     async def signal_gate(self, gate: TaskNode, status: str, output: dict) -> None:
         try:
-            await self.app.client.signal_task(self._id, gate.ref, status, output)
+            # A pending gate may belong to a recursed SUB_WORKFLOW. Signal the workflow
+            # that owns the HUMAN task, not necessarily the run opened in this screen.
+            await self.app.client.signal_task(gate.workflow_id or self._id,
+                                              gate.ref, status, output)
             if gate.input.get("workflow") == "design_docs" and status == "COMPLETED":
                 self.notify("design approved — continuing…" if output.get("approved")
                             else "feedback submitted — revising the design…")

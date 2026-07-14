@@ -1,5 +1,5 @@
-"""Subprocess helper. Mirrors ``agents/exec.ts``: stdin closed, captured
-stdout/stderr, timeout, non-zero exit raises with output attached."""
+"""Subprocess helper: stdin closed, captured stdout/stderr, and non-zero exits
+raise with output attached. Runtime deadlines are owned by Conductor task defs."""
 
 from __future__ import annotations
 
@@ -22,13 +22,12 @@ class RunError(RuntimeError):
         self.stderr = stderr
 
 
-def run(cmd: list[str], cwd: str | None = None, timeout: float = 600.0,
-        check: bool = True) -> RunResult:
+def run(cmd: list[str], cwd: str | None = None, check: bool = True) -> RunResult:
     """Run a command with stdin closed. Raises RunError on non-zero exit when
     ``check`` is True; otherwise returns the RunResult regardless of code."""
     proc = subprocess.run(
         cmd, cwd=cwd, stdin=subprocess.DEVNULL,
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True,
     )
     res = RunResult(stdout=proc.stdout or "", stderr=proc.stderr or "", code=proc.returncode)
     if check and proc.returncode != 0:

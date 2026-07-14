@@ -1,5 +1,5 @@
 ---
-name: conductor-coding-harness
+name: coding-harness
 description: >-
   Drive autonomous coding as durable Conductor workflows. Use when the user wants to
   resolve a GitHub issue into a PR, review a pull request, address PR feedback, or make a
@@ -112,13 +112,13 @@ Before starting `code_parallel`, `issue_to_pr`, or `address_pr` with its default
 `code_parallel` engine, explicitly ask whether the user wants design docs and pass `design:true`
 or `design:false`. Never infer the choice. When enabled, human design review is the default:
 approval exits the bounded design loop, while feedback triggers a revision. Set
-`designHumanApproval:false` only when the user wants the read-only LLM judge. The defaults are
-five design iterations and five judge tool turns; use `designMaxIterations` and
-`designReviewMaxTurns` when the user requests higher limits.
+`designHumanApproval:false` only when the user wants the read-only coding-agent judge. The defaults are
+five design iterations; use `designMaxIterations` when the user requests a higher limit.
 
-Shared tuning knobs (all optional): `maxTurns`, `maxBudgetUsd`, `timeoutS`, `*Model` (`""` =
+Shared tuning knobs (all optional): `maxTurns`, `maxBudgetUsd`, `*Model` (`""` =
 backend default). Backends: `claude` (default) | `codex` | `gemini`, or inferred from a
-`*Model` id.
+`*Model` id. Shipped workflows default every applicable agent budget to `$50` and every turn cap
+to at least 250; `code_parallel` planning, design, and coding sessions default to 500 turns.
 
 **Prompt templates (optional).** To fully override an agent step's prompt with your own
 instructions (review focus, house style, domain rules), either pass a `*PromptTemplate` input
@@ -165,7 +165,7 @@ conductor workflow start --workflow address_pr \
 
 ## TUI operations
 
-Install and launch from the repository root:
+Install and launch from `coding-harness/`:
 
 ```bash
 python3 -m venv tui/.venv
