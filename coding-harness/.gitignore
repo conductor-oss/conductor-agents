@@ -15,3 +15,4 @@ openspec/
 __pycache__
 examples/app-cache/
 uv.lock
+.venv-ci/

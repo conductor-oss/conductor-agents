@@ -1,0 +1,17 @@
+{
+  "ok": true,
+  "status": "success",
+  "result": "Added a capped exponential backoff to git_push and a covering unit test.",
+  "structured": null,
+  "session_id": "sess-abc123",
+  "num_turns": 7,
+  "turns": [
+    { "index": 1, "tokens": 1820, "tools": ["Read"] },
+    { "index": 2, "tokens": 2640, "tools": ["Edit", "Bash(git diff*)"] }
+  ],
+  "tokens": 4460,
+  "cost_usd": 0.0312,
+  "denials": ["Bash(rm -rf /): outside worktree"],
+  "turn_log": "1: read git.py\n2: edited git.py, ran git diff",
+  "error": null
+}
