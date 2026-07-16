@@ -8,8 +8,10 @@ Only genuine worker errors (missing/bad ``repoPath``) return FAILED.
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
+import checks.tasks
 from checks.tasks import run_checks, _detect_default, OUTPUT_CAP
 
 
@@ -88,6 +90,47 @@ def test_label_in_summary(fake_task_input, tmp_git_repo):
     summary = result.output_data["summary"]
     assert "run_checks[alpha]" in summary
     assert "pass" in summary
+
+
+# --- OUTPUT_CAP env configurability -----------------------------------------
+
+def test_output_cap_respects_env_var(monkeypatch, fake_task_input, tmp_git_repo):
+    # A small cap set via env should truncate stdout to the smaller value.
+    monkeypatch.setenv("RUN_CHECKS_OUTPUT_CAP", "10")
+    reloaded = importlib.reload(checks.tasks)
+    try:
+        assert reloaded.OUTPUT_CAP == 10
+        result = reloaded.run_checks(fake_task_input(
+            repoPath=str(tmp_git_repo), cmd="printf 'x%.0s' {1..500}"))
+        assert result.status.value == "COMPLETED"
+        out = result.output_data
+        # Capped to 10 chars + the truncation note appended by results.cap.
+        assert out["stdout"].startswith("xxxxxxxxxx")
+        assert "truncated" in out["stdout"]
+        assert len(out["stdout"]) < 4000
+    finally:
+        monkeypatch.delenv("RUN_CHECKS_OUTPUT_CAP", raising=False)
+        importlib.reload(checks.tasks)
+
+
+def test_invalid_output_cap_env_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("RUN_CHECKS_OUTPUT_CAP", "not-a-number")
+    reloaded = importlib.reload(checks.tasks)
+    try:
+        assert reloaded.OUTPUT_CAP == 4000
+    finally:
+        monkeypatch.delenv("RUN_CHECKS_OUTPUT_CAP", raising=False)
+        importlib.reload(checks.tasks)
+
+
+def test_nonpositive_output_cap_env_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("RUN_CHECKS_OUTPUT_CAP", "-5")
+    reloaded = importlib.reload(checks.tasks)
+    try:
+        assert reloaded.OUTPUT_CAP == 4000
+    finally:
+        monkeypatch.delenv("RUN_CHECKS_OUTPUT_CAP", raising=False)
+        importlib.reload(checks.tasks)
 
 
 # --- _detect_default micro-tests --------------------------------------------

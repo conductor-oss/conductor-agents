@@ -14,6 +14,7 @@ runs and the check is a fail-open skip (``passed=True``).
 from __future__ import annotations
 
 import json as _json
+import os
 import re
 import time
 from pathlib import Path
@@ -23,7 +24,21 @@ from conductor.client.worker.worker_task import worker_task
 from common.exec import run
 from common.results import cap, fail, ok
 
-OUTPUT_CAP = 4000
+
+def _env_int(name: str, default: int) -> int:
+    """Read a positive int from ``os.environ[name]``, falling back to ``default``
+    for a missing, non-numeric, or non-positive value (never raises)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+OUTPUT_CAP = _env_int("RUN_CHECKS_OUTPUT_CAP", 4000)
 
 
 def _detect_default(repo_path: str) -> str | None:
@@ -99,12 +114,16 @@ def run_checks(task):
         except Exception as e:  # noqa: BLE001 — bash failed to spawn: real error
             return fail(task, "run_checks", e)
         duration_ms = int((time.monotonic() - start) * 1000)
+        # A None returncode (e.g. process killed by signal) is treated as a
+        # non-zero/failed exit: passed=False and exitCode carries the None
+        # rather than silently reporting a pass.
+        exit_code = result.code
         output = {
             "cmd": effective_cmd,
             "ran": True,
             "detected": (not cmd and detected_cmd is not None),
-            "passed": result.code == 0,
-            "exitCode": result.code,
+            "passed": exit_code == 0,
+            "exitCode": exit_code,
             "stdout": cap(result.stdout, OUTPUT_CAP),
             "stderr": cap(result.stderr, OUTPUT_CAP),
             "durationMs": duration_ms,
