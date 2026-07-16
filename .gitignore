@@ -41,3 +41,7 @@
 /security-harness/manifests
 /site
 /security-harness/blog
+
+# Harness runtime state (git worktrees + session/output dirs)
+.cc-worktrees/
+.conductor-code/
