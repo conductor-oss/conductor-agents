@@ -14,7 +14,11 @@ import json as _json
 from conductor.client.worker.worker_task import worker_task
 
 from common import git, github
+from common.git import GIT_IDENTITY_EMAIL, GIT_IDENTITY_NAME
 from common.results import fail, ok
+
+# Budget fall-back for merge_worktrees' conflict-resolver — env-configurable.
+_MERGE_BUDGET_USD = git._env_float("GITOPS_MERGE_BUDGET_USD", 50.0)
 
 
 def _int(val, default=None):
@@ -41,8 +45,8 @@ def prepare_repo(task):
     try:
         out = git.ensure_ready(
             i["repoPath"],
-            name=i.get("identityName") or "conductor-code",
-            email=i.get("identityEmail") or "harness@conductor.local",
+            name=i.get("identityName") or GIT_IDENTITY_NAME,
+            email=i.get("identityEmail") or GIT_IDENTITY_EMAIL,
         )
         return ok(task, out, [f"[prepare_repo] init={out['initialized']} "
                               f"initialCommit={out['initialCommitCreated']} branch={out['branch']}"])
@@ -116,7 +120,7 @@ def merge_worktrees(task):
                     "(<<<<<<<, =======, >>>>>>>). Edit only the conflicted files."
                 )
                 res = run_agent(prompt, cwd=repo, model=model, write=True,
-                                max_budget_usd=float(i.get("maxBudgetUsd") or 50.0))
+                                max_budget_usd=float(i.get("maxBudgetUsd") or _MERGE_BUDGET_USD))
                 total_tokens += res["tokens"]
                 total_cost += res["cost_usd"]
                 if res["ok"]:
