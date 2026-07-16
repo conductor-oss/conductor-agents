@@ -126,14 +126,14 @@ def pr_comments(repo_or_url: str, number: int) -> dict:
               "--json", _PR_META_FIELDS], check=True)
     meta = json.loads(mr.stdout or "{}")
 
-    conv = [(c.get("author", {}).get("login", "?"), c.get("body", ""))
+    conv = [((c.get("author") or {}).get("login", "?"), c.get("body", ""))
             for c in (meta.get("comments") or []) if _keep(c.get("body", ""))]
-    reviews = [(r.get("author", {}).get("login", "?"), r.get("state", ""), r.get("body", ""))
+    reviews = [((r.get("author") or {}).get("login", "?"), r.get("state", ""), r.get("body", ""))
                for r in (meta.get("reviews") or []) if _keep(r.get("body", ""))]
     inline_raw = run(["gh", "api", f"repos/{slug}/pulls/{number}/comments"],
                      check=False).stdout
     try:
-        inline = [(c.get("user", {}).get("login", "?"), c.get("path", ""),
+        inline = [((c.get("user") or {}).get("login", "?"), c.get("path", ""),
                    c.get("line") or c.get("original_line"), c.get("body", ""))
                   for c in json.loads(inline_raw or "[]") if _keep(c.get("body", ""))]
     except ValueError:
@@ -289,7 +289,23 @@ def pr_merge(repo: str, number: int, *, method: str = "squash",
     return {"merged": True, "number": number, "method": method, "auto": auto}
 
 
-_DIFF_CAP = 200_000  # chars — keep a huge PR from blowing up the review prompt
+_DIFF_CAP_DEFAULT = 200_000  # chars — keep a huge PR from blowing up the review prompt
+
+
+def _diff_cap() -> int:
+    """Read the diff-truncation cap from ``PR_DIFF_CAP`` (chars). Non-numeric or
+    non-positive values fall back to the 200_000 default."""
+    raw = os.environ.get("PR_DIFF_CAP")
+    if not raw:
+        return _DIFF_CAP_DEFAULT
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return _DIFF_CAP_DEFAULT
+    return val if val > 0 else _DIFF_CAP_DEFAULT
+
+
+_DIFF_CAP = _diff_cap()
 
 
 def _local_pr_diff(repo_path: str, base: str | None) -> tuple[str, list[str]]:
@@ -350,9 +366,10 @@ def pr_diff(repo_or_url: str, number: int, repo_path: str | None = None) -> dict
             f"pr_diff: gh pr diff {number} --repo {slug} exited {dr.code}: {detail}; "
             "no local checkout (repoPath) to fall back to")
 
-    truncated = len(diff) > _DIFF_CAP
+    cap = _diff_cap()
+    truncated = len(diff) > cap
     if truncated:
-        diff = diff[:_DIFF_CAP] + "\n…[diff truncated]"
+        diff = diff[:cap] + "\n…[diff truncated]"
     return {"diff": diff, "changedFiles": files, "truncated": truncated, "diffSource": source}
 
 
@@ -371,9 +388,21 @@ def submit_review(repo_or_url: str, number: int, *, summary: str,
     if ev not in ("COMMENT", "REQUEST_CHANGES"):
         ev = "COMMENT"  # never APPROVE from the bot
     items = comments or []
-    inline = [{"path": c["path"], "line": int(c["line"]), "side": "RIGHT",
-               "body": c.get("body", "")}
-              for c in items if c.get("path") and c.get("line")]
+
+    def _inline(c: dict) -> dict | None:
+        """Build one inline-comment payload, or None if it can't anchor. A non-integer
+        or None ``line`` is skipped rather than raising, so one bad comment doesn't
+        sink the whole review."""
+        if not (c.get("path") and c.get("line")):
+            return None
+        try:
+            line = int(c["line"])
+        except (TypeError, ValueError):
+            return None
+        return {"path": c["path"], "line": line, "side": "RIGHT",
+                "body": c.get("body", "")}
+
+    inline = [p for p in (_inline(c) for c in items) if p is not None]
 
     def _post(payload: dict) -> str:
         fd, path = tempfile.mkstemp(suffix=".json")
