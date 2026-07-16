@@ -274,12 +274,21 @@ def pr_submit_review(task):
         structured = structured or {}
         verdict = str(structured.get("verdict") or "comment").lower()
         event = "REQUEST_CHANGES" if verdict == "request_changes" else "COMMENT"
+        # New optional self-review-fix inputs (empty strings normalise to None).
+        reviewer = i.get("reviewer") or None
+        repo_path = i.get("repoPath") or None
+        write_local = _bool(i.get("writeLocalFile"), True)
+        default_output = getattr(github, "DEFAULT_REVIEW_OUTPUT_PATH", ".conductor/review-output.md")
+        local_output_path = (i.get("localOutputPath") or default_output) if write_local else None
         out = github.submit_review(
             repo_ref, _int(i["number"]),
             summary=structured.get("summary") or "Automated review.",
-            event=event, comments=structured.get("comments") or [])
-        return ok(task, out, [f"[pr_submit_review] #{i.get('number')} event={out['event']} "
-                              f"inline={out['inlineCount']} (posted inline={out['inline']})"])
+            event=event, comments=structured.get("comments") or [],
+            reviewer=reviewer, repo_path=repo_path, local_output_path=local_output_path)
+        return ok(task, out, [f"[pr_submit_review] #{i.get('number')} mode={out.get('mode', 'review')} "
+                              f"event={out.get('event', event)} self={out.get('selfReview', False)} "
+                              f"inline={out.get('inlineCount', 0)} (posted inline={out.get('inline', False)}) "
+                              f"file={out.get('localOutputPath', '')}"])
     except Exception as e:  # noqa: BLE001
         return fail(task, "pr_submit_review", e)
 
