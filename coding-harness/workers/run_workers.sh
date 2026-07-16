@@ -4,9 +4,10 @@
 #
 #   CONDUCTOR_SERVER_URL=http://localhost:8080/api ./run_workers.sh
 #
-# Split workers across hosts by setting WORKER_MODULES (comma-separated), e.g.
-#   WORKER_MODULES=claude_code,code_review,test,ui_test ./run_workers.sh   # heavy
-#   WORKER_MODULES=gitops,pipeline ./run_workers.sh                        # light
+# Split workers across hosts by setting WORKER_MODULES (comma-separated;
+# default coding_agent,gitops), e.g.
+#   WORKER_MODULES=coding_agent ./run_workers.sh   # heavy: LLM coding sessions
+#   WORKER_MODULES=gitops ./run_workers.sh         # light: git + GitHub tasks
 set -u
 cd "$(dirname "$0")"
 export CONDUCTOR_SERVER_URL="${CONDUCTOR_SERVER_URL:-http://localhost:8080/api}"

@@ -33,7 +33,6 @@ worktree write-boundary guard, cost/turn circuit breakers, and result reporting.
 | Creating/removing the worktree | `gitops` / `git.worktree_add` |
 | Committing, pushing, merging | `gitops` |
 | Running the project's test suite as a gate | `test` / `run_checks` |
-| File-scope + secret-scan policy enforcement | `claude_code` worker (see §9) |
 
 The agent runs *inside* the worktree; the harness stages the worktree before and
 commits/tests after.
@@ -421,21 +420,14 @@ one-`Write` result — run it with `.venv/bin/python -m coding_agent.smoke_test`
 
 ---
 
-## 9. Relationship to the `claude_code` worker
+## 9. Security posture summary
 
-Both drive the Claude Agent SDK; they differ in posture and scope enforcement:
-
-| | `coding_agent` (this worker) | `claude_code` (existing) |
-|---|---|---|
-| Permission mode | `dontAsk` (deny-by-default) | `acceptEdits` (auto-approve edits) |
-| Tool surface | fixed allowlist + guard hook | broad; web disabled |
-| Scope enforcement | worktree boundary via `PreToolUse` hook (blocks *before* write) | declared-file + secret **policy check after** the run, reverting out-of-scope files |
-| System prompt | `claude_code` preset + worker append | default |
-| Modes | one: agentic edit | three: `edit` / `generate` / `structured` |
-| Best for | untrusted/unattended runs where you want writes blocked at the source | the harness's existing coding groups with post-hoc policy scoring |
-
-`coding_agent` is the "secure by construction" variant; `claude_code` is the
-"broad + audited after" variant. They can coexist — pick per workflow.
+`coding_agent` is "secure by construction": it drives the Claude Agent SDK with the
+`dontAsk` permission mode (deny-by-default), a fixed tool allowlist plus a guard hook,
+and web access disabled. Scope is enforced at the worktree boundary by a `PreToolUse`
+hook that blocks an out-of-scope write *before* it happens, rather than reverting it
+after the fact. The allowlist/denylist and the hook live in `common/coding_agent.py`
+and `common/tool_policy.py` (see §10), not in task inputs.
 
 ---
 
@@ -583,8 +575,7 @@ progress (§ Progress reporting) is visible per branch, and so is the planner's 
   from the fork no longer races `.git/index.lock`.
 - **Sub-tasks must be independent** (disjoint files). Overlaps surface in
   `merge.output.conflicts` (agent-resolved where possible). This is the **flat-parallel MVP** —
-  no dependency ordering; for layered/dependency-aware waves see `cc_program.json` /
-  `cc_feature.json`, which run multiple sequential fork/join rounds.
+  no dependency ordering; sub-tasks run in a single parallel fork/join round.
 - **Reshape uses `JSON_JQ_TRANSFORM`, not INLINE** — building keyed maps / SUB_WORKFLOW stubs
   is what JQ is for; INLINE/graaljs mis-serializes structured output.
 
@@ -626,9 +617,9 @@ plumbing.
 | `designMaxIterations` | `5` | Maximum author/review passes; configurable higher. |
 
 Notes:
-- Uses **`coding_agent`**, not `claude_code` — so design is backend-selectable and an all-Codex
-  run (`designAgent`/`codeAgent`: `codex`) authors design on Codex too. `code_parallel` no longer
-  needs the `claude_code` module; `WORKER_MODULES=coding_agent,gitops` suffices for every path.
+- Uses **`coding_agent`** (backend-selectable) — so an all-Codex run
+  (`designAgent`/`codeAgent`: `codex`) authors design on Codex too. Every path is covered
+  by `WORKER_MODULES=coding_agent,gitops`.
 - Single-session authorship within each pass plus feedback-driven revision is the consistency
   mechanism (vs. generating docs in isolation, which can diverge on names/types).
 - Verified end-to-end: one Claude session wrote 5 consistent docs (architecture + api / data-model

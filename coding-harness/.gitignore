@@ -1,18 +1,21 @@
+# macOS
 .DS_Store
-node_modules/
-spike/.work/
-**/.cc-tmp-*/
-.conductor-code/
-.cc-worktrees/
-openspec/
+
+# IDEs
 /.idea
-.DS_Store
-.DS_Store
-/workers/common/__pycache__
-/workers/selfimprove
-/workers/test/__pycache__
-/workers/tests/__pycache__
-__pycache__
-examples/app-cache/
-uv.lock
+
+# Python
+__pycache__/
+.pytest_cache/
+.venv/
 .venv-ci/
+
+# Node dependencies (in target repos the harness builds)
+node_modules/
+
+# Local env / secrets
+.env
+
+# Harness runtime state (git worktrees + session/output dirs)
+.cc-worktrees/
+.conductor-code/
