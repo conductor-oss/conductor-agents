@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import common.github as github
 from common.exec import RunError, RunResult
+from common.github import pr_comments, pr_diff, submit_review
 from gitops.tasks import pr_create, pr_submit_review
 
 
@@ -162,3 +164,94 @@ def test_pr_submit_review_falls_back_to_summary_only(fake_task_input, monkeypatc
     assert rec.calls[0]["payload"]["comments"]
     assert "comments" not in rec.calls[1]["payload"]
     assert "a.py:9999" in rec.calls[1]["payload"]["body"]
+
+
+# --- PR_DIFF_CAP override ----------------------------------------------------
+
+class QueuedRun:
+    """Returns queued RunResults in call order, ignoring argv (for helpers that
+    make more than one ``gh`` call)."""
+
+    def __init__(self, *results):
+        self.calls: list[list[str]] = []
+        self._results = list(results)
+
+    def __call__(self, cmd, cwd=None, check=True, timeout=600.0):
+        self.calls.append(list(cmd))
+        return self._results.pop(0) if self._results else RunResult("", "", 0)
+
+
+def test_pr_diff_cap_env_override_changes_truncation(monkeypatch):
+    """``PR_DIFF_CAP`` shrinks the truncation threshold pr_diff applies."""
+    monkeypatch.setattr("common.github.ensure_git_auth", lambda: True)
+    long_diff = "x" * 500
+    rec = QueuedRun(
+        RunResult(json.dumps({"baseRefName": "main", "files": [{"path": "a.py"}]}), "", 0),
+        RunResult(long_diff, "", 0),
+    )
+    monkeypatch.setattr("common.github.run", rec)
+
+    monkeypatch.setenv("PR_DIFF_CAP", "50")
+    out = pr_diff("o/n", 1)
+    assert out["truncated"] is True
+    # Capped body = first 50 chars + the truncation marker.
+    assert out["diff"] == long_diff[:50] + "\n…[diff truncated]"
+
+
+def test_pr_diff_cap_env_invalid_falls_back_to_default(monkeypatch):
+    """Non-numeric / non-positive PR_DIFF_CAP falls back to the 200000 default."""
+    monkeypatch.setenv("PR_DIFF_CAP", "not-a-number")
+    assert github._diff_cap() == 200_000
+    monkeypatch.setenv("PR_DIFF_CAP", "0")
+    assert github._diff_cap() == 200_000
+    monkeypatch.setenv("PR_DIFF_CAP", "-5")
+    assert github._diff_cap() == 200_000
+    monkeypatch.delenv("PR_DIFF_CAP", raising=False)
+    assert github._diff_cap() == 200_000
+    monkeypatch.setenv("PR_DIFF_CAP", "123")
+    assert github._diff_cap() == 123
+
+
+# --- null / None hardening ---------------------------------------------------
+
+def test_pr_comments_null_author_does_not_raise(monkeypatch):
+    """A comment/review with an explicit JSON null ``author`` must not raise in the
+    _keep/author-extraction path — the login falls back to '?'."""
+    monkeypatch.setattr("common.github.ensure_git_auth", lambda: True)
+    meta = {
+        "number": 7, "title": "T", "headRefName": "h", "baseRefName": "main", "url": "u",
+        "headRepositoryOwner": None, "headRepository": None,
+        "comments": [{"author": None, "body": "please fix"}],
+        "reviews": [{"author": None, "state": "COMMENT", "body": "reviewed"}],
+    }
+    inline = [{"user": None, "path": "a.py", "line": 3, "body": "inline note"}]
+    rec = QueuedRun(
+        RunResult(json.dumps(meta), "", 0),        # gh pr view --json
+        RunResult(json.dumps(inline), "", 0),      # gh api .../comments
+    )
+    monkeypatch.setattr("common.github.run", rec)
+
+    out = pr_comments("o/n", 7)
+    assert out["commentCount"] == 3
+    assert out["hasFeedback"] is True
+    assert "@?" in out["feedback"]           # null author rendered as the '?' fallback
+    assert out["headRepoUrl"] == ""          # null head repo → empty, not a crash
+
+
+def test_submit_review_skips_uncoercible_line(fake_task_input, monkeypatch):
+    """A non-integer/None inline ``line`` is skipped rather than sinking the review."""
+    monkeypatch.setattr("common.github.ensure_git_auth", lambda: True)
+    rec = QueuedRun(RunResult('{"html_url": "u"}', "", 0))
+    monkeypatch.setattr("common.github.run", rec)
+
+    out = submit_review(
+        "o/n", 1, summary="S", event="COMMENT",
+        comments=[
+            {"path": "a.py", "line": "not-int", "body": "bad"},
+            {"path": "b.py", "line": None, "body": "also bad"},
+            {"path": "c.py", "line": 12, "body": "good"},
+        ],
+    )
+    # Only the coercible comment survives; the review still lands.
+    assert out["inlineCount"] == 1
+    assert out["inline"] is True
