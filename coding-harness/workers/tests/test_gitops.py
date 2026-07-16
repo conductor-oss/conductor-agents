@@ -8,6 +8,7 @@ dependency — the Claude Agent SDK conflict-resolver invoked by ``merge_worktre
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 from common import git
@@ -165,3 +166,66 @@ def test_merge_worktrees_aborts_when_resolution_fails(
     assert out["resolved"] == []
     # ...and the merge was aborted, so the working tree is NOT left broken.
     assert git.has_conflicts(repo) == []
+
+
+# --- env-configurable git values --------------------------------------------
+
+def test_worktree_add_copies_default_paths(fake_task_input, tmp_git_repo):
+    """With no override, the default test/ dir + package.json are copied into the
+    fresh worktree (they live only in the main repo, not on the group branch)."""
+    repo = str(tmp_git_repo)
+    (tmp_git_repo / "test").mkdir()
+    (tmp_git_repo / "test" / "spec.txt").write_text("t\n")
+    (tmp_git_repo / "package.json").write_text("{}\n")
+
+    result = worktree_add(fake_task_input(repoPath=repo, name="wd"))
+    assert _completed(result)
+    wt = Path(result.output_data["worktreePath"])
+    assert (wt / "test" / "spec.txt").exists()
+    assert (wt / "package.json").exists()
+
+
+def test_worktree_copy_paths_env_override(fake_task_input, tmp_git_repo, monkeypatch):
+    """WORKTREE_COPY_PATHS changes which paths are copied: reloading common.git
+    picks up the env override, and only the listed paths land in the worktree."""
+    monkeypatch.setenv("WORKTREE_COPY_PATHS", "extra.txt, , nested")
+    importlib.reload(git)
+    try:
+        assert git.WORKTREE_COPY_PATHS == ["extra.txt", "nested"]  # blanks dropped
+        (tmp_git_repo / "extra.txt").write_text("e\n")
+        (tmp_git_repo / "nested").mkdir()
+        (tmp_git_repo / "nested" / "f.txt").write_text("n\n")
+        # A default path that is NOT in the override must not be copied.
+        (tmp_git_repo / "package.json").write_text("{}\n")
+
+        result = worktree_add(fake_task_input(repoPath=str(tmp_git_repo), name="ov"))
+        assert _completed(result)
+        wt = Path(result.output_data["worktreePath"])
+        assert (wt / "extra.txt").exists()
+        assert (wt / "nested" / "f.txt").exists()
+        assert not (wt / "package.json").exists()
+    finally:
+        monkeypatch.delenv("WORKTREE_COPY_PATHS", raising=False)
+        importlib.reload(git)
+
+
+def test_git_identity_defaults_from_env(monkeypatch):
+    """GIT_IDENTITY_NAME/GIT_IDENTITY_EMAIL feed the module-level identity defaults
+    (reload picks up the env), while the built-in defaults are otherwise preserved."""
+    # Baseline defaults with no env set.
+    monkeypatch.delenv("GIT_IDENTITY_NAME", raising=False)
+    monkeypatch.delenv("GIT_IDENTITY_EMAIL", raising=False)
+    importlib.reload(git)
+    try:
+        assert git.GIT_IDENTITY_NAME == "conductor-code"
+        assert git.GIT_IDENTITY_EMAIL == "harness@conductor.local"
+
+        monkeypatch.setenv("GIT_IDENTITY_NAME", "ci-bot")
+        monkeypatch.setenv("GIT_IDENTITY_EMAIL", "ci@example.com")
+        importlib.reload(git)
+        assert git.GIT_IDENTITY_NAME == "ci-bot"
+        assert git.GIT_IDENTITY_EMAIL == "ci@example.com"
+    finally:
+        monkeypatch.delenv("GIT_IDENTITY_NAME", raising=False)
+        monkeypatch.delenv("GIT_IDENTITY_EMAIL", raising=False)
+        importlib.reload(git)
