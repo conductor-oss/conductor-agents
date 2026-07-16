@@ -41,13 +41,38 @@ from .cost import usage_tokens
 
 log = logging.getLogger("coding_agent")
 
+
+def _env_int(name: str, default: int) -> int:
+    """Read a positive integer tuning knob from the environment, once, at import.
+
+    Falls back to ``default`` when the var is unset, non-numeric, or <= 0 — so a
+    typo'd or hostile env value can never disable a bound (e.g. a 0-length ring
+    buffer or an unbounded file tree)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return val if val > 0 else default
+
+
+# Tuning knobs, read once at import (behavior-preserving defaults). Operators can
+# override these via the worker task env without touching code.
+_FILE_TREE_MAX_FILES = _env_int("CODING_AGENT_FILE_TREE_MAX_FILES", 400)
+_FILE_TREE_MAX_CHARS = _env_int("CODING_AGENT_FILE_TREE_MAX_CHARS", 8000)
+_STDERR_LINES = _env_int("CODING_AGENT_STDERR_LINES", 200)
+_STDERR_TAIL = _env_int("CODING_AGENT_STDERR_TAIL", 4000)
+
 # Directories never worth listing in the file-tree prime (noise + huge).
 _TREE_SKIP_DIRS = {".git", ".cc-worktrees", "node_modules", ".venv", "venv",
                    "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
                    "dist", "build", "target", ".idea", ".vscode", ".next", ".gradle"}
 
 
-def _file_tree(root: str, *, max_files: int = 400, max_chars: int = 8000) -> str:
+def _file_tree(root: str, *, max_files: int = _FILE_TREE_MAX_FILES,
+               max_chars: int = _FILE_TREE_MAX_CHARS) -> str:
     """Cheap, bounded listing of the working directory to prime the agent so it
     doesn't spend its first turn on `ls -R` / `Glob **/*`. Prefers `git ls-files`
     (respects .gitignore, includes untracked-but-not-ignored); falls back to a
@@ -433,7 +458,7 @@ async def run_coding_agent(
 
     # Bounded stderr capture — a ring buffer so a chatty subprocess can't grow
     # memory without bound; only the tail is ever useful for diagnosis.
-    stderr_lines: collections.deque[str] = collections.deque(maxlen=200)
+    stderr_lines: collections.deque[str] = collections.deque(maxlen=_STDERR_LINES)
 
     opts: dict[str, Any] = {
         "cwd": worktree_abs,
@@ -482,7 +507,7 @@ async def run_coding_agent(
 
     def _attach(d: dict[str, Any]) -> dict[str, Any]:
         # Tail of subprocess stderr, capped, for diagnosing opaque failures.
-        d["stderr"] = "".join(stderr_lines)[-4000:]
+        d["stderr"] = "".join(stderr_lines)[-_STDERR_TAIL:]
         d.setdefault("model", model or "")
         return d
 

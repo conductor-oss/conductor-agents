@@ -68,13 +68,23 @@ body { color: var(--c-text); -webkit-font-smoothing: antialiased; background: va
 .md-grid { max-width: 61rem; }
 
 /* ---------- Header ---------- */
+/* Blur lives on a ::before layer, not .md-header itself: backdrop-filter on an
+   element makes it a containing block for position:fixed descendants, which
+   breaks the mobile/tablet full-screen search overlay (.md-search__inner). */
 .md-header {
-  background: var(--c-header-bg) !important;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: transparent !important;
   color: var(--c-text) !important;
   border-bottom: 1px solid var(--c-border);
   box-shadow: none !important;
+}
+.md-header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--c-header-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  z-index: -1;
 }
 .md-header__title { font-size: 16px; font-weight: 600; color: var(--c-text) !important; }
 

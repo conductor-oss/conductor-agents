@@ -2,7 +2,28 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 from typing import Any
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read a float from env; non-numeric/missing values fall back to default."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logging.warning("cost: ignoring non-numeric %s=%r; using default %s", name, raw, default)
+        return default
+
+
+# Default fallback rate (USD per 1M tokens) — sonnet pricing by default.
+# Configurable via env so operators can tune the fallback for unknown models.
+_DEFAULT_INPUT_RATE = _env_float("LLM_DEFAULT_INPUT_RATE", 3.0)
+_DEFAULT_OUTPUT_RATE = _env_float("LLM_DEFAULT_OUTPUT_RATE", 15.0)
 
 # USD per 1M tokens (input/output) — P3.3. Source: Anthropic pricing Jun 2025.
 # Key: model id substring → (input_per_1M, output_per_1M)
@@ -28,14 +49,38 @@ PRICING: dict[str, tuple[float, float]] = {
 }
 
 
+def _load_pricing_overrides() -> None:
+    """Merge LLM_PRICING_JSON overrides onto PRICING (env entries win).
+
+    Expects a JSON object of {"model-substring": [input_per_1M, output_per_1M]}.
+    Malformed JSON or entries are ignored (with a warning) and the built-in
+    table is kept. Existing keys are overridden in place (preserving their
+    position in the substring walk); new keys are appended after built-ins.
+    """
+    raw = os.environ.get("LLM_PRICING_JSON")
+    if not raw:
+        return
+    try:
+        overrides = json.loads(raw)
+        if not isinstance(overrides, dict):
+            raise ValueError("LLM_PRICING_JSON must be a JSON object")
+        for key, rates in overrides.items():
+            PRICING[str(key)] = (float(rates[0]), float(rates[1]))
+    except (ValueError, TypeError, IndexError, KeyError) as exc:
+        logging.warning("cost: ignoring malformed LLM_PRICING_JSON: %s", exc)
+
+
+_load_pricing_overrides()
+
+
 def _price_rates(model: str | None) -> tuple[float, float]:
     if not model:
-        return (3.0, 15.0)  # default to sonnet pricing
+        return (_DEFAULT_INPUT_RATE, _DEFAULT_OUTPUT_RATE)  # default to sonnet pricing
     ml = (model or "").lower()
     for key, rates in PRICING.items():
         if key in ml:
             return rates
-    return (3.0, 15.0)
+    return (_DEFAULT_INPUT_RATE, _DEFAULT_OUTPUT_RATE)
 
 
 def price_usage(usage: dict[str, Any] | None, model: str | None = None) -> float:

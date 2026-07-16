@@ -14,7 +14,11 @@ import json as _json
 from conductor.client.worker.worker_task import worker_task
 
 from common import git, github
+from common.git import GIT_IDENTITY_EMAIL, GIT_IDENTITY_NAME
 from common.results import fail, ok
+
+# Budget fall-back for merge_worktrees' conflict-resolver — env-configurable.
+_MERGE_BUDGET_USD = git._env_float("GITOPS_MERGE_BUDGET_USD", 50.0)
 
 
 def _int(val, default=None):
@@ -41,8 +45,8 @@ def prepare_repo(task):
     try:
         out = git.ensure_ready(
             i["repoPath"],
-            name=i.get("identityName") or "conductor-code",
-            email=i.get("identityEmail") or "harness@conductor.local",
+            name=i.get("identityName") or GIT_IDENTITY_NAME,
+            email=i.get("identityEmail") or GIT_IDENTITY_EMAIL,
         )
         return ok(task, out, [f"[prepare_repo] init={out['initialized']} "
                               f"initialCommit={out['initialCommitCreated']} branch={out['branch']}"])
@@ -116,7 +120,7 @@ def merge_worktrees(task):
                     "(<<<<<<<, =======, >>>>>>>). Edit only the conflicted files."
                 )
                 res = run_agent(prompt, cwd=repo, model=model, write=True,
-                                max_budget_usd=float(i.get("maxBudgetUsd") or 50.0))
+                                max_budget_usd=float(i.get("maxBudgetUsd") or _MERGE_BUDGET_USD))
                 total_tokens += res["tokens"]
                 total_cost += res["cost_usd"]
                 if res["ok"]:
@@ -270,12 +274,21 @@ def pr_submit_review(task):
         structured = structured or {}
         verdict = str(structured.get("verdict") or "comment").lower()
         event = "REQUEST_CHANGES" if verdict == "request_changes" else "COMMENT"
+        # New optional self-review-fix inputs (empty strings normalise to None).
+        reviewer = i.get("reviewer") or None
+        repo_path = i.get("repoPath") or None
+        write_local = _bool(i.get("writeLocalFile"), True)
+        default_output = getattr(github, "DEFAULT_REVIEW_OUTPUT_PATH", ".conductor/review-output.md")
+        local_output_path = (i.get("localOutputPath") or default_output) if write_local else None
         out = github.submit_review(
             repo_ref, _int(i["number"]),
             summary=structured.get("summary") or "Automated review.",
-            event=event, comments=structured.get("comments") or [])
-        return ok(task, out, [f"[pr_submit_review] #{i.get('number')} event={out['event']} "
-                              f"inline={out['inlineCount']} (posted inline={out['inline']})"])
+            event=event, comments=structured.get("comments") or [],
+            reviewer=reviewer, repo_path=repo_path, local_output_path=local_output_path)
+        return ok(task, out, [f"[pr_submit_review] #{i.get('number')} mode={out.get('mode', 'review')} "
+                              f"event={out.get('event', event)} self={out.get('selfReview', False)} "
+                              f"inline={out.get('inlineCount', 0)} (posted inline={out.get('inline', False)}) "
+                              f"file={out.get('localOutputPath', '')}"])
     except Exception as e:  # noqa: BLE001
         return fail(task, "pr_submit_review", e)
 
