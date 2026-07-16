@@ -42,3 +42,7 @@
 /site
 /security-harness/blog
 node_modules/
+
+# Harness runtime state (git worktrees + session/output dirs)
+.cc-worktrees/
+.conductor-code/
