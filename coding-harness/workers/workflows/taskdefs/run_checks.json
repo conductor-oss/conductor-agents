@@ -1,0 +1,11 @@
+{
+  "name": "run_checks",
+  "description": "Run a repo's test/build command in a working dir and report pass/fail (exit code + capped stdout/stderr). Fail-soft: a failing check is COMPLETED with passed=false, not FAILED. Input: repoPath, cmd?, label?.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 86400,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}
