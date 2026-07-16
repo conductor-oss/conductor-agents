@@ -368,6 +368,40 @@ def test_run_checks_only_in_code_workflows():
         assert "run_checks" not in names
 
 
+# --- 8. pr_review self-review-fix wiring (see docs/design/pr-review-422) ------
+
+def test_pr_review_self_review_fix_wiring():
+    """The self-review-fix options are wired into pr_review.json: the new
+    workflow inputs + defaults, the submit-task passthrough, and the new
+    output params. Mirrors docs/design/pr-review-422/data-model.md."""
+    wf = _load(WORKFLOWS_DIR / "pr_review.json")
+
+    # New workflow inputs are declared and defaulted.
+    assert "writeReviewFile" in wf["inputParameters"]
+    assert "reviewOutputPath" in wf["inputParameters"]
+    assert wf["inputTemplate"]["writeReviewFile"] is True
+    assert wf["inputTemplate"]["reviewOutputPath"] == ".conductor/review-output.md"
+
+    # The submit task forwards the local-file options + repo path.
+    by_ref = {
+        t["taskReferenceName"]: t
+        for t in _collect_tasks(wf)
+        if "taskReferenceName" in t
+    }
+    submit = by_ref["submit"]
+    assert submit["name"] == "pr_submit_review"
+    params = submit["inputParameters"]
+    assert params["repoPath"] == "${clone.output.repoPath}"
+    assert params["writeLocalFile"] == "${workflow.input.writeReviewFile}"
+    assert params["localOutputPath"] == "${workflow.input.reviewOutputPath}"
+
+    # New output params surface the mode / self-review / local file path.
+    out = wf["outputParameters"]
+    assert out["mode"] == "${submit.output.mode}"
+    assert out["selfReview"] == "${submit.output.selfReview}"
+    assert out["localOutputPath"] == "${submit.output.localOutputPath}"
+
+
 # --- 7. run_checks gate wiring (see docs/design/testing.md §2) ---------------
 
 def test_code_subtask_gates_commit_behind_run_checks():
