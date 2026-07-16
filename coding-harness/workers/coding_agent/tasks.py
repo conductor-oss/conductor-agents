@@ -62,6 +62,26 @@ from common.tool_policy import denied_without_changes
 # input overrides this.
 _ENV_SETTING_SOURCES = os.environ.get("CODING_AGENT_SETTING_SOURCES")
 
+
+def _env_num(name, default, cast):
+    """Read a numeric operator knob from the env, falling back to ``default`` on
+    unset/blank/non-numeric values (cast is int or float). Fleet-wide overrides for
+    the per-task runtime caps below; the per-task input always wins over these."""
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return cast(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+# Fleet-wide runtime defaults (doc §10). Each is the fallback when the per-task
+# input omits the value; a per-task maxTurns/maxBudgetUsd still overrides these.
+CODING_AGENT_MAX_TURNS = _env_num("CODING_AGENT_MAX_TURNS", 50, int)
+CODING_AGENT_MAX_BUDGET_USD = _env_num("CODING_AGENT_MAX_BUDGET_USD", 50.0, float)
+CODING_AGENT_HEARTBEAT_S = _env_num("CODING_AGENT_HEARTBEAT_S", 30.0, float)
+
 # Shared-volume session store for cross-host resume (doc §10 item 6). Constructed
 # once from CODING_AGENT_SESSION_STORE_DIR; None (and host-local sessions) if unset.
 _SESSION_STORE = store_from_env()
@@ -133,7 +153,7 @@ async def coding_agent():
         before = await asyncio.to_thread(git.status_files, wt)
         # Push interim IN_PROGRESS updates: after every turn (on_turn) and at least
         # every 30s regardless; all HTTP pushes happen on the reporter's own thread.
-        reporter = ProgressReporter(task, heartbeat_s=30.0).start()
+        reporter = ProgressReporter(task, heartbeat_s=CODING_AGENT_HEARTBEAT_S).start()
         try:
             res = await run_coding_agent(
                 prompt,
@@ -141,8 +161,8 @@ async def coding_agent():
                 model=i.get("model") or None,
                 fallback_model=i.get("fallbackModel") or None,
                 effort=i.get("effort") or None,
-                max_turns=int(i.get("maxTurns") or 50),
-                max_budget_usd=(float(i["maxBudgetUsd"]) if i.get("maxBudgetUsd") is not None else 50.0),
+                max_turns=int(i.get("maxTurns") or CODING_AGENT_MAX_TURNS),
+                max_budget_usd=(float(i["maxBudgetUsd"]) if i.get("maxBudgetUsd") is not None else CODING_AGENT_MAX_BUDGET_USD),
                 resume_session_id=i.get("resumeSessionId") or None,
                 output_schema=_parse_schema(i.get("schema")),
                 allowed_domains=domains or None,
@@ -179,11 +199,11 @@ async def coding_agent():
 
         backend = _infer_backend(i.get("agent"), i.get("model"))
         logs = [
-            f"[coding_agent] backend={backend} model={res.get('model') or '(default)'} status={res['status']} "
+            f"[coding_agent] backend={backend} model={res.get('model') or '(default)'} status={res.get('status', '')} "
             f"{'resumed ' + str(i.get('resumeSessionId'))[:8] if i.get('resumeSessionId') else 'cold-start'} "
             f"session={str(res.get('session_id'))[:8]}",
-            f"[coding_agent] changed={len(changed)} {changed} turns={res['num_turns']} "
-            f"tokens={res['tokens']} cost=${res['cost_usd']:.4f}",
+            f"[coding_agent] changed={len(changed)} {changed} turns={res.get('num_turns', 0)} "
+            f"tokens={res.get('tokens', 0)} cost=${res.get('cost_usd', 0.0):.4f}",
         ]
         for entry in res.get("turn_log") or []:
             logs.append(f"[coding_agent] {entry}")
@@ -191,7 +211,7 @@ async def coding_agent():
             logs.append(f"[coding_agent] DENIED {cap(d, 200)}")
 
         out = {
-            "status": res["status"],
+            "status": res.get("status", ""),
             "agent": backend,
             "model": res.get("model") or "",
             "filesChanged": changed,
@@ -218,8 +238,8 @@ async def coding_agent():
             out["retryable"] = False
             return fail(task, "coding_agent", err, logs, output=out)
 
-        if not res["ok"]:
-            err = res.get("error") or f"agent ended with status={res['status']}"
+        if not res.get("ok"):
+            err = res.get("error") or f"agent ended with status={res.get('status', '')}"
             # The agent's final text often carries the real reason the SDK's generic
             # stream error hides — e.g. an invalid/inaccessible model or an auth error.
             detail = (res.get("result") or "").strip()
@@ -230,7 +250,7 @@ async def coding_agent():
                 logs.append(f"[coding_agent] stderr tail: {cap(res['stderr'], 2000)}")
             # error_max_turns / error_max_budget_usd are retryable via resume — surface
             # the session id and let the workflow decide, rather than hard-failing.
-            out["retryable"] = res["status"] in ("error_max_turns", "error_max_budget_usd")
+            out["retryable"] = res.get("status") in ("error_max_turns", "error_max_budget_usd")
             out["stderr"] = cap(res.get("stderr"), 2000)
             return fail(task, "coding_agent", err, logs, output=out)
 
