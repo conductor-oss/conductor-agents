@@ -12,11 +12,16 @@ import importlib
 from pathlib import Path
 
 from common import git
-from gitops.tasks import create_branch, merge_worktrees, worktree_add
+from gitops.tasks import create_branch, merge_worktrees, pr_submit_review, worktree_add
 
 
 def _completed(result) -> bool:
     return result.status.value == "COMPLETED"
+
+
+def _log_text(result) -> str:
+    """Join a TaskResult's log lines (TaskExecLog objects carry the message on .log)."""
+    return " ".join(getattr(entry, "log", str(entry)) for entry in (result.logs or []))
 
 
 def _commit_file(repo: str, rel: str, content: str, message: str) -> None:
@@ -166,6 +171,81 @@ def test_merge_worktrees_aborts_when_resolution_fails(
     assert out["resolved"] == []
     # ...and the merge was aborted, so the working tree is NOT left broken.
     assert git.has_conflicts(repo) == []
+
+
+# --- pr_submit_review: new self-review-fix input passthrough -----------------
+
+def _fake_submit_review(recorded):
+    """A github.submit_review stand-in that records kwargs and returns a full
+    (superset) result dict echoing the local_output_path it was handed."""
+    def _submit(repo_ref, number, **kw):
+        recorded.update(kw)
+        recorded["repo_ref"] = repo_ref
+        recorded["number"] = number
+        return {
+            "reviewed": True,
+            "mode": "comments",
+            "selfReview": True,
+            "event": kw.get("event", "COMMENT"),
+            "inlineCount": 2,
+            "inline": True,
+            "url": "https://example.test/pr/7#comment",
+            "localOutputPath": kw.get("local_output_path") or "",
+        }
+    return _submit
+
+
+def test_pr_submit_review_forwards_new_inputs_write_true(
+    fake_task_input, monkeypatch
+):
+    recorded = {}
+    monkeypatch.setattr(
+        "gitops.tasks.github.submit_review", _fake_submit_review(recorded)
+    )
+    task = fake_task_input(
+        repo="acme/widgets", number="7",
+        structured={"summary": "s", "verdict": "request_changes", "comments": []},
+        reviewer="octocat", repoPath="/tmp/checkout",
+        writeLocalFile=True, localOutputPath=".conductor/out.md",
+    )
+    result = pr_submit_review(task)
+    assert _completed(result)
+    # reviewer / repo_path pass straight through...
+    assert recorded["reviewer"] == "octocat"
+    assert recorded["repo_path"] == "/tmp/checkout"
+    # ...and with writeLocalFile true the path is the provided localOutputPath.
+    assert recorded["local_output_path"] == ".conductor/out.md"
+    # verdict->event mapping preserved.
+    assert recorded["event"] == "REQUEST_CHANGES"
+    log = _log_text(result)
+    assert "mode=" in log
+    assert "file=" in log
+    assert ".conductor/out.md" in log
+
+
+def test_pr_submit_review_local_path_none_when_write_disabled(
+    fake_task_input, monkeypatch
+):
+    recorded = {}
+    monkeypatch.setattr(
+        "gitops.tasks.github.submit_review", _fake_submit_review(recorded)
+    )
+    task = fake_task_input(
+        repo="acme/widgets", number="9",
+        structured={"summary": "s", "verdict": "comment"},
+        reviewer="", repoPath="",
+        writeLocalFile=False, localOutputPath=".conductor/out.md",
+    )
+    result = pr_submit_review(task)
+    assert _completed(result)
+    # Empty-string reviewer/repoPath normalise to None.
+    assert recorded["reviewer"] is None
+    assert recorded["repo_path"] is None
+    # writeLocalFile false => no local file, regardless of localOutputPath.
+    assert recorded["local_output_path"] is None
+    log = _log_text(result)
+    assert "mode=" in log
+    assert "file=" in log
 
 
 # --- env-configurable git values --------------------------------------------
