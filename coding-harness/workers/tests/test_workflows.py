@@ -127,7 +127,7 @@ def _worker_task_names() -> set[str]:
     """``task_definition_name=`` values from the harness's ``@worker_task``s."""
     pat = re.compile(r'@worker_task\(\s*task_definition_name\s*=\s*"([^"]+)"')
     names: set[str] = set()
-    for mod in ("coding_agent/tasks.py", "gitops/tasks.py"):
+    for mod in ("coding_agent/tasks.py", "gitops/tasks.py", "checks/tasks.py"):
         names.update(pat.findall((WORKERS / mod).read_text()))
     return names
 
@@ -331,3 +331,71 @@ def test_design_docs_loop_wiring():
             assert not unknown, (
                 f"{t['taskReferenceName']} sets undeclared variables: {sorted(unknown)}"
             )
+
+
+# --- 7. run_checks gate wiring (CCOR-13227) ---------------------------------
+
+def test_code_subtask_gates_commit_behind_run_checks():
+    """commit runs only inside verify_gate's true case, downstream of run_checks."""
+    wf = _load(WORKFLOWS_DIR / "code_subtask.json")
+    by_ref = {t["taskReferenceName"]: t for t in _collect_tasks(wf) if "taskReferenceName" in t}
+    assert by_ref["check"]["name"] == "run_checks"
+    gate = by_ref["verify_gate"]
+    assert gate["type"] == "SWITCH"
+    true_case = {t["taskReferenceName"] for t in gate["decisionCases"]["true"]}
+    assert "cmt" in true_case                       # commit is gated
+    assert gate["decisionCases"]["true"][0]["name"] == "commit"
+    # commit must NOT also exist as a top-level (ungated) task.
+    top = {t["taskReferenceName"] for t in wf["tasks"]}
+    assert "cmt" not in top
+
+
+def test_code_parallel_verifies_after_merge_before_aggregate():
+    """run_checks runs after the merge and before the aggregate, and its result
+    is surfaced on the workflow output."""
+    wf = _load(WORKFLOWS_DIR / "code_parallel.json")
+    order = [t["taskReferenceName"] for t in wf["tasks"]]
+    assert order.index("merge") < order.index("verify") < order.index("aggregate")
+    verify = next(t for t in wf["tasks"] if t["taskReferenceName"] == "verify")
+    assert verify["name"] == "run_checks"
+    assert wf["outputParameters"]["verified"] == "null"
+
+
+def test_run_checks_only_in_code_workflows():
+    """run_checks must not leak into the unrelated workflows."""
+    for name in ("design_docs", "pr_review", "address_pr", "issue_to_pr", "github_demo"):
+        names = {o.get("name") for o in _iter_objects(_load(WORKFLOWS_DIR / f"{name}.json"))}
+        assert "run_checks" not in names
+
+
+# --- 7. run_checks gate wiring (see docs/design/testing.md §2) ---------------
+
+def test_code_subtask_gates_commit_behind_run_checks():
+    """commit runs only inside verify_gate's true case, downstream of run_checks."""
+    wf = _load(WORKFLOWS_DIR / "code_subtask.json")
+    by_ref = {t["taskReferenceName"]: t for t in _collect_tasks(wf) if "taskReferenceName" in t}
+    assert by_ref["check"]["name"] == "run_checks"
+    gate = by_ref["verify_gate"]
+    assert gate["type"] == "SWITCH"
+    true_case = {t["taskReferenceName"] for t in gate["decisionCases"]["true"]}
+    assert "cmt" in true_case                       # commit is gated
+    assert gate["decisionCases"]["true"][0]["name"] == "commit"
+    # commit must NOT also exist as a top-level (ungated) task.
+    top = {t["taskReferenceName"] for t in wf["tasks"]}
+    assert "cmt" not in top
+
+
+def test_code_parallel_verifies_after_merge_before_aggregate():
+    wf = _load(WORKFLOWS_DIR / "code_parallel.json")
+    order = [t["taskReferenceName"] for t in wf["tasks"]]
+    assert order.index("merge") < order.index("verify") < order.index("aggregate")
+    verify = next(t for t in wf["tasks"] if t["taskReferenceName"] == "verify")
+    assert verify["name"] == "run_checks"
+    assert wf["outputParameters"]["verified"] == "null"
+
+
+def test_run_checks_only_in_code_workflows():
+    """run_checks must not leak into the unrelated workflows."""
+    for name in ("design_docs", "pr_review", "address_pr", "issue_to_pr", "github_demo"):
+        names = {o.get("name") for o in _iter_objects(_load(WORKFLOWS_DIR / f"{name}.json"))}
+        assert "run_checks" not in names
