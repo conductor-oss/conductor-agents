@@ -3,14 +3,15 @@
 Imports every selected task package so the ``@worker_task`` decorators register
 their functions, then starts the Conductor poller. Which task modules load is
 controlled by the ``WORKER_MODULES`` env var (comma separated); the default
-(``coding_agent,gitops``) covers every workflow (code_parallel, issue_to_pr,
+(``coding_agent,gitops,checks``) covers every workflow (code_parallel, issue_to_pr,
 pr_review, address_pr, github_demo, and the design_docs / code_subtask sub-workflows).
 
     CONDUCTOR_SERVER_URL=http://localhost:8080/api python main.py
 
 ``coding_agent`` drives the Claude Agent SDK / OpenAI Codex / Google Gemini sessions
-(CPU/RAM-heavy); ``gitops`` holds the lightweight git + GitHub (gh) tasks. Split them
-across hosts with ``WORKER_MODULES`` per host if desired.
+(CPU/RAM-heavy); ``gitops`` holds the lightweight git + GitHub (gh) tasks; ``checks``
+holds the LLM-free ``run_checks`` verification-gate task. Split them across hosts with
+``WORKER_MODULES`` per host if desired.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import os
 from conductor.client.automator.task_handler import TaskHandler
 from conductor.client.configuration.configuration import Configuration
 
-DEFAULT_MODULES = "coding_agent,gitops"
+DEFAULT_MODULES = "coding_agent,gitops,checks"
 
 
 def main() -> None:
