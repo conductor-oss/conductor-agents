@@ -14,14 +14,16 @@
     "model",
     "agent",
     "maxTurns",
-    "maxBudgetUsd"
+    "maxBudgetUsd",
+    "testCmd"
   ],
   "inputTemplate": {
     "promptTemplate": "",
     "templateKey": "code",
     "promptContext": {},
     "maxTurns": 250,
-    "maxBudgetUsd": 50.0
+    "maxBudgetUsd": 50.0,
+    "testCmd": ""
   },
   "tasks": [
     {
@@ -50,13 +52,38 @@
       }
     },
     {
-      "name": "commit",
-      "taskReferenceName": "cmt",
+      "name": "run_checks",
+      "taskReferenceName": "check",
       "type": "SIMPLE",
       "inputParameters": {
         "repoPath": "${wt.output.worktreePath}",
-        "message": "code_subtask ${workflow.input.name}"
+        "cmd": "${workflow.input.testCmd}",
+        "label": "${workflow.input.name}"
       }
+    },
+    {
+      "name": "verify_gate",
+      "taskReferenceName": "verify_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "passed",
+      "inputParameters": {
+        "passed": "${check.output.passed}"
+      },
+      "decisionCases": {
+        "true": [
+          {
+            "name": "commit",
+            "taskReferenceName": "cmt",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "repoPath": "${wt.output.worktreePath}",
+              "message": "code_subtask ${workflow.input.name}"
+            }
+          }
+        ]
+      },
+      "defaultCase": []
     }
   ],
   "outputParameters": {
@@ -69,6 +96,10 @@
     "numTurns": "${code.output.numTurns}",
     "turns": "${code.output.turns}",
     "branch": "${wt.output.branch}",
-    "commit": "${cmt.output.commit}"
+    "commit": "${cmt.output.commit}",
+    "verified": "${check.output.passed}",
+    "checkRan": "${check.output.ran}",
+    "checkExitCode": "${check.output.exitCode}",
+    "checkCmd": "${check.output.cmd}"
   }
 }
