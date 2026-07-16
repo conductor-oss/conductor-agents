@@ -24,7 +24,8 @@
     "codePromptTemplate",
     "maxSubtasks",
     "maxTurns",
-    "maxBudgetUsd"
+    "maxBudgetUsd",
+    "verifyCmd"
   ],
   "inputTemplate": {
     "changeBranch": "code-parallel",
@@ -44,7 +45,8 @@
     "codePromptTemplate": "",
     "maxSubtasks": 6,
     "maxTurns": 500,
-    "maxBudgetUsd": 50.0
+    "maxBudgetUsd": 50.0,
+    "verifyCmd": ""
   },
   "tasks": [
     {
@@ -149,7 +151,7 @@
         "codePromptTemplate": "${workflow.input.codePromptTemplate}",
         "maxTurns": "${workflow.input.maxTurns}",
         "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-        "queryExpression": ".repoPath as $r | .codeModel as $m | .codeAgent as $ag | .codePromptTemplate as $ct | .maxTurns as $mt | .maxBudgetUsd as $mb | .result.subtasks as $subs | {dynamicTasks: [$subs[] | {name:\"code_subtask\", taskReferenceName:.id, type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"code_subtask\", version:1}}], dynamicTasksInput: (reduce $subs[] as $s ({}; . + ((($s.files // []) | join(\", \")) as $files | ($s.description + \"\\nTarget files: \" + $files + (if $s.testCmd then \"\\nYour check: \" + $s.testCmd else \"\" end)) as $desc | {($s.id): {repoPath:$r, name:$s.id, model:$m, agent:$ag, maxTurns:$mt, maxBudgetUsd:$mb, prompt:($desc + \"\\n\\nDesign docs (if present) are under docs/design/ in your working directory — read architecture.md first and conform to its shared types/names/file-layout, then the doc(s) for your slice, before implementing.\"), promptTemplate:$ct, templateKey:\"code\", promptContext:{subtask:$desc}}}))), groupIds: ([$subs[].id] | join(\",\"))}"
+        "queryExpression": ".repoPath as $r | .codeModel as $m | .codeAgent as $ag | .codePromptTemplate as $ct | .maxTurns as $mt | .maxBudgetUsd as $mb | .result.subtasks as $subs | {dynamicTasks: [$subs[] | {name:\"code_subtask\", taskReferenceName:.id, type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"code_subtask\", version:1}}], dynamicTasksInput: (reduce $subs[] as $s ({}; . + ((($s.files // []) | join(\", \")) as $files | ($s.description + \"\\nTarget files: \" + $files + (if $s.testCmd then \"\\nYour check: \" + $s.testCmd else \"\" end)) as $desc | {($s.id): {repoPath:$r, name:$s.id, model:$m, agent:$ag, maxTurns:$mt, maxBudgetUsd:$mb, prompt:($desc + \"\\n\\nDesign docs (if present) are under docs/design/ in your working directory — read architecture.md first and conform to its shared types/names/file-layout, then the doc(s) for your slice, before implementing.\"), promptTemplate:$ct, templateKey:\"code\", promptContext:{subtask:$desc}, testCmd:($s.testCmd // \"\")}}))), groupIds: ([$subs[].id] | join(\",\"))}"
       }
     },
     {
@@ -180,6 +182,16 @@
       }
     },
     {
+      "name": "run_checks",
+      "taskReferenceName": "verify",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "/Users/patrickropp/Code/conductor-oss/conductor-agents",
+        "cmd": "null",
+        "label": "integration"
+      }
+    },
+    {
       "name": "aggregate",
       "taskReferenceName": "aggregate",
       "type": "JSON_JQ_TRANSFORM",
@@ -192,7 +204,9 @@
         "designCost": "${design.output.costUsd}",
         "mergeTokens": "${merge.output.tokenUsed}",
         "mergeCost": "${merge.output.costUsd}",
-        "queryExpression": "def num: if type == \"number\" then . else 0 end; (.joined // {}) as $j | [$j | to_entries[] | (.value.output // .value // {}) | {status:(.status // \"unknown\"), filesChanged:(.filesChanged // []), costUsd:(.costUsd | num), tokenUsed:(.tokenUsed | num)}] as $g | (.planTokens | num) as $pt | (.planCost | num) as $pc | (.designTokens | num) as $dt | (.designCost | num) as $dc | (.mergeTokens | num) as $mt | (.mergeCost | num) as $mc | ([$g[].tokenUsed] | add | num) as $st | ([$g[].costUsd] | add | num) as $sc | {perSubtask:$g, subtaskCount:($g | length), tokens:{plan:$pt, design:$dt, subtasks:$st, merge:$mt}, cost:{plan:$pc, design:$dc, subtasks:$sc, merge:$mc}, totalTokens:($pt + $dt + $st + $mt), totalCostUsd:($pc + $dc + $sc + $mc)}"
+        "verifyPassed": "null",
+        "verifyRan": "null",
+        "queryExpression": "def num: if type == \"number\" then . else 0 end; (.joined // {}) as $j | [$j | to_entries[] | (.value.output // .value // {}) | {status:(.status // \"unknown\"), filesChanged:(.filesChanged // []), verified:(.verified // null), costUsd:(.costUsd | num), tokenUsed:(.tokenUsed | num)}] as $g | (.planTokens | num) as $pt | (.planCost | num) as $pc | (.designTokens | num) as $dt | (.designCost | num) as $dc | (.mergeTokens | num) as $mt | (.mergeCost | num) as $mc | ([$g[].tokenUsed] | add | num) as $st | ([$g[].costUsd] | add | num) as $sc | {perSubtask:$g, subtaskCount:($g | length), verified:.verifyPassed, verifiedRan:.verifyRan, tokens:{plan:$pt, design:$dt, subtasks:$st, merge:$mt}, cost:{plan:$pc, design:$dc, subtasks:$sc, merge:$mc}, totalTokens:($pt + $dt + $st + $mt), totalCostUsd:($pc + $dc + $sc + $mc)}"
       }
     }
   ],
@@ -203,6 +217,10 @@
     "merged": "${merge.output.merged}",
     "conflicts": "${merge.output.conflicts}",
     "mergeCostUsd": "${merge.output.costUsd}",
+    "verified": "null",
+    "verifiedRan": "null",
+    "verifyExitCode": "null",
+    "verifyCmd": "null",
     "totalTokens": "${aggregate.output.result.totalTokens}",
     "totalCostUsd": "${aggregate.output.result.totalCostUsd}",
     "summary": "${aggregate.output.result}"
