@@ -28,6 +28,15 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
+      # Installed for every harness so a harness can adopt uv without a CI change.
+      # Cache disabled: harnesses that don't invoke uv yet leave no cache dir to save,
+      # which fails the post-job cache-save step.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: false
+
       # Fail fast on malformed DAG / profile / benchmark JSON (the edits most likely to break a run).
       - name: Validate workflow & config JSON
         if: matrix.harness == 'security-harness'

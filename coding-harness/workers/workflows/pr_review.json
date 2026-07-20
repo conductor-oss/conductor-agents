@@ -12,7 +12,9 @@
     "approve",
     "reviewPromptTemplate",
     "maxTurns",
-    "maxBudgetUsd"
+    "maxBudgetUsd",
+    "writeReviewFile",
+    "reviewOutputPath"
   ],
   "inputTemplate": {
     "agent": "claude",
@@ -20,7 +22,9 @@
     "approve": false,
     "reviewPromptTemplate": "",
     "maxTurns": 250,
-    "maxBudgetUsd": 50.0
+    "maxBudgetUsd": 50.0,
+    "writeReviewFile": true,
+    "reviewOutputPath": ".conductor/review-output.md"
   },
   "tasks": [
     {
@@ -146,7 +150,10 @@
       "inputParameters": {
         "repo": "${workflow.input.repo}",
         "number": "${workflow.input.prNumber}",
-        "structured": "${final_review.output.result}"
+        "structured": "${final_review.output.result}",
+        "repoPath": "${clone.output.repoPath}",
+        "writeLocalFile": "${workflow.input.writeReviewFile}",
+        "localOutputPath": "${workflow.input.reviewOutputPath}"
       }
     }
   ],
@@ -158,6 +165,9 @@
     "reviewUrl": "${submit.output.url}",
     "tokenUsed": "${review.output.tokenUsed}",
     "costUsd": "${review.output.costUsd}",
-    "changedFiles": "${diff.output.changedFiles}"
+    "changedFiles": "${diff.output.changedFiles}",
+    "mode": "${submit.output.mode}",
+    "selfReview": "${submit.output.selfReview}",
+    "localOutputPath": "${submit.output.localOutputPath}"
   }
 }

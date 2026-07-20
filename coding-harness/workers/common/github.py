@@ -27,10 +27,23 @@ log = logging.getLogger("gitops.github")
 _AUTH_LOCK = threading.Lock()
 _AUTH_DONE = False
 
+# Login of the authenticated gh user, resolved once per process (like _AUTH_DONE).
+_VIEWER_LOCK = threading.Lock()
+_VIEWER_LOGIN: str | None = None
+_VIEWER_CACHED = False
+
 # Invisible marker appended to every harness-posted PR comment. Lets pr_comments
 # skip the harness's own comments so the review-feedback loop is safely re-runnable
 # (the bot posts under the same account as humans, so author can't distinguish it).
 HARNESS_MARKER = "<!-- conductor-harness -->"
+
+# Default location (under the checkout) for the rendered review markdown, so the
+# review output is never lost regardless of which posting path is taken.
+DEFAULT_REVIEW_OUTPUT_PATH = ".conductor/review-output.md"
+
+# gh/GitHub 422 substrings that mean "you can't submit a formal review of your own
+# PR" — matched case-insensitively to trigger the comments-API fallback.
+SELF_REVIEW_422_HINTS = ("own pull request", "review cannot be submitted")
 
 
 def ensure_git_auth() -> bool:
@@ -126,14 +139,14 @@ def pr_comments(repo_or_url: str, number: int) -> dict:
               "--json", _PR_META_FIELDS], check=True)
     meta = json.loads(mr.stdout or "{}")
 
-    conv = [(c.get("author", {}).get("login", "?"), c.get("body", ""))
+    conv = [((c.get("author") or {}).get("login", "?"), c.get("body", ""))
             for c in (meta.get("comments") or []) if _keep(c.get("body", ""))]
-    reviews = [(r.get("author", {}).get("login", "?"), r.get("state", ""), r.get("body", ""))
+    reviews = [((r.get("author") or {}).get("login", "?"), r.get("state", ""), r.get("body", ""))
                for r in (meta.get("reviews") or []) if _keep(r.get("body", ""))]
     inline_raw = run(["gh", "api", f"repos/{slug}/pulls/{number}/comments"],
                      check=False).stdout
     try:
-        inline = [(c.get("user", {}).get("login", "?"), c.get("path", ""),
+        inline = [((c.get("user") or {}).get("login", "?"), c.get("path", ""),
                    c.get("line") or c.get("original_line"), c.get("body", ""))
                   for c in json.loads(inline_raw or "[]") if _keep(c.get("body", ""))]
     except ValueError:
@@ -289,7 +302,23 @@ def pr_merge(repo: str, number: int, *, method: str = "squash",
     return {"merged": True, "number": number, "method": method, "auto": auto}
 
 
-_DIFF_CAP = 200_000  # chars — keep a huge PR from blowing up the review prompt
+_DIFF_CAP_DEFAULT = 200_000  # chars — keep a huge PR from blowing up the review prompt
+
+
+def _diff_cap() -> int:
+    """Read the diff-truncation cap from ``PR_DIFF_CAP`` (chars). Non-numeric or
+    non-positive values fall back to the 200_000 default."""
+    raw = os.environ.get("PR_DIFF_CAP")
+    if not raw:
+        return _DIFF_CAP_DEFAULT
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return _DIFF_CAP_DEFAULT
+    return val if val > 0 else _DIFF_CAP_DEFAULT
+
+
+_DIFF_CAP = _diff_cap()
 
 
 def _local_pr_diff(repo_path: str, base: str | None) -> tuple[str, list[str]]:
@@ -350,20 +379,163 @@ def pr_diff(repo_or_url: str, number: int, repo_path: str | None = None) -> dict
             f"pr_diff: gh pr diff {number} --repo {slug} exited {dr.code}: {detail}; "
             "no local checkout (repoPath) to fall back to")
 
-    truncated = len(diff) > _DIFF_CAP
+    cap = _diff_cap()
+    truncated = len(diff) > cap
     if truncated:
-        diff = diff[:_DIFF_CAP] + "\n…[diff truncated]"
+        diff = diff[:cap] + "\n…[diff truncated]"
     return {"diff": diff, "changedFiles": files, "truncated": truncated, "diffSource": source}
 
 
-def submit_review(repo_or_url: str, number: int, *, summary: str,
-                  event: str = "COMMENT", comments: list | None = None) -> dict:
-    """Post a formal PR review (inline comments + summary + verdict) via the reviews
-    REST API. ``event`` is clamped to COMMENT / REQUEST_CHANGES (never APPROVE).
+def viewer_login() -> str | None:
+    """Login of the authenticated gh user (`gh api user --jq .login`).
 
-    GitHub rejects the WHOLE review (422) if any inline comment's line isn't in the
-    diff — so on failure we retry once with no inline comments, folding the findings
-    into the summary body. The review therefore always lands.
+    Cached per process (like ``_AUTH_DONE``): the second call issues no extra gh
+    call. Returns None when gh is unauthenticated / the call fails. Never raises."""
+    global _VIEWER_LOGIN, _VIEWER_CACHED
+    with _VIEWER_LOCK:
+        if _VIEWER_CACHED:
+            return _VIEWER_LOGIN
+        login: str | None = None
+        try:
+            r = run(["gh", "api", "user", "--jq", ".login"], check=False)
+            if r.code == 0:
+                login = (r.stdout or "").strip() or None
+        except Exception as e:  # noqa: BLE001 — degrade to the reviews-API path
+            log.warning("viewer_login failed: %s", str(e)[:200])
+            login = None
+        _VIEWER_LOGIN = login
+        _VIEWER_CACHED = True
+        return _VIEWER_LOGIN
+
+
+def pr_author_login(repo_or_url: str, number: int) -> str | None:
+    """PR author's login via `gh pr view <n> --repo <slug> --json author`.
+    Returns None on any error. Never raises."""
+    try:
+        slug = repo_slug(repo_or_url)
+        r = run(["gh", "pr", "view", str(number), "--repo", slug,
+                 "--json", "author"], check=False)
+        if r.code != 0:
+            return None
+        d = json.loads(r.stdout or "{}") or {}
+        return ((d.get("author") or {}).get("login") or "").strip() or None
+    except Exception as e:  # noqa: BLE001 — degrade to the reviews-API path
+        log.warning("pr_author_login failed: %s", str(e)[:200])
+        return None
+
+
+def _verdict_badge(verdict: str) -> str:
+    """Emoji + label for the review verdict used in the markdown H2 title."""
+    return "🔧 request changes" if (verdict or "").upper() == "REQUEST_CHANGES" else "✅ comment"
+
+
+def _anchor(comment: dict) -> str:
+    """`path:line` when the comment anchors to an integer line, else `path`."""
+    path = comment.get("path") or ""
+    line = comment.get("line")
+    try:
+        line_int = int(line) if line is not None else None
+    except (TypeError, ValueError):
+        line_int = None
+    return f"{path}:{line_int}" if (path and line_int is not None) else path
+
+
+def render_review_markdown(summary: str, verdict: str,
+                           comments: list | None) -> str:
+    """Render the whole review as one markdown blob (reused for the fallback
+    conversation comment body and the local file): an H2 title with the verdict
+    badge, the summary, an optional '### Inline findings' bullet list, and a
+    trailing HARNESS_MARKER so the same blob is safe to post as a comment."""
+    body = (summary or "").strip() or "No summary provided."
+    blocks = [f"## Automated review — {_verdict_badge(verdict)}", body]
+    items = comments or []
+    if items:
+        bullets = "\n".join(f"- `{_anchor(c)}` — {c.get('body', '')}" for c in items)
+        blocks.append("### Inline findings\n\n" + bullets)
+    blocks.append(HARNESS_MARKER)
+    return "\n\n".join(blocks)
+
+
+def _post_inline_comment(slug: str, number: int, payload: dict) -> None:
+    """POST one inline review comment to `repos/{slug}/pulls/{n}/comments`.
+    Raises (RunError) if gh exits non-zero, so the caller can fold the finding."""
+    fd, path = tempfile.mkstemp(suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        run(["gh", "api", f"repos/{slug}/pulls/{number}/comments",
+             "--method", "POST", "--input", path], check=True)
+    finally:
+        os.unlink(path)
+
+
+def post_review_comments(repo_or_url: str, number: int, *, summary: str,
+                         verdict: str, comments: list | None = None) -> dict:
+    """Post a review through the COMMENTS API (no formal review submission) — the
+    self-review fallback. Each anchorable finding becomes an inline review comment
+    (commit_id = head sha, side=RIGHT); findings that can't be posted inline are
+    folded into one conversation summary comment via ``pr_comment``."""
+    ensure_git_auth()
+    slug = repo_slug(repo_or_url)
+    ev = (verdict or "COMMENT").upper()
+    if ev not in ("COMMENT", "REQUEST_CHANGES"):
+        ev = "COMMENT"  # never APPROVE from the bot
+    items = comments or []
+
+    # Head sha anchors inline comments; without it, fold every finding.
+    head_sha = ""
+    vr = run(["gh", "pr", "view", str(number), "--repo", slug,
+              "--json", "headRefOid"], check=False)
+    if vr.code == 0:
+        try:
+            head_sha = (json.loads(vr.stdout or "{}") or {}).get("headRefOid") or ""
+        except ValueError:
+            head_sha = ""
+
+    inline_count = 0
+    folded: list = []
+    for c in items:
+        path = c.get("path")
+        line = c.get("line")
+        try:
+            line_int = int(line) if line is not None else None
+        except (TypeError, ValueError):
+            line_int = None
+        if path and line_int is not None and head_sha:
+            payload = {"commit_id": head_sha, "path": path, "line": line_int,
+                       "side": "RIGHT",
+                       "body": (c.get("body", "") + "\n\n" + HARNESS_MARKER)}
+            try:
+                _post_inline_comment(slug, number, payload)
+                inline_count += 1
+                continue
+            except Exception as e:  # noqa: BLE001 — line not in diff etc.; fold it
+                log.warning("inline comment on %s rejected (%s); folding into summary",
+                            _anchor(c), str(e)[:200])
+        folded.append(c)
+
+    conv = pr_comment(slug, number, render_review_markdown(summary, ev, folded))
+    return {"reviewed": True, "mode": "comments", "selfReview": True, "event": ev,
+            "inlineCount": inline_count, "inline": inline_count > 0,
+            "url": conv.get("url", ""), "localOutputPath": ""}
+
+
+def submit_review(repo_or_url: str, number: int, *, summary: str,
+                  event: str = "COMMENT", comments: list | None = None,
+                  reviewer: str | None = None,
+                  local_output_path: str | None = None,
+                  repo_path: str | None = None) -> dict:
+    """Post a PR review (inline comments + summary + verdict). ``event`` is clamped
+    to COMMENT / REQUEST_CHANGES (never APPROVE).
+
+    Self-review safe: GitHub 422s a formal review of your own PR. When the reviewer
+    (``reviewer`` override, else ``viewer_login()``) equals the PR author, or the
+    reviews API returns a self-review 422 anyway, we fall back to the COMMENTS API
+    (see ``post_review_comments``). Otherwise the formal reviews-API path is used,
+    with the existing inline-drop summary-only retry for line-not-in-diff 422s.
+
+    ``local_output_path`` (resolved relative to ``repo_path`` when given) receives
+    the rendered markdown before any posting, so the review is never lost.
     """
     ensure_git_auth()
     slug = repo_slug(repo_or_url)
@@ -371,9 +543,57 @@ def submit_review(repo_or_url: str, number: int, *, summary: str,
     if ev not in ("COMMENT", "REQUEST_CHANGES"):
         ev = "COMMENT"  # never APPROVE from the bot
     items = comments or []
-    inline = [{"path": c["path"], "line": int(c["line"]), "side": "RIGHT",
-               "body": c.get("body", "")}
-              for c in items if c.get("path") and c.get("line")]
+
+    md = render_review_markdown(summary, ev, items)
+
+    # Optional local file — written before any posting, errors logged not raised.
+    written_path = ""
+    if local_output_path:
+        try:
+            target = local_output_path
+            if repo_path and not os.path.isabs(target):
+                target = os.path.join(repo_path, target)
+            target = os.path.abspath(target)
+            parent = os.path.dirname(target)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(md)
+            written_path = target
+        except Exception as e:  # noqa: BLE001 — don't lose the review over a bad path
+            log.warning("failed to write review output to %s: %s",
+                        local_output_path, str(e)[:200])
+            written_path = ""
+
+    def _comments_fallback() -> dict:
+        result = post_review_comments(repo_or_url, number, summary=summary,
+                                      verdict=ev, comments=items)
+        result["selfReview"] = True
+        result["localOutputPath"] = written_path
+        return result
+
+    # Detect self-review up front — both logins must be known and equal.
+    reviewer_login = reviewer if reviewer is not None else viewer_login()
+    author = pr_author_login(repo_or_url, number)
+    self_review = bool(reviewer_login and author and
+                       reviewer_login.strip().lower() == author.strip().lower())
+    if self_review:
+        return _comments_fallback()
+
+    def _inline(c: dict) -> dict | None:
+        """Build one inline-comment payload, or None if it can't anchor. A non-integer
+        or None ``line`` is skipped rather than raising, so one bad comment doesn't
+        sink the whole review."""
+        if not (c.get("path") and c.get("line")):
+            return None
+        try:
+            line = int(c["line"])
+        except (TypeError, ValueError):
+            return None
+        return {"path": c["path"], "line": line, "side": "RIGHT",
+                "body": c.get("body", "")}
+
+    inline = [p for p in (_inline(c) for c in items) if p is not None]
 
     def _post(payload: dict) -> str:
         fd, path = tempfile.mkstemp(suffix=".json")
@@ -389,18 +609,34 @@ def submit_review(repo_or_url: str, number: int, *, summary: str,
         finally:
             os.unlink(path)
 
+    def _is_self_review(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return any(hint in text for hint in SELF_REVIEW_422_HINTS)
+
     body = summary or "Automated review."
     try:
         url = _post({"body": body, "event": ev, "comments": inline})
-        return {"reviewed": True, "event": ev, "inlineCount": len(inline),
-                "inline": True, "url": url}
-    except Exception as e:  # noqa: BLE001 — inline anchoring failed; fall back
-        log.warning("inline review rejected (%s); posting summary-only",
-                    str(e)[:200])
+        return {"reviewed": True, "mode": "review", "selfReview": False, "event": ev,
+                "inlineCount": len(inline), "inline": True, "url": url,
+                "localOutputPath": written_path}
+    except Exception as e:  # noqa: BLE001 — self-review 422, or inline anchoring failed
+        if _is_self_review(e):
+            log.warning("reviews API rejected self-review (%s); posting via comments",
+                        str(e)[:200])
+            return _comments_fallback()
+        log.warning("inline review rejected (%s); posting summary-only", str(e)[:200])
         folded = body
         if inline:
             folded += "\n\n---\n### Inline findings\n" + "\n".join(
                 f"- `{c['path']}:{c['line']}` — {c['body']}" for c in inline)
-        url = _post({"body": folded, "event": ev})
-        return {"reviewed": True, "event": ev, "inlineCount": 0,
-                "inline": False, "url": url}
+        try:
+            url = _post({"body": folded, "event": ev})
+        except Exception as e2:  # noqa: BLE001 — a self-review 422 can surface here too
+            if _is_self_review(e2):
+                log.warning("reviews API rejected self-review (%s); posting via comments",
+                            str(e2)[:200])
+                return _comments_fallback()
+            raise
+        return {"reviewed": True, "mode": "review", "selfReview": False, "event": ev,
+                "inlineCount": 0, "inline": False, "url": url,
+                "localOutputPath": written_path}

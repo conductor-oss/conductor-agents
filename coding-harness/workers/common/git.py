@@ -19,6 +19,45 @@ from .exec import RunError, run
 WORKTREES = ".cc-worktrees"
 GROUP_BRANCH = "cc-group-{name}"
 
+# Git identity used for the local commit when a repo has none configured. Sourced
+# from env so deployments can override without code changes (defaults preserved).
+GIT_IDENTITY_NAME = os.environ.get("GIT_IDENTITY_NAME") or "conductor-code"
+GIT_IDENTITY_EMAIL = os.environ.get("GIT_IDENTITY_EMAIL") or "harness@conductor.local"
+
+
+def _env_int(key: str, default: int) -> int:
+    """Env int with fall-back: a missing/blank/invalid value keeps the default."""
+    raw = os.environ.get(key)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(key: str, default: float) -> float:
+    """Env float with fall-back: a missing/blank/invalid value keeps the default."""
+    raw = os.environ.get(key)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+# Transient-git-lock retry knobs (see _git_retry) — env-configurable, validated.
+GIT_LOCK_RETRY_ATTEMPTS = _env_int("GIT_LOCK_RETRY_ATTEMPTS", 5)
+GIT_LOCK_RETRY_BASE = _env_float("GIT_LOCK_RETRY_BASE", 0.3)
+
+# Paths copied from the main repo into a fresh worktree so test runs find them
+# (worktrees only contain branch-tracked files). Comma-separated env override.
+WORKTREE_COPY_PATHS = [
+    p.strip() for p in (os.environ.get("WORKTREE_COPY_PATHS") or "test,package.json").split(",")
+    if p.strip()
+]
+
 # git emits these when two processes touch the same repo/refs at once. The
 # parallel code_parallel forks all mutate one repo, so worktree_add/commit can
 # collide; we serialize (flock on the shared git dir) and retry these.
@@ -66,7 +105,7 @@ def _is_git_lock_error(e: Exception) -> bool:
     return any(h in s for h in _GIT_LOCK_HINTS)
 
 
-def _git_retry(fn, attempts: int = 5, base: float = 0.3):
+def _git_retry(fn, attempts: int = GIT_LOCK_RETRY_ATTEMPTS, base: float = GIT_LOCK_RETRY_BASE):
     """Run fn(); retry with backoff only on a transient git-lock error (defense
     for a stale lock the flock can't cover, e.g. a crashed peer)."""
     last: Exception | None = None
@@ -81,8 +120,8 @@ def _git_retry(fn, attempts: int = 5, base: float = 0.3):
     raise last  # unreachable
 
 
-def ensure_ready(repo: str, *, name: str = "conductor-code",
-                 email: str = "harness@conductor.local") -> dict:
+def ensure_ready(repo: str, *, name: str = GIT_IDENTITY_NAME,
+                 email: str = GIT_IDENTITY_EMAIL) -> dict:
     """Make ``repo`` git-ready so worktree_add/commit won't fail: init if needed,
     set a LOCAL identity only if none is configured, and create an initial commit
     if there is no HEAD. Idempotent — safe to run on an already-prepared repo."""
@@ -134,9 +173,9 @@ def worktree_add(repo: str, name: str) -> dict:
         git(repo, "worktree", "remove", "--force", wt, check=False)
         git(repo, "branch", "-D", br, check=False)
         _git_retry(lambda: git(repo, "worktree", "add", "-B", br, wt))
-    # Copy test/ + package.json into the worktree so test runs find them
-    # (worktrees only contain branch-tracked files; tests live in the main repo).
-    for rel in ("test", "package.json"):
+    # Copy configured paths (default test/ + package.json) into the worktree so
+    # test runs find them (worktrees only contain branch-tracked files).
+    for rel in WORKTREE_COPY_PATHS:
         src = os.path.join(repo, rel)
         if os.path.exists(src):
             dst = os.path.join(wt, rel)

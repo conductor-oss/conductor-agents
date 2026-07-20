@@ -8,14 +8,20 @@ dependency — the Claude Agent SDK conflict-resolver invoked by ``merge_worktre
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 from common import git
-from gitops.tasks import create_branch, merge_worktrees, worktree_add
+from gitops.tasks import create_branch, merge_worktrees, pr_submit_review, worktree_add
 
 
 def _completed(result) -> bool:
     return result.status.value == "COMPLETED"
+
+
+def _log_text(result) -> str:
+    """Join a TaskResult's log lines (TaskExecLog objects carry the message on .log)."""
+    return " ".join(getattr(entry, "log", str(entry)) for entry in (result.logs or []))
 
 
 def _commit_file(repo: str, rel: str, content: str, message: str) -> None:
@@ -165,3 +171,141 @@ def test_merge_worktrees_aborts_when_resolution_fails(
     assert out["resolved"] == []
     # ...and the merge was aborted, so the working tree is NOT left broken.
     assert git.has_conflicts(repo) == []
+
+
+# --- pr_submit_review: new self-review-fix input passthrough -----------------
+
+def _fake_submit_review(recorded):
+    """A github.submit_review stand-in that records kwargs and returns a full
+    (superset) result dict echoing the local_output_path it was handed."""
+    def _submit(repo_ref, number, **kw):
+        recorded.update(kw)
+        recorded["repo_ref"] = repo_ref
+        recorded["number"] = number
+        return {
+            "reviewed": True,
+            "mode": "comments",
+            "selfReview": True,
+            "event": kw.get("event", "COMMENT"),
+            "inlineCount": 2,
+            "inline": True,
+            "url": "https://example.test/pr/7#comment",
+            "localOutputPath": kw.get("local_output_path") or "",
+        }
+    return _submit
+
+
+def test_pr_submit_review_forwards_new_inputs_write_true(
+    fake_task_input, monkeypatch
+):
+    recorded = {}
+    monkeypatch.setattr(
+        "gitops.tasks.github.submit_review", _fake_submit_review(recorded)
+    )
+    task = fake_task_input(
+        repo="acme/widgets", number="7",
+        structured={"summary": "s", "verdict": "request_changes", "comments": []},
+        reviewer="octocat", repoPath="/tmp/checkout",
+        writeLocalFile=True, localOutputPath=".conductor/out.md",
+    )
+    result = pr_submit_review(task)
+    assert _completed(result)
+    # reviewer / repo_path pass straight through...
+    assert recorded["reviewer"] == "octocat"
+    assert recorded["repo_path"] == "/tmp/checkout"
+    # ...and with writeLocalFile true the path is the provided localOutputPath.
+    assert recorded["local_output_path"] == ".conductor/out.md"
+    # verdict->event mapping preserved.
+    assert recorded["event"] == "REQUEST_CHANGES"
+    log = _log_text(result)
+    assert "mode=" in log
+    assert "file=" in log
+    assert ".conductor/out.md" in log
+
+
+def test_pr_submit_review_local_path_none_when_write_disabled(
+    fake_task_input, monkeypatch
+):
+    recorded = {}
+    monkeypatch.setattr(
+        "gitops.tasks.github.submit_review", _fake_submit_review(recorded)
+    )
+    task = fake_task_input(
+        repo="acme/widgets", number="9",
+        structured={"summary": "s", "verdict": "comment"},
+        reviewer="", repoPath="",
+        writeLocalFile=False, localOutputPath=".conductor/out.md",
+    )
+    result = pr_submit_review(task)
+    assert _completed(result)
+    # Empty-string reviewer/repoPath normalise to None.
+    assert recorded["reviewer"] is None
+    assert recorded["repo_path"] is None
+    # writeLocalFile false => no local file, regardless of localOutputPath.
+    assert recorded["local_output_path"] is None
+    log = _log_text(result)
+    assert "mode=" in log
+    assert "file=" in log
+
+
+# --- env-configurable git values --------------------------------------------
+
+def test_worktree_add_copies_default_paths(fake_task_input, tmp_git_repo):
+    """With no override, the default test/ dir + package.json are copied into the
+    fresh worktree (they live only in the main repo, not on the group branch)."""
+    repo = str(tmp_git_repo)
+    (tmp_git_repo / "test").mkdir()
+    (tmp_git_repo / "test" / "spec.txt").write_text("t\n")
+    (tmp_git_repo / "package.json").write_text("{}\n")
+
+    result = worktree_add(fake_task_input(repoPath=repo, name="wd"))
+    assert _completed(result)
+    wt = Path(result.output_data["worktreePath"])
+    assert (wt / "test" / "spec.txt").exists()
+    assert (wt / "package.json").exists()
+
+
+def test_worktree_copy_paths_env_override(fake_task_input, tmp_git_repo, monkeypatch):
+    """WORKTREE_COPY_PATHS changes which paths are copied: reloading common.git
+    picks up the env override, and only the listed paths land in the worktree."""
+    monkeypatch.setenv("WORKTREE_COPY_PATHS", "extra.txt, , nested")
+    importlib.reload(git)
+    try:
+        assert git.WORKTREE_COPY_PATHS == ["extra.txt", "nested"]  # blanks dropped
+        (tmp_git_repo / "extra.txt").write_text("e\n")
+        (tmp_git_repo / "nested").mkdir()
+        (tmp_git_repo / "nested" / "f.txt").write_text("n\n")
+        # A default path that is NOT in the override must not be copied.
+        (tmp_git_repo / "package.json").write_text("{}\n")
+
+        result = worktree_add(fake_task_input(repoPath=str(tmp_git_repo), name="ov"))
+        assert _completed(result)
+        wt = Path(result.output_data["worktreePath"])
+        assert (wt / "extra.txt").exists()
+        assert (wt / "nested" / "f.txt").exists()
+        assert not (wt / "package.json").exists()
+    finally:
+        monkeypatch.delenv("WORKTREE_COPY_PATHS", raising=False)
+        importlib.reload(git)
+
+
+def test_git_identity_defaults_from_env(monkeypatch):
+    """GIT_IDENTITY_NAME/GIT_IDENTITY_EMAIL feed the module-level identity defaults
+    (reload picks up the env), while the built-in defaults are otherwise preserved."""
+    # Baseline defaults with no env set.
+    monkeypatch.delenv("GIT_IDENTITY_NAME", raising=False)
+    monkeypatch.delenv("GIT_IDENTITY_EMAIL", raising=False)
+    importlib.reload(git)
+    try:
+        assert git.GIT_IDENTITY_NAME == "conductor-code"
+        assert git.GIT_IDENTITY_EMAIL == "harness@conductor.local"
+
+        monkeypatch.setenv("GIT_IDENTITY_NAME", "ci-bot")
+        monkeypatch.setenv("GIT_IDENTITY_EMAIL", "ci@example.com")
+        importlib.reload(git)
+        assert git.GIT_IDENTITY_NAME == "ci-bot"
+        assert git.GIT_IDENTITY_EMAIL == "ci@example.com"
+    finally:
+        monkeypatch.delenv("GIT_IDENTITY_NAME", raising=False)
+        monkeypatch.delenv("GIT_IDENTITY_EMAIL", raising=False)
+        importlib.reload(git)
