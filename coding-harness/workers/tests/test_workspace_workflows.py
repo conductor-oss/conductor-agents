@@ -51,7 +51,7 @@ def test_nested_workflows_pin_current_versions_and_inherit_parent_workspace():
     code_parallel = _load("code_parallel")
     build_forks = next(node for node in _walk(code_parallel)
                        if node.get("taskReferenceName") == "build_forks")
-    assert 'subWorkflowParam:{name:\\"code_subtask\\", version:2}' in \
+    assert 'subWorkflowParam:{name:"code_subtask", version:2}' in \
         build_forks["inputParameters"]["queryExpression"]
 
 
