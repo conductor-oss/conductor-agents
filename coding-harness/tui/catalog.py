@@ -463,6 +463,7 @@ CATALOG: dict[str, WorkflowSpec] = {
             Field("fixPromptTemplate", "Prompt template", "template", "", advanced=True,
                   help="override the coding prompt; inline text or @repo/path; blank = built-in (or .conductor/code.md)"),
             Field("designMaxIterations", "Design iterations", "int", 5, advanced=True),
+            Field("planPromptTemplate", "Planning prompt template", "template", "", advanced=True),
             *_caps(250, 50.0),
         ),
         target=_t_pr,

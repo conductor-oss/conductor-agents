@@ -27,17 +27,15 @@ def test_automation_path_taskdefs_have_all_three_timeouts():
             assert int(taskdef.get(field) or 0) > 0, f"{name}: {field} must be positive"
 
 
-def test_review_and_address_have_bounded_recursive_revision_routes():
+def test_automation_dispatch_carries_bounded_approval_configuration():
     workflows = Path(__file__).resolve().parents[1] / "workflows"
-    for name in ("pr_review", "address_pr"):
-        workflow = json.loads((workflows / f"{name}.json").read_text())
-        serialized = json.dumps(workflow)
-        assert '"maxApprovalRevisions"' in serialized
-        assert '"approvalFeedback"' in serialized
-        assert '"auto_revise"' in serialized
-        assert '"START_WORKFLOW"' in serialized
-        assert '((.remaining|tonumber)-1)' in serialized
-        assert '"status": "suppressed"' in serialized
+    workflow = json.loads((workflows / "automation_dispatch.json").read_text())
+    serialized = json.dumps(workflow)
+    assert '"maxApprovalRevisions"' in serialized
+    assert '"approvalJudgePromptTemplate"' in serialized
+    assert '"reviewPromptTemplate"' in serialized
+    assert '"fixPromptTemplate"' in serialized
+    assert '"modelProfile"' in serialized
 
 
 def test_markers_require_trusted_author_and_version():

@@ -30,7 +30,7 @@ explicit override for that task role.
 
 Required: `repo`, `prNumber`.
 
-Optional: `engine` = `"code_parallel"`; `agent` = `"claude"`; `model` = `""`; `design` = `false`; `designHumanApproval` = `true`; `designMaxIterations` = `5`; `fixPromptTemplate` = `""`; `fixPromptTemplateSource` = `""`; `maxSubtasks` = `4`; `maxTurns` = `250`; `maxBudgetUsd` = `50.0`.
+Optional: `engine` = `"code_parallel"`; `agent` = `"claude"`; `model` = `""`; `design` = `false`; `designHumanApproval` = `true`; `designMaxIterations` = `5`; `fixPromptTemplate` = `""`; `fixPromptTemplateSource` = `""`; `planPromptTemplate` = `""`; `planPromptTemplateSource` = `""`; `maxSubtasks` = `4`; `maxTurns` = `250`; `maxBudgetUsd` = `50.0`.
 
 ## `automation_dispatch` (internal)
 

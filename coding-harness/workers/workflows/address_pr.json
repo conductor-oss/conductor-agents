@@ -22,6 +22,8 @@
     "modelPolicySource",
     "modelProfile",
     "modelsConfig",
+    "planPromptTemplate",
+    "planPromptTemplateSource",
     "prNumber",
     "repo"
   ],
@@ -42,7 +44,9 @@
     "modelPolicySource": "",
     "modelPolicySha256": "",
     "modelsConfig": "",
-    "modelOverrides": {}
+    "modelOverrides": {},
+    "planPromptTemplate": "",
+    "planPromptTemplateSource": ""
   },
   "tasks": [
     {
@@ -165,6 +169,8 @@
                   "designHumanApproval": "${workflow.input.designHumanApproval}",
                   "designMaxIterations": "${workflow.input.designMaxIterations}",
                   "planAgent": "${workflow.input.agent}",
+                  "planPromptTemplate": "${workflow.input.planPromptTemplate}",
+                  "planPromptTemplateSource": "${workflow.input.planPromptTemplateSource}",
                   "codeAgent": "${workflow.input.agent}",
                   "codePromptTemplate": "${workflow.input.fixPromptTemplate}",
                   "maxSubtasks": "${workflow.input.maxSubtasks}",

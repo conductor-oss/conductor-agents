@@ -8,7 +8,7 @@ def test_local_review_is_read_only_and_reviews_direct_checkout():
     path = Path(__file__).resolve().parents[1] / "workflows" / "local_review.json"
     workflow = json.loads(path.read_text())
     assert workflow["version"] == 1
-    assert workflow["inputParameters"][0] == "repoPath"
+    assert "repoPath" in workflow["inputParameters"]
     assert workflow["inputTemplate"]["baseRemote"] == "origin"
     assert workflow["inputTemplate"]["baseBranch"] == "main"
     serialized = json.dumps(workflow)
@@ -16,7 +16,8 @@ def test_local_review_is_read_only_and_reviews_direct_checkout():
     assert "workspace_cleanup" not in serialized
     assert "pr_submit_review" not in serialized
     assert '"name": "local_diff"' in serialized
-    review = workflow["tasks"][1]["inputParameters"]
+    review = next(task["inputParameters"] for task in workflow["tasks"]
+                  if task["taskReferenceName"] == "review")
     assert review["worktreePath"] == "${workflow.input.repoPath}"
     assert review["tools"] == ["Read", "Grep", "Glob"]
     assert review["templateKey"] == "local_review"
