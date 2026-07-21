@@ -7,6 +7,11 @@ record revision claims and child IDs. Register with `./register.sh`, restart wor
 `automation` module polls, then create schedules explicitly (registration creates none). The
 exact sweep and dispatch inputs are listed in [`../docs/workflow-inputs.md`](../docs/workflow-inputs.md).
 
+Operator guides: [models and profiles](../docs/model-profiles.md),
+[prompt templates](../docs/templates.md), and
+[local OpenSpec development](../docs/openspec.md). The workflow input reference remains the
+definition-backed source for required parameters and defaults.
+
 Autonomous coding as durable [Conductor](https://conductor-oss.org) workflows. Point it at
 a repo, an issue, or a PR and it plans, writes, reviews, and revises code — running coding
 agents (Claude Agent SDK, OpenAI Codex, or Google Gemini) in parallel across isolated git

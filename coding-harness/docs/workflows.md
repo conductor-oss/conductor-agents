@@ -10,7 +10,7 @@
 | Address existing PR feedback | `address_pr` | `repo`, `prNumber` |
 | Implement a multi-part local change | `code_parallel` | `repoPath`, `instruction` |
 | Run a long-lived, interactive complex feature campaign | `feature_campaign` | `repoPath`, `instruction` |
-| Implement an apply-ready OpenSpec change | `openspec_development` | `repoPath`, `specSource`, `changeId` |
+| Implement an apply-ready OpenSpec change | `openspec_development` | `specSource`, `changeId` (plus `repoPath` except local-source-workspace mode) |
 | Smoke-test GitHub connectivity | `github_demo` | `repoUrl`, `instruction` |
 
 `design_docs` and `code_subtask` are internal sub-workflows. Let `code_parallel` invoke them.
@@ -48,8 +48,9 @@ remote, or a public HTTPS `.zip`, `.tar.gz`, or `.tgz`. Set `specRef`/`specPath`
 Set `useSpecSourceWorkspace:true` to make a local checked-out spec source the implementation
 repository: Conductor creates an isolated worktree there, materializes only the selected OpenSpec
 tree, commits the verified implementation and archive, then pushes a draft PR. The original
-checkout is never edited. URL bundles also require `specWritebackRepo`; secrets remain in the worker environment or `gh`
-credential store, never in workflow inputs.
+checkout is never edited. See the [local OpenSpec guide](openspec.md) for source modes, writeback
+rules, and safety boundaries. URL bundles require `specWritebackRepo`; secrets remain in the
+worker environment or `gh` credential store, never in workflow inputs.
 
 ```text
 resolve + validate → assess repository + DAG → auto route
@@ -120,10 +121,14 @@ It reads the design documents with only `Read`, `Grep`, and `Glob`, then returns
 
 ## Backends and limits
 
-Use `claude` (default), `codex`, or `gemini`. `code_parallel` can use different planning and coding
-backends through `planAgent` and `codeAgent`. Shipped workflow defaults use at least 250 turns and a
+Use `claude`, `codex`, or `gemini`. `code_parallel` can use different planning and coding
+backends through `planAgent` and `codeAgent`; leave them blank to retain the selected policy role.
+Shipped workflow defaults use at least 250 turns and a
 `$50` maximum budget for every applicable agent task. Planning, parallel coding, and design-author
 sessions in `code_parallel` default to 500 turns. Override these caps only intentionally.
+
+See [models and profiles](model-profiles.md) for policy precedence, backend fallback, and cost
+labels. See [prompt templates](templates.md) for prompt-source precedence and reusable role guidance.
 
 Turn and spend caps are agent limits, not wall-clock deadlines. Runtime timeouts belong only to
 the referenced Conductor task definition. There is no workflow `timeoutS` input and no secondary

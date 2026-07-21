@@ -59,9 +59,14 @@ terminating, or retrying a run pops a confirmation** first. After it starts a ru
 `ctrl+o` (or `/open`) to jump into the live Run Detail view.
 
 Slash commands: `/dashboard` · `/sessions` (browse & resume past chats) · `/templates`
-(manage prompt templates) · `/open [id]` · `/folder [id]` (open a run's working folder in your
+(manage prompt templates) · `/models` (manage workflow model policies) · `/open [id]` · `/folder [id]` (open a run's working folder in your
 editor) · `/register` (update task/workflow definitions and run the worker gate) ·
 `/new` · `/help` · `/quit`.
+
+**Model profiles.** Press `m` on the dashboard or use `/models` to create, browse, edit, and
+reload the single user-owned `models.json` policy. A launcher selection snapshots that policy and
+its hash into the workflow; blank selection uses the configured default. This workflow policy is
+separate from the TUI chat model set by `--model`. See [`../docs/model-profiles.md`](../docs/model-profiles.md).
 
 **What changed.** A finished run's result card lists the **changed files with status**
 (`A` created · `M` updated · `D` deleted; older runs show `•`), aggregated across all

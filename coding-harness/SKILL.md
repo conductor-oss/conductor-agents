@@ -157,6 +157,11 @@ commands + review priorities there. Toggle: `includeRepoGuide` / `CODING_AGENT_R
 the output schema stays enforced (a custom `pr_review` template still yields a structured review).
 See `docs/CODING_AGENT_WORKER.md` §14.
 
+For the complete operator contract, use `docs/model-profiles.md` for policy/profile selection,
+`docs/templates.md` for prompt precedence and trust boundaries, and `docs/openspec.md` for
+checked-out local OpenSpec source/worktree behavior. The workflow JSON input contract is kept in
+`docs/workflow-inputs.md`.
+
 ## Examples
 
 ```bash

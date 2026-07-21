@@ -73,6 +73,11 @@ the model id), mixable within a run. The complete required/optional input contra
 are in **[`docs/workflow-inputs.md`](docs/workflow-inputs.md)**; examples and prerequisites are
 in **[`workers/README.md`](workers/README.md)**.
 
+Choose a workflow profile with `modelProfile`, manage reusable agent guidance with prompt
+templates, and use the local-source OpenSpec mode when the checked-out spec repository is also
+the implementation repository. These are documented in [Models and profiles](docs/model-profiles.md),
+[Prompt templates](docs/templates.md), and [Local OpenSpec development](docs/openspec.md).
+
 Runtime deadlines are owned exclusively by Conductor task definitions. Workflow inputs and
 workers do not impose a second agent wall-clock timeout; adjust `responseTimeoutSeconds`,
 `timeoutSeconds`, and `timeoutPolicy` on the applicable task definition instead.
@@ -149,9 +154,12 @@ opened as a draft PR. It never accepts credential values in workflow inputs.
 | [`tui/README.md`](tui/README.md) | **Terminal UI** — the interactive interface: launch runs, watch agents live, manage them. |
 | [`SKILL.md`](SKILL.md) | **Agents** — how a Claude Code / LLM agent drives the harness (when to use which workflow, how to trigger, gotchas). |
 | [`docs/index.md`](docs/index.md) | **Documentation site** — overview, quickstart, workflow selection, and reference navigation. |
+| [`docs/model-profiles.md`](docs/model-profiles.md) | **Models** — profiles, provider catalog, policy precedence, costs, and TUI selection. |
+| [`docs/templates.md`](docs/templates.md) | **Prompts** — template sources, scoping, placeholders, provenance, and trust boundaries. |
+| [`docs/openspec.md`](docs/openspec.md) | **OpenSpec** — local/Git/archive sources, isolated worktrees, verification, archive, and PR behavior. |
 | [`docs/CODING_AGENT_WORKER.md`](docs/CODING_AGENT_WORKER.md) | **Reference** — the `coding_agent` worker, all workflows, backends, guardrails, remote git/GitHub. |
 | [`docs/CLAUDE_AGENT_SDK.md`](docs/CLAUDE_AGENT_SDK.md) | Claude Agent SDK deep-dive (features, interception, gotchas). |
-| [`docs/SPEC.md`](docs/SPEC.md) · [`docs/DESIGN.md`](docs/DESIGN.md) | **Historical** — the original spec-driven design, since superseded. |
+| [`docs/SPEC.md`](docs/SPEC.md) · [`docs/DESIGN.md`](docs/DESIGN.md) | **Historical** — original design material, not the current operator contract. |
 
 ## Prerequisites
 

@@ -1,6 +1,6 @@
 # Workflow input reference
 
-This is the complete input contract for every registered harness workflow (version 1).
+This is the complete input contract for every harness workflow definition in this repository.
 It is derived from the workflow definitions in `workers/workflows/`: an input is **required**
 when it is listed in `inputParameters` and has no value in `inputTemplate`; every other listed
 input is **optional**, with the shown default. Internal workflows are included for operators and
