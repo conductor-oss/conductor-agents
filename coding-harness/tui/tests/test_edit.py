@@ -85,8 +85,19 @@ def test_workspace_from_code_parallel_input():
 
 def test_workspace_from_output():
     run = api.Run(id="w", workflow="issue_to_pr", status="COMPLETED", start_ms=0, end_ms=1,
-                  output={"repoPath": "/tmp/issue_3_x"})
-    assert api.workspace_path(run) == "/tmp/issue_3_x"
+                  input={"repoPath": "/home/me/source"},
+                  output={"repoPath": "/home/me/source/.cc-worktrees/run-w",
+                          "worktreePath": "/home/me/source/.cc-worktrees/run-w"})
+    assert api.workspace_path(run) == "/home/me/source/.cc-worktrees/run-w"
+
+
+def test_workspace_from_prepare_task_before_workflow_output_exists():
+    run = api.Run(id="w", workflow="feature_campaign", status="RUNNING", start_ms=0, end_ms=None,
+                  input={"repoPath": "/home/me/source"})
+    tasks = [api.TaskNode(ref="workspace", def_name="workspace_prepare", type="SIMPLE",
+                          status="COMPLETED", task_id="t",
+                          output={"worktreePath": "/home/me/source/.cc-worktrees/run-w"})]
+    assert api.workspace_path(run, tasks) == "/home/me/source/.cc-worktrees/run-w"
 
 
 def test_workspace_from_git_clone_task():

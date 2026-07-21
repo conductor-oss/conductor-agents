@@ -1,0 +1,12 @@
+{
+  "name": "workspace_cleanup",
+  "description": "Remove an owned run worktree when keepWorktree is false and the workflow outcome is successful. Nested worktrees are removed first; branches are preserved.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "pollTimeoutSeconds": 120,
+  "responseTimeoutSeconds": 60,
+  "timeoutSeconds": 300,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "ownerEmail": "viren@orkes.io"
+}

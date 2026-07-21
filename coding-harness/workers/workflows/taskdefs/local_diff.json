@@ -1,0 +1,12 @@
+{
+  "name": "local_diff",
+  "description": "Build a local checkout diff against a freshly fetched remote branch, including staged, unstaged, committed-ahead, and untracked changes. Does not alter files, stage, commit, push, or check out. Input: repoPath, baseRemote?, baseBranch?.",
+  "retryCount": 1,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 300,
+  "responseTimeoutSeconds": 120,
+  "pollTimeoutSeconds": 300,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "ownerEmail": "viren@orkes.io"
+}

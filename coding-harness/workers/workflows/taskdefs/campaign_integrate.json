@@ -1,0 +1,12 @@
+{
+  "name": "campaign_integrate",
+  "description": "Fail-soft merge of successful feature-campaign wave branches; conflicts and failed tasks are returned to the WAIT checkpoint.",
+  "retryCount": 0,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 2,
+  "pollTimeoutSeconds": 300,
+  "responseTimeoutSeconds": 300,
+  "timeoutSeconds": 1800,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "ownerEmail": "viren@orkes.io"
+}

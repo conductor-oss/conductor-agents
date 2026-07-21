@@ -1,0 +1,13 @@
+{
+  "name": "github_automation_state",
+  "description": "Append a trusted terminal or child-started state marker for a GitHub automation revision.",
+  "retryCount": 3,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
+  "retryDelaySeconds": 5,
+  "responseTimeoutSeconds": 60,
+  "pollTimeoutSeconds": 120,
+  "timeoutSeconds": 180,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 1,
+  "ownerEmail": "harness@conductor.local"
+}

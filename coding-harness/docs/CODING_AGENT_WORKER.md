@@ -132,6 +132,9 @@ Set on `task.input_data`. Only `prompt` and `worktreePath` are required.
 | `model` | string | SDK/CLI default | Model id (e.g. `claude-sonnet-4-6`, or `gpt-5.1` for Codex). Omit for the backend default. |
 | `fallbackModel` | string | none | Model used when the primary is overloaded (`529`). **Claude only.** |
 | `allowedDomains` | string[] \| CSV | none | Network hosts the OS sandbox may reach (e.g. `registry.npmjs.org`). Default: **no network** from sandboxed Bash. |
+| `allowedWriteRoots` | string[] \| CSV | whole worktree | Optional repository-relative roots that only tighten the normal worktree boundary. Direct file writes are denied and any newly created out-of-scope backend/Bash changes are reverted before output. |
+| `contextFiles` | string[] \| CSV | none | Internal, read-only context snapshots appended to the prompt. Every path must resolve below `OPENSPEC_SNAPSHOT_DIR` (default `/tmp/conductor-openspec`) and combined content is capped at 512 KiB. Used by `openspec_development`; it cannot expand write access. |
+| `failSoft` | bool | `false` | Return agent errors/exhaustion in output instead of failing the task; interactive campaigns use this to pause and resume the same `sessionId`. |
 | `effort` | string | model default | `low` \| `medium` \| `high` \| `xhigh` \| `max` — reasoning depth vs cost. |
 | `maxTurns` | int | `50` | Tool-use round-trip cap before the agent stops (`error_max_turns`). |
 | `maxBudgetUsd` | float | `50.0` | Spend cap before the agent stops (`error_max_budget_usd`). |
@@ -297,7 +300,7 @@ users can watch it work:
 
 - **After every turn** — the SDK wrapper's `on_turn` callback fires as each turn
   completes, and the worker pushes the current output.
-- **At least every 30 s regardless** — a background heartbeat thread pushes the latest
+- **At least every 10 s regardless** — a background heartbeat thread pushes the latest
   snapshot even when a single turn runs longer than that, so the task never looks stuck.
 
 Each interim update sets task status `IN_PROGRESS` with an `output_data` snapshot:
@@ -594,7 +597,7 @@ It's a `design_gate` SWITCH that runs the **`design_docs` sub-workflow**
    reuse those contracts. **One session authors them all, so they're mutually consistent** — no
    cross-doc reconciliation needed. Backend-selectable via `designAgent` (Claude or Codex), and
    it reads the existing repo (brownfield-aware).
-2. Review the pass. With `designHumanApproval:true` (the default), a `HUMAN` task pauses the
+2. Review the pass. With `designHumanApproval:true` (the default), a `WAIT` task pauses the
    workflow. Approval exits the loop; rejection completes the gate with actionable feedback and
    the next authoring pass revises the docs. With human review disabled, a read-only
    `coding_agent` judge reads the design documents in read-only mode and emits structured approval + feedback.
@@ -720,13 +723,15 @@ unaffected.
 
 | Task | What it does | Key inputs |
 |---|---|---|
+| `workspace_prepare` | Create/resume an isolated run worktree from a local checkout or temporary clone; inherited workspaces pass through for nested workflows. Dirty source changes are reported and excluded. | `repoPath?`, `repoUrl?`, `workspacePath?`, `workflowId`, `branch?`, `fetchSource?`, `fetchRefspec?`, `startPoint?` |
+| `workspace_cleanup` | Retain or safely remove an owned run worktree (nested task worktrees first) while preserving branches. Incomplete/failed outcomes are retained. | `sourceRepoPath`, `worktreePath`, `owned`, `keepWorktree`, `outcome` |
 | `git_clone` | Clone a remote repo (optionally shallow / a specific branch). | `repoUrl`, `dest?`, `branch?`, `depth?` |
 | `git_fetch` | Fetch refs/PRs from a remote. | `repoPath`, `remote?`, `refspec?`, `prune?` |
 | `git_pull` | Fetch + integrate (rebase by default). **Fail-soft**: on conflict it aborts and returns `conflicts[]`, leaving the tree clean. | `repoPath`, `remote?`, `branch?`, `rebase?` |
-| `git_push` | Push a branch (sets upstream). `--force-with-lease` only when `forceWithLease:true` — never a bare `--force`. | `repoPath`, `branch?`, `remote?`, `setUpstream?`, `forceWithLease?` |
+| `git_push` | Push a branch to a named remote or authenticated URL, optionally under another destination branch. `--force-with-lease` only when requested. | `repoPath`, `branch?`, `destinationBranch?`, `remote?`, `remoteUrl?`, `setUpstream?`, `forceWithLease?` |
 | `git_remote` | Add/set a remote URL (idempotent). | `repoPath`, `url`, `name?` |
 | `pr_create` | Open a PR from the change branch. No `title` → `gh --fill` from commits. Returns `{number, url}`. | `repoPath`, `title?`, `body?`, `base?`, `head?`, `draft?`, `fill?` |
-| `pr_checkout` | Check out an existing PR by number so the harness can iterate on it. | `repoPath`, `number`, `branch?`, `force?` |
+| `pr_checkout` | Check out an existing PR by number so the harness can iterate on it. | `repoPath`, `number`, `repo?` (upstream PR owner/name), `branch?`, `force?` |
 | `pr_status` | Review/merge state + CI checks, with pass/fail/pending counts. | `repoPath`, `number?` |
 | `pr_comment` | Post a comment on a PR. Always appends an invisible `<!-- conductor-harness -->` marker so `pr_comments` can skip harness-authored comments. | `repoPath`, `number`, `body` |
 | `pr_merge` | Merge a PR (`squash`\|`rebase`\|`merge`; optional `--auto`). **Destructive, opt-in, no retry.** | `repoPath`, `number`, `method?`, `deleteBranch?`, `auto?` |
@@ -740,7 +745,7 @@ never retries. Code: `common/git.py` (transport) + `common/github.py` (gh/PR ops
 `@worker_task` wrappers in `gitops/tasks.py`.
 
 **Demo workflow `github_demo`** — the full local-change-to-PR loop:
-`git_clone → create_branch → coding_agent → commit → git_push → pr_create`.
+`workspace_prepare → coding_agent → commit → git_push → pr_create → workspace_cleanup`.
 
 ```bash
 conductor workflow start -w github_demo -i '{
@@ -761,17 +766,16 @@ usual `planAgent`/`codeAgent`/limits. The **`approvePr` review gate** (see below
 `git_push` and `pr_create`*, so when it's on nothing reaches the remote until a human approves.
 
 **Workflow `address_pr`** — the PR-feedback loop:
-`pr_comments → [feedback_gate: hasFeedback?] → git_clone → pr_checkout → [engine_gate] →
-git_push → pr_comment`. Consolidates a PR's review feedback and addresses it on the PR
+`pr_comments → [feedback_gate: hasFeedback?] → workspace_prepare → [engine_gate] → checks →
+[approval/revision route] → git_push → pr_comment`. Consolidates a PR's review feedback and addresses it on the PR
 branch, pushing to the **same branch** (updates the PR — no new PR). The harness's own
 replies carry the marker and are skipped, so the loop is safely re-runnable; the outer
 gate returns cleanly when there's no outstanding feedback.
 
 The **`engine` input** selects how the coding is done (nested `engine_gate` SWITCH):
 - `code_parallel` (default) — embeds the full decompose → parallel forks → merge
-  sub-workflow (same core as `issue_to_pr`), reusing the PR branch as its `changeBranch`
-  (`pr_checkout` positions HEAD at the PR tip first, so the merged commits land on the PR
-  branch). Best for multi-part reviews; it commits internally.
+  sub-workflow (same core as `issue_to_pr`), reusing the prepared PR worktree and branch as
+  its `changeBranch`. Best for multi-part reviews; it commits internally.
 - `coding_agent` — a single session on the PR branch (`+ commit`). Cheapest for small,
   cohesive feedback.
 
@@ -789,8 +793,8 @@ write-back needs the fork flow (future). File move/delete feedback ("move X to a
 move/delete verbs (see §6).
 
 **Workflow `pr_review`** — review a PR and post a formal review:
-`pr_comments → git_clone → pr_checkout → pr_diff → coding_agent (read-only + review schema)
-→ [approve_gate] → final_review → pr_submit_review`. The review *analysis reuses `coding_agent`* — a **read-only** run
+`pr_comments → workspace_prepare → pr_diff → coding_agent (read-only + review schema) → checks
+→ [approval/revision route] → final_review → pr_submit_review`. The review *analysis reuses `coding_agent`* — a **read-only** run
 (`tools:["Read","Grep","Glob"]`, no write/Bash) with an `output_schema`
 (`{summary, verdict, comments:[{path,line,body}]}`), exactly the planner's read-only+structured
 pattern. The diff is **pre-computed** (`pr_diff`) and injected so the reviewer stays read-only
@@ -807,40 +811,72 @@ conductor workflow start -w pr_review -i '{
 
 `pr_review` + `address_pr` compose the full loop: review a PR → address the feedback.
 
-### Review gate (optional HITL)
+**Workflow `local_review`** — review a checked-out repository before a commit:
 
-Both `pr_review` and `issue_to_pr` carry an **optional human-in-the-loop checkpoint** so a
-person can review — and edit — the drafted output before it reaches GitHub. It's built from
-Conductor's built-in **`HUMAN`** system task (pauses until signaled; no worker/taskdef), gated
-by a **`SWITCH`** on a boolean workflow input that defaults **false** — so
-`conductor workflow start` and any automation run gate-off, while the TUI enables it by default.
-
-| Workflow | Input | What the human reviews | Gate position |
-|---|---|---|---|
-| `pr_review` | `approve` | the drafted review — `summary` · `verdict` · inline `comments` | before `pr_submit_review` (nothing posts) |
-| `issue_to_pr` | `approvePr` | the drafted PR — `title` + `body` | before `git_push` + `pr_create` (nothing hits the remote) |
-
-Shape (per workflow): `approve_gate` (SWITCH value-param on the flag) → `"true": [ gate (HUMAN) ]`,
-default `[]`. The HUMAN task's `inputParameters.draft` holds what to review (the client reads it
-to render/edit). A `JSON_JQ_TRANSFORM` (`final_review` / `final_pr`) then chooses the human's
-version when gated (guarding on the flag, tolerant of the unresolved gate ref on the auto path)
-and the auto-draft otherwise; the terminal task (`pr_submit_review` / `pr_create`) consumes it.
-
-Signal the gate over REST: `POST /tasks/{workflowId}/{gateRef}/{status}` with the decision as
-the JSON body. `COMPLETED` proceeds — body `{approved:true, review:{…}}` for `pr_review`
-(the edited structured review), `{approved:true, title, body}` for `issue_to_pr`.
-`FAILED_WITH_TERMINAL_ERROR` **rejects** — the terminal task never runs, the workflow ends
-FAILED, and nothing is posted/opened. The output flows to `${gateRef.output.*}`.
+- invokes `local_diff`, which fetches the requested baseline (`origin/main` by default) into its
+  remote-tracking ref and builds a unified diff against the current working tree;
+- includes local commits ahead of the baseline, staged and unstaged changes, and untracked files;
+- passes the actual checkout to `coding_agent` with only `Read`, `Grep`, and `Glob`;
+- has no worktree creation, GitHub, approval, commit, push, checkout, or cleanup tasks.
 
 ```bash
-# gated review; pause, then approve (optionally edited) from the TUI or:
-WID=$(conductor workflow start -w pr_review -i '{"repo":"you/repo","prNumber":4,"approve":true}')
-curl -X POST "$CONDUCTOR_SERVER_URL/tasks/$WID/review_gate/COMPLETED" \
-  -H 'Content-Type: application/json' \
-  -d '{"approved":true,"review":{"summary":"LGTM","verdict":"comment","comments":[]}}'
-# …or reject (no review posted, workflow FAILED):
-curl -X POST "$CONDUCTOR_SERVER_URL/tasks/$WID/review_gate/FAILED_WITH_TERMINAL_ERROR" \
-  -H 'Content-Type: application/json' -d '{"approved":false}'
+conductor workflow start -w local_review -i '{
+  "repoPath":"/absolute/path/to/repo",
+  "baseRemote":"origin",
+  "baseBranch":"main"
+}'
+```
+
+Its output is the structured review (`summary`, `verdict`, `comments`) alongside the reviewed
+baseline and changed-file list. The fetch updates Git metadata only; it never changes the source
+files or current branch.
+
+### Approval and revision gate
+
+The v3 GitHub workflows accept `approvalMode: human|llm|none`. When the field is omitted,
+`pr_review.approve` and `issue_to_pr.approvePr` retain their legacy behavior, and legacy
+`address_pr` remains ungated. Blocking configured checks run before publication in every mode.
+
+| Workflow | Artifact inspected before publication | LLM rejection behavior |
+|---|---|---|
+| `pr_review` | structured summary, verdict, and inline comments | bounded same-worktree producer revision, then human WAIT |
+| `address_pr` | diff and checks before push | bounded same-worktree producer revision, then human WAIT |
+| `issue_to_pr` | diff, checks, branch, and PR draft | currently escalates directly to human WAIT |
+
+`maxApprovalRevisions` defaults to `2` for `pr_review` and `address_pr`. It counts follow-up
+producer executions, so the default permits the initial artifact plus at most two automatic
+revisions. On rejection, `START_WORKFLOW` launches v3 again with the same `workspacePath`, the
+judge's result in `approvalFeedback`, and the remaining count decremented. The rejected execution
+completes before any post or push. For scheduled work, `github_automation_state` transfers the
+active marker to the new child workflow ID, preserving the claim across every execution and an
+eventual open WAIT gate.
+
+If the LLM approves, publication proceeds. If it rejects at zero, the workflow enters the same
+signal-based WAIT shown in the global Approval Inbox. Human actions are:
+
+- **Approve** — use the editable artifact and publish.
+- **Revise** — start a new execution in the same worktree, with the feedback and human approval
+  enabled for its next artifact.
+- **Stop** — record a suppressed automation outcome and terminate before posting or pushing.
+- **Later** — leave the WAIT unresolved.
+
+For `pr_review` and `address_pr`, Approve, Revise, and Stop are all sent as `COMPLETED` WAIT
+signals with a decision payload; the workflow routes the action. A client must signal the
+execution that owns the WAIT, which may be a nested or follow-up execution rather than the parent
+shown in a result card. Legacy HUMAN tasks are not compatible with this WAIT signaling path.
+
+```bash
+# Start an independently judged review. Two rejected artifacts may be revised automatically.
+conductor workflow start -w pr_review -i '{
+  "repo":"you/repo",
+  "prNumber":4,
+  "approvalMode":"llm",
+  "maxApprovalRevisions":2
+}'
+
+# Human Revise after escalation; use the workflow ID that owns review_gate.
+conductor task signal-sync --workflow-id "$WID" --task-ref review_gate \
+  --status COMPLETED --output '{"decision":"revise","approved":false,"feedback":"Tighten the inline finding."}'
 ```
 
 ## 14. Prompt templates (user-supplied instructions)
@@ -863,6 +899,25 @@ layered sources, resolved in `coding_agent` (`common/templating.py`, choke point
    files, and editing a file changes the default the worker runs. (A last-resort inline `prompt`
    in the workflow JSON remains only as a safety net if a default file is ever missing.)
 
+Every override has a paired `*PromptTemplateSource` workflow input. The TUI fills it with the
+selected user-library path (for example `user:/Users/me/.conductor-harness/templates/security.md`),
+`input:inline`, or `repo:<path>`; schedules use `schedule:inline` or
+`schedule:repo-reference`. The worker does not trust that label to resolve content. It records the
+actual result as `output.promptTemplate` with `requestedSource`, `resolvedSource`, `templateKey`,
+and `sha256`. Typical resolved sources are `input:inline`, `repo:@.github/review.md`,
+`repo:.conductor/pr_review.md`, `bundled:pr_review`, and `workflow:inline-prompt`. This makes the
+exact prompt origin visible in task logs, workflow output, Run Detail, and result cards.
+
+The TUI user library is a source, not an out-of-band dependency: its selected file body is copied
+into the durable workflow input at launch time, while its absolute path is retained in the paired
+source field. Re-running therefore uses the recorded text even if the local library later changes.
+Forms, chat starts, and schedule creation run the same resolver across every template input in the
+workflow catalog. Files may declare `fields: [planPromptTemplate]` (or another prompt input) to
+target a role. Legacy files without `fields` target the workflow's primary role. A unique
+workflow/repo/role match is attached; multiple equally specific matches stop the launch and require
+an explicit selection. Any role left blank is still resolved by the worker from repo and bundled
+layers, so all applicable sources are consulted without concatenating unrelated prompts.
+
 The template becomes the agent's **user prompt** (uniform across Claude/Codex/Gemini — no
 system-prompt/backend changes). The `WORKER_SYSTEM_APPEND` guardrail text and the structured
 **output `schema` stay harness-owned**, so a fully custom `pr_review` template still yields the
@@ -877,6 +932,7 @@ Placeholders with no matching context key are left literal.
 
 | Workflow | Input | templateKey (repo file) | context placeholders |
 |---|---|---|---|
+| `local_review` | `localReviewPromptTemplate` | `.conductor/local_review.md` | `{{baseRef}}`, `{{baseCommit}}`, `{{headCommit}}`, `{{diff}}` |
 | `pr_review` | `reviewPromptTemplate` | `.conductor/pr_review.md` | `{{diff}}`, `{{feedback}}` |
 | `design_docs` | `designPromptTemplate` | `.conductor/design.md` | `{{instruction}}`, `{{designDir}}` |
 | `code_parallel` (planner) | `planPromptTemplate` | `.conductor/plan.md` | `{{instruction}}`, `{{maxSubtasks}}` |
@@ -884,6 +940,10 @@ Placeholders with no matching context key are left literal.
 | `issue_to_pr` | `planPromptTemplate` / `codePromptTemplate` | (via code_parallel) | as above |
 | `address_pr` (single-agent) | `fixPromptTemplate` | `.conductor/address_pr.md` | `{{feedback}}` |
 | `address_pr` (code_parallel engine) | `fixPromptTemplate` | `.conductor/code.md` | subtask |
+| approval judges | `approvalJudgePromptTemplate` | `.conductor/<workflow>_judge.md` | artifact, diff, checks |
+| design judge | `designJudgePromptTemplate` | `.conductor/design_judge.md` | design and requested change |
+| `feature_campaign` | `design/plan/code/review/revisionPromptTemplate` | matching `.conductor/<key>.md` | phase-specific context |
+| `openspec_development` | `assess/code/review/verificationPromptTemplate` | matching `.conductor/<key>.md` | spec, plan, checks |
 
 `.conductor/code.md` is the high-value one: a backend-portable, harness-managed coding-guidelines
 file applied to every parallel subtask (like CLAUDE.md, but cross-backend and workflow-scoped).
@@ -894,7 +954,8 @@ point for your own `.conductor/<key>.md` or `*PromptTemplate`.
 # explicit input (full override of the review prompt):
 conductor workflow start -w pr_review -i '{
   "repo": "you/repo", "prNumber": 4,
-  "reviewPromptTemplate": "You are a security reviewer. Focus on authz, input validation, and secret handling. Diff:\n{{diff}}"
+  "reviewPromptTemplate": "You are a security reviewer. Focus on authz, input validation, and secret handling. Diff:\n{{diff}}",
+  "reviewPromptTemplateSource": "cli:inline-security-review"
 }'
 # or commit .conductor/pr_review.md in the repo and just:
 conductor workflow start -w pr_review -i '{"repo":"you/repo","prNumber":4}'

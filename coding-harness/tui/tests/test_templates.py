@@ -30,13 +30,15 @@ def test_workflow_filtering():
 def test_parse_frontmatter_and_body():
     path = templates.templates_dir() / "manual.md"
     path.write_text(
-        "---\nname: Manual\ndescription: hand written\nworkflows: [pr_review, address_pr]\n---\n"
+        "---\nname: Manual\ndescription: hand written\nworkflows: [pr_review, address_pr]\n"
+        "fields: [reviewPromptTemplate]\n---\n"
         "BODY LINE 1\nBODY LINE 2\n",
         encoding="utf-8",
     )
     e = next(e for e in templates.list_templates() if e.path == path)
     assert e.name == "Manual" and e.description == "hand written"
     assert e.workflows == ("pr_review", "address_pr")
+    assert e.fields == ("reviewPromptTemplate",)
     assert templates.load(e) == "BODY LINE 1\nBODY LINE 2"
 
 
@@ -93,3 +95,64 @@ def test_no_frontmatter_uses_stem_and_full_body():
     e = next(e for e in templates.list_templates() if e.path == path)
     assert e.name == "plain-note" and templates.load(e) == "just the prompt text"
     assert e.applies_to("pr_review") and e.applies_to(None)
+
+
+def test_apply_user_templates_routes_every_role_and_records_sources():
+    fix_path = templates.save(
+        "Fix comments", "FIX {{feedback}}", workflows=("address_pr",))
+    plan_path = templates.save(
+        "Planning rules", "PLAN {{instruction}}", workflows=("address_pr",),
+        fields=("planPromptTemplate",))
+
+    payload, applied = templates.apply_user_templates(
+        "address_pr", {"repo": "acme/app", "prNumber": 7})
+
+    assert payload["fixPromptTemplate"] == "FIX {{feedback}}"
+    assert payload["fixPromptTemplateSource"] == f"user:{fix_path}"
+    assert payload["planPromptTemplate"] == "PLAN {{instruction}}"
+    assert payload["planPromptTemplateSource"] == f"user:{plan_path}"
+    assert {(item.field, item.source) for item in applied} == {
+        ("fixPromptTemplate", f"user:{fix_path}"),
+        ("planPromptTemplate", f"user:{plan_path}"),
+    }
+
+
+def test_apply_user_templates_prefers_repo_and_explicit_values():
+    templates.save(
+        "Global plan", "GLOBAL", workflows=("issue_to_pr",),
+        fields=("planPromptTemplate",))
+    repo_path = templates.save(
+        "Repo plan", "REPO", workflows=("issue_to_pr",), repos=("acme/app",),
+        fields=("planPromptTemplate",))
+
+    payload, _ = templates.apply_user_templates(
+        "issue_to_pr", {"repo": "acme/app", "planPromptTemplate": "EXPLICIT"})
+    assert payload["planPromptTemplate"] == "EXPLICIT"
+    assert payload["planPromptTemplateSource"] == "input:inline"
+
+    payload, _ = templates.apply_user_templates(
+        "issue_to_pr", {"repo": "acme/app"})
+    assert payload["planPromptTemplate"] == "REPO"
+    assert payload["planPromptTemplateSource"] == f"user:{repo_path}"
+
+
+def test_apply_user_templates_blocks_ambiguous_role():
+    for name in ("Plan A", "Plan B"):
+        templates.save(name, name, workflows=("address_pr",),
+                       fields=("planPromptTemplate",))
+    try:
+        templates.apply_user_templates("address_pr", {"repo": "acme/app"})
+    except templates.TemplateSelectionError as exc:
+        assert "address_pr.planPromptTemplate" in str(exc)
+        assert "Plan A" in str(exc) and "Plan B" in str(exc)
+    else:
+        raise AssertionError("ambiguous template role did not block the launch")
+
+
+def test_feature_campaign_legacy_template_routes_to_code_prompt():
+    path = templates.save("Campaign", "CODE", workflows=("feature_campaign",))
+    payload, _ = templates.apply_user_templates(
+        "feature_campaign", {"repoPath": "/tmp/repo", "instruction": "ship"})
+    assert payload["codePromptTemplate"] == "CODE"
+    assert payload["codePromptTemplateSource"] == f"user:{path}"
+    assert "designPromptTemplate" not in payload

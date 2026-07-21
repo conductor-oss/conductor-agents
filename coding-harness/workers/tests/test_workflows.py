@@ -127,8 +127,8 @@ def _worker_task_names() -> set[str]:
     """``task_definition_name=`` values from the harness's ``@worker_task``s."""
     pat = re.compile(r'@worker_task\(\s*task_definition_name\s*=\s*"([^"]+)"')
     names: set[str] = set()
-    for mod in ("coding_agent/tasks.py", "gitops/tasks.py"):
-        names.update(pat.findall((WORKERS / mod).read_text()))
+    for mod in WORKERS.glob("*/tasks.py"):
+        names.update(pat.findall(mod.read_text()))
     return names
 
 
@@ -174,6 +174,34 @@ def test_every_simple_task_has_a_taskdef():
     have = set(_taskdef_names())
     missing = sorted(simple - have)
     assert not missing, f"SIMPLE tasks with no local taskdef: {missing}"
+
+
+def test_prompt_template_inputs_always_declare_provenance_source():
+    """A runtime template override is auditable only when its requested source
+    travels with it through the durable workflow input."""
+    for path in WORKFLOW_FILES:
+        workflow = _load(path)
+        declared = set(workflow.get("inputParameters") or [])
+        defaults = workflow.get("inputTemplate") or {}
+        for field in sorted(name for name in declared if name.endswith("PromptTemplate")):
+            source = f"{field}Source"
+            assert source in declared, f"{path.name}: {field} has no {source} input"
+            assert source in defaults, f"{path.name}: {source} has no inputTemplate default"
+
+
+def test_every_coding_agent_exposes_template_override_and_source():
+    for path in WORKFLOW_FILES:
+        for task in _collect_tasks(_load(path)):
+            if task.get("type") != "SIMPLE" or task.get("name") != "coding_agent":
+                continue
+            inputs = task.get("inputParameters") or {}
+            assert "promptTemplate" in inputs, (
+                f"{path.name}: {task.get('taskReferenceName')} has a hardcoded-only prompt"
+            )
+            assert "promptTemplateSource" in inputs, (
+                f"{path.name}: {task.get('taskReferenceName')} forwards a template "
+                "without its source"
+            )
 
 
 # --- 3. sub-workflow references resolve + version pins consistent -----------
@@ -308,7 +336,10 @@ def test_design_docs_loop_wiring():
     assert review_mode and review_mode["type"] == "SWITCH"
     human_branch = {t["taskReferenceName"] for t in review_mode["decisionCases"]["true"]}
     assert {"design_review", "set_human_review"} <= human_branch
-    assert by_ref["design_review"]["type"] == "HUMAN"
+    # v3 approvals use signal-based WAIT tasks so they can be discovered and
+    # acted on through the global approval inbox. Legacy HUMAN tasks are shown
+    # separately because they cannot use the WAIT signaling path.
+    assert by_ref["design_review"]["type"] == "WAIT"
     judge_branch = {t["taskReferenceName"] for t in review_mode["defaultCase"]}
     assert {"design_judge", "set_judge_review"} <= judge_branch
 

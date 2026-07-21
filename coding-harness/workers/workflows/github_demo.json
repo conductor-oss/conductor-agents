@@ -5,26 +5,55 @@
   "ownerEmail": "viren@orkes.io",
   "description": "End-to-end remote demo: clone a GitHub repo, branch, make a coding_agent change, commit, push the branch, and open a PR. Shows the full local-change-to-PR loop using the new remote githops tasks.",
   "inputParameters": [
-    "repoUrl",
-    "instruction",
-    "changeBranch",
-    "base",
     "agent",
-    "model",
-    "prTitle",
+    "base",
+    "changeBranch",
+    "codePromptTemplate",
+    "codePromptTemplateSource",
+    "instruction",
+    "maxBudgetUsd",
     "maxTurns",
-    "maxBudgetUsd"
+    "model",
+    "modelOverrides",
+    "modelPolicy",
+    "modelPolicySha256",
+    "modelPolicySource",
+    "modelProfile",
+    "modelsConfig",
+    "prTitle",
+    "repoUrl"
   ],
   "inputTemplate": {
     "changeBranch": "conductor-harness-change",
     "base": "",
-    "agent": "claude",
+    "agent": "",
     "model": "",
+    "codePromptTemplate": "",
+    "codePromptTemplateSource": "",
     "prTitle": "",
     "maxTurns": 300,
-    "maxBudgetUsd": 50.0
+    "maxBudgetUsd": 50.0,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
   },
   "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
     {
       "name": "git_clone",
       "taskReferenceName": "clone",
@@ -53,7 +82,18 @@
         "agent": "${workflow.input.agent}",
         "model": "${workflow.input.model}",
         "maxTurns": "${workflow.input.maxTurns}",
-        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}"
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "templateKey": "code",
+        "promptTemplate": "${workflow.input.codePromptTemplate}",
+        "promptTemplateSource": "${workflow.input.codePromptTemplateSource}",
+        "modelRole": "code",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelResolution": "${model_policy.output}"
       }
     },
     {

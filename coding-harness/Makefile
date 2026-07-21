@@ -20,7 +20,7 @@ validate: ## Validate workflow and task-definition JSON
 
 lint: ## Compile Python and check shell syntax
 	@$(PYTHON) -m compileall -q tui workers
-	@bash -n run.sh workers/register.sh workers/run_workers.sh
+	@bash -n run.sh scripts/conductor_env.sh workers/register.sh workers/run_workers.sh
 
 test-ci: $(DEPS) ## Run unit tests
 	@$(PY) -m pytest tui/tests workers/tests -q

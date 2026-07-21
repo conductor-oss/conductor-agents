@@ -1,0 +1,697 @@
+{
+  "updateTime": 1784527269635,
+  "name": "openspec_development",
+  "description": "Resolve an apply-ready OpenSpec change from a local path, Git remote, or public HTTPS archive; optionally use a checked-out local spec repository as the isolated implementation worktree; assess, implement, verify, archive, and publish the selected lifecycle branch.",
+  "version": 2,
+  "tasks": [
+    {
+      "name": "openspec_defaults",
+      "taskReferenceName": "openspec_defaults",
+      "inputParameters": {
+        "archiveBranch": "${workflow.input.archiveBranch}",
+        "changeBranch": "${workflow.input.changeBranch}",
+        "changeId": "${workflow.input.changeId}",
+        "evaluatorType": "graaljs",
+        "expression": "(function(){ var suffix = $.workflowId.substring(0, 8); return {changeBranch: ($.changeBranch && $.changeBranch.length > 0) ? $.changeBranch : ('openspec/' + $.changeId + '/' + suffix), archiveBranch: ($.archiveBranch && $.archiveBranch.length > 0) ? $.archiveBranch : ('openspec/archive/' + $.changeId + '/' + suffix)}; })();",
+        "workflowId": "${workflow.workflowId}"
+      },
+      "type": "INLINE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "openspec_source_resolve",
+      "taskReferenceName": "openspec_source",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "changeId": "${workflow.input.changeId}",
+        "repoPath": "${workflow.input.repoPath}",
+        "specPath": "${workflow.input.specPath}",
+        "specSource": "${workflow.input.specSource}",
+        "specSourceType": "${workflow.input.specSourceType}",
+        "useSpecSourceWorkspace": "${workflow.input.useSpecSourceWorkspace}"
+      }
+    },
+    {
+      "name": "workspace_prepare",
+      "taskReferenceName": "openspec_workspace",
+      "inputParameters": {
+        "branch": "${openspec_defaults.output.result.changeBranch}",
+        "preserveExisting": true,
+        "materializedSourcePaths": [
+          "${openspec_source.output.sourceOpenSpecRelativePath}"
+        ],
+        "repoPath": "${openspec_source.output.workspaceRepoPath}",
+        "workflowId": "${workflow.workflowId}",
+        "workspacePath": "${workflow.input.workspacePath}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${openspec_workspace.output.worktreePath}"
+      }
+    },
+    {
+      "name": "openspec_intake",
+      "taskReferenceName": "openspec_intake",
+      "inputParameters": {
+        "changeId": "${workflow.input.changeId}",
+        "repoPath": "${openspec_workspace.output.worktreePath}",
+        "sourceResolution": "${openspec_source.output}",
+        "specPath": "${workflow.input.specPath}",
+        "specRef": "${workflow.input.specRef}",
+        "specSource": "${workflow.input.specSource}",
+        "specSourceType": "${workflow.input.specSourceType}",
+        "specWritebackRef": "${workflow.input.specWritebackRef}",
+        "specWritebackRepo": "${workflow.input.specWritebackRepo}",
+        "workspaceOwned": "${openspec_workspace.output.owned}",
+        "workflowId": "${workflow.workflowId}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "openspec_assess",
+      "inputParameters": {
+        "agent": "${workflow.input.agent}",
+        "contextFiles": [
+          "${openspec_intake.output.contextPath}"
+        ],
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "model": "${workflow.input.model}",
+        "prompt": "Assess the apply-ready OpenSpec change in the authoritative external context. Explore the target repository without editing it. Produce a validated implementation DAG that maps every planned item to OpenSpec task references. Recommend parallel only when every task is dependency-free, file-disjoint, independently testable, and the entire change fits one bounded wave; otherwise recommend campaign. Include migrations, rollout, cross-cutting behavior, environment dependencies, and verification risk. Supplemental operator instruction: ${workflow.input.instruction}",
+        "promptTemplate": "${workflow.input.assessPromptTemplate}",
+        "promptTemplateSource": "${workflow.input.assessPromptTemplateSource}",
+        "schema": {
+          "properties": {
+            "confidence": {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            "rationale": {
+              "type": "string"
+            },
+            "recommendedMode": {
+              "enum": [
+                "parallel",
+                "campaign"
+              ],
+              "type": "string"
+            },
+            "risks": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "tasks": {
+              "items": {
+                "properties": {
+                  "acceptanceCriteria": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "checks": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "dependsOn": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "files": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "openspecTaskRefs": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "id",
+                  "description",
+                  "dependsOn",
+                  "files",
+                  "acceptanceCriteria",
+                  "checks",
+                  "openspecTaskRefs"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "recommendedMode",
+            "confidence",
+            "rationale",
+            "risks",
+            "tasks"
+          ],
+          "type": "object"
+        },
+        "templateKey": "openspec_assess",
+        "tools": [
+          "Read",
+          "Grep",
+          "Glob"
+        ],
+        "worktreePath": "${openspec_workspace.output.worktreePath}",
+        "modelRole": "plan",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelResolution": "${model_policy.output}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "openspec_route",
+      "taskReferenceName": "openspec_route",
+      "inputParameters": {
+        "assessment": "${openspec_assess.output.structured}",
+        "changeId": "${workflow.input.changeId}",
+        "executionMode": "${workflow.input.executionMode}",
+        "maxParallelism": "${workflow.input.maxParallelism}",
+        "maxTasks": "${workflow.input.maxTasks}",
+        "supplementalInstruction": "${workflow.input.instruction}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "store_route",
+      "taskReferenceName": "store_route",
+      "inputParameters": {
+        "selectedMode": "${openspec_route.output.selectedMode}"
+      },
+      "type": "SET_VARIABLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "development_route",
+      "taskReferenceName": "development_route",
+      "inputParameters": {
+        "mode": "${openspec_route.output.selectedMode}"
+      },
+      "type": "SWITCH",
+      "decisionCases": {
+        "campaign": [
+          {
+            "name": "feature_campaign",
+            "taskReferenceName": "openspec_campaign",
+            "inputParameters": {
+              "changeBranch": "${openspec_defaults.output.result.changeBranch}",
+              "checksConfig": "${workflow.input.checksConfig}",
+              "codeAgent": "${workflow.input.agent}",
+              "codeModel": "${workflow.input.model}",
+              "codePromptTemplate": "${workflow.input.codePromptTemplate}",
+              "codePromptTemplateSource": "${workflow.input.codePromptTemplateSource}",
+              "finalProfile": "${workflow.input.finalProfile}",
+              "importedDesignLocation": "${openspec_intake.output.contextPath}",
+              "importedPlan": "${openspec_route.output.plan}",
+              "instruction": "${openspec_route.output.instruction}",
+              "keepWorktree": true,
+              "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+              "maxParallelism": "${workflow.input.maxParallelism}",
+              "maxTasks": "${workflow.input.maxTasks}",
+              "maxTurns": "${workflow.input.maxTurns}",
+              "maxWaves": "${workflow.input.maxWaves}",
+              "repoPath": "${openspec_workspace.output.worktreePath}",
+              "reviewAgent": "${workflow.input.agent}",
+              "reviewModel": "${workflow.input.model}",
+              "reviewPromptTemplate": "${workflow.input.reviewPromptTemplate}",
+              "reviewPromptTemplateSource": "${workflow.input.reviewPromptTemplateSource}",
+              "specContextPath": "${openspec_intake.output.contextPath}",
+              "useImportedPlan": true,
+              "workspacePath": "${openspec_workspace.output.worktreePath}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}"
+            },
+            "type": "SUB_WORKFLOW",
+            "decisionCases": {},
+            "defaultCase": [],
+            "subWorkflowParam": {
+              "name": "feature_campaign",
+                "version": 2
+            }
+          },
+          {
+            "name": "campaign_state_result",
+            "taskReferenceName": "campaign_state_result",
+            "inputParameters": {
+              "childOutput": "${openspec_campaign.output}",
+              "childWorkflow": "feature_campaign",
+              "verifiedBranch": "${openspec_campaign.output.verifiedBranch}"
+            },
+            "type": "SET_VARIABLE",
+            "decisionCases": {},
+            "defaultCase": []
+          }
+        ],
+        "parallel": [
+          {
+            "name": "code_parallel",
+            "taskReferenceName": "openspec_parallel",
+            "inputParameters": {
+              "changeBranch": "${openspec_defaults.output.result.changeBranch}",
+              "codeAgent": "${workflow.input.agent}",
+              "codeModel": "${workflow.input.model}",
+              "codePromptTemplate": "${workflow.input.codePromptTemplate}",
+              "codePromptTemplateSource": "${workflow.input.codePromptTemplateSource}",
+              "instruction": "${openspec_route.output.instruction}",
+              "keepWorktree": true,
+              "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+              "maxSubtasks": "${workflow.input.maxParallelism}",
+              "maxTurns": "${workflow.input.maxTurns}",
+              "precomputedPlan": "${openspec_route.output.parallelPlan}",
+              "repoPath": "${openspec_workspace.output.worktreePath}",
+              "specContextPath": "${openspec_intake.output.contextPath}",
+              "usePrecomputedPlan": true,
+              "workspacePath": "${openspec_workspace.output.worktreePath}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}"
+            },
+            "type": "SUB_WORKFLOW",
+            "decisionCases": {},
+            "defaultCase": [],
+            "subWorkflowParam": {
+              "name": "code_parallel",
+                "version": 3
+            }
+          },
+          {
+            "name": "parallel_state",
+            "taskReferenceName": "parallel_state",
+            "inputParameters": {
+              "childOutput": "${openspec_parallel.output}",
+              "childWorkflow": "code_parallel",
+              "verifiedBranch": "${openspec_parallel.output.changeBranch}"
+            },
+            "type": "SET_VARIABLE",
+            "decisionCases": {},
+            "defaultCase": []
+          }
+        ]
+      },
+      "defaultCase": [],
+      "evaluatorType": "value-param",
+      "expression": "mode"
+    },
+    {
+      "name": "campaign_checks",
+      "taskReferenceName": "openspec_checks",
+      "inputParameters": {
+        "attachedConfirmed": false,
+        "configPath": "${workflow.input.checksConfig}",
+        "phase": "final",
+        "profile": "${workflow.input.finalProfile}",
+        "repoPath": "${openspec_workspace.output.worktreePath}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "openspec_semantic_verify",
+      "inputParameters": {
+        "agent": "${workflow.input.agent}",
+        "contextFiles": [
+          "${openspec_intake.output.contextPath}"
+        ],
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "model": "${workflow.input.model}",
+        "prompt": "Perform a read-only semantic verification of the implemented repository against every requirement, scenario, design artifact, and task in the authoritative OpenSpec context. Inspect the actual diff and test evidence. Pass only when the implementation is complete and consistent; enumerate precise findings and requirement-level results. Child workflow: ${workflow.variables.childWorkflow}. Child result: ${workflow.variables.childOutput}. Checks: ${openspec_checks.output}",
+        "promptTemplate": "${workflow.input.verificationPromptTemplate}",
+        "promptTemplateSource": "${workflow.input.verificationPromptTemplateSource}",
+        "schema": {
+          "properties": {
+            "findings": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "passed": {
+              "type": "boolean"
+            },
+            "requirementResults": {
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "passed",
+            "findings",
+            "requirementResults"
+          ],
+          "type": "object"
+        },
+        "templateKey": "openspec_verify",
+        "tools": [
+          "Read",
+          "Grep",
+          "Glob"
+        ],
+        "worktreePath": "${openspec_workspace.output.worktreePath}",
+        "modelRole": "review",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelResolution": "${model_policy.output}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "openspec_verify",
+      "taskReferenceName": "openspec_verify",
+      "inputParameters": {
+        "checks": "${openspec_checks.output}",
+        "child": "${workflow.variables.childOutput}",
+        "selectedMode": "${workflow.variables.selectedMode}",
+        "semantic": "${openspec_semantic_verify.output.structured}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "verified_gate",
+      "taskReferenceName": "verified_gate",
+      "inputParameters": {
+        "passed": "${openspec_verify.output.passed}"
+      },
+      "type": "SWITCH",
+      "decisionCases": {
+        "true": [
+          {
+            "name": "openspec_finalize",
+            "taskReferenceName": "openspec_finalize",
+            "inputParameters": {
+              "base": "${workflow.input.base}",
+              "branch": "${openspec_defaults.output.result.archiveBranch}",
+              "changeId": "${workflow.input.changeId}",
+              "forceAddPaths": "${openspec_intake.output.forceAddPaths}",
+              "publish": "${openspec_intake.output.publishOnVerify}",
+              "sameRepo": "${openspec_intake.output.sameRepo}",
+              "writebackProjectPath": "${openspec_intake.output.writebackProjectPath}",
+              "writebackRepoPath": "${openspec_intake.output.writebackRepoPath}"
+            },
+            "type": "SIMPLE",
+            "decisionCases": {},
+            "defaultCase": []
+          },
+          {
+            "name": "publication_gate",
+            "taskReferenceName": "publication_gate",
+            "inputParameters": {
+              "publish": "${openspec_finalize.output.publish}"
+            },
+            "type": "SWITCH",
+            "decisionCases": {
+              "true": [
+                {
+                  "name": "git_push",
+                  "taskReferenceName": "openspec_push",
+                  "inputParameters": {
+                    "branch": "${openspec_finalize.output.branch}",
+                    "repoPath": "${openspec_finalize.output.repoPath}",
+                    "setUpstream": true
+                  },
+                  "type": "SIMPLE",
+                  "decisionCases": {},
+                  "defaultCase": []
+                },
+                {
+                  "name": "pr_create",
+                  "taskReferenceName": "openspec_pr",
+                  "inputParameters": {
+                    "base": "${openspec_finalize.output.base}",
+                    "body": "${openspec_finalize.output.body}",
+                    "draft": true,
+                    "head": "${openspec_finalize.output.branch}",
+                    "repoPath": "${openspec_finalize.output.repoPath}",
+                    "title": "${openspec_finalize.output.title}"
+                  },
+                  "type": "SIMPLE",
+                  "decisionCases": {},
+                  "defaultCase": []
+                },
+                {
+                  "name": "published_state",
+                  "taskReferenceName": "published_state",
+                  "inputParameters": {
+                    "archive": "${openspec_finalize.output}",
+                    "outcome": "verified",
+                    "prNumber": "${openspec_pr.output.number}",
+                    "prUrl": "${openspec_pr.output.url}"
+                  },
+                  "type": "SET_VARIABLE",
+                  "decisionCases": {},
+                  "defaultCase": []
+                }
+              ]
+            },
+            "defaultCase": [
+              {
+                "name": "local_archive_state",
+                "taskReferenceName": "local_archive_state",
+                "inputParameters": {
+                  "archive": "${openspec_finalize.output}",
+                  "outcome": "verified"
+                },
+                "type": "SET_VARIABLE",
+                "decisionCases": {},
+                "defaultCase": []
+              }
+            ],
+            "evaluatorType": "value-param",
+            "expression": "publish"
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "verification_failed",
+          "taskReferenceName": "verification_failed",
+          "inputParameters": {
+            "outcome": "needs_attention"
+          },
+          "type": "SET_VARIABLE",
+          "decisionCases": {},
+          "defaultCase": []
+        }
+      ],
+      "evaluatorType": "value-param",
+      "expression": "passed"
+    },
+    {
+      "name": "openspec_usage",
+      "taskReferenceName": "openspec_usage",
+      "inputParameters": {
+        "assessment": "${openspec_assess.output}",
+        "child": "${workflow.variables.childOutput}",
+        "queryExpression": "def num: if type == \"number\" then . else 0 end; {totalTokens: ((.assessment.tokenUsed | num) + (.child.totalTokens | num) + (.verification.tokenUsed | num)), totalCostUsd: ((.assessment.costUsd | num) + (.child.totalCostUsd | num) + (.verification.costUsd | num))}",
+        "verification": "${openspec_semantic_verify.output}"
+      },
+      "type": "JSON_JQ_TRANSFORM",
+      "decisionCases": {},
+      "defaultCase": [],
+      "optional": true
+    },
+    {
+      "name": "workspace_cleanup",
+      "taskReferenceName": "openspec_workspace_cleanup",
+      "inputParameters": {
+        "branch": "${openspec_workspace.output.branch}",
+        "keepWorktree": "${workflow.input.keepWorktree}",
+        "outcome": "${workflow.variables.outcome}",
+        "owned": "${openspec_workspace.output.owned}",
+        "sourceRepoPath": "${openspec_workspace.output.sourceRepoPath}",
+        "worktreePath": "${openspec_workspace.output.worktreePath}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    }
+  ],
+  "inputParameters": [
+    "agent",
+    "archiveBranch",
+    "assessPromptTemplate",
+    "assessPromptTemplateSource",
+    "base",
+    "changeBranch",
+    "changeId",
+    "checksConfig",
+    "codePromptTemplate",
+    "codePromptTemplateSource",
+    "executionMode",
+    "finalProfile",
+    "instruction",
+    "keepWorktree",
+    "maxBudgetUsd",
+    "maxParallelism",
+    "maxTasks",
+    "maxTurns",
+    "maxWaves",
+    "model",
+    "modelOverrides",
+    "modelPolicy",
+    "modelPolicySha256",
+    "modelPolicySource",
+    "modelProfile",
+    "modelsConfig",
+    "repoPath",
+    "reviewPromptTemplate",
+    "reviewPromptTemplateSource",
+    "specPath",
+    "specRef",
+    "specSource",
+    "specSourceType",
+    "specWritebackRef",
+    "specWritebackRepo",
+    "useSpecSourceWorkspace",
+    "verificationPromptTemplate",
+    "verificationPromptTemplateSource",
+    "workspacePath"
+  ],
+  "outputParameters": {
+    "archive": "${workflow.variables.archive}",
+    "assessmentPromptTemplate": "${openspec_assess.output.promptTemplate}",
+    "changeId": "${workflow.input.changeId}",
+    "checks": "${openspec_checks.output}",
+    "child": "${workflow.variables.childOutput}",
+    "contextPath": "${openspec_intake.output.contextPath}",
+    "ignoredSourceChanges": "${openspec_workspace.output.ignoredSourceChanges}",
+    "materializedSourcePaths": "${openspec_intake.output.materializedSourcePaths}",
+    "outcome": "${workflow.variables.outcome}",
+    "plan": "${openspec_route.output.plan}",
+    "prNumber": "${workflow.variables.prNumber}",
+    "prUrl": "${workflow.variables.prUrl}",
+    "selectedMode": "${workflow.variables.selectedMode}",
+    "selectedWorkflow": "${workflow.variables.childWorkflow}",
+    "source": "${openspec_intake.output.provenance}",
+    "sourceRepoPath": "${openspec_workspace.output.sourceRepoPath}",
+    "sourceWorkspace": "${openspec_source.output}",
+    "totalCostUsd": "${openspec_usage.output.result.totalCostUsd}",
+    "totalTokens": "${openspec_usage.output.result.totalTokens}",
+    "verification": "${openspec_verify.output}",
+    "verificationPromptTemplate": "${openspec_semantic_verify.output.promptTemplate}",
+    "verifiedBranch": "${workflow.variables.verifiedBranch}",
+    "workspaceRetained": "${openspec_workspace_cleanup.output.retained}",
+    "worktreePath": "${openspec_workspace.output.worktreePath}"
+  },
+  "schemaVersion": 2,
+  "restartable": true,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "variables": {
+    "archive": {},
+    "childOutput": {},
+    "childWorkflow": "",
+    "outcome": "running",
+    "prNumber": 0,
+    "prUrl": "",
+    "selectedMode": "",
+    "verifiedBranch": ""
+  },
+  "inputTemplate": {
+    "agent": "",
+    "archiveBranch": "",
+    "assessPromptTemplate": "",
+    "assessPromptTemplateSource": "",
+    "base": "main",
+    "changeBranch": "",
+    "checksConfig": ".conductor-code/checks.json",
+    "codePromptTemplate": "",
+    "codePromptTemplateSource": "",
+    "executionMode": "auto",
+    "finalProfile": "",
+    "instruction": "",
+    "keepWorktree": true,
+    "maxBudgetUsd": 50,
+    "maxParallelism": 6,
+    "maxTasks": 25,
+    "maxTurns": 500,
+    "maxWaves": 20,
+    "model": "",
+    "repoPath": "",
+    "reviewPromptTemplate": "",
+    "reviewPromptTemplateSource": "",
+    "specPath": "",
+    "specRef": "",
+    "specSourceType": "auto",
+    "specWritebackRef": "",
+    "specWritebackRepo": "",
+    "useSpecSourceWorkspace": false,
+    "verificationPromptTemplate": "",
+    "verificationPromptTemplateSource": "",
+    "workspacePath": "",
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "overwriteTags": false
+}

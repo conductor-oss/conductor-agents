@@ -1,0 +1,13 @@
+{
+  "name": "github_automation_scan",
+  "description": "Scan GitHub for eligible review, feedback, or labeled issue revisions and build bounded dynamic dispatch tasks.",
+  "retryCount": 2,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
+  "retryDelaySeconds": 10,
+  "responseTimeoutSeconds": 120,
+  "pollTimeoutSeconds": 120,
+  "timeoutSeconds": 600,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "concurrentExecLimit": 3,
+  "ownerEmail": "harness@conductor.local"
+}

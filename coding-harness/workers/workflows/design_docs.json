@@ -4,100 +4,267 @@
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
   "description": "Iteratively create and review coherent design docs before coding. Approval ends the loop; feedback drives the next pass; the bounded loop fails closed if no design is approved.",
-  "inputParameters": ["repoPath", "instruction", "designDir", "designAgent", "designModel", "designPromptTemplate", "designMaxTurns", "designMaxBudgetUsd", "humanApproval", "designMaxIterations"],
+  "inputParameters": [
+    "designAgent",
+    "designDir",
+    "designMaxBudgetUsd",
+    "designMaxIterations",
+    "designMaxTurns",
+    "designModel",
+    "designPromptTemplate",
+    "designPromptTemplateSource",
+    "humanApproval",
+    "instruction",
+    "modelOverrides",
+    "modelPolicy",
+    "modelPolicySha256",
+    "modelPolicySource",
+    "modelProfile",
+    "modelsConfig",
+    "repoPath"
+  ],
   "inputTemplate": {
-    "designDir": "docs/design", "designAgent": "claude", "designModel": "", "designPromptTemplate": "",
-    "designMaxTurns": 500, "designMaxBudgetUsd": 50.0, "humanApproval": true, "designMaxIterations": 5
+    "designDir": "docs/design",
+    "designAgent": "",
+    "designModel": "",
+    "designPromptTemplate": "",
+    "designPromptTemplateSource": "",
+    "designMaxTurns": 500,
+    "designMaxBudgetUsd": 50.0,
+    "humanApproval": true,
+    "designMaxIterations": 5,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
   },
   "variables": {
-    "designApproved": false, "designFeedback": "", "designReview": "", "lastFilesChanged": [],
-    "lastAgent": "", "lastCostUsd": 0, "lastTokenUsed": 0, "lastSessionId": ""
+    "designApproved": false,
+    "designFeedback": "",
+    "designReview": "",
+    "lastFilesChanged": [],
+    "lastAgent": "",
+    "lastCostUsd": 0,
+    "lastTokenUsed": 0,
+    "lastSessionId": ""
   },
   "tasks": [
     {
-      "name": "design_loop", "taskReferenceName": "design_loop", "type": "DO_WHILE", "evaluatorType": "graaljs",
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "design_loop",
+      "taskReferenceName": "design_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
       "loopCondition": "(function(){ return $.design_loop['iteration'] < $.max_iterations && $.approved !== true && $.approved !== 'true'; })();",
       "inputParameters": {
-        "design_loop": "${design_loop.output}", "max_iterations": "${workflow.input.designMaxIterations}",
+        "design_loop": "${design_loop.output}",
+        "max_iterations": "${workflow.input.designMaxIterations}",
         "approved": "${workflow.variables.designApproved}"
       },
       "loopOver": [
         {
-          "name": "coding_agent", "taskReferenceName": "design", "type": "SIMPLE",
+          "name": "coding_agent",
+          "taskReferenceName": "design",
+          "type": "SIMPLE",
           "inputParameters": {
-            "worktreePath": "${workflow.input.repoPath}", "agent": "${workflow.input.designAgent}", "model": "${workflow.input.designModel}",
-            "maxTurns": "${workflow.input.designMaxTurns}", "maxBudgetUsd": "${workflow.input.designMaxBudgetUsd}",
-            "templateKey": "design", "promptTemplate": "${workflow.input.designPromptTemplate}",
-            "promptContext": {"instruction": "${workflow.input.instruction}", "designDir": "${workflow.input.designDir}", "feedback": "${workflow.variables.designFeedback}"},
-            "prompt": "You are a senior software architect. Create or revise mutually consistent GitHub-flavored markdown design documents under ${workflow.input.designDir}/. Read existing design docs first. architecture.md is the source of truth for complete file layout, shared contracts, exact types, interfaces, data model, and naming conventions. Write only markdown design docs; do not write application code.\n\nRequested change:\n${workflow.input.instruction}\n\nPrevious review feedback (empty on first pass):\n${workflow.variables.designFeedback}\n\nAddress every feedback item, then summarize the design and files changed."
+            "worktreePath": "${workflow.input.repoPath}",
+            "agent": "${workflow.input.designAgent}",
+            "model": "${workflow.input.designModel}",
+            "maxTurns": "${workflow.input.designMaxTurns}",
+            "maxBudgetUsd": "${workflow.input.designMaxBudgetUsd}",
+            "templateKey": "design",
+            "promptTemplate": "${workflow.input.designPromptTemplate}",
+            "promptTemplateSource": "${workflow.input.designPromptTemplateSource}",
+            "promptContext": {
+              "instruction": "${workflow.input.instruction}",
+              "designDir": "${workflow.input.designDir}",
+              "feedback": "${workflow.variables.designFeedback}"
+            },
+            "prompt": "You are a senior software architect. Create or revise mutually consistent GitHub-flavored markdown design documents under ${workflow.input.designDir}/. Read existing design docs first. architecture.md is the source of truth for complete file layout, shared contracts, exact types, interfaces, data model, and naming conventions. Write only markdown design docs; do not write application code.\n\nRequested change:\n${workflow.input.instruction}\n\nPrevious review feedback (empty on first pass):\n${workflow.variables.designFeedback}\n\nAddress every feedback item, then summarize the design and files changed.",
+            "modelRole": "design",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}",
+            "modelResolution": "${model_policy.output}"
           }
         },
         {
-          "name": "capture_design_result", "taskReferenceName": "capture_design_result", "type": "SET_VARIABLE",
+          "name": "capture_design_result",
+          "taskReferenceName": "capture_design_result",
+          "type": "SET_VARIABLE",
           "inputParameters": {
-            "lastFilesChanged": "${design.output.filesChanged}", "lastAgent": "${design.output.agent}", "lastCostUsd": "${design.output.costUsd}",
-            "lastTokenUsed": "${design.output.tokenUsed}", "lastSessionId": "${design.output.sessionId}"
+            "lastFilesChanged": "${design.output.filesChanged}",
+            "lastAgent": "${design.output.agent}",
+            "lastCostUsd": "${design.output.costUsd}",
+            "lastTokenUsed": "${design.output.tokenUsed}",
+            "lastSessionId": "${design.output.sessionId}"
           }
         },
         {
-          "name": "review_mode", "taskReferenceName": "review_mode", "type": "SWITCH", "evaluatorType": "value-param", "expression": "humanApproval",
-          "inputParameters": {"humanApproval": "${workflow.input.humanApproval}"},
+          "name": "review_mode",
+          "taskReferenceName": "review_mode",
+          "type": "SWITCH",
+          "evaluatorType": "value-param",
+          "expression": "humanApproval",
+          "inputParameters": {
+            "humanApproval": "${workflow.input.humanApproval}"
+          },
           "decisionCases": {
             "true": [
               {
-                "name": "design_review", "taskReferenceName": "design_review", "type": "HUMAN",
+                "name": "design_review",
+                "taskReferenceName": "design_review",
+                "type": "WAIT",
                 "inputParameters": {
-                  "workflow": "design_docs", "repoPath": "${workflow.input.repoPath}", "designDir": "${workflow.input.designDir}",
-                  "draft": {"kind": "design", "designDir": "${workflow.input.designDir}", "filesChanged": "${design.output.filesChanged}", "summary": "${design.output.result}"}
+                  "workflow": "design_docs",
+                  "repoPath": "${workflow.input.repoPath}",
+                  "designDir": "${workflow.input.designDir}",
+                  "draft": {
+                    "kind": "design",
+                    "designDir": "${workflow.input.designDir}",
+                    "filesChanged": "${design.output.filesChanged}",
+                    "summary": "${design.output.result}"
+                  }
                 }
               },
               {
-                "name": "set_human_review", "taskReferenceName": "set_human_review", "type": "SET_VARIABLE",
-                "inputParameters": {"designApproved": "${design_review.output.approved}", "designFeedback": "${design_review.output.feedback}", "designReview": "human"}
+                "name": "set_human_review",
+                "taskReferenceName": "set_human_review",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "designApproved": "${design_review.output.approved}",
+                  "designFeedback": "${design_review.output.feedback}",
+                  "designReview": "human"
+                }
               }
             ]
           },
           "defaultCase": [
             {
-              "name": "coding_agent", "taskReferenceName": "design_judge", "type": "SIMPLE",
+              "name": "coding_agent",
+              "taskReferenceName": "design_judge",
+              "type": "SIMPLE",
               "inputParameters": {
                 "worktreePath": "${workflow.input.repoPath}",
                 "agent": "${workflow.input.designAgent}",
                 "model": "${workflow.input.designModel}",
                 "maxTurns": "${workflow.input.designMaxTurns}",
                 "maxBudgetUsd": "${workflow.input.designMaxBudgetUsd}",
-                "tools": ["Read", "Grep", "Glob"],
+                "templateKey": "design-judge",
+                "promptTemplate": "",
+                "promptTemplateSource": "builtin:design-judge",
+                "tools": [
+                  "Read",
+                  "Grep",
+                  "Glob"
+                ],
                 "schema": {
                   "type": "object",
-                  "required": ["approved", "feedback"],
+                  "required": [
+                    "approved",
+                    "feedback"
+                  ],
                   "properties": {
-                    "approved": {"type": "boolean"},
-                    "feedback": {"type": "string"}
+                    "approved": {
+                      "type": "boolean"
+                    },
+                    "feedback": {
+                      "type": "string"
+                    }
                   }
                 },
-                "prompt": "Act as a read-only software design judge. Read the design documents under ${workflow.input.designDir}/, especially architecture.md, and compare them with the requested change below. Judge whether the design is complete, internally consistent, implementable, testable, and ready for parallel coding. Approve only when shared contracts, exact types, file layout, data model, APIs, failure handling, migration/compatibility concerns, and testing are sufficiently specified. Return the required structured output with approved (boolean) and concise actionable feedback (string). Do not edit any files.\n\nRequested change:\n${workflow.input.instruction}\n\nAuthor summary:\n${design.output.result}"
+                "prompt": "Act as a read-only software design judge. Read the design documents under ${workflow.input.designDir}/, especially architecture.md, and compare them with the requested change below. Judge whether the design is complete, internally consistent, implementable, testable, and ready for parallel coding. Approve only when shared contracts, exact types, file layout, data model, APIs, failure handling, migration/compatibility concerns, and testing are sufficiently specified. Return the required structured output with approved (boolean) and concise actionable feedback (string). Do not edit any files.\n\nRequested change:\n${workflow.input.instruction}\n\nAuthor summary:\n${design.output.result}",
+                "modelRole": "judge",
+                "modelProfile": "${workflow.input.modelProfile}",
+                "modelPolicy": "${workflow.input.modelPolicy}",
+                "modelPolicySource": "${workflow.input.modelPolicySource}",
+                "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                "modelsConfig": "${workflow.input.modelsConfig}",
+                "modelOverrides": "${workflow.input.modelOverrides}",
+                "modelResolution": "${model_policy.output}"
               }
             },
             {
-              "name": "set_judge_review", "taskReferenceName": "set_judge_review", "type": "SET_VARIABLE",
-              "inputParameters": {"designApproved": "${design_judge.output.structured.approved}", "designFeedback": "${design_judge.output.structured.feedback}", "designReview": "agent"}
+              "name": "set_judge_review",
+              "taskReferenceName": "set_judge_review",
+              "type": "SET_VARIABLE",
+              "inputParameters": {
+                "designApproved": "${design_judge.output.structured.approved}",
+                "designFeedback": "${design_judge.output.structured.feedback}",
+                "designReview": "agent"
+              }
             }
           ]
         }
       ]
     },
     {
-      "name": "approval_result", "taskReferenceName": "approval_result", "type": "SWITCH", "evaluatorType": "value-param", "expression": "approved",
-      "inputParameters": {"approved": "${workflow.variables.designApproved}"},
-      "decisionCases": {
-        "true": [{"name": "commit", "taskReferenceName": "commit_design", "type": "SIMPLE", "inputParameters": {"repoPath": "${workflow.input.repoPath}", "message": "approved design docs (${workflow.input.designDir})"}}]
+      "name": "approval_result",
+      "taskReferenceName": "approval_result",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "approved",
+      "inputParameters": {
+        "approved": "${workflow.variables.designApproved}"
       },
-      "defaultCase": [{"name": "design_not_approved", "taskReferenceName": "design_not_approved", "type": "TERMINATE", "inputParameters": {"terminationStatus": "FAILED", "terminationReason": "Design was not approved within ${workflow.input.designMaxIterations} iterations.", "workflowOutput": {"approved": false, "feedback": "${workflow.variables.designFeedback}"}}}]
+      "decisionCases": {
+        "true": [
+          {
+            "name": "commit",
+            "taskReferenceName": "commit_design",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "repoPath": "${workflow.input.repoPath}",
+              "message": "approved design docs (${workflow.input.designDir})"
+            }
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "design_not_approved",
+          "taskReferenceName": "design_not_approved",
+          "type": "TERMINATE",
+          "inputParameters": {
+            "terminationStatus": "FAILED",
+            "terminationReason": "Design was not approved within ${workflow.input.designMaxIterations} iterations.",
+            "workflowOutput": {
+              "approved": false,
+              "feedback": "${workflow.variables.designFeedback}"
+            }
+          }
+        }
+      ]
     }
   ],
   "outputParameters": {
-    "approved": "${workflow.variables.designApproved}", "reviewMode": "${workflow.variables.designReview}", "feedback": "${workflow.variables.designFeedback}",
-    "iterations": "${design_loop.output.iteration}", "filesChanged": "${workflow.variables.lastFilesChanged}", "agent": "${workflow.variables.lastAgent}",
-    "costUsd": "${workflow.variables.lastCostUsd}", "tokenUsed": "${workflow.variables.lastTokenUsed}", "sessionId": "${workflow.variables.lastSessionId}", "designCommit": "${commit_design.output.commit}"
+    "approved": "${workflow.variables.designApproved}",
+    "reviewMode": "${workflow.variables.designReview}",
+    "feedback": "${workflow.variables.designFeedback}",
+    "iterations": "${design_loop.output.iteration}",
+    "filesChanged": "${workflow.variables.lastFilesChanged}",
+    "agent": "${workflow.variables.lastAgent}",
+    "costUsd": "${workflow.variables.lastCostUsd}",
+    "tokenUsed": "${workflow.variables.lastTokenUsed}",
+    "sessionId": "${workflow.variables.lastSessionId}",
+    "designCommit": "${commit_design.output.commit}"
   }
 }

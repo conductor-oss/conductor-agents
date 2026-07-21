@@ -21,12 +21,14 @@ GitHub issue ──issue_to_pr──▶ pull request ──pr_review──▶ re
                                   └────────address_pr────────┘
 
 Local repository ──code_parallel──▶ planned parallel changes ──▶ merged branch
+                 └─local_review──▶ read-only findings before commit
 ```
 
 ## Next steps
 
 - [Quickstart](quickstart.md) — launch the local stack and run a first workflow.
 - [Workflow guide](workflows.md) — choose a workflow, backend, design mode, and publication gate.
+- [Workflow input reference](workflow-inputs.md) — required and optional parameters, including exact defaults.
 - [Worker and backend reference](CODING_AGENT_WORKER.md) — inputs, guardrails, worker internals,
   prompt templates, and Git/GitHub operations.
 - [Repository README](https://github.com/conductor-oss/conductor-agents/blob/main/coding-harness/README.md) — TUI setup and the complete documentation map.

@@ -54,7 +54,7 @@ class FakeClient:
     async def retry(self, wid):
         pass
 
-    async def signal_task(self, wid, task_ref, status, output=None):
+    async def signal_task(self, wid, task_ref, status, output=None, *, task_type=None):
         self.signals.append((wid, task_ref, status, output))
 
     async def task_logs(self, task_id):
@@ -68,6 +68,199 @@ def _app(client) -> HarnessApp:
     # start on the dashboard for these screen tests (chat is the real default landing)
     return HarnessApp(Settings(server_url="http://x/api", notify=False), client=client,
                       start_dashboard=True)
+
+
+class FakeWorkerSupervisor:
+    def __init__(self):
+        self.started = False
+        self.stopped = False
+        self.last_error = None
+
+    async def start(self):
+        self.started = True
+        return True
+
+    async def stop(self):
+        self.stopped = True
+
+
+@pytest.mark.asyncio
+async def test_app_starts_and_stops_worker_supervisor():
+    supervisor = FakeWorkerSupervisor()
+    app = HarnessApp(
+        Settings(server_url="http://x/api", notify=False),
+        client=FakeClient(),
+        worker_supervisor=supervisor,
+        start_dashboard=True,
+    )
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0.1)
+        assert supervisor.started
+        assert not supervisor.stopped
+    assert supervisor.stopped
+
+
+@pytest.mark.asyncio
+async def test_global_approval_poller_notifies_at_startup_and_for_new_tasks(monkeypatch):
+    first = api.PendingApproval(
+        task_id="gate-1", task_ref="review_gate", task_type="WAIT",
+        workflow_id="wf-1", workflow="pr_review",
+        input={"repo": "acme/app", "draft": {"summary": "first"}}, scheduled_ms=1000,
+    )
+    second = api.PendingApproval(
+        task_id="gate-2", task_ref="address_gate", task_type="WAIT",
+        workflow_id="wf-2", workflow="address_pr",
+        input={"repo": "acme/app", "draft": {"summary": "second"}}, scheduled_ms=2000,
+    )
+
+    class ApprovalClient(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.poll = 0
+
+        async def pending_approvals(self):
+            self.poll += 1
+            return [first] if self.poll == 1 else [second, first]
+
+    sent = []
+    monkeypatch.setattr("tui.notify.notify",
+                        lambda *args, **kwargs: sent.append((args, kwargs)))
+    app = HarnessApp(Settings(server_url="http://x/api", notify=True),
+                     client=ApprovalClient(), start_dashboard=True)
+
+    await app.poll_approvals()
+    await app.poll_approvals()
+
+    assert sent[0][0][1:] == ("Conductor approvals", "1 approval waiting")
+    assert sent[0][1] == {"open_approvals": True}
+    assert sent[1][0][1:3] == ("Approval requested", "address_pr · acme/app · address_gate")
+    assert sent[1][0][3].endswith("/execution/wf-2")
+    assert sent[1][1] == {"open_approvals": True}
+
+
+@pytest.mark.asyncio
+async def test_approval_inbox_enter_opens_selected_wait():
+    item = api.PendingApproval(
+        task_id="gate-1", task_ref="review_gate", task_type="WAIT",
+        workflow_id="wf-1", workflow="pr_review",
+        input={"repo": "acme/app", "prNumber": 7,
+               "draft": {"summary": "Review is ready", "verdict": "comment"}},
+        scheduled_ms=1000,
+    )
+
+    class ApprovalClient(FakeClient):
+        async def pending_approvals(self):
+            return [item]
+
+    from tui.screens.approvals import ApprovalInbox
+    from tui.widgets.modals import ApprovalModal
+
+    app = _app(ApprovalClient())
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause(0.2)
+        app.push_screen(ApprovalInbox())
+        await pilot.pause(0.5)
+        table = app.screen.query_one("#approval_table")
+        assert table.row_count == 1
+        table.focus()
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert isinstance(app.screen, ApprovalModal)
+
+
+@pytest.mark.asyncio
+async def test_notification_click_opens_inbox_when_multiple_approvals_wait():
+    items = [
+        api.PendingApproval(
+            task_id=f"gate-{number}", task_ref="review_gate", task_type="WAIT",
+            workflow_id=f"wf-{number}", workflow="pr_review",
+            input={"repo": "acme/app", "prNumber": number,
+                   "draft": {"summary": f"Review {number}"}}, scheduled_ms=number,
+        )
+        for number in (7, 8)
+    ]
+
+    class ApprovalClient(FakeClient):
+        async def pending_approvals(self):
+            return items
+
+    from tui.screens.approvals import ApprovalInbox
+
+    app = _app(ApprovalClient())
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause(0.2)
+        app.open_approvals_from_notification()
+        await pilot.pause(0.5)
+        assert isinstance(app.screen, ApprovalInbox)
+        assert app.screen.query_one("#approval_table").row_count == 2
+
+
+@pytest.mark.asyncio
+async def test_notification_click_auto_opens_only_actionable_approval():
+    actionable = api.PendingApproval(
+        task_id="gate-1", task_ref="review_gate", task_type="WAIT",
+        workflow_id="wf-1", workflow="pr_review",
+        input={"repo": "acme/app", "prNumber": 7,
+               "draft": {"summary": "Review is ready", "verdict": "comment"}},
+        scheduled_ms=1000,
+    )
+    legacy = api.PendingApproval(
+        task_id="legacy-1", task_ref="legacy_gate", task_type="HUMAN",
+        workflow_id="wf-old", workflow="pr_review", input={}, scheduled_ms=500,
+    )
+
+    class ApprovalClient(FakeClient):
+        async def pending_approvals(self):
+            return [legacy, actionable]
+
+    from tui.widgets.modals import ApprovalModal
+
+    app = _app(ApprovalClient())
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause(0.2)
+        app.open_approvals_from_notification()
+        await pilot.pause(0.6)
+        assert isinstance(app.screen, ApprovalModal)
+
+
+@pytest.mark.asyncio
+async def test_factory_top_bar_shows_title_and_operational_stats():
+    from textual.widgets import Static
+    from tui.widgets.factory_bar import FactoryTopBar
+
+    runs = [
+        api.Run(id="active", workflow="code_parallel", status="RUNNING",
+                start_ms=1000, end_ms=None),
+        api.Run(id="failed", workflow="pr_review", status="FAILED",
+                start_ms=1000, end_ms=2000),
+    ]
+    app = _app(FakeClient(runs=runs))
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0.3)
+        bar = app.screen.query_one(FactoryTopBar)
+        logo = str(bar.query_one("#factory_logo", Static).render())
+        title = str(bar.query_one("#factory_title", Static).render())
+        stats = str(bar.query_one("#factory_stats", Static).render())
+        assert "/ ___/ __" in logo
+        assert "Conductor Software Factory" in title
+        assert "recent 2" in stats
+        assert "active 1" in stats
+        assert "failed 1" in stats
+        assert "workers 2/2" in stats
+
+
+@pytest.mark.asyncio
+async def test_factory_top_bar_uses_white_stats_when_workers_are_degraded():
+    from textual.widgets import Static
+    from tui.widgets.factory_bar import FactoryTopBar
+
+    app = _app(FakeClient(workers_alive=False))
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0.3)
+        rendered = app.screen.query_one(FactoryTopBar).query_one("#factory_stats", Static).render()
+        detail_style = rendered.spans[-1].style
+        assert detail_style.bold
+        assert detail_style.foreground.ansi == 7  # ANSI white
 
 
 @pytest.mark.asyncio
@@ -138,6 +331,7 @@ async def test_launcher_picker_select_flows_to_payload():
         values, missing = scr._collect()
         assert not missing
         assert scr.spec.build_payload(values)["reviewPromptTemplate"] == "Perf review only."
+        assert scr._template_source("reviewPromptTemplate") == f"user:{perf.path}"
 
 
 @pytest.mark.asyncio
@@ -315,7 +509,7 @@ async def test_run_detail_recurses_subworkflows():
 # --------------------------------------------------------------------------- HITL gate
 
 def _pr_review_gate_execution() -> dict:
-    """A pr_review run paused at its review_gate HUMAN task, draft in inputData."""
+    """A pr_review run paused at its review_gate WAIT task, draft in inputData."""
     return {
         "workflowId": "wf-gate",
         "workflowType": "pr_review",
@@ -326,7 +520,7 @@ def _pr_review_gate_execution() -> dict:
             {"referenceTaskName": "review", "taskDefName": "coding_agent", "taskType": "SIMPLE",
              "status": "COMPLETED", "taskId": "t1",
              "outputData": {"structured": {"summary": "ok", "verdict": "comment", "comments": []}}},
-            {"referenceTaskName": "review_gate", "taskType": "HUMAN", "status": "IN_PROGRESS",
+            {"referenceTaskName": "review_gate", "taskType": "WAIT", "status": "IN_PROGRESS",
              "taskId": "gate-1",
              "inputData": {"workflow": "pr_review", "prNumber": 7,
                            "draft": {"summary": "Looks fine overall", "verdict": "comment",
@@ -339,14 +533,25 @@ def _design_gate_execution() -> dict:
     return {"workflowId": "wf-design-gate", "workflowType": "design_docs", "status": "RUNNING", "startTime": 1000,
             "input": {"repoPath": "/tmp/app", "instruction": "Design the change"},
             "tasks": [{"referenceTaskName": "design", "taskDefName": "coding_agent", "taskType": "SIMPLE", "status": "COMPLETED", "taskId": "d1", "outputData": {"filesChanged": ["docs/design/architecture.md"]}},
-                      {"referenceTaskName": "design_review", "taskType": "HUMAN", "status": "IN_PROGRESS", "taskId": "design-review-1", "inputData": {"workflow": "design_docs", "draft": {"designDir": "docs/design", "filesChanged": ["docs/design/architecture.md"], "summary": "Initial design"}}}]}
+                      {"referenceTaskName": "design_review", "taskType": "WAIT", "status": "IN_PROGRESS", "taskId": "design-review-1", "inputData": {"workflow": "design_docs", "draft": {"designDir": "docs/design", "filesChanged": ["docs/design/architecture.md"], "summary": "Initial design"}}}]}
+
+
+def _campaign_gate_execution() -> dict:
+    return {"workflowId": "wf-campaign", "workflowType": "feature_campaign", "status": "RUNNING",
+            "startTime": 1000, "input": {"repoPath": "/tmp/app", "instruction": "build it"},
+            "tasks": [{"referenceTaskName": "wave_checkpoint", "taskType": "WAIT",
+                       "status": "IN_PROGRESS", "taskId": "campaign-gate-1",
+                       "inputData": {"workflow": "feature_campaign", "phase": "wave", "wave": 2,
+                                     "draft": {"readyTasks": ["api", "ui"],
+                                               "checks": {"blockingPassed": True},
+                                               "profiles": {"wave": "fast", "final": "full"}}}}]}
 
 
 def test_pending_gate_detection():
     run, tasks = api.parse_execution(_pr_review_gate_execution())
     d = api.RunDetail(run=run, tasks=tasks)
     gate = d.pending_gate()
-    assert gate is not None and gate.ref == "review_gate" and gate.type == "HUMAN"
+    assert gate is not None and gate.ref == "review_gate" and gate.type == "WAIT"
     assert gate.input["draft"]["verdict"] == "comment"
 
 
@@ -370,7 +575,7 @@ async def test_run_detail_gate_auto_opens_and_approves():
 
 
 @pytest.mark.asyncio
-async def test_run_detail_gate_reject_fails_run():
+async def test_run_detail_gate_stop_routes_to_suppression_branch():
     fc = FakeClient(execution=_pr_review_gate_execution())
     app = _app(fc)
     async with app.run_test(size=(140, 45)) as pilot:
@@ -380,11 +585,11 @@ async def test_run_detail_gate_reject_fails_run():
         app.push_screen(RunDetail("wf-gate"))
         await pilot.pause(0.6)
         assert isinstance(app.screen, ApprovalModal)
-        await pilot.click("#reject")
+        await pilot.click("#stop")
         await pilot.pause(0.5)
         _, ref, status, output = fc.signals[-1]
-        assert ref == "review_gate" and status == "FAILED_WITH_TERMINAL_ERROR"
-        assert output["approved"] is False
+        assert ref == "review_gate" and status == "COMPLETED"
+        assert output == {"approved": False, "action": "stop", "suppressed": True, "feedback": ""}
 
 
 @pytest.mark.asyncio
@@ -402,6 +607,35 @@ async def test_design_gate_requests_changes_with_feedback_and_keeps_loop_alive()
         _, ref, status, output = fc.signals[-1]
         assert ref == "design_review" and status == "COMPLETED"
         assert output == {"approved": False, "feedback": "rollback"}
+
+
+@pytest.mark.asyncio
+async def test_design_gate_views_changed_file_from_its_isolated_worktree(tmp_path, monkeypatch):
+    from tui import edit
+    from tui.widgets.modals import ApprovalModal, FileListModal, FilePreviewModal
+    from textual.widgets import Static
+
+    design_file = tmp_path / "docs" / "design" / "architecture.md"
+    design_file.parent.mkdir(parents=True)
+    design_file.write_text("# Architecture\n\nA durable design review.", encoding="utf-8")
+    execution = _design_gate_execution()
+    execution["input"]["repoPath"] = str(tmp_path)
+    execution["tasks"][1]["inputData"]["repoPath"] = str(tmp_path)
+    opened: list[str] = []
+    monkeypatch.setattr(edit, "open_path", lambda app, path, override=None: opened.append(path) or "opened")
+
+    app = _app(FakeClient(execution=execution))
+    async with app.run_test(size=(140, 45)) as pilot:
+        from tui.screens.run_detail import RunDetail
+        await pilot.pause(0.2); app.push_screen(RunDetail("wf-design-gate")); await pilot.pause(0.6)
+        assert isinstance(app.screen, ApprovalModal)
+        await pilot.click("#design_files"); await pilot.pause(0.2)
+        assert isinstance(app.screen, FileListModal)
+        await pilot.press("enter"); await pilot.pause(0.2)
+        assert isinstance(app.screen, FilePreviewModal)
+        assert "A durable design review." in app.screen.query_one("#file_preview", Static).render().plain
+        await pilot.click("#open_editor"); await pilot.pause(0.1)
+        assert opened == [str(design_file)]
 
 
 @pytest.mark.asyncio
@@ -451,3 +685,39 @@ async def test_run_detail_gate_defer_leaves_paused():
         # doesn't auto-reopen on the next poll (already prompted this gate)
         await pilot.pause(2.2)
         assert not isinstance(app.screen, ApprovalModal)
+
+
+@pytest.mark.asyncio
+async def test_campaign_gate_edits_feedback_and_requests_revision():
+    from textual.widgets import TextArea
+    fc = FakeClient(execution=_campaign_gate_execution())
+    app = _app(fc)
+    async with app.run_test(size=(160, 55)) as pilot:
+        from tui.screens.run_detail import RunDetail
+        from tui.widgets.modals import ApprovalModal
+        await pilot.pause(0.2); app.push_screen(RunDetail("wf-campaign")); await pilot.pause(0.6)
+        assert isinstance(app.screen, ApprovalModal)
+        app.screen.query_one("#campaign_feedback", TextArea).text = "split the migration"
+        await pilot.click("#campaign_revise"); await pilot.pause(0.4)
+        wid, ref, status, output = fc.signals[-1]
+        assert (wid, ref, status) == ("wf-campaign", "wave_checkpoint", "COMPLETED")
+        assert output["action"] == "revise" and output["feedback"] == "split the migration"
+
+
+@pytest.mark.asyncio
+async def test_campaign_gate_attached_check_confirmation_and_defer():
+    from textual.widgets import Input, Switch
+    fc = FakeClient(execution=_campaign_gate_execution())
+    app = _app(fc)
+    async with app.run_test(size=(160, 55)) as pilot:
+        from tui.screens.run_detail import RunDetail
+        from tui.widgets.modals import ApprovalModal
+        await pilot.pause(0.2); app.push_screen(RunDetail("wf-campaign")); await pilot.pause(0.6)
+        assert isinstance(app.screen, ApprovalModal)
+        app.screen.query_one("#campaign_profile", Input).value = "attached"
+        app.screen.query_one("#campaign_checks", Input).value = "smoke, browser"
+        app.screen.query_one("#campaign_attached", Switch).value = True
+        await pilot.click("#campaign_run_checks"); await pilot.pause(0.4)
+        output = fc.signals[-1][3]
+        assert output["action"] == "run_checks" and output["checks"] == ["smoke", "browser"]
+        assert output["attachedConfirmed"] is True

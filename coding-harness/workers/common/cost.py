@@ -7,17 +7,21 @@ from typing import Any
 # USD per 1M tokens (input/output) — P3.3. Source: Anthropic pricing Jun 2025.
 # Key: model id substring → (input_per_1M, output_per_1M)
 PRICING: dict[str, tuple[float, float]] = {
-    "claude-opus-4":      (15.0, 75.0),
-    "claude-sonnet-4-6":  (3.0,  15.0),
-    "claude-haiku-4-5":   (0.8,   4.0),
+    "claude-opus-4":      (5.0,  25.0),
+    "claude-sonnet-5":    (3.0,  15.0),
+    "claude-haiku-4-5":   (1.0,   5.0),
     "claude-haiku-4":     (0.25,  1.25),
     # OpenAI / Codex (best-effort estimate for the Codex backend, which reports
     # tokens but not USD). Approximate public rates; unknown ids fall back below.
     "gpt-5":              (1.25,  10.0),
+    "gpt-5.6-sol":        (5.0,  30.0),
+    "gpt-5.6-terra":      (2.5,  15.0),
+    "gpt-5.6-luna":       (1.0,   6.0),
     "gpt-4.1":            (2.0,   8.0),
     "o4":                 (1.1,   4.4),
     "o3":                 (2.0,   8.0),
     "codex":              (1.25,  10.0),
+    "codex:default":      (1.25,  10.0),
     # Google Gemini (best-effort estimate for the Gemini CLI backend, which reports
     # tokens but not USD). Approximate public rates; specific ids before the generic
     # "gemini" fallback (substring match walks dict order).
@@ -30,7 +34,7 @@ PRICING: dict[str, tuple[float, float]] = {
 
 def _price_rates(model: str | None) -> tuple[float, float]:
     if not model:
-        return (3.0, 15.0)  # default to sonnet pricing
+        return (3.0, 15.0)  # caller must use codex:default for an empty Codex model
     ml = (model or "").lower()
     for key, rates in PRICING.items():
         if key in ml:

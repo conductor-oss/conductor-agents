@@ -1,0 +1,12 @@
+{
+  "name": "campaign_validate_plan",
+  "description": "Validate and normalize a feature-campaign DAG, including ids, dependencies, cycles, paths, acceptance criteria, and task count.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 2,
+  "pollTimeoutSeconds": 120,
+  "responseTimeoutSeconds": 60,
+  "timeoutSeconds": 300,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "ownerEmail": "viren@orkes.io"
+}

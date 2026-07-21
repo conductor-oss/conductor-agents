@@ -1,0 +1,66 @@
+{
+  "updateTime": 1784527270715,
+  "name": "automation_reset",
+  "description": "Explicitly clear a stopped or exhausted GitHub automation revision so a later sweep may claim it again.",
+  "version": 1,
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "github_automation_state",
+      "taskReferenceName": "reset",
+      "inputParameters": {
+        "attempt": 1,
+        "kind": "${workflow.input.kind}",
+        "number": "${workflow.input.number}",
+        "repo": "${workflow.input.repo}",
+        "revision": "${workflow.input.revision}",
+        "status": "reset",
+        "workflowId": "${workflow.workflowId}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    }
+  ],
+  "inputParameters": [
+    "kind",
+    "modelOverrides",
+    "modelPolicy",
+    "modelPolicySha256",
+    "modelPolicySource",
+    "modelProfile",
+    "modelsConfig",
+    "number",
+    "repo",
+    "revision"
+  ],
+  "outputParameters": {
+    "reset": "${reset.output.recorded}"
+  },
+  "schemaVersion": 2,
+  "restartable": true,
+  "ownerEmail": "harness@conductor.local",
+  "timeoutPolicy": "TIME_OUT_WF",
+  "timeoutSeconds": 180,
+  "overwriteTags": false,
+  "inputTemplate": {
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  }
+}

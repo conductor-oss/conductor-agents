@@ -1,52 +1,88 @@
 {
   "name": "code_parallel",
-  "version": 1,
+  "version": 3,
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
   "description": "Parallelize the coding agent: an LLM decomposes one instruction into independent sub-tasks, a JQ task reshapes them into a dynamic fork, FORK_JOIN_DYNAMIC runs a code_subtask (worktree->coding_agent->commit) per sub-task in parallel, then merge_worktrees merges the branches back into a change branch.",
   "inputParameters": [
-    "repoPath",
-    "instruction",
     "changeBranch",
-    "design",
-    "designAgent",
-    "designModel",
-    "designDir",
-    "designMaxTurns",
-    "designHumanApproval",
-    "designMaxIterations",
-    "planAgent",
-    "planModel",
-    "planMaxTurns",
-    "planPromptTemplate",
     "codeAgent",
     "codeModel",
     "codePromptTemplate",
+    "codePromptTemplateSource",
+    "design",
+    "designAgent",
+    "designDir",
+    "designHumanApproval",
+    "designMaxIterations",
+    "designMaxTurns",
+    "designModel",
+    "instruction",
+    "maxBudgetUsd",
     "maxSubtasks",
     "maxTurns",
-    "maxBudgetUsd"
+    "modelOverrides",
+    "modelPolicy",
+    "modelPolicySha256",
+    "modelPolicySource",
+    "modelProfile",
+    "modelsConfig",
+    "planAgent",
+    "planMaxTurns",
+    "planModel",
+    "planPromptTemplate",
+    "planPromptTemplateSource",
+    "precomputedPlan",
+    "repoPath"
+    ,"specContextPath",
+    "usePrecomputedPlan"
   ],
   "inputTemplate": {
     "changeBranch": "code-parallel",
     "design": false,
-    "designAgent": "claude",
+    "designAgent": "",
     "designModel": "",
     "designDir": "docs/design",
     "designMaxTurns": 500,
     "designHumanApproval": true,
     "designMaxIterations": 5,
-    "planAgent": "claude",
+    "planAgent": "",
     "planModel": "",
     "planMaxTurns": 500,
     "planPromptTemplate": "",
-    "codeAgent": "claude",
+    "planPromptTemplateSource": "",
+    "codeAgent": "",
     "codeModel": "",
     "codePromptTemplate": "",
+    "codePromptTemplateSource": "",
     "maxSubtasks": 6,
     "maxTurns": 500,
-    "maxBudgetUsd": 50.0
+    "maxBudgetUsd": 50.0,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+    ,"precomputedPlan": {},
+    "specContextPath": "",
+    "usePrecomputedPlan": false
   },
   "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
     {
       "name": "prepare_repo",
       "taskReferenceName": "prep",
@@ -91,7 +127,13 @@
               "designModel": "${workflow.input.designModel}",
               "designMaxTurns": "${workflow.input.designMaxTurns}",
               "humanApproval": "${workflow.input.designHumanApproval}",
-              "designMaxIterations": "${workflow.input.designMaxIterations}"
+              "designMaxIterations": "${workflow.input.designMaxIterations}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}"
             }
           }
         ]
@@ -108,33 +150,64 @@
         "agent": "${workflow.input.planAgent}",
         "maxTurns": "${workflow.input.planMaxTurns}",
         "maxBudgetUsd": 50.0,
-        "tools": ["Read", "Grep", "Glob"],
+        "tools": [
+          "Read",
+          "Grep",
+          "Glob"
+        ],
         "templateKey": "plan",
         "promptTemplate": "${workflow.input.planPromptTemplate}",
+        "promptTemplateSource": "${workflow.input.planPromptTemplateSource}",
         "promptContext": {
           "instruction": "${workflow.input.instruction}",
           "maxSubtasks": "${workflow.input.maxSubtasks}"
         },
         "schema": {
           "type": "object",
-          "required": ["subtasks"],
+          "required": [
+            "subtasks"
+          ],
           "properties": {
             "subtasks": {
               "type": "array",
               "items": {
                 "type": "object",
-                "required": ["id", "description"],
+                "required": [
+                  "id",
+                  "description"
+                ],
                 "properties": {
-                  "id": {"type": "string", "description": "short unique kebab-case slug"},
-                  "description": {"type": "string", "description": "self-contained implementation instruction"},
-                  "files": {"type": "array", "items": {"type": "string"}},
-                  "testCmd": {"type": "string"}
+                  "id": {
+                    "type": "string",
+                    "description": "short unique kebab-case slug"
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "self-contained implementation instruction"
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "testCmd": {
+                    "type": "string"
+                  }
                 }
               }
             }
           }
         },
-        "prompt": "You are planning parallel work on the repository in the current directory. First EXPLORE the repo (read files, grep, glob) to understand its current state: what already exists, what is implemented, and what is still pending. If a docs/design/ directory exists, READ those design documents first — especially architecture.md — and conform your decomposition to its module/file layout and shared contracts. Then break the following instruction into INDEPENDENT sub-tasks that can be implemented in parallel with NO dependencies between them — crucially, no two sub-tasks may edit the same file. Skip anything already done. Return the plan as the required structured output (subtasks[] with id, description, files, testCmd). Keep ids short, unique, kebab-case; at most ${workflow.input.maxSubtasks} sub-tasks; each description must be complete enough to implement on its own without seeing the others.\n\nInstruction:\n${workflow.input.instruction}"
+        "prompt": "You are planning parallel work on the repository in the current directory. First EXPLORE the repo (read files, grep, glob) to understand its current state: what already exists, what is implemented, and what is still pending. If a docs/design/ directory exists, READ those design documents first — especially architecture.md — and conform your decomposition to its module/file layout and shared contracts. Then break the following instruction into INDEPENDENT sub-tasks that can be implemented in parallel with NO dependencies between them — crucially, no two sub-tasks may edit the same file. Skip anything already done. Return the plan as the required structured output (subtasks[] with id, description, files, testCmd). Keep ids short, unique, kebab-case; at most ${workflow.input.maxSubtasks} sub-tasks; each description must be complete enough to implement on its own without seeing the others.\n\nInstruction:\n${workflow.input.instruction}",
+        "modelRole": "plan",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelResolution": "${model_policy.output}"
       }
     },
     {
@@ -143,13 +216,23 @@
       "type": "JSON_JQ_TRANSFORM",
       "inputParameters": {
         "result": "${plan.output.structured}",
+        "precomputedPlan": "${workflow.input.precomputedPlan}",
+        "usePrecomputedPlan": "${workflow.input.usePrecomputedPlan}",
+        "specContextPath": "${workflow.input.specContextPath}",
         "repoPath": "${workflow.input.repoPath}",
         "codeModel": "${workflow.input.codeModel}",
         "codeAgent": "${workflow.input.codeAgent}",
         "codePromptTemplate": "${workflow.input.codePromptTemplate}",
+        "codePromptTemplateSource": "${workflow.input.codePromptTemplateSource}",
         "maxTurns": "${workflow.input.maxTurns}",
         "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-        "queryExpression": ".repoPath as $r | .codeModel as $m | .codeAgent as $ag | .codePromptTemplate as $ct | .maxTurns as $mt | .maxBudgetUsd as $mb | .result.subtasks as $subs | {dynamicTasks: [$subs[] | {name:\"code_subtask\", taskReferenceName:.id, type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"code_subtask\", version:1}}], dynamicTasksInput: (reduce $subs[] as $s ({}; . + ((($s.files // []) | join(\", \")) as $files | ($s.description + \"\\nTarget files: \" + $files + (if $s.testCmd then \"\\nYour check: \" + $s.testCmd else \"\" end)) as $desc | {($s.id): {repoPath:$r, name:$s.id, model:$m, agent:$ag, maxTurns:$mt, maxBudgetUsd:$mb, prompt:($desc + \"\\n\\nDesign docs (if present) are under docs/design/ in your working directory — read architecture.md first and conform to its shared types/names/file-layout, then the doc(s) for your slice, before implementing.\"), promptTemplate:$ct, templateKey:\"code\", promptContext:{subtask:$desc}}}))), groupIds: ([$subs[].id] | join(\",\"))}"
+        "queryExpression": ".repoPath as $r | .codeModel as $m | .codeAgent as $ag | .codePromptTemplate as $ct | .codePromptTemplateSource as $cts | .maxTurns as $mt | .maxBudgetUsd as $mb | .specContextPath as $sc | .modelProfile as $mp | .modelPolicy as $mpp | .modelPolicySource as $mps | .modelPolicySha256 as $mpsh | .modelsConfig as $mc | .modelOverrides as $mo | (if .usePrecomputedPlan then .precomputedPlan else .result end).subtasks as $subs | {dynamicTasks: [$subs[] | {name:\"code_subtask\", taskReferenceName:.id, type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"code_subtask\", version:2}}], dynamicTasksInput: (reduce $subs[] as $s ({}; . + ((($s.files // []) | join(\", \")) as $files | ($s.description + \"\\nTarget files: \" + $files + (if $s.testCmd then \"\\nYour check: \" + $s.testCmd else \"\" end)) as $desc | {($s.id): {repoPath:$r, name:$s.id, model:$m, agent:$ag, maxTurns:$mt, maxBudgetUsd:$mb, prompt:($desc + \"\\n\\nDesign docs (if present) are under docs/design/ in your working directory — read architecture.md first and conform to its shared types/names/file-layout, then the doc(s) for your slice, before implementing.\"), promptTemplate:$ct, promptTemplateSource:$cts, templateKey:\"code\", promptContext:{subtask:$desc}, specContextPath:$sc, modelProfile:$mp, modelPolicy:$mpp, modelPolicySource:$mps, modelPolicySha256:$mpsh, modelsConfig:$mc, modelOverrides:$mo}}))), groupIds: ([$subs[].id] | join(\",\"))}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
       }
     },
     {

@@ -5,38 +5,67 @@
   "ownerEmail": "viren@orkes.io",
   "description": "GitHub issue -> PR, end to end: fetch a GitHub issue, clone the repo into a temp folder, run code_parallel (decompose + parallel coding_agent forks + merge) to resolve it, push the change branch, and open a PR that closes the issue.",
   "inputParameters": [
-    "repo",
-    "issueNumber",
+    "approvePr",
     "base",
-    "planAgent",
     "codeAgent",
-    "designAgent",
+    "codePromptTemplate",
+    "codePromptTemplateSource",
     "design",
+    "designAgent",
     "designHumanApproval",
     "designMaxIterations",
-    "approvePr",
-    "planPromptTemplate",
-    "codePromptTemplate",
+    "issueNumber",
+    "maxBudgetUsd",
     "maxSubtasks",
     "maxTurns",
-    "maxBudgetUsd"
+    "modelOverrides",
+    "modelPolicy",
+    "modelPolicySha256",
+    "modelPolicySource",
+    "modelProfile",
+    "modelsConfig",
+    "planAgent",
+    "planPromptTemplate",
+    "planPromptTemplateSource",
+    "repo"
   ],
   "inputTemplate": {
     "base": "main",
-    "planAgent": "claude",
-    "codeAgent": "claude",
-    "designAgent": "claude",
+    "planAgent": "",
+    "codeAgent": "",
+    "designAgent": "",
     "design": false,
     "designHumanApproval": true,
     "designMaxIterations": 5,
     "approvePr": false,
     "planPromptTemplate": "",
+    "planPromptTemplateSource": "",
     "codePromptTemplate": "",
+    "codePromptTemplateSource": "",
     "maxSubtasks": 4,
     "maxTurns": 300,
-    "maxBudgetUsd": 50.0
+    "maxBudgetUsd": 50.0,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
   },
   "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
     {
       "name": "issue_fetch",
       "taskReferenceName": "issue",
@@ -61,7 +90,7 @@
       "type": "SUB_WORKFLOW",
       "subWorkflowParam": {
         "name": "code_parallel",
-        "version": 1
+        "version": 3
       },
       "inputParameters": {
         "repoPath": "${clone.output.repoPath}",
@@ -74,10 +103,18 @@
         "planAgent": "${workflow.input.planAgent}",
         "codeAgent": "${workflow.input.codeAgent}",
         "planPromptTemplate": "${workflow.input.planPromptTemplate}",
+        "planPromptTemplateSource": "${workflow.input.planPromptTemplateSource}",
         "codePromptTemplate": "${workflow.input.codePromptTemplate}",
+        "codePromptTemplateSource": "${workflow.input.codePromptTemplateSource}",
         "maxSubtasks": "${workflow.input.maxSubtasks}",
         "maxTurns": "${workflow.input.maxTurns}",
-        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}"
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
       }
     },
     {
@@ -94,7 +131,7 @@
           {
             "name": "pr_gate",
             "taskReferenceName": "pr_gate",
-            "type": "HUMAN",
+            "type": "WAIT",
             "inputParameters": {
               "workflow": "issue_to_pr",
               "issueNumber": "${workflow.input.issueNumber}",

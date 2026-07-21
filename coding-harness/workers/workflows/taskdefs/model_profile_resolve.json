@@ -1,0 +1,12 @@
+{
+  "name": "model_profile_resolve",
+  "description": "Resolve validated declarative model profiles after workspace preparation.",
+  "retryCount": 2,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 2,
+  "timeoutSeconds": 60,
+  "responseTimeoutSeconds": 30,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "ownerEmail": "viren@orkes.io"
+}

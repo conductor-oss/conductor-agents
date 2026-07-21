@@ -56,11 +56,38 @@ def test_resolve_prefers_explicit_template(tmp_path):
     assert out == "EXPLICIT D"
 
 
+def test_resolve_details_reports_inline_source_and_hash(tmp_path):
+    result = t.resolve_prompt_details(
+        "BUILTIN", template="EXPLICIT {{diff}}", template_key="pr_review",
+        context={"diff": "D"}, worktree=str(tmp_path),
+    )
+    assert result.prompt == "EXPLICIT D"
+    assert result.source == "input:inline"
+    assert result.template_key == "pr_review"
+    assert len(result.sha256) == 64
+
+
 def test_resolve_uses_repo_file_when_no_explicit(tmp_path):
     _write_repo_template(tmp_path, "pr_review", "REPO {{diff}}")
     out = t.resolve_prompt("BUILTIN", template="", template_key="pr_review",
                            context={"diff": "D"}, worktree=str(tmp_path))
     assert out == "REPO D"
+
+
+def test_resolve_details_reports_repo_and_bundled_sources(tmp_path):
+    _write_repo_template(tmp_path, "pr_review", "REPO {{diff}}")
+    repo = t.resolve_prompt_details(
+        "BUILTIN", template="", template_key="pr_review",
+        context={"diff": "D"}, worktree=str(tmp_path),
+    )
+    assert repo.source == "repo:.conductor/pr_review.md"
+
+    (tmp_path / ".conductor" / "pr_review.md").unlink()
+    bundled = t.resolve_prompt_details(
+        "BUILTIN", template="", template_key="pr_review",
+        context={"diff": "D"}, worktree=str(tmp_path),
+    )
+    assert bundled.source == "bundled:pr_review"
 
 
 def test_resolve_falls_back_to_builtin_when_no_bundled(tmp_path):
@@ -158,6 +185,12 @@ def test_resolve_at_path_reads_repo_file(tmp_path):
     out = t.resolve_prompt("BUILTIN", template="@docs/review.md", template_key="pr_review",
                            context={"diff": "D"}, worktree=str(tmp_path))
     assert out == "REVIEW GUIDE D"
+
+    details = t.resolve_prompt_details(
+        "BUILTIN", template="@docs/review.md", template_key="pr_review",
+        context={"diff": "D"}, worktree=str(tmp_path),
+    )
+    assert details.source == "repo:@docs/review.md"
 
 
 def test_resolve_at_path_missing_falls_through_to_repo_then_bundled(tmp_path):
