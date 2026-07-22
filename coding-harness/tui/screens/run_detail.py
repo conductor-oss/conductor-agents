@@ -168,9 +168,9 @@ class RunDetail(Screen):
             # that owns the HUMAN task, not necessarily the run opened in this screen.
             await self.app.client.signal_task(gate.workflow_id or self._id,
                                               gate.ref, status, output)
-            if gate.input.get("workflow") == "design_docs" and status == "COMPLETED":
-                self.notify("design approved — continuing…" if output.get("approved")
-                            else "feedback submitted — revising the design…")
+            if gate.input.get("workflow") == "openspec_plan" and status == "COMPLETED":
+                self.notify("plan approved — continuing…" if output.get("approved")
+                            else "feedback submitted — revising the plan…")
             else:
                 self.notify("approved — posting…" if status == "COMPLETED"
                             else "rejected — the run will fail")

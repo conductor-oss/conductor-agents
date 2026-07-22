@@ -30,7 +30,7 @@ In a second terminal, point the harness at any local checkout:
 ```bash
 export CONDUCTOR_SERVER_URL=http://localhost:8080/api
 conductor workflow start --workflow code_parallel --input \
-  '{"repoPath":"/absolute/path/to/repo","instruction":"Add a health endpoint and tests","design":false}'
+  '{"repoPath":"/absolute/path/to/repo","instruction":"Add a health endpoint and tests"}'
 ```
 
 The command returns a workflow ID. Watch it with
@@ -75,11 +75,11 @@ Ask chat to “register/update the workflows”, use `/register`, or press `g` o
 whenever definitions change. The TUI confirms the target server, updates the definitions, and
 runs the SIMPLE-task worker gate before reporting success. Chat starts at most one workflow per
 user message; when the requested action is ambiguous, it asks which workflow you want first.
-Before any `code_parallel` path starts, chat also asks whether you want design docs. Choosing
-design enables an iterative human review gate by default: approve to continue to coding, or give
-feedback for another design pass. You can opt into an automated structured judge instead; its
-read-only review uses the `coding_agent` worker. The design loop is capped at five passes by
-default and can be raised with `designMaxIterations`.
+Every `code_parallel` path always plans through OpenSpec first (proposal/specs/design/tasks) —
+there's no "skip planning" toggle. That plan goes through an iterative human review gate by
+default: approve to continue to coding, or give feedback for another planning pass. You can opt
+into an automated structured judge instead; its read-only review uses the `coding_agent` worker.
+The plan loop is capped at five passes by default and can be raised with `openspecMaxIterations`.
 
 ## How it works
 
@@ -91,10 +91,12 @@ Conductor workflow
   └─ gitops workers → commit, merge, push, GitHub PR/review operations
 ```
 
-`code_parallel` is the coding core. It asks a read-only agent to decompose the goal,
-creates a dynamic Conductor fork, implements each independent slice in its own worktree,
-then merges the branches and aggregates files, tokens, and cost. The GitHub workflows wrap
-that core with issue, PR, review, and push operations.
+`code_parallel` is the coding core. Its `openspec_plan` sub-workflow drives the `openspec` CLI
+through a proposal/specs/design/tasks change — reviewed via the same human-or-AI-judge loop —
+and deterministically parses the generated `tasks.md` into independent sub-tasks; `code_parallel`
+then creates a dynamic Conductor fork, implements each independent slice in its own worktree,
+merges the branches, and aggregates files, tokens, and cost. The GitHub workflows wrap that core
+with issue, PR, review, and push operations.
 
 ## Documentation
 
@@ -111,7 +113,15 @@ that core with issue, PR, review, and push operations.
 ## Prerequisites
 
 - Python 3.13+, `jq`, and the `conductor` CLI.
-- A reachable Conductor server. For local development: `conductor server start` (Java 21+).
+- The `openspec` CLI (`openspec_plan` shells out to it for all planning) — installed wherever
+  workers run.
+- A reachable Conductor server. For local development: `conductor server start` (Java 21+, SQLite
+  — no other services needed). If a parallel-heavy run (`code_parallel`, `openspec_plan`) fails
+  with `NonTransientException: [SQLITE_BUSY...]`, switch to the opt-in Postgres-backed server
+  instead: set `CONDUCTOR_BACKEND=postgres` in `.env` and rerun `./run.sh` — it brings up
+  [`docker-compose.postgres.yml`](docker-compose.postgres.yml) instead (requires Docker). Stop
+  any already-running SQLite server first (`conductor server stop`) — a leftover process can
+  keep answering on port 8080 and silently shadow the new container.
 - At least one authenticated backend:
   - Claude: `claude login` or `ANTHROPIC_API_KEY`.
   - Codex: `~/.codex/auth.json` or `OPENAI_API_KEY`.

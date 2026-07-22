@@ -81,7 +81,7 @@ def test_resolve_uses_bundled_default(tmp_path):
 
 
 def test_bundled_default_exists_for_each_key():
-    for key in ("pr_review", "plan", "design", "code", "address_pr"):
+    for key in ("pr_review", "code", "address_pr"):
         assert t.bundled_default(key), f"missing shipped default for {key}"
 
 

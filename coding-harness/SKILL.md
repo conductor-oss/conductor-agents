@@ -42,7 +42,7 @@ The natural loop: **`issue_to_pr` → `pr_review` → `address_pr`** (open, revi
    for the GitHub workflows, and the chosen backend's key (`ANTHROPIC_API_KEY` /
    `~/.codex/auth.json` / `GEMINI_API_KEY`). You can't fix these from here — surface them.
 3. **Pick a backend** only if the user cares; otherwise omit and it defaults to `claude`.
-   Mix with `planAgent`/`codeAgent` when asked (e.g. plan on claude, code on codex).
+   Mix with `openspecPlanAgent`/`codeAgent` when asked (e.g. plan on claude, code on codex).
 4. **Choose the publication gate.** TUI launches default `pr_review.approve=true` and
    `issue_to_pr.approvePr=true`, pausing before anything is posted/opened. Raw CLI/API runs
    default both gates off unless explicitly supplied.
@@ -91,7 +91,7 @@ Only the **required** inputs must be set; everything else has sane defaults. Ful
 [`workers/README.md`](workers/README.md).
 
 - **`issue_to_pr`** — required: `repo` (URL or `owner/name`), `issueNumber`. Common:
-  `base` (`main`), `codeAgent`, `design` (`false`), `maxSubtasks` (`4`).
+  `base` (`main`), `codeAgent`, `openspecHumanApproval` (`true`).
   → outputs `prNumber`, `prUrl`.
 - **`pr_review`** — required: `repo`, `prNumber`. Common: `agent`.
   → posts a formal review (inline comments + summary; COMMENT or REQUEST_CHANGES, never
@@ -100,34 +100,38 @@ Only the **required** inputs must be set; everything else has sane defaults. Ful
   or `coding_agent` for small feedback), `agent`. Pushes to the PR's own branch; re-runnable.
   → outputs `pushed`, `replyUrl`.
 - **`code_parallel`** — required: `repoPath` (local dir), `instruction`. Common:
-  `changeBranch`, `design`, `maxSubtasks`, `planAgent`/`codeAgent`. Local only — no clone/push.
-  → outputs `changeBranch`, `merged`, `totalTokens`, `totalCostUsd`.
+  `changeBranch`, `openspecHumanApproval`, `openspecPlanAgent`/`codeAgent`. Local only — no
+  clone/push. → outputs `changeBranch`, `merged`, `totalTokens`, `totalCostUsd`.
 - **`github_demo`** — required: `repoUrl`, `instruction`. Connectivity smoke test only;
   clone → one coding session → push → PR.
 
-Internal workflows are `design_docs` and `code_subtask`; normally let `code_parallel`
-invoke them rather than starting them directly.
+Internal workflows are `openspec_plan`, `openspec_generate_artifact`, and `code_subtask`;
+normally let `code_parallel` invoke them rather than starting them directly.
 
-Before starting `code_parallel`, `issue_to_pr`, or `address_pr` with its default
-`code_parallel` engine, explicitly ask whether the user wants design docs and pass `design:true`
-or `design:false`. Never infer the choice. When enabled, human design review is the default:
-approval exits the bounded design loop, while feedback triggers a revision. Set
-`designHumanApproval:false` only when the user wants the read-only coding-agent judge. The defaults are
-five design iterations; use `designMaxIterations` when the user requests a higher limit.
+`code_parallel`, `issue_to_pr`, and `address_pr` (with its default `code_parallel` engine)
+always plan through OpenSpec first — `openspec_plan` drives the `openspec` CLI to produce a
+proposal/specs/design/tasks change, then deterministically parses the generated `tasks.md`
+into the independent sub-tasks that fan out in parallel. There's no "skip planning" toggle.
+Human review of the generated plan is the default (`openspecHumanApproval:true`): approval
+exits the bounded plan loop, while feedback triggers a revision. Set
+`openspecHumanApproval:false` only when the user wants the read-only coding-agent judge
+instead. The default is five plan iterations; use `openspecMaxIterations` when the user
+requests a higher limit.
 
 Shared tuning knobs (all optional): `maxTurns`, `maxBudgetUsd`, `*Model` (`""` =
 backend default). Backends: `claude` (default) | `codex` | `gemini`, or inferred from a
 `*Model` id. Shipped workflows default every applicable agent budget to `$50` and every turn cap
-to at least 250; `code_parallel` planning, design, and coding sessions default to 500 turns.
+to at least 250; `code_parallel`'s OpenSpec planning and coding sessions default to 500 turns.
 
 **Prompt templates (optional).** To fully override an agent step's prompt with your own
 instructions (review focus, house style, domain rules), either pass a `*PromptTemplate` input
-(`reviewPromptTemplate`, `codePromptTemplate`, `planPromptTemplate`, `designPromptTemplate`,
-`fixPromptTemplate`) or commit a `.conductor/<key>.md` file in the target repo
-(`pr_review`/`code`/`plan`/`design`/`address_pr`) — the repo file applies automatically with no
-input, which is ideal for scheduled/CI runs. A `*PromptTemplate` input may also be `@repo/path`
-to read the prompt from a repo file. The canonical default prompts live in
-`workers/defaults/prompts/`.
+(`reviewPromptTemplate`, `codePromptTemplate`, `fixPromptTemplate`) or commit a
+`.conductor/<key>.md` file in the target repo (`pr_review`/`code`/`address_pr`) — the repo file
+applies automatically with no input, which is ideal for scheduled/CI runs. A `*PromptTemplate`
+input may also be `@repo/path` to read the prompt from a repo file. The canonical default
+prompts live in `workers/defaults/prompts/`. OpenSpec artifact generation (proposal/specs/
+design/tasks) is instead driven by that artifact's `openspec instructions` output, not a
+`*PromptTemplate` input.
 
 **Repo guide (`AGENTS.md`).** The worker auto-reads a repo guide — `AGENTS.md` → `AGENT.md` →
 `CLAUDE.md` (first at the repo root) — and injects it into every agent's prompt (coding, review,
@@ -191,8 +195,15 @@ flow as `/register`, including the SIMPLE-task worker gate.
   contribution isn't wired yet.
 - **Large PRs**: `pr_review` caps the diff (~200 KB) — very large PRs get a partial review.
 - If a workflow **hangs in RUNNING** with no task progress, a SIMPLE task's worker isn't
-  polling (workers down, or `WORKER_MODULES` missing `coding_agent`/`gitops`) — check the
-  worker process, not the workflow.
+  polling (workers down, or `WORKER_MODULES` missing `coding_agent`/`gitops`/`openspecops`) —
+  check the worker process, not the workflow.
+- **`openspec` CLI required**: `openspec_plan` shells out to it (via the `openspecops` worker
+  module), so it must be installed on every host running workers.
+- If a run's logs show `NonTransientException: [SQLITE_BUSY]` / `[SQLITE_BUSY_SNAPSHOT]`, the
+  default local server's SQLite backend is hitting write-lock contention (common with
+  `code_parallel`/`openspec_plan`'s parallel fan-out). Suggest the opt-in Postgres-backed server:
+  `CONDUCTOR_BACKEND=postgres` in `.env`, then re-run `./run.sh` (needs Docker) — see
+  [`docker-compose.postgres.yml`](docker-compose.postgres.yml).
 
 Full reference: [`docs/CODING_AGENT_WORKER.md`](docs/CODING_AGENT_WORKER.md). User guide with
 complete input tables: [`workers/README.md`](workers/README.md).

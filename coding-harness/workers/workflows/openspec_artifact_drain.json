@@ -1,0 +1,75 @@
+{
+  "name": "openspec_artifact_drain",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "One pass of openspec_plan's artifact-generation drain loop, extracted into its own sub-workflow: Conductor does not support a DO_WHILE nested directly inside another DO_WHILE (confirmed live and in docs — 'Nested Do While tasks are not supported... use a Sub Workflow task inside the Do While task'). Repeatedly calls openspec_status, JQ-selects not-yet-generated-this-pass artifacts with status != blocked, and fans out openspec_generate_artifact sub-workflows for them, until nothing new is selectable.",
+  "inputParameters": ["repoPath", "changeName", "goal", "feedback", "agent", "model", "maxTurns", "maxBudgetUsd"],
+  "inputTemplate": {"feedback": "", "model": "", "maxTurns": 500, "maxBudgetUsd": 50.0},
+  "variables": {
+    "generatedThisPass": [], "readyCount": 0,
+    "filesChanged": [], "costUsd": 0, "tokenUsed": 0
+  },
+  "tasks": [
+    {
+      "name": "artifact_loop", "taskReferenceName": "artifact_loop", "type": "DO_WHILE", "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ return $.artifact_loop['iteration'] < 8 && $.ready_count > 0; })();",
+      "inputParameters": {
+        "artifact_loop": "${artifact_loop.output}", "ready_count": "${workflow.variables.readyCount}"
+      },
+      "loopOver": [
+        {
+          "name": "openspec_status", "taskReferenceName": "status", "type": "SIMPLE",
+          "inputParameters": {"repoPath": "${workflow.input.repoPath}", "changeName": "${workflow.input.changeName}"}
+        },
+        {
+          "name": "select_ready", "taskReferenceName": "select_ready", "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "status": "${status.output}", "generated": "${workflow.variables.generatedThisPass}",
+            "repoPath": "${workflow.input.repoPath}", "changeName": "${workflow.input.changeName}",
+            "feedback": "${workflow.input.feedback}", "goal": "${workflow.input.goal}",
+            "agent": "${workflow.input.agent}", "model": "${workflow.input.model}",
+            "maxTurns": "${workflow.input.maxTurns}", "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+            "queryExpression": ".repoPath as $r | .changeName as $cn | .feedback as $fb | .goal as $g | .agent as $ag | .model as $m | .maxTurns as $mt | .maxBudgetUsd as $mb | (.generated // []) as $gen | ((.status.artifacts // []) | map(select(.status != \"blocked\" and ((.id as $i | ($gen | index($i))) == null)))) as $ready | { dynamicTasks: [$ready[] | {name:\"openspec_generate_artifact\", taskReferenceName: (\"gen_\" + .id), type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"openspec_generate_artifact\", version:1}}], dynamicTasksInput: (reduce $ready[] as $a ({}; . + {((\"gen_\" + $a.id)): {repoPath:$r, changeName:$cn, artifact:$a.id, goal:$g, feedback:$fb, agent:$ag, model:$m, maxTurns:$mt, maxBudgetUsd:$mb}})), readyIds: [$ready[].id], readyCount: ($ready | length) }"
+          }
+        },
+        {
+          "name": "fan_out_artifacts", "taskReferenceName": "fan_out_artifacts", "type": "FORK_JOIN_DYNAMIC",
+          "dynamicForkTasksParam": "dynamicTasks", "dynamicForkTasksInputParamName": "dynamicTasksInput",
+          "inputParameters": {
+            "dynamicTasks": "${select_ready.output.result.dynamicTasks}",
+            "dynamicTasksInput": "${select_ready.output.result.dynamicTasksInput}"
+          }
+        },
+        {"name": "fan_join_artifacts", "taskReferenceName": "fan_join_artifacts", "type": "JOIN"},
+        {
+          "name": "merge_pass_progress", "taskReferenceName": "merge_pass_progress", "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "fanOutput": "${fan_join_artifacts.output}", "readyIds": "${select_ready.output.result.readyIds}",
+            "prevGenerated": "${workflow.variables.generatedThisPass}", "prevFiles": "${workflow.variables.filesChanged}",
+            "prevCost": "${workflow.variables.costUsd}", "prevTokens": "${workflow.variables.tokenUsed}",
+            "queryExpression": ".prevGenerated as $pg | .prevFiles as $pf | .prevCost as $pc | .prevTokens as $pt | .readyIds as $rid | (.fanOutput // {}) as $fo | ($fo | to_entries | map(.value.output // .value // {})) as $vals | (if ($rid|length) > 0 then ([$vals[].filesChanged] | add // []) else $pf end) as $files | (if ($rid|length) > 0 then ((([$vals[].costUsd] | map(if type==\"number\" then . else 0 end) | add) // 0) + ($pc // 0)) else $pc end) as $cost | (if ($rid|length) > 0 then ((([$vals[].tokenUsed] | map(if type==\"number\" then . else 0 end) | add) // 0) + ($pt // 0)) else $pt end) as $tokens | { generated: (($pg + $rid) | unique), filesChanged: $files, costUsd: $cost, tokenUsed: $tokens }"
+          }
+        },
+        {
+          "name": "capture_round", "taskReferenceName": "capture_round", "type": "SET_VARIABLE",
+          "inputParameters": {
+            "generatedThisPass": "${merge_pass_progress.output.result.generated}",
+            "readyCount": "${select_ready.output.result.readyCount}",
+            "filesChanged": "${merge_pass_progress.output.result.filesChanged}",
+            "costUsd": "${merge_pass_progress.output.result.costUsd}",
+            "tokenUsed": "${merge_pass_progress.output.result.tokenUsed}"
+          }
+        }
+      ]
+    }
+  ],
+  "outputParameters": {
+    "changeName": "${status.output.changeName}",
+    "changeDir": "${status.output.changeRoot}",
+    "tasksPath": "${status.output.artifactPaths.tasks.resolvedOutputPath}",
+    "filesChanged": "${workflow.variables.filesChanged}",
+    "costUsd": "${workflow.variables.costUsd}",
+    "tokenUsed": "${workflow.variables.tokenUsed}"
+  }
+}

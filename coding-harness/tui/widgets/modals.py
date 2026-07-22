@@ -366,33 +366,33 @@ class ApprovalModal(ModalScreen):
             yield Label(self._heading())
             with VerticalScroll(id="approval_body"):
                 yield Static(self._draft_text(), id="approval_content")
-                if self._workflow == "design_docs":
-                    yield Label("Feedback for the next design pass", classes="muted")
-                    yield TextArea("", id="design_feedback")
-            hint = ("Approve the design, or provide feedback and request another pass"
-                    if self._workflow == "design_docs"
+                if self._workflow == "openspec_plan":
+                    yield Label("Feedback for the next OpenSpec plan pass", classes="muted")
+                    yield TextArea("", id="plan_feedback")
+            hint = ("Approve the plan, or provide feedback and request another pass"
+                    if self._workflow == "openspec_plan"
                     else "edit then Approve to post the edited version")
             yield Static(hint, classes="muted", id="approval_hint")
             yield Static("", id="approval_error", classes="banner-error")
             with Horizontal(classes="modal-buttons"):
                 yield Button("Approve ✓", variant="success", id="approve")
-                if self._workflow != "design_docs":
+                if self._workflow != "openspec_plan":
                     yield Button("Edit ✎", id="edit")
-                reject_label = "Request changes ↻" if self._workflow == "design_docs" else "Reject ✗"
-                yield Button(reject_label, variant="warning" if self._workflow == "design_docs" else "error",
+                reject_label = "Request changes ↻" if self._workflow == "openspec_plan" else "Reject ✗"
+                yield Button(reject_label, variant="warning" if self._workflow == "openspec_plan" else "error",
                              id="reject")
                 yield Button("Later", id="defer")
 
     def on_mount(self) -> None:
         self.query_one("#approval_error", Static).display = False
-        if self._workflow == "design_docs":
-            self.query_one("#design_feedback", TextArea).focus()
+        if self._workflow == "openspec_plan":
+            self.query_one("#plan_feedback", TextArea).focus()
         else:
             self.query_one("#approve", Button).focus()
 
     def _heading(self) -> str:
-        if self._workflow == "design_docs":
-            return "Review the design before coding starts"
+        if self._workflow == "openspec_plan":
+            return "Review the OpenSpec plan before coding starts"
         if self._workflow == "issue_to_pr":
             tgt = f" for issue #{self._issue_number}" if self._issue_number else ""
             return f"Review the pull request{tgt} before it opens"
@@ -402,9 +402,9 @@ class ApprovalModal(ModalScreen):
     def _draft_text(self) -> Text:
         d = self._draft
         t = Text()
-        if self._workflow == "design_docs":
-            t.append("Design directory: ", style="bold")
-            t.append(str(d.get("designDir", "docs/design")) + "\n")
+        if self._workflow == "openspec_plan":
+            t.append("Change directory: ", style="bold")
+            t.append(str(d.get("changeDir", "")) + "\n")
             files = d.get("filesChanged") or []
             t.append("Files changed: ", style="bold")
             t.append(", ".join(str(x) for x in files) if isinstance(files, list) else str(files))
@@ -477,7 +477,7 @@ class ApprovalModal(ModalScreen):
         draft = self._final_draft()
         if draft is None:
             return
-        if self._workflow == "design_docs":
+        if self._workflow == "openspec_plan":
             output = {"approved": True, "feedback": ""}
         elif self._workflow == "issue_to_pr":
             output = {"approved": True, "title": draft.get("title", ""),
@@ -487,10 +487,10 @@ class ApprovalModal(ModalScreen):
         self._decide("COMPLETED", output)
 
     def action_reject(self) -> None:
-        if self._workflow == "design_docs":
-            feedback = self.query_one("#design_feedback", TextArea).text.strip()
+        if self._workflow == "openspec_plan":
+            feedback = self.query_one("#plan_feedback", TextArea).text.strip()
             if not feedback:
-                self._error("Add actionable feedback before requesting another design pass.")
+                self._error("Add actionable feedback before requesting another plan pass.")
                 return
             self._decide("COMPLETED", {"approved": False, "feedback": feedback})
             return

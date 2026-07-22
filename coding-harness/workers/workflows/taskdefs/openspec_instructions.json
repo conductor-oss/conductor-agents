@@ -1,0 +1,11 @@
+{
+  "name": "openspec_instructions",
+  "description": "Fetch enriched generation instructions for one OpenSpec artifact (openspec instructions <artifact> --json): template, instruction text, rules, resolved output path.",
+  "retryCount": 2,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 3,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 120,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

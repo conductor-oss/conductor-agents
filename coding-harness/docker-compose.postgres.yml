@@ -1,0 +1,58 @@
+# Opt-in Postgres-backed Conductor server (see README.md "Postgres backend").
+# Brought up by `./run.sh` when CONDUCTOR_BACKEND=postgres; NOT used by default —
+# the default `./run.sh` path still uses `conductor server start` (SQLite, no Docker).
+#
+# Reach for this when a parallel-heavy workflow (code_parallel, openspec_plan) hits
+# SQLite write-lock contention (NonTransientException: [SQLITE_BUSY...]) against the
+# default local server. Uses the official conductoross/conductor image with its
+# built-in `config-postgres.properties` profile (conductor.db.type=postgres,
+# conductor.queue.type=postgres, conductor.indexing.type=postgres, Elasticsearch
+# disabled) — see docker/server/bin/startup.sh and docker/server/config/config-postgres.properties
+# in https://github.com/conductor-oss/conductor for how CONFIG_PROP is consumed.
+
+services:
+  # Service name MUST be "postgresdb": the conductoross/conductor image's built-in
+  # config-postgres.properties hardcodes jdbc:postgresql://postgresdb:5432/postgres
+  # (user/password "conductor"/"conductor"). CONDUCTOR_CONFIG_FILE loads that file at
+  # HIGHER precedence than SPRING_DATASOURCE_* env vars (confirmed live: an env-var
+  # override attempt was silently ignored, and the server failed with
+  # `UnknownHostException: postgresdb`) — so matching its hardcoded values, rather
+  # than trying to override them, is the only working approach with this image.
+  postgresdb:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: conductor
+      POSTGRES_PASSWORD: conductor
+      POSTGRES_DB: postgres
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata-conductor:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U conductor -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  conductor-server:
+    image: conductoross/conductor:${CONDUCTOR_IMAGE_TAG:-3.22.3}
+    environment:
+      # Selects the image's built-in Postgres profile: conductor.db.type=postgres,
+      # conductor.queue.type=postgres, conductor.indexing.type=postgres, Elasticsearch
+      # disabled, and the datasource pointed at the "postgresdb" service above.
+      CONFIG_PROP: config-postgres.properties
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgresdb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+volumes:
+  pgdata-conductor:
+    driver: local
