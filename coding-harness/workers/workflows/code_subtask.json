@@ -1,29 +1,59 @@
 {
   "name": "code_subtask",
-  "version": 1,
+  "version": 2,
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
   "description": "One parallel sub-task of code_parallel: create a git worktree/branch, run the coding_agent in it, and commit the changes on that branch so merge_worktrees can merge it back.",
   "inputParameters": [
-    "repoPath",
+    "agent",
+    "maxBudgetUsd",
+    "maxTurns",
+    "model",
+    "modelOverrides",
+    "modelPolicy",
+    "modelPolicySha256",
+    "modelPolicySource",
+    "modelProfile",
+    "modelsConfig",
     "name",
     "prompt",
-    "promptTemplate",
-    "templateKey",
     "promptContext",
-    "model",
-    "agent",
-    "maxTurns",
-    "maxBudgetUsd"
+    "promptTemplate",
+    "promptTemplateSource",
+    "repoPath",
+    "specContextPath",
+    "templateKey"
   ],
   "inputTemplate": {
     "promptTemplate": "",
+    "promptTemplateSource": "",
     "templateKey": "code",
     "promptContext": {},
     "maxTurns": 250,
-    "maxBudgetUsd": 50.0
+    "maxBudgetUsd": 50.0,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+    ,"specContextPath": ""
   },
   "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
     {
       "name": "worktree_add",
       "taskReferenceName": "wt",
@@ -39,14 +69,26 @@
       "type": "SIMPLE",
       "inputParameters": {
         "worktreePath": "${wt.output.worktreePath}",
+        "contextFiles": [
+          "${workflow.input.specContextPath}"
+        ],
         "prompt": "${workflow.input.prompt}",
         "promptTemplate": "${workflow.input.promptTemplate}",
+        "promptTemplateSource": "${workflow.input.promptTemplateSource}",
         "templateKey": "${workflow.input.templateKey}",
         "promptContext": "${workflow.input.promptContext}",
         "model": "${workflow.input.model}",
         "agent": "${workflow.input.agent}",
         "maxTurns": "${workflow.input.maxTurns}",
-        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}"
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "modelRole": "code",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelResolution": "${model_policy.output}"
       }
     },
     {

@@ -2,10 +2,10 @@
 name: coding-harness
 description: >-
   Drive autonomous coding as durable Conductor workflows. Use when the user wants to
-  resolve a GitHub issue into a PR, review a pull request, address PR feedback, or make a
-  parallelized multi-part code change in a repo. Also use to register/update the harness
+  resolve a GitHub issue into a PR, review a pull request or a local checkout before commit,
+  address PR feedback, or make a parallelized multi-part code change in a repo. Also use to register/update the harness
   definitions or operate its TUI. Triggers Conductor workflows
-  (issue_to_pr, pr_review, address_pr, code_parallel) via the `conductor` CLI; coding runs
+  (issue_to_pr, pr_review, local_review, address_pr, code_parallel) via the `conductor` CLI; coding runs
   on Claude / Codex / Gemini backends in sandboxed git worktrees.
 ---
 
@@ -22,7 +22,11 @@ worktrees, git/GitHub plumbing, guardrails, retries, and observability.
 |---|---|
 | Turn a GitHub issue into a pull request | `issue_to_pr` |
 | Review an open PR and post comments | `pr_review` |
+| Review local changes before committing, without modifying or posting anything | `local_review` |
 | Apply the review feedback on a PR | `address_pr` |
+| Review each new PR revision on a schedule | `pr_review_sweep` |
+| Address changed feedback on harness-created PRs | `pr_address_sweep` |
+| Resolve labeled issues on a schedule | `issue_resolution_sweep` |
 | Make a multi-part code change in a local repo (no GitHub) | `code_parallel` |
 | Smoke-test GitHub connectivity (clone→change→PR) | `github_demo` |
 
@@ -87,17 +91,24 @@ Long runs are normal (minutes). Don't block tightly — check periodically. Ever
 
 ## Workflow inputs (essentials)
 
-Only the **required** inputs must be set; everything else has sane defaults. Full tables in
-[`workers/README.md`](workers/README.md).
+Only the **required** inputs must be set; everything else has sane defaults. The complete,
+definition-backed required/optional tables are in
+[`docs/workflow-inputs.md`](docs/workflow-inputs.md).
 
 - **`issue_to_pr`** — required: `repo` (URL or `owner/name`), `issueNumber`. Common:
   `base` (`main`), `codeAgent`, `design` (`false`), `maxSubtasks` (`4`).
   → outputs `prNumber`, `prUrl`.
-- **`pr_review`** — required: `repo`, `prNumber`. Common: `agent`.
+- **`pr_review`** — required: `repo`, `prNumber`. Common: `agent`, `model`, `approve`.
   → posts a formal review (inline comments + summary; COMMENT or REQUEST_CHANGES, never
   APPROVE); outputs `reviewUrl`, `event`, `inlineCount`.
+- **`local_review`** — required: `repoPath`. Common: `baseRemote` (`origin`),
+  `baseBranch` (`main`), `agent`. Fetches that remote branch and reviews the existing checkout
+  directly, including local commits, staged/unstaged edits, and untracked files. It never
+  creates a worktree, writes source files, stages, commits, pushes, or posts a GitHub review.
+  → outputs `summary`, `verdict`, `comments`, `changedFiles`, `baseRef`.
 - **`address_pr`** — required: `repo`, `prNumber`. Common: `engine` (`code_parallel` default,
-  or `coding_agent` for small feedback), `agent`. Pushes to the PR's own branch; re-runnable.
+  or `coding_agent` for small feedback), `agent`, `model`, `design`. Pushes to the PR's own
+  branch; re-runnable.
   → outputs `pushed`, `replyUrl`.
 - **`code_parallel`** — required: `repoPath` (local dir), `instruction`. Common:
   `changeBranch`, `design`, `maxSubtasks`, `planAgent`/`codeAgent`. Local only — no clone/push.
@@ -116,18 +127,27 @@ approval exits the bounded design loop, while feedback triggers a revision. Set
 five design iterations; use `designMaxIterations` when the user requests a higher limit.
 
 Shared tuning knobs (all optional): `maxTurns`, `maxBudgetUsd`, `*Model` (`""` =
-backend default). Backends: `claude` (default) | `codex` | `gemini`, or inferred from a
-`*Model` id. Shipped workflows default every applicable agent budget to `$50` and every turn cap
+backend default). `modelProfile` is available on every workflow; pass a profile name or leave it
+blank to use the configured default. Backends: `claude` (default) | `codex` | `gemini`, or
+inferred from a `*Model` id. Shipped workflows default every applicable agent budget to `$50` and every turn cap
 to at least 250; `code_parallel` planning, design, and coding sessions default to 500 turns.
 
 **Prompt templates (optional).** To fully override an agent step's prompt with your own
 instructions (review focus, house style, domain rules), either pass a `*PromptTemplate` input
-(`reviewPromptTemplate`, `codePromptTemplate`, `planPromptTemplate`, `designPromptTemplate`,
-`fixPromptTemplate`) or commit a `.conductor/<key>.md` file in the target repo
-(`pr_review`/`code`/`plan`/`design`/`address_pr`) — the repo file applies automatically with no
+(`localReviewPromptTemplate`, `reviewPromptTemplate`, `codePromptTemplate`, `planPromptTemplate`, `designPromptTemplate`,
+`fixPromptTemplate`, plus campaign/OpenSpec and approval/design-judge variants) or commit a `.conductor/<key>.md` file in the target repo
+(`local_review`/`pr_review`/`code`/`plan`/`design`/`address_pr`) — the repo file applies automatically with no
 input, which is ideal for scheduled/CI runs. A `*PromptTemplate` input may also be `@repo/path`
 to read the prompt from a repo file. The canonical default prompts live in
 `workers/defaults/prompts/`.
+Every such input has a paired `*PromptTemplateSource`; pass a descriptive origin when launching
+through an API. The worker reports the actual resolved source, key, and SHA-256 hash in
+`output.promptTemplate`, which is authoritative.
+The TUI's form, chat, and schedule launch paths consult `~/.conductor-harness/templates` for every
+prompt role before starting. Role-specific files declare `fields: [planPromptTemplate]` (or another
+input name); legacy files without `fields` apply to the workflow's primary role. A unique match is
+copied into the durable input with `user:<path>` provenance, while ambiguous same-role matches
+block the launch. Blank roles continue through repo `.conductor/<key>.md` and bundled fallback.
 
 **Repo guide (`AGENTS.md`).** The worker auto-reads a repo guide — `AGENTS.md` → `AGENT.md` →
 `CLAUDE.md` (first at the repo root) — and injects it into every agent's prompt (coding, review,
@@ -136,6 +156,11 @@ commands + review priorities there. Toggle: `includeRepoGuide` / `CODING_AGENT_R
 /`{{instruction}}`/`{{subtask}}` placeholders in the template are filled with runtime context;
 the output schema stays enforced (a custom `pr_review` template still yields a structured review).
 See `docs/CODING_AGENT_WORKER.md` §14.
+
+For the complete operator contract, use `docs/model-profiles.md` for policy/profile selection,
+`docs/templates.md` for prompt precedence and trust boundaries, and `docs/openspec.md` for
+checked-out local OpenSpec source/worktree behavior. The workflow JSON input contract is kept in
+`docs/workflow-inputs.md`.
 
 ## Examples
 
@@ -148,6 +173,10 @@ conductor workflow start --workflow issue_to_pr \
 conductor workflow start --workflow pr_review \
   -i '{"repo":"acme/app","prNumber":7}'
 
+# Review local changes before committing (read-only, no GitHub side effects)
+conductor workflow start --workflow local_review \
+  -i '{"repoPath":"/absolute/path/to/repo","baseRemote":"origin","baseBranch":"main"}'
+
 # Address the feedback on PR #7 (cheap single-session engine)
 conductor workflow start --workflow address_pr \
   -i '{"repo":"acme/app","prNumber":7,"engine":"coding_agent"}'
@@ -158,6 +187,8 @@ conductor workflow start --workflow address_pr \
 - Coding agents are sandboxed to the worktree (no escape, no network unless opened), with a
   fixed tool allowlist and turn/budget/time caps. Reviewers are **read-only**.
 - `pr_review` never approves; destructive ops (`pr_merge`) are separate and opt-in.
+- `local_review` is read-only for source files and GitHub: it refreshes only the selected
+  remote-tracking baseline, then returns local review findings.
 - The harness pushes to a change branch and opens/updates PRs — it does not merge or
   force-push unless a workflow explicitly does so. Confirm with the user before merging.
 - Interactive TUI mutations require confirmation. Review/PR publication gates can be edited,
@@ -182,6 +213,16 @@ Chat may start at most one workflow per user message. If a request could map to 
 workflows, it asks the user to choose one before starting anything. Natural-language requests
 to register, re-register, update, or refresh definitions invoke the same confirmed registration
 flow as `/register`, including the SIMPLE-task worker gate.
+
+## Automation schedules
+
+The sweep and dispatch workflows accept `approvalMode: human|llm|none` and default to `human`.
+Use the [workflow input reference](docs/workflow-inputs.md) for their complete contracts.
+
+Automation schedules use Quartz cron (default `0 */10 * ? * *`), local timezone, and no
+catch-up. Never put credentials in schedule input. Schedule mutation/run-now, item reset, and
+approval decisions require confirmation. The TUI dashboard keys are `s` for Automations and
+`a` for the global Approval Inbox.
 
 ## Boundaries / gotchas
 

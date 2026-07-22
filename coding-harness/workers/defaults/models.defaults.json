@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "defaultProfile": "standard",
+  "reviewLoop": {
+    "maxRounds": 8,
+    "weights": {"checks": 0.55, "review": 0.30, "acceptance": 0.15},
+    "targetScore": 1.0,
+    "plateauRounds": 2,
+    "minImprovement": 0.05
+  },
+  "prices": {
+    "codex:default": {"input": 1.25, "output": 10.0},
+    "claude-sonnet-5": {"input": 3.0, "output": 15.0},
+    "claude-opus-4-8": {"input": 5.0, "output": 25.0},
+    "claude-haiku-4-5": {"input": 1.0, "output": 5.0}
+  },
+  "profiles": {
+    "legacy": {"roles": {"design": {"agent": "claude"}, "plan": {"agent": "claude"}, "code": {"agent": "claude"}, "review": {"agent": "claude"}, "judge": {"agent": "claude"}, "scribe": {"agent": "claude"}}},
+    "trivial": {"reviewLoop": {"maxRounds": 2}, "roles": {"design": {"agent": "claude", "model": "claude-sonnet-5", "maxBudgetUsd": 10}, "plan": {"agent": "claude", "model": "claude-sonnet-5", "maxBudgetUsd": 10}, "code": {"tiers": [{"agent": "claude", "model": "claude-sonnet-5", "maxBudgetUsd": 15}]}, "review": {"agent": "codex", "model": ""}, "judge": {"agent": "codex", "model": ""}, "scribe": {"agent": "claude", "model": "claude-haiku-4-5"}}},
+    "standard": {"roles": {"design": {"agent": "claude", "model": "claude-opus-4-8"}, "plan": {"agent": "claude", "model": "claude-opus-4-8"}, "code": {"tiers": [{"agent": "claude", "model": "claude-sonnet-5"}, {"agent": "claude", "model": "claude-opus-4-8"}]}, "review": {"agent": "codex", "model": ""}, "judge": {"agent": "codex", "model": ""}, "scribe": {"agent": "claude", "model": "claude-haiku-4-5"}}},
+    "full": {"reviewLoop": {"maxRounds": 12}, "roles": {"design": {"agent": "claude", "model": "claude-opus-4-8", "maxBudgetUsd": 100}, "plan": {"agent": "claude", "model": "claude-opus-4-8", "maxBudgetUsd": 100}, "code": {"tiers": [{"agent": "claude", "model": "claude-sonnet-5", "maxBudgetUsd": 100}, {"agent": "claude", "model": "claude-opus-4-8", "maxBudgetUsd": 200}]}, "review": {"agent": "codex", "model": ""}, "judge": {"agent": "codex", "model": ""}, "scribe": {"agent": "claude", "model": "claude-haiku-4-5"}}}
+  }
+}

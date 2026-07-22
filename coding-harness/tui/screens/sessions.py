@@ -9,6 +9,8 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import Footer, Label, ListItem, ListView, Static
 
+from ..widgets.factory_bar import FactoryTopBar
+
 
 def _ago(ts: float) -> str:
     s = max(0, int(time.time() - ts))
@@ -28,6 +30,7 @@ class Sessions(Screen):
     ]
 
     def compose(self) -> ComposeResult:
+        yield FactoryTopBar()
         yield Static("Sessions — enter to resume · n new · esc back", id="launcher_title")
         yield ListView(id="session_list")
         yield Footer()

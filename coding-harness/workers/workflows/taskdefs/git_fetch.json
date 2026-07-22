@@ -4,8 +4,9 @@
   "retryCount": 2,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 0,
+  "timeoutSeconds": 86400,
   "responseTimeoutSeconds": 86400,
   "timeoutPolicy": "ALERT_ONLY",
-  "ownerEmail": "viren@orkes.io"
+  "ownerEmail": "viren@orkes.io",
+  "pollTimeoutSeconds": 60
 }

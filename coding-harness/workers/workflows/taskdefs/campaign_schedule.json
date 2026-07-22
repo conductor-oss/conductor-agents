@@ -1,0 +1,12 @@
+{
+  "name": "campaign_schedule",
+  "description": "Select the next dependency-ready, file-disjoint feature-campaign wave and build its dynamic sub-workflow inputs.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 2,
+  "pollTimeoutSeconds": 120,
+  "responseTimeoutSeconds": 60,
+  "timeoutSeconds": 300,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "ownerEmail": "viren@orkes.io"
+}

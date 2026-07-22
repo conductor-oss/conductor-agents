@@ -23,7 +23,9 @@ Kept import-light (stdlib only) so it's unit-testable without the agent backends
 
 from __future__ import annotations
 
+import hashlib
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 # Repo "agent guide" discovery: first existing, non-empty root file wins. AGENTS.md is the
@@ -36,6 +38,23 @@ _GUIDE_CAP = 24_000
 # the single source of truth for the default prompts: the worker uses them (rendered) as the
 # built-in, and the TUI seeds new templates from the same files. Ship alongside the workers.
 _DEFAULTS_DIR = Path(__file__).resolve().parents[1] / "defaults" / "prompts"
+
+
+@dataclass(frozen=True)
+class PromptResolution:
+    prompt: str
+    source: str
+    template_key: str
+    sha256: str
+
+
+def _resolution(prompt: str, source: str, template_key) -> PromptResolution:
+    return PromptResolution(
+        prompt=prompt,
+        source=source,
+        template_key=str(template_key or ""),
+        sha256=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+    )
 
 
 def bundled_default(template_key) -> str | None:
@@ -160,7 +179,8 @@ def render_template(template: str, context: dict | None) -> str:
     return out
 
 
-def resolve_prompt(prompt: str, *, template, template_key, context, worktree: str) -> str:
+def resolve_prompt_details(prompt: str, *, template, template_key, context,
+                           worktree: str) -> PromptResolution:
     """Effective prompt, precedence highest-first:
       explicit `promptTemplate` (inline text, or `@repo/path` → a file in the checkout)
       > repo `.conductor/<key>.md` > shipped default (workers/defaults/prompts/<key>.md)
@@ -170,14 +190,31 @@ def resolve_prompt(prompt: str, *, template, template_key, context, worktree: st
     repo/shipped default rather than failing the run."""
     t = template.strip() if isinstance(template, str) else ""
     chosen = None
+    source = ""
     if t.startswith("@"):
-        chosen = read_repo_prompt_path(worktree, t[1:].strip())
+        relpath = t[1:].strip()
+        chosen = read_repo_prompt_path(worktree, relpath)
+        if chosen is not None:
+            source = f"repo:@{relpath}"
     elif t:
         chosen = t
+        source = "input:inline"
     if chosen is None:
         chosen = read_repo_template(worktree, template_key)
+        if chosen is not None:
+            source = f"repo:.conductor/{template_key}.md"
     if chosen is None:
         chosen = bundled_default(template_key)
+        if chosen is not None:
+            source = f"bundled:{template_key}"
     if chosen:
-        return render_template(chosen, context)
-    return prompt
+        return _resolution(render_template(chosen, context), source, template_key)
+    return _resolution(prompt, "workflow:inline-prompt", template_key)
+
+
+def resolve_prompt(prompt: str, *, template, template_key, context, worktree: str) -> str:
+    """Backward-compatible text-only wrapper around :func:`resolve_prompt_details`."""
+    return resolve_prompt_details(
+        prompt, template=template, template_key=template_key,
+        context=context, worktree=worktree,
+    ).prompt

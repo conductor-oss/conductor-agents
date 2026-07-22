@@ -9,8 +9,12 @@
 #   WORKER_MODULES=coding_agent ./run_workers.sh   # heavy: LLM coding sessions
 #   WORKER_MODULES=gitops ./run_workers.sh         # light: git + GitHub tasks
 set -u
-cd "$(dirname "$0")"
-export CONDUCTOR_SERVER_URL="${CONDUCTOR_SERVER_URL:-http://localhost:8080/api}"
+WORKERS_DIR=$(cd "$(dirname "$0")" && pwd)
+HARNESS_ROOT=$(cd "$WORKERS_DIR/.." && pwd)
+# shellcheck disable=SC1091
+. "$HARNESS_ROOT/scripts/conductor_env.sh"
+load_harness_environment "$HARNESS_ROOT/.env" || exit $?
+cd "$WORKERS_DIR"
 PY=.venv/bin/python
 DELAY=5
 echo "[run_workers] CONDUCTOR_SERVER_URL=$CONDUCTOR_SERVER_URL modules=${WORKER_MODULES:-<all>}"

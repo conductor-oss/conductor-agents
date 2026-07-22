@@ -18,6 +18,7 @@ from textual.widgets import (Button, Collapsible, Footer, Input, Label, ListItem
 from .. import catalog, gh
 from ..api import ConductorError
 from ..catalog import Field
+from ..widgets.factory_bar import FactoryTopBar
 from ..widgets.modals import PickerModal
 from ..widgets.preflight import Preflight
 
@@ -26,6 +27,7 @@ class Launcher(Screen):
     BINDINGS = [Binding("escape", "back", "back")]
 
     def compose(self) -> ComposeResult:
+        yield FactoryTopBar()
         yield Label("New run — pick an action", id="launcher_title")
         lv = ListView(id="action_list")
         yield lv
@@ -64,6 +66,7 @@ class LauncherForm(Screen):
         self._widgets: dict[str, object] = {}
 
     def compose(self) -> ComposeResult:
+        yield FactoryTopBar()
         yield Label(f"{self.spec.action}  [dim]({self.spec.name})[/dim]", id="launcher_title")
         with VerticalScroll():
             common = [f for f in self.spec.fields if not f.advanced]
@@ -147,7 +150,10 @@ class LauncherForm(Screen):
 
     # ------------------------------------------------------------------ template picker
     def _template_field(self):
-        return next((f for f in self.spec.fields if f.kind == "template"), None)
+        from .. import templates
+        preferred = templates.primary_field(self.spec.name)
+        return next((f for f in self.spec.fields if f.kind == "template" and f.name == preferred),
+                    next((f for f in self.spec.fields if f.kind == "template"), None))
 
     def _target_repo(self) -> str:
         """The repo the run targets, for repo-scoped template filtering. Empty string when the
@@ -165,12 +171,17 @@ class LauncherForm(Screen):
         f = self._template_field()
         if not f:
             return
-        entries = templates.list_templates(self.spec.name, repo=self._target_repo())
+        entries = templates.list_field_templates(
+            self.spec.name, f.name, repo=self._target_repo())
         self._tpl_entries = {str(e.path): e for e in entries}
         sel = self.query_one("#tplsel", Select)
         opts = [("Built-in default", "__builtin__")] + [(e.name, str(e.path)) for e in entries]
         opts.append(("Custom (edit below)", "__custom__"))
-        prev = sel.value
+        f = self._template_field()
+        initial_template = self._init.get(f.name) if f else None
+        prev = ("__custom__" if initial_template and not getattr(self, "_tpl_initialized", False)
+                else sel.value)
+        self._tpl_initialized = True
         sel.set_options(opts)
         # decide the selection
         if prev in self._tpl_entries or prev == "__custom__":
@@ -199,6 +210,7 @@ class LauncherForm(Screen):
                 w.text = templates.load(entry)
 
     def _set_tpl_hint(self, n: int) -> None:
+        from .. import templates
         f = self._template_field()
         repo = self._target_repo()
         where = f" for {self.spec.name}" + (f" · {repo}" if repo else "")
@@ -208,11 +220,20 @@ class LauncherForm(Screen):
             msg = f"{n} templates{where} — pick one, or Built-in"
         else:
             msg = f"no saved templates{where} — Advanced ▸ {f.label} ▸ Save as… to create one"
+        selected = self.query_one("#tplsel", Select).value
+        entry = getattr(self, "_tpl_entries", {}).get(selected)
+        if entry is not None:
+            msg += f" · source: {entry.path}"
+        elif selected == "__custom__":
+            msg += " · source: inline workflow input"
+        else:
+            msg += f" · source: repo .conductor/{templates.field_key(self.spec.name, f.name) or 'template'}.md or bundled default"
         self.query_one("#tpl_hint", Label).update(msg)
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "tplsel":
             self._apply_selection(event.value)
+            self._set_tpl_hint(len(getattr(self, "_tpl_entries", {})))
 
     # ------------------------------------------------------------------ preflight
     @work(exclusive=True, group="preflight")
@@ -241,7 +262,7 @@ class LauncherForm(Screen):
         """Fill the editor with the shipped built-in prompt text so the user can tweak it;
         marks the picker Custom (this becomes an explicit, sent prompt)."""
         from .. import templates
-        text = templates.default_prompt(templates.FIELD_KEY.get(field_name))
+        text = templates.default_prompt(templates.field_key(self.spec.name, field_name))
         w = self._widgets.get(field_name)
         if text and isinstance(w, TextArea):
             w.text = text
@@ -262,12 +283,14 @@ class LauncherForm(Screen):
             return
         self.app.push_screen(SaveTemplateModal(
             self.spec.name, self._target_repo(),
-            on_save=lambda name, scoped, repos: self._do_save_template(name, text, scoped, repos)))
+            on_save=lambda name, scoped, repos: self._do_save_template(
+                field_name, name, text, scoped, repos)))
 
-    def _do_save_template(self, name: str, text: str, scoped: bool, repos: tuple[str, ...]) -> None:
+    def _do_save_template(self, field_name: str, name: str, text: str, scoped: bool,
+                          repos: tuple[str, ...]) -> None:
         from .. import templates
         wfs = (self.spec.name,) if scoped else ()
-        path = templates.save(name, text, workflows=wfs, repos=repos)
+        path = templates.save(name, text, workflows=wfs, repos=repos, fields=(field_name,))
         self.notify(f"saved template → {path.name}")
         self._rebuild_tpl_picker()   # the new one shows up (and auto-selects if it's now the only match)
 
@@ -313,7 +336,43 @@ class LauncherForm(Screen):
         if missing:
             self._error("Required: " + ", ".join(missing))
             return
-        payload = self.spec.build_payload(values)
+        payload = catalog.normalize_local_paths(self.spec.build_payload(values))
+        for field in (item for item in self.spec.fields if item.kind == "template"):
+            if payload.get(field.name):
+                payload[f"{field.name}Source"] = self._template_source(field.name)
+        from .. import templates
+        primary = self._template_field()
+        try:
+            payload, _applied = templates.apply_user_templates(
+                self.spec.name, payload,
+                skip_fields={primary.name} if primary else set(),
+            )
+        except templates.TemplateSelectionError as exc:
+            self._error(str(exc))
+            return
+        # Form launches use the same durable model-policy snapshot as chat and
+        # schedules.  A blank picker value selects the uniquely scoped user policy
+        # (or leaves bundled/repository resolution to the worker).
+        from ..model_profiles import ProfileError, choose_profile, snapshot_inputs
+        try:
+            profile_name = str(payload.get("modelProfile") or "").strip()
+            repo = str(payload.get("repo") or payload.get("repoPath") or "")
+            profile = choose_profile(self.spec.name, repo, explicit=profile_name)
+            variant = profile_name or (str(profile.data.get("defaultProfile") or "") if profile else "")
+            for key, value in snapshot_inputs(profile, profile_variant=variant).items():
+                if not payload.get(key):
+                    payload[key] = value
+        except ProfileError as exc:
+            self._error(str(exc))
+            return
+        from ..workspace import preview
+        workspace = preview(payload.get("repoPath", ""))
+        if workspace and workspace.ignored_changes:
+            self.notify(
+                f"{workspace.ignored_changes} uncommitted source change(s) will be ignored; "
+                "the run starts from committed HEAD",
+                severity="warning",
+            )
         try:
             wid = await self.app.client.start(self.spec.name, payload)
         except ConductorError as e:
@@ -322,6 +381,25 @@ class LauncherForm(Screen):
         self.app.track(wid)
         from .run_detail import RunDetail
         self.app.switch_screen(RunDetail(wid))
+
+    def _template_source(self, field_name: str) -> str:
+        """Durable provenance paired with the inline template workflow input."""
+        from .. import templates
+
+        text = str(self._value(field_name) or "")
+        selected = self.query_one("#tplsel", Select).value
+        entry = getattr(self, "_tpl_entries", {}).get(selected)
+        primary = self._template_field()
+        if entry is not None and primary and field_name == primary.name:
+            suffix = "" if text == templates.load(entry) else "#edited-inline"
+            return f"user:{entry.path}{suffix}"
+        previous = self._init.get(f"{field_name}Source")
+        if primary and field_name == primary.name and selected == "__custom__" \
+                and previous and text == self._init.get(field_name):
+            return str(previous)
+        if text.strip().startswith("@"):
+            return f"repo:{text.strip()[1:]}"
+        return "input:inline"
 
     def _collect(self) -> tuple[dict, list[str]]:
         values, missing = {}, []

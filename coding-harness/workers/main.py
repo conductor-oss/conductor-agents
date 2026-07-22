@@ -3,7 +3,7 @@
 Imports every selected task package so the ``@worker_task`` decorators register
 their functions, then starts the Conductor poller. Which task modules load is
 controlled by the ``WORKER_MODULES`` env var (comma separated); the default
-(``coding_agent,gitops``) covers every workflow (code_parallel, issue_to_pr,
+(``coding_agent,gitops,campaign,openspec``) covers every workflow (code_parallel, feature_campaign, issue_to_pr,
 pr_review, address_pr, github_demo, and the design_docs / code_subtask sub-workflows).
 
     CONDUCTOR_SERVER_URL=http://localhost:8080/api python main.py
@@ -20,9 +20,9 @@ import logging
 import os
 
 from conductor.client.automator.task_handler import TaskHandler
-from conductor.client.configuration.configuration import Configuration
+from common.conductor_config import configuration_from_env
 
-DEFAULT_MODULES = "coding_agent,gitops"
+DEFAULT_MODULES = "coding_agent,gitops,campaign,openspec,automation,model_policy,revision"
 
 
 def main() -> None:
@@ -37,8 +37,10 @@ def main() -> None:
         importlib.import_module(mod)
         log.info("loaded worker module: %s", mod)
 
-    config = Configuration()
-    log.info("polling Conductor at %s", os.environ.get("CONDUCTOR_SERVER_URL", "<unset>"))
+    config = configuration_from_env()
+    auth_mode = "key/secret" if config.authentication_settings is not None else "none"
+    log.info("polling Conductor at %s (authentication=%s)",
+             os.environ.get("CONDUCTOR_SERVER_URL", "<unset>"), auth_mode)
     with TaskHandler(configuration=config, scan_for_annotated_workers=True) as handler:
         handler.start_processes()
         handler.join_processes()

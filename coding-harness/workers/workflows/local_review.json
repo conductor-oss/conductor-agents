@@ -1,0 +1,190 @@
+{
+  "updateTime": 1784527269983,
+  "name": "local_review",
+  "description": "Read-only review of a checked-out local repository against a freshly fetched remote branch. Includes local commits, staged and unstaged edits, and untracked files. Never creates a worktree, modifies source files, commits, pushes, or posts to GitHub.",
+  "version": 1,
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "local_diff",
+      "taskReferenceName": "diff",
+      "inputParameters": {
+        "baseBranch": "${workflow.input.baseBranch}",
+        "baseRemote": "${workflow.input.baseRemote}",
+        "repoPath": "${workflow.input.repoPath}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "review",
+      "inputParameters": {
+        "agent": "${workflow.input.agent}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "model": "${workflow.input.model}",
+        "prompt": "Review the locally checked-out changes only. Do not modify this checkout in any way. Compare it to ${diff.output.baseRef}; return the required structured review as the workflow result.\n\nChanged files: ${diff.output.changedFiles}\nUntracked files: ${diff.output.untrackedFiles}\n\nDiff:\n${diff.output.diff}",
+        "promptContext": {
+          "baseCommit": "${diff.output.baseCommit}",
+          "baseRef": "${diff.output.baseRef}",
+          "changedFiles": "${diff.output.changedFiles}",
+          "diff": "${diff.output.diff}",
+          "headCommit": "${diff.output.headCommit}",
+          "truncated": "${diff.output.truncated}",
+          "untrackedFiles": "${diff.output.untrackedFiles}"
+        },
+        "promptTemplate": "${workflow.input.localReviewPromptTemplate}",
+        "promptTemplateSource": "${workflow.input.localReviewPromptTemplateSource}",
+        "schema": {
+          "properties": {
+            "comments": {
+              "description": "specific findings anchored to the current local files",
+              "items": {
+                "properties": {
+                  "body": {
+                    "description": "the finding",
+                    "type": "string"
+                  },
+                  "line": {
+                    "description": "line number in the current local file",
+                    "type": "integer"
+                  },
+                  "path": {
+                    "description": "repo-relative file path",
+                    "type": "string"
+                  },
+                  "severity": {
+                    "enum": [
+                      "blocking",
+                      "suggestion",
+                      "nit",
+                      "question"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "body"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "summary": {
+              "description": "overall local-change review summary (markdown)",
+              "type": "string"
+            },
+            "verdict": {
+              "description": "request_changes only for blocking correctness or security issues",
+              "enum": [
+                "comment",
+                "request_changes"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "summary",
+            "verdict",
+            "comments"
+          ],
+          "type": "object"
+        },
+        "templateKey": "local_review",
+        "tools": [
+          "Read",
+          "Grep",
+          "Glob"
+        ],
+        "worktreePath": "${workflow.input.repoPath}",
+        "modelRole": "review",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelResolution": "${model_policy.output}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    }
+  ],
+  "inputParameters": [
+    "agent",
+    "baseBranch",
+    "baseRemote",
+    "localReviewPromptTemplate",
+    "localReviewPromptTemplateSource",
+    "maxBudgetUsd",
+    "maxTurns",
+    "model",
+    "modelOverrides",
+    "modelPolicy",
+    "modelPolicySha256",
+    "modelPolicySource",
+    "modelProfile",
+    "modelsConfig",
+    "repoPath"
+  ],
+  "outputParameters": {
+    "baseBranch": "${diff.output.baseBranch}",
+    "baseCommit": "${diff.output.baseCommit}",
+    "baseRef": "${diff.output.baseRef}",
+    "baseRemote": "${diff.output.baseRemote}",
+    "changedFiles": "${diff.output.changedFiles}",
+    "comments": "${review.output.structured.comments}",
+    "costUsd": "${review.output.costUsd}",
+    "diffChars": "${diff.output.diffChars}",
+    "diffTruncated": "${diff.output.truncated}",
+    "hasChanges": "${diff.output.hasChanges}",
+    "headCommit": "${diff.output.headCommit}",
+    "repoPath": "${diff.output.repoPath}",
+    "review": "${review.output.structured}",
+    "reviewPromptTemplate": "${review.output.promptTemplate}",
+    "summary": "${review.output.structured.summary}",
+    "tokenUsed": "${review.output.tokenUsed}",
+    "untrackedFiles": "${diff.output.untrackedFiles}",
+    "verdict": "${review.output.structured.verdict}"
+  },
+  "schemaVersion": 2,
+  "restartable": true,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "inputTemplate": {
+    "agent": "",
+    "baseBranch": "main",
+    "baseRemote": "origin",
+    "localReviewPromptTemplate": "",
+    "localReviewPromptTemplateSource": "",
+    "maxBudgetUsd": 50,
+    "maxTurns": 250,
+    "model": "",
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "overwriteTags": false
+}

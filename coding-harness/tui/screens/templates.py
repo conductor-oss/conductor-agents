@@ -14,6 +14,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Label, ListItem, ListView, Static
 
 from .. import catalog, edit, templates
+from ..widgets.factory_bar import FactoryTopBar
 from ..widgets.modals import ConfirmModal, NewTemplateModal
 
 
@@ -27,6 +28,7 @@ class TemplatesScreen(Screen):
     ]
 
     def compose(self) -> ComposeResult:
+        yield FactoryTopBar()
         yield Static("Prompt templates — enter/e edit in editor · n new · d delete · esc back",
                      id="launcher_title")
         yield ListView(id="tpl_list")

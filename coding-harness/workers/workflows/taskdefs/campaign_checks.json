@@ -1,0 +1,12 @@
+{
+  "name": "campaign_checks",
+  "description": "Run a version-2 named check profile with retries, capped output tails, artifacts, and managed/attached environment semantics. Test failures are returned as structured data.",
+  "retryCount": 0,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 2,
+  "pollTimeoutSeconds": 300,
+  "responseTimeoutSeconds": 300,
+  "timeoutSeconds": 86400,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "ownerEmail": "viren@orkes.io"
+}

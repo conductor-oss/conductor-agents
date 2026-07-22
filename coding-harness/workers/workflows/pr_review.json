@@ -5,24 +5,51 @@
   "ownerEmail": "viren@orkes.io",
   "description": "Review a pull request and post a formal review: fetch PR metadata + prior discussion, clone + check out the PR, compute the diff, run a read-only coding_agent to produce structured findings, and post them as a GitHub review (inline comments + summary + verdict). Never approves.",
   "inputParameters": [
-    "repo",
-    "prNumber",
     "agent",
-    "model",
     "approve",
-    "reviewPromptTemplate",
+    "maxBudgetUsd",
     "maxTurns",
-    "maxBudgetUsd"
+    "model",
+    "modelOverrides",
+    "modelPolicy",
+    "modelPolicySha256",
+    "modelPolicySource",
+    "modelProfile",
+    "modelsConfig",
+    "prNumber",
+    "repo",
+    "reviewPromptTemplate",
+    "reviewPromptTemplateSource"
   ],
   "inputTemplate": {
-    "agent": "claude",
+    "agent": "",
     "model": "",
     "approve": false,
     "reviewPromptTemplate": "",
+    "reviewPromptTemplateSource": "",
     "maxTurns": 250,
-    "maxBudgetUsd": 50.0
+    "maxBudgetUsd": 50.0,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
   },
   "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
     {
       "name": "pr_comments",
       "taskReferenceName": "fb",
@@ -37,7 +64,7 @@
       "taskReferenceName": "clone",
       "type": "SIMPLE",
       "inputParameters": {
-        "repoUrl": "${fb.output.headRepoUrl}",
+        "repoUrl": "${workflow.input.repo}",
         "dest": "/tmp/review_${workflow.input.prNumber}_${workflow.workflowId}"
       }
     },
@@ -47,7 +74,8 @@
       "type": "SIMPLE",
       "inputParameters": {
         "repoPath": "${clone.output.repoPath}",
-        "number": "${workflow.input.prNumber}"
+        "number": "${workflow.input.prNumber}",
+        "repo": "${workflow.input.repo}"
       }
     },
     {
@@ -70,36 +98,84 @@
         "model": "${workflow.input.model}",
         "maxTurns": "${workflow.input.maxTurns}",
         "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-        "tools": ["Read", "Grep", "Glob"],
+        "tools": [
+          "Read",
+          "Grep",
+          "Glob"
+        ],
         "templateKey": "pr_review",
         "promptTemplate": "${workflow.input.reviewPromptTemplate}",
+        "promptTemplateSource": "${workflow.input.reviewPromptTemplateSource}",
         "promptContext": {
           "diff": "${diff.output.diff}",
           "feedback": "${fb.output.feedback}"
         },
         "schema": {
           "type": "object",
-          "required": ["summary", "verdict", "comments"],
+          "required": [
+            "summary",
+            "verdict",
+            "comments"
+          ],
           "properties": {
-            "summary": {"type": "string", "description": "overall review summary (markdown)"},
-            "verdict": {"type": "string", "enum": ["comment", "request_changes"], "description": "request_changes ONLY if there are blocking correctness/security issues; otherwise comment"},
+            "summary": {
+              "type": "string",
+              "description": "overall review summary (markdown)"
+            },
+            "verdict": {
+              "type": "string",
+              "enum": [
+                "comment",
+                "request_changes"
+              ],
+              "description": "request_changes ONLY if there are blocking correctness/security issues; otherwise comment"
+            },
             "comments": {
               "type": "array",
               "description": "specific inline comments, each anchored to a file + line in the NEW version",
               "items": {
                 "type": "object",
-                "required": ["path", "line", "body"],
+                "required": [
+                  "path",
+                  "line",
+                  "body"
+                ],
                 "properties": {
-                  "path": {"type": "string", "description": "repo-relative file path"},
-                  "line": {"type": "integer", "description": "line number in the file's NEW (post-change) version"},
-                  "severity": {"type": "string", "enum": ["blocking", "suggestion", "nit", "question"]},
-                  "body": {"type": "string", "description": "the comment"}
+                  "path": {
+                    "type": "string",
+                    "description": "repo-relative file path"
+                  },
+                  "line": {
+                    "type": "integer",
+                    "description": "line number in the file's NEW (post-change) version"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "enum": [
+                      "blocking",
+                      "suggestion",
+                      "nit",
+                      "question"
+                    ]
+                  },
+                  "body": {
+                    "type": "string",
+                    "description": "the comment"
+                  }
                 }
               }
             }
           }
         },
-        "prompt": "You are a senior code reviewer. Review the changes in this pull request and produce a focused, high-signal review as the required structured output.\n\nGuidelines:\n- Comment on REAL issues: correctness bugs, security problems, missing/incorrect error handling, missing tests for new behavior, and clear design problems. Do NOT nitpick formatting or style.\n- Read the surrounding code (Read/Grep/Glob) for context before judging — check callers, related files, and whether a change breaks something elsewhere.\n- Anchor each inline comment to a file `path` + `line` number in the file's NEW (post-change) version.\n- Set verdict to `request_changes` ONLY if there is at least one blocking issue; otherwise `comment`.\n- If the PR looks good, return an empty comments array and a brief approving summary (verdict `comment`).\n\nThe unified diff of this PR:\n\n${diff.output.diff}\n\nPrior discussion on the PR (may be empty):\n\n${fb.output.feedback}"
+        "prompt": "You are a senior code reviewer. Review the changes in this pull request and produce a focused, high-signal review as the required structured output.\n\nGuidelines:\n- Comment on REAL issues: correctness bugs, security problems, missing/incorrect error handling, missing tests for new behavior, and clear design problems. Do NOT nitpick formatting or style.\n- Read the surrounding code (Read/Grep/Glob) for context before judging — check callers, related files, and whether a change breaks something elsewhere.\n- Anchor each inline comment to a file `path` + `line` number in the file's NEW (post-change) version.\n- Set verdict to `request_changes` ONLY if there is at least one blocking issue; otherwise `comment`.\n- If the PR looks good, return an empty comments array and a brief approving summary (verdict `comment`).\n\nThe unified diff of this PR:\n\n${diff.output.diff}\n\nPrior discussion on the PR (may be empty):\n\n${fb.output.feedback}",
+        "modelRole": "review",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelResolution": "${model_policy.output}"
       }
     },
     {
@@ -116,7 +192,7 @@
           {
             "name": "review_gate",
             "taskReferenceName": "review_gate",
-            "type": "HUMAN",
+            "type": "WAIT",
             "inputParameters": {
               "workflow": "pr_review",
               "prNumber": "${workflow.input.prNumber}",
