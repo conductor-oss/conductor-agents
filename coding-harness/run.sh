@@ -51,7 +51,7 @@ setup_workers() {
     echo "[coding-harness] creating worker environment…"
     python3 -m venv workers/.venv
   fi
-  workers/.venv/bin/pip install -q -r workers/requirements.txt
+  #workers/.venv/bin/uvuv  install -q -r workers/requirements.txt
 }
 
 register() {

@@ -65,9 +65,9 @@ def test_build_payload_omits_defaults_and_expands_maps_to():
     assert payload["repo"] == "acme/app"
     assert payload["issueNumber"] == 42
     # backend expands to both plan + code agents
-    assert payload["planAgent"] == "codex" and payload["codeAgent"] == "codex"
+    assert payload["openspecPlanAgent"] == "codex" and payload["codeAgent"] == "codex"
     # unchanged defaults are omitted
-    assert "base" not in payload and "maxTurns" not in payload and "design" not in payload
+    assert "base" not in payload and "maxTurns" not in payload
 
 
 def test_target_and_result_helpers():
@@ -77,26 +77,26 @@ def test_target_and_result_helpers():
     assert catalog.short_repo("git@github.com:acme/app.git") == "acme/app"
 
 
-def test_design_docs_is_bounded_review_loop():
-    wf = _load("design_docs")
-    assert wf["inputTemplate"]["humanApproval"] is True
-    assert wf["inputTemplate"]["designMaxIterations"] == 5
-    loop = wf["tasks"][0]
+def test_openspec_plan_is_bounded_review_loop():
+    wf = _load("openspec_plan")
+    assert wf["inputTemplate"]["openspecHumanApproval"] is True
+    assert wf["inputTemplate"]["openspecMaxIterations"] == 5
+    loop = next(t for t in wf["tasks"] if t["taskReferenceName"] == "openspec_loop")
     assert loop["type"] == "DO_WHILE" and loop["evaluatorType"] == "graaljs"
-    assert "$.design_loop['iteration'] < $.max_iterations" in loop["loopCondition"]
+    assert "$.openspec_loop['iteration'] < $.max_iterations" in loop["loopCondition"]
     review = next(t for t in loop["loopOver"] if t["taskReferenceName"] == "review_mode")
     assert any(t["type"] == "HUMAN" for t in review["decisionCases"]["true"])
-    judge = next(t for t in review["defaultCase"] if t["taskReferenceName"] == "design_judge")
+    judge = next(t for t in review["defaultCase"] if t["taskReferenceName"] == "plan_judge")
     assert judge["type"] == "SIMPLE" and judge["name"] == "coding_agent"
     assert judge["inputParameters"]["tools"] == ["Read", "Grep", "Glob"]
-    assert judge["inputParameters"]["maxTurns"] == "${workflow.input.designMaxTurns}"
-    assert judge["inputParameters"]["maxBudgetUsd"] == "${workflow.input.designMaxBudgetUsd}"
+    assert judge["inputParameters"]["maxTurns"] == "${workflow.input.openspecMaxTurns}"
+    assert judge["inputParameters"]["maxBudgetUsd"] == "${workflow.input.openspecMaxBudgetUsd}"
     assert set(judge["inputParameters"]["schema"]["required"]) == {"approved", "feedback"}
-    assert "${design.output.result}" in judge["inputParameters"]["prompt"]
+    assert "${workflow.input.instruction}" in judge["inputParameters"]["prompt"]
     set_review = next(t for t in review["defaultCase"] if t["taskReferenceName"] == "set_judge_review")
-    assert set_review["inputParameters"]["designApproved"] == "${design_judge.output.structured.approved}"
-    assert set_review["inputParameters"]["designFeedback"] == "${design_judge.output.structured.feedback}"
-    assert set_review["inputParameters"]["designReview"] == "agent"
+    assert set_review["inputParameters"]["planApproved"] == "${plan_judge.output.structured.approved}"
+    assert set_review["inputParameters"]["planFeedback"] == "${plan_judge.output.structured.feedback}"
+    assert set_review["inputParameters"]["planReview"] == "agent"
 
 
 def test_no_llm_chat_complete_tasks_remain():
@@ -119,13 +119,13 @@ def test_no_llm_chat_complete_tasks_remain():
 
 
 @pytest.mark.parametrize("wf_name", ["code_parallel", "issue_to_pr", "address_pr"])
-def test_code_parallel_paths_forward_design_review_controls(wf_name):
+def test_code_parallel_paths_forward_openspec_plan_controls(wf_name):
     wf = _load(wf_name)
     template = wf["inputTemplate"]
-    assert template["design"] is False and template["designHumanApproval"] is True
-    assert template["designMaxIterations"] == 5
+    assert template["openspecHumanApproval"] is True
+    assert template["openspecMaxIterations"] == 5
     serialized = json.dumps(wf)
-    for key in ("designHumanApproval", "designMaxIterations"):
+    for key in ("openspecHumanApproval", "openspecMaxIterations"):
         assert f"${{workflow.input.{key}}}" in serialized
 
 
@@ -134,8 +134,10 @@ def test_code_parallel_paths_forward_design_review_controls(wf_name):
     [
         ("address_pr", "maxBudgetUsd"),
         ("code_parallel", "maxBudgetUsd"),
+        ("code_parallel", "openspecMaxBudgetUsd"),
         ("code_subtask", "maxBudgetUsd"),
-        ("design_docs", "designMaxBudgetUsd"),
+        ("openspec_plan", "openspecMaxBudgetUsd"),
+        ("openspec_generate_artifact", "maxBudgetUsd"),
         ("github_demo", "maxBudgetUsd"),
         ("issue_to_pr", "maxBudgetUsd"),
         ("pr_review", "maxBudgetUsd"),
@@ -149,11 +151,10 @@ def test_all_workflow_agent_budget_defaults_are_fifty(wf_name, budget_key):
     ("wf_name", "turn_key", "expected"),
     [
         ("address_pr", "maxTurns", 250),
-        ("code_parallel", "designMaxTurns", 500),
-        ("code_parallel", "planMaxTurns", 500),
+        ("code_parallel", "openspecMaxTurns", 500),
         ("code_parallel", "maxTurns", 500),
         ("code_subtask", "maxTurns", 250),
-        ("design_docs", "designMaxTurns", 500),
+        ("openspec_plan", "openspecMaxTurns", 500),
         ("github_demo", "maxTurns", 300),
         ("issue_to_pr", "maxTurns", 300),
         ("pr_review", "maxTurns", 250),
@@ -167,7 +168,7 @@ def test_workflow_agent_turn_defaults(wf_name, turn_key, expected):
 
 def test_code_parallel_internal_agent_budgets_are_fifty():
     wf = _load("code_parallel")
-    plan = next(t for t in wf["tasks"] if t["taskReferenceName"] == "plan")
+    plan = next(t for t in wf["tasks"] if t["taskReferenceName"] == "openspec_plan")
     merge = next(t for t in wf["tasks"] if t["taskReferenceName"] == "merge")
-    assert plan["inputParameters"]["maxBudgetUsd"] == 50.0
+    assert plan["inputParameters"]["openspecMaxBudgetUsd"] == "${workflow.input.openspecMaxBudgetUsd}"
     assert merge["inputParameters"]["maxBudgetUsd"] == "${workflow.input.maxBudgetUsd}"

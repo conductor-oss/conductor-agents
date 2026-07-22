@@ -1,0 +1,54 @@
+{
+  "name": "openspec_generate_artifact",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "One fan-out unit of openspec_plan: fetch one OpenSpec artifact's generation instructions (typed CLI task, not agent judgment) and run a coding_agent to write that artifact's content, addressing prior review feedback.",
+  "inputParameters": ["repoPath", "changeName", "artifact", "goal", "feedback", "agent", "model", "maxTurns", "maxBudgetUsd"],
+  "inputTemplate": {"feedback": "", "model": "", "maxTurns": 500, "maxBudgetUsd": 50.0},
+  "tasks": [
+    {
+      "name": "openspec_instructions",
+      "taskReferenceName": "instr",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "changeName": "${workflow.input.changeName}",
+        "artifact": "${workflow.input.artifact}"
+      }
+    },
+    {
+      "name": "build_prompt",
+      "taskReferenceName": "build_prompt",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "instr": "${instr.output}",
+        "goal": "${workflow.input.goal}",
+        "feedback": "${workflow.input.feedback}",
+        "queryExpression": ".instr.artifactId as $artifact | .instr.instruction as $instrText | .instr.template as $tmpl | .instr.resolvedOutputPath as $path | (.instr.rules // []) as $rules | .goal as $goal | .feedback as $fb | ($rules | map(\"- \" + .) | join(\"\\n\")) as $rulesTxt | { prompt: (\"You are contributing the '\" + $artifact + \"' artifact to an OpenSpec change that plans this work:\\n\" + $goal + \"\\n\\n\" + $instrText + (if ($rules | length) > 0 then \"\\n\\nAdditional rules:\\n\" + $rulesTxt else \"\" end) + \"\\n\\nWrite exactly this file: \" + $path + \"\\n\\nTemplate structure to follow (fill in every section):\\n\" + $tmpl + (if ($fb | length) > 0 then \"\\n\\nPrevious review feedback — address every item:\\n\" + $fb else \"\" end) + \"\\n\\nWrite only this OpenSpec artifact file; do not write application/source code.\") }"
+      }
+    },
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "write",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "worktreePath": "${workflow.input.repoPath}",
+        "agent": "${workflow.input.agent}",
+        "model": "${workflow.input.model}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "prompt": "${build_prompt.output.result.prompt}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "artifact": "${workflow.input.artifact}",
+    "filesChanged": "${write.output.filesChanged}",
+    "costUsd": "${write.output.costUsd}",
+    "tokenUsed": "${write.output.tokenUsed}",
+    "agent": "${write.output.agent}",
+    "sessionId": "${write.output.sessionId}",
+    "result": "${write.output.result}"
+  }
+}

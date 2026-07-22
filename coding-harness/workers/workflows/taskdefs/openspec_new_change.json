@@ -1,0 +1,11 @@
+{
+  "name": "openspec_new_change",
+  "description": "Scaffold a new OpenSpec change in the target repo (openspec new change --json); seeds the tasks-artifact file-disjoint independence rule in openspec/config.yaml if missing.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 300,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

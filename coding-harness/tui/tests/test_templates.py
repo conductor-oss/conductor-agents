@@ -64,7 +64,7 @@ def test_repo_scoping_parse_and_filter():
 
 def test_default_prompt_reads_shipped_defaults():
     # the TUI reads the same canonical files the worker uses
-    for key in ("pr_review", "code", "plan", "design", "address_pr"):
+    for key in ("pr_review", "code", "address_pr"):
         assert templates.default_prompt(key), f"no shipped default for {key}"
     assert "{{diff}}" in templates.default_prompt("pr_review")
     assert templates.default_prompt("nope") is None

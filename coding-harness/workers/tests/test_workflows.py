@@ -40,8 +40,9 @@ TASKDEFS_DIR = WORKFLOWS_DIR / "taskdefs"
 WORKFLOW_FILES = sorted(WORKFLOWS_DIR.glob("*.json"))
 TASKDEF_FILES = sorted(TASKDEFS_DIR.glob("*.json"))
 
-# The four workflows PR #5 reshaped with the iterative design-review gate.
-RESHAPED = ("code_parallel", "address_pr", "issue_to_pr", "design_docs")
+# The four workflows PR #5 reshaped with the iterative design-review gate
+# (design_docs was replaced by openspec_plan when planning moved to OpenSpec).
+RESHAPED = ("code_parallel", "address_pr", "issue_to_pr", "openspec_plan")
 
 # ``${<token>...}`` interpolation: capture the leading reference identifier.
 INTERP = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)")
@@ -127,7 +128,7 @@ def _worker_task_names() -> set[str]:
     """``task_definition_name=`` values from the harness's ``@worker_task``s."""
     pat = re.compile(r'@worker_task\(\s*task_definition_name\s*=\s*"([^"]+)"')
     names: set[str] = set()
-    for mod in ("coding_agent/tasks.py", "gitops/tasks.py"):
+    for mod in ("coding_agent/tasks.py", "gitops/tasks.py", "openspecops/tasks.py"):
         names.update(pat.findall((WORKERS / mod).read_text()))
     return names
 
@@ -290,41 +291,48 @@ def test_reshaped_gate_references_resolve(name: str):
     assert not dangling, f"{name}: gate references unknown task refs: {dangling}"
 
 
-def test_design_docs_loop_wiring():
-    """design_docs is the heart of the PR #5 design-review gate; assert its
-    iterative DO_WHILE / SWITCH structure is intact and internally consistent."""
-    wf = _load(WORKFLOWS_DIR / "design_docs.json")
+def test_openspec_plan_loop_wiring():
+    """openspec_plan is the OpenSpec-driven successor to the PR #5 design-review
+    gate; assert its iterative DO_WHILE / SWITCH structure is intact and
+    internally consistent (same human-or-AI-judge mechanism, ported verbatim)."""
+    wf = _load(WORKFLOWS_DIR / "openspec_plan.json")
     tasks = _collect_tasks(wf)
     by_ref = {t["taskReferenceName"]: t for t in tasks if "taskReferenceName" in t}
 
-    # The loop itself.
-    loop = by_ref.get("design_loop")
-    assert loop and loop["type"] == "DO_WHILE", "design_loop DO_WHILE missing"
+    # The outer loop itself.
+    loop = by_ref.get("openspec_loop")
+    assert loop and loop["type"] == "DO_WHILE", "openspec_loop DO_WHILE missing"
     body_refs = {t["taskReferenceName"] for t in loop["loopOver"]}
-    assert {"design", "capture_design_result", "review_mode"} <= body_refs
+    assert {"reset_pass", "artifact_loop", "capture_pass_result", "review_mode"} <= body_refs
+
+    # The inner artifact-generation drain loop.
+    inner = by_ref.get("artifact_loop")
+    assert inner and inner["type"] == "DO_WHILE", "artifact_loop DO_WHILE missing"
+    inner_refs = {t["taskReferenceName"] for t in inner["loopOver"]}
+    assert {"status", "select_ready", "fan_out_artifacts", "fan_join_artifacts",
+            "merge_pass_progress", "capture_round"} <= inner_refs
 
     # The in-loop human-vs-judge review switch, both branches wired.
     review_mode = by_ref.get("review_mode")
     assert review_mode and review_mode["type"] == "SWITCH"
     human_branch = {t["taskReferenceName"] for t in review_mode["decisionCases"]["true"]}
-    assert {"design_review", "set_human_review"} <= human_branch
-    assert by_ref["design_review"]["type"] == "HUMAN"
+    assert {"plan_review", "set_human_review"} <= human_branch
+    assert by_ref["plan_review"]["type"] == "HUMAN"
     judge_branch = {t["taskReferenceName"] for t in review_mode["defaultCase"]}
-    assert {"design_judge", "set_judge_review"} <= judge_branch
+    assert {"plan_judge", "set_judge_review"} <= judge_branch
 
-    # The post-loop approval gate: approve -> commit, else -> fail closed.
+    # The post-loop approval gate: approve -> commit + parse tasks.md, else -> fail closed.
     approval = by_ref.get("approval_result")
     assert approval and approval["type"] == "SWITCH"
-    assert by_ref["commit_design"]["taskReferenceName"] in {
-        t["taskReferenceName"] for t in approval["decisionCases"]["true"]
-    }
+    approved_refs = {t["taskReferenceName"] for t in approval["decisionCases"]["true"]}
+    assert {"commit_plan", "parse_tasks"} <= approved_refs
     assert any(t["type"] == "TERMINATE" for t in approval["defaultCase"]), (
-        "design_docs must fail closed when no design is approved"
+        "openspec_plan must fail closed when no plan is approved"
     )
 
     # Every SET_VARIABLE writes only variables declared on the workflow.
     declared = set(wf.get("variables", {}))
-    assert declared, "design_docs should declare loop variables"
+    assert declared, "openspec_plan should declare loop variables"
     for t in tasks:
         if t.get("type") == "SET_VARIABLE":
             unknown = set(t.get("inputParameters", {})) - declared

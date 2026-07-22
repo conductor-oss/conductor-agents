@@ -87,37 +87,35 @@ must be set; the rest have the defaults shown.
 
 ### `code_parallel` — code a change, in parallel
 
-Decompose one instruction into independent sub-tasks, code each on its own git worktree/branch
-in parallel, then merge back into a change branch. Optional up-front design-docs phase. Works
-on a **local path** (`repoPath`); it doesn't clone or push (the GitHub workflows do that).
+Plan through OpenSpec (`openspec_plan`: proposal → specs/design → tasks, reviewed via a
+human-or-AI-judge loop), deterministically decompose the generated `tasks.md` into independent
+sub-tasks, code each on its own git worktree/branch in parallel, then merge back into a change
+branch. Works on a **local path** (`repoPath`); it doesn't clone or push (the GitHub workflows
+do that).
 
 | Input | Default | Meaning |
 |---|---|---|
 | `repoPath` | **required** | Local directory to work in. Need not be a git repo — it's initialized if needed. |
 | `instruction` | **required** | The coding goal to decompose and implement. |
-| `changeBranch` | `code-parallel` | Branch the parallel work merges into. |
-| `design` | `false` | Explicit choice: if true, generate and approve design docs before coding. The TUI always asks. |
-| `designHumanApproval` | `true` | Pause after each design pass for approval or actionable feedback. False uses the read-only `coding_agent` judge. |
-| `designMaxIterations` | `5` | Maximum design/review passes before the workflow fails closed; may be raised. |
-| `maxSubtasks` | `6` | Upper bound on the parallel fan-out. |
-| `planAgent` / `codeAgent` / `designAgent` | `claude` | Backend for the planner / coders / design step. |
-| `planModel` / `codeModel` / `designModel` | `""` | Model id; empty = the backend's default. |
-| `maxTurns` / `maxBudgetUsd` | `500` / `50.0` | Per-agent turn and spend caps. The planner also defaults to 500 turns. Runtime timeouts come from the Conductor task definition. |
+| `changeBranch` | `code-parallel` | Branch the parallel work merges into; also the OpenSpec change name. |
+| `openspecHumanApproval` | `true` | Pause after each OpenSpec plan pass for approval or actionable feedback. False uses the read-only `coding_agent` judge. |
+| `openspecMaxIterations` | `5` | Maximum plan/review passes before the workflow fails closed; may be raised. |
+| `openspecPlanAgent` / `codeAgent` | `claude` | Backend for the OpenSpec plan / coders. |
+| `openspecPlanModel` / `codeModel` | `""` | Model id; empty = the backend's default. |
+| `maxTurns` / `maxBudgetUsd` | `500` / `50.0` | Per-agent turn and spend caps. The OpenSpec plan also defaults to 500 turns/`$50` (`openspecMaxTurns`/`openspecMaxBudgetUsd`). Runtime timeouts come from the Conductor task definition. |
 
 ```bash
 conductor workflow start --workflow code_parallel -i '{
   "repoPath": "/path/to/repo",
   "instruction": "Add a REST API with CRUD endpoints for notes, plus tests.",
   "changeBranch": "notes-api",
-  "design": true,
-  "maxSubtasks": 4,
-  "planAgent": "claude",
+  "openspecPlanAgent": "claude",
   "codeAgent": "codex"
 }'
 ```
 
 **Output:** `changeBranch`, `subtasks`, `merged`, `conflicts`, **`totalTokens`**,
-**`totalCostUsd`**, and a `summary` with a per-sub-task + `{plan, design, subtasks, merge}`
+**`totalCostUsd`**, and a `summary` with a per-sub-task + `{plan, subtasks, merge}`
 token/cost breakdown.
 
 ### `issue_to_pr` — GitHub issue → pull request
@@ -130,11 +128,9 @@ branch, and open a PR whose body closes the issue.
 | `repo` | **required** | Repo URL or `owner/name`. |
 | `issueNumber` | **required** | Issue to resolve. |
 | `base` | `main` | Base branch for the PR. |
-| `design` | `false` | Explicit choice: generate and approve design docs before coding. The TUI always asks. |
-| `designHumanApproval` | `true` | Human review each pass; false selects the automated read-only judge. |
-| `designMaxIterations` | `5` | Maximum design/review passes before the workflow fails closed. |
-| `maxSubtasks` | `4` | Parallel fan-out cap. |
-| `planAgent` / `codeAgent` / `designAgent` | `claude` | Backends. |
+| `openspecHumanApproval` | `true` | Human review each OpenSpec plan pass; false selects the automated read-only judge. |
+| `openspecMaxIterations` | `5` | Maximum plan/review passes before the workflow fails closed. |
+| `openspecPlanAgent` / `codeAgent` | `claude` | Backends. |
 | `maxTurns` / `maxBudgetUsd` | `300` / `50.0` | Per-agent turn and spend caps. Runtime timeouts come from the Conductor task definition. |
 
 ```bash
@@ -187,7 +183,8 @@ skipped, and it no-ops when there's no outstanding feedback.
 | `prNumber` | **required** | PR whose feedback to address. |
 | `engine` | `code_parallel` | How to code: `code_parallel` (decompose+parallel) or `coding_agent` (single session, cheaper for small feedback). |
 | `agent` | `claude` | Backend. |
-| `maxSubtasks` / `maxTurns` / `maxBudgetUsd` | `4` / `250` / `50.0` | Parallelism, turn, and spend caps (`maxSubtasks` is used only by the `code_parallel` engine). Runtime timeouts come from the Conductor task definition. |
+| `openspecHumanApproval` / `openspecMaxIterations` | `true` / `5` | OpenSpec plan review (`code_parallel` engine only). |
+| `maxTurns` / `maxBudgetUsd` | `250` / `50.0` | Turn and spend caps. Runtime timeouts come from the Conductor task definition. |
 
 ```bash
 conductor workflow start --workflow address_pr -i '{
@@ -215,11 +212,16 @@ edit, commit, push, open a PR. Good for smoke-testing GitHub connectivity.
 
 ### Internal sub-workflows
 
-- **`design_docs`** — iteratively writes a consistent set of design docs under `docs/design/`,
-  reviews each pass, and commits only an approved design. Human review is the default: approve to
-  exit, or submit feedback that drives the next pass. With `humanApproval:false`, a read-only
-  `coding_agent` judge reads and reviews the design documents instead. `designMaxIterations` defaults to
-  5 and can be raised. Invoked by `code_parallel` when `design:true`; also runnable standalone.
+- **`openspec_plan`** — drives the `openspec` CLI (typed tasks, not agent judgment) to
+  scaffold an OpenSpec change and deterministically drain its proposal/specs/design/tasks
+  dependency graph each pass, then reuses the same human-or-AI-judge review loop the harness
+  has always had: human review is the default (approve to exit, or submit feedback that drives
+  the next pass); with `openspecHumanApproval:false`, a read-only `coding_agent` judge reviews
+  the generated artifacts instead. `openspecMaxIterations` defaults to 5 and can be raised. On
+  approval, it deterministically parses the generated `tasks.md` into `subtasks[]`. Always
+  invoked by `code_parallel`; not called directly.
+- **`openspec_generate_artifact`** — one artifact-generation unit of `openspec_plan`
+  (`openspec_instructions → coding_agent`). Driven by the dynamic fork; not called directly.
 - **`code_subtask`** — one parallel unit of `code_parallel` (`worktree_add → coding_agent →
   commit`). Driven by the dynamic fork; not called directly.
 
@@ -231,13 +233,17 @@ Every workflow ships a tuned built-in prompt, but you can fully override an agen
 with your own instructions — from three layers, highest precedence first:
 
 1. **Explicit input** — a `*PromptTemplate` workflow input (`reviewPromptTemplate`,
-   `codePromptTemplate`, `planPromptTemplate`, `designPromptTemplate`, `fixPromptTemplate`);
-   inline text, or `@repo/path` to read the prompt from a file in the checkout.
+   `codePromptTemplate`, `fixPromptTemplate`); inline text, or `@repo/path` to read the prompt
+   from a file in the checkout.
 2. **Repo-resident** — a `.conductor/<key>.md` file committed in the target repo
-   (`pr_review` · `code` · `plan` · `design` · `address_pr`), read from the checkout. Applies to
+   (`pr_review` · `code` · `address_pr`), read from the checkout. Applies to
    every run on that repo with **no payload change** — the natural fit for scheduled/CI automation.
 3. **Shipped default** — the canonical built-in prompt in `defaults/prompts/<key>.md` (what the
    worker uses by default; the TUI seeds new templates from the same files).
+
+OpenSpec artifact generation (proposal/specs/design/tasks, inside `openspec_plan`) is instead
+driven by that artifact's `openspec instructions` output (template + instruction + rules), not
+by a `*PromptTemplate` input — the artifact content it produces is what `openspec` itself defines.
 
 `{{diff}}` / `{{feedback}}` / `{{instruction}}` / `{{subtask}}` placeholders are filled with
 runtime context; unused context is appended automatically. The output schema stays enforced
@@ -280,7 +286,7 @@ backends, so it learns how to build/test/review the repo with no payload. Disabl
 
 ## Backends
 
-Every coding task selects its engine via `agent` (or `planAgent`/`codeAgent`/`designAgent`).
+Every coding task selects its engine via `agent` (or `openspecPlanAgent`/`codeAgent`).
 If unset, it's inferred from the model id: `gpt-*`/`o*`/`codex-*` → codex, `gemini-*` → gemini,
 else claude. All three return the same result contract (status, result, structured output,
 turns, tokens, cost) so they're interchangeable and mixable within one run. Cost is native for
@@ -301,11 +307,13 @@ breakers. Reviewers run **read-only**. Details in
 CONDUCTOR_SERVER_URL=http://localhost:8080/api workers/.venv/bin/python workers/main.py
 ```
 
-`WORKER_MODULES` (comma-separated, default `coding_agent,gitops`) selects which task modules
-load; the default covers every workflow. `coding_agent` is the async agent driver
+`WORKER_MODULES` (comma-separated, default `coding_agent,gitops,openspecops`) selects which task
+modules load; the default covers every workflow. `coding_agent` is the async agent driver
 (`thread_count=8` = 8 concurrent sessions on one event loop); `gitops` holds the git/GitHub
-tasks. Split them across hosts with `WORKER_MODULES` if desired — note the GitHub workflows
-assume clone/code/push share a filesystem (single host, or a shared volume).
+tasks; `openspecops` shells out to the `openspec` CLI (must be installed on that host — see
+[Prerequisites](#prerequisites)). Split them across hosts with `WORKER_MODULES` if desired —
+note the GitHub workflows assume clone/code/push share a filesystem (single host, or a shared
+volume).
 
 ## Layout
 
@@ -315,13 +323,16 @@ common/               coding_agent (backend dispatch + locked-down Claude driver
                       codex (openai-codex SDK + CLI fallback), gemini (Gemini CLI driver),
                       claude (SDK wrapper for merge conflict-resolution),
                       git (local + remote transport), github (gh/PR ops),
+                      openspec_cli (openspec CLI wrapper), tasks_md (tasks.md -> subtasks[] parser),
                       progress, session_store, cost, results, exec
 coding_agent/         @worker_task("coding_agent") — the sandboxed coding worker + smoke_test.py
 gitops/               local: prepare_repo, create_branch, commit, worktree_add, merge_worktrees;
                       remote: git_clone/fetch/pull/push/remote, issue_fetch,
                       pr_comments/diff/create/checkout/status/comment/merge/submit_review
+openspecops/          openspec_new_change, openspec_status, openspec_instructions,
+                      openspec_tasks_to_subtasks
 workflows/            code_parallel, issue_to_pr, pr_review, address_pr, github_demo,
-                      design_docs, code_subtask (+ taskdefs/)
+                      openspec_plan, openspec_generate_artifact, code_subtask (+ taskdefs/)
 ```
 
 Full design reference: **[`../docs/CODING_AGENT_WORKER.md`](../docs/CODING_AGENT_WORKER.md)**.

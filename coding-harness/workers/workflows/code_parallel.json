@@ -3,46 +3,34 @@
   "version": 1,
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
-  "description": "Parallelize the coding agent: an LLM decomposes one instruction into independent sub-tasks, a JQ task reshapes them into a dynamic fork, FORK_JOIN_DYNAMIC runs a code_subtask (worktree->coding_agent->commit) per sub-task in parallel, then merge_worktrees merges the branches back into a change branch.",
+  "description": "Parallelize the coding agent: openspec_plan drives the openspec CLI to produce a proposal/specs/design/tasks change (reviewed via a human-or-AI-judge loop) and deterministically parses tasks.md into independent sub-tasks, a JQ task reshapes them into a dynamic fork, FORK_JOIN_DYNAMIC runs a code_subtask (worktree->coding_agent->commit) per sub-task in parallel, then merge_worktrees merges the branches back into a change branch.",
   "inputParameters": [
     "repoPath",
     "instruction",
     "changeBranch",
-    "design",
-    "designAgent",
-    "designModel",
-    "designDir",
-    "designMaxTurns",
-    "designHumanApproval",
-    "designMaxIterations",
-    "planAgent",
-    "planModel",
-    "planMaxTurns",
-    "planPromptTemplate",
+    "openspecPlanAgent",
+    "openspecPlanModel",
+    "openspecMaxTurns",
+    "openspecMaxBudgetUsd",
+    "openspecHumanApproval",
+    "openspecMaxIterations",
     "codeAgent",
     "codeModel",
     "codePromptTemplate",
-    "maxSubtasks",
     "maxTurns",
     "maxBudgetUsd"
   ],
   "inputTemplate": {
     "changeBranch": "code-parallel",
-    "design": false,
-    "designAgent": "claude",
-    "designModel": "",
-    "designDir": "docs/design",
-    "designMaxTurns": 500,
-    "designHumanApproval": true,
-    "designMaxIterations": 5,
-    "planAgent": "claude",
-    "planModel": "",
-    "planMaxTurns": 500,
-    "planPromptTemplate": "",
+    "openspecPlanAgent": "claude",
+    "openspecPlanModel": "",
+    "openspecMaxTurns": 500,
+    "openspecMaxBudgetUsd": 50.0,
+    "openspecHumanApproval": true,
+    "openspecMaxIterations": 5,
     "codeAgent": "claude",
     "codeModel": "",
     "codePromptTemplate": "",
-    "maxSubtasks": 6,
     "maxTurns": 500,
     "maxBudgetUsd": 50.0
   },
@@ -65,76 +53,23 @@
       }
     },
     {
-      "name": "design_gate",
-      "taskReferenceName": "design_gate",
-      "type": "SWITCH",
-      "evaluatorType": "value-param",
-      "expression": "design",
-      "inputParameters": {
-        "design": "${workflow.input.design}"
+      "name": "openspec_plan",
+      "taskReferenceName": "openspec_plan",
+      "type": "SUB_WORKFLOW",
+      "subWorkflowParam": {
+        "name": "openspec_plan",
+        "version": 1
       },
-      "decisionCases": {
-        "true": [
-          {
-            "name": "design_docs",
-            "taskReferenceName": "design",
-            "type": "SUB_WORKFLOW",
-            "subWorkflowParam": {
-              "name": "design_docs",
-              "version": 1
-            },
-            "inputParameters": {
-              "repoPath": "${workflow.input.repoPath}",
-              "instruction": "${workflow.input.instruction}",
-              "designDir": "${workflow.input.designDir}",
-              "designAgent": "${workflow.input.designAgent}",
-              "designModel": "${workflow.input.designModel}",
-              "designMaxTurns": "${workflow.input.designMaxTurns}",
-              "humanApproval": "${workflow.input.designHumanApproval}",
-              "designMaxIterations": "${workflow.input.designMaxIterations}"
-            }
-          }
-        ]
-      },
-      "defaultCase": []
-    },
-    {
-      "name": "coding_agent",
-      "taskReferenceName": "plan",
-      "type": "SIMPLE",
       "inputParameters": {
-        "worktreePath": "${workflow.input.repoPath}",
-        "model": "${workflow.input.planModel}",
-        "agent": "${workflow.input.planAgent}",
-        "maxTurns": "${workflow.input.planMaxTurns}",
-        "maxBudgetUsd": 50.0,
-        "tools": ["Read", "Grep", "Glob"],
-        "templateKey": "plan",
-        "promptTemplate": "${workflow.input.planPromptTemplate}",
-        "promptContext": {
-          "instruction": "${workflow.input.instruction}",
-          "maxSubtasks": "${workflow.input.maxSubtasks}"
-        },
-        "schema": {
-          "type": "object",
-          "required": ["subtasks"],
-          "properties": {
-            "subtasks": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "required": ["id", "description"],
-                "properties": {
-                  "id": {"type": "string", "description": "short unique kebab-case slug"},
-                  "description": {"type": "string", "description": "self-contained implementation instruction"},
-                  "files": {"type": "array", "items": {"type": "string"}},
-                  "testCmd": {"type": "string"}
-                }
-              }
-            }
-          }
-        },
-        "prompt": "You are planning parallel work on the repository in the current directory. First EXPLORE the repo (read files, grep, glob) to understand its current state: what already exists, what is implemented, and what is still pending. If a docs/design/ directory exists, READ those design documents first — especially architecture.md — and conform your decomposition to its module/file layout and shared contracts. Then break the following instruction into INDEPENDENT sub-tasks that can be implemented in parallel with NO dependencies between them — crucially, no two sub-tasks may edit the same file. Skip anything already done. Return the plan as the required structured output (subtasks[] with id, description, files, testCmd). Keep ids short, unique, kebab-case; at most ${workflow.input.maxSubtasks} sub-tasks; each description must be complete enough to implement on its own without seeing the others.\n\nInstruction:\n${workflow.input.instruction}"
+        "repoPath": "${workflow.input.repoPath}",
+        "instruction": "${workflow.input.instruction}",
+        "changeBranch": "${workflow.input.changeBranch}",
+        "openspecPlanAgent": "${workflow.input.openspecPlanAgent}",
+        "openspecPlanModel": "${workflow.input.openspecPlanModel}",
+        "openspecMaxTurns": "${workflow.input.openspecMaxTurns}",
+        "openspecMaxBudgetUsd": "${workflow.input.openspecMaxBudgetUsd}",
+        "openspecHumanApproval": "${workflow.input.openspecHumanApproval}",
+        "openspecMaxIterations": "${workflow.input.openspecMaxIterations}"
       }
     },
     {
@@ -142,14 +77,15 @@
       "taskReferenceName": "build_forks",
       "type": "JSON_JQ_TRANSFORM",
       "inputParameters": {
-        "result": "${plan.output.structured}",
+        "result": "${openspec_plan.output}",
+        "changeDir": "${openspec_plan.output.changeDir}",
         "repoPath": "${workflow.input.repoPath}",
         "codeModel": "${workflow.input.codeModel}",
         "codeAgent": "${workflow.input.codeAgent}",
         "codePromptTemplate": "${workflow.input.codePromptTemplate}",
         "maxTurns": "${workflow.input.maxTurns}",
         "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-        "queryExpression": ".repoPath as $r | .codeModel as $m | .codeAgent as $ag | .codePromptTemplate as $ct | .maxTurns as $mt | .maxBudgetUsd as $mb | .result.subtasks as $subs | {dynamicTasks: [$subs[] | {name:\"code_subtask\", taskReferenceName:.id, type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"code_subtask\", version:1}}], dynamicTasksInput: (reduce $subs[] as $s ({}; . + ((($s.files // []) | join(\", \")) as $files | ($s.description + \"\\nTarget files: \" + $files + (if $s.testCmd then \"\\nYour check: \" + $s.testCmd else \"\" end)) as $desc | {($s.id): {repoPath:$r, name:$s.id, model:$m, agent:$ag, maxTurns:$mt, maxBudgetUsd:$mb, prompt:($desc + \"\\n\\nDesign docs (if present) are under docs/design/ in your working directory — read architecture.md first and conform to its shared types/names/file-layout, then the doc(s) for your slice, before implementing.\"), promptTemplate:$ct, templateKey:\"code\", promptContext:{subtask:$desc}}}))), groupIds: ([$subs[].id] | join(\",\"))}"
+        "queryExpression": ".repoPath as $r | .codeModel as $m | .codeAgent as $ag | .codePromptTemplate as $ct | .maxTurns as $mt | .maxBudgetUsd as $mb | .changeDir as $cd | .result.subtasks as $subs | {dynamicTasks: [$subs[] | {name:\"code_subtask\", taskReferenceName:.id, type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"code_subtask\", version:1}}], dynamicTasksInput: (reduce $subs[] as $s ({}; . + ((($s.files // []) | join(\", \")) as $files | ($s.description + \"\\nTarget files: \" + $files + (if $s.testCmd then \"\\nYour check: \" + $s.testCmd else \"\" end)) as $desc | {($s.id): {repoPath:$r, name:$s.id, model:$m, agent:$ag, maxTurns:$mt, maxBudgetUsd:$mb, prompt:($desc + \"\\n\\nThe OpenSpec planning artifacts for this change are under \" + $cd + \" in your working directory — read proposal.md and design.md first, then specs/**/*.md, then your slice of tasks.md, before implementing.\"), promptTemplate:$ct, templateKey:\"code\", promptContext:{subtask:$desc}}}))), groupIds: ([$subs[].id] | join(\",\"))}"
       }
     },
     {
@@ -186,20 +122,18 @@
       "optional": true,
       "inputParameters": {
         "joined": "${fan_join.output}",
-        "planTokens": "${plan.output.tokenUsed}",
-        "planCost": "${plan.output.costUsd}",
-        "designTokens": "${design.output.tokenUsed}",
-        "designCost": "${design.output.costUsd}",
+        "planTokens": "${openspec_plan.output.tokenUsed}",
+        "planCost": "${openspec_plan.output.costUsd}",
         "mergeTokens": "${merge.output.tokenUsed}",
         "mergeCost": "${merge.output.costUsd}",
-        "queryExpression": "def num: if type == \"number\" then . else 0 end; (.joined // {}) as $j | [$j | to_entries[] | (.value.output // .value // {}) | {status:(.status // \"unknown\"), filesChanged:(.filesChanged // []), costUsd:(.costUsd | num), tokenUsed:(.tokenUsed | num)}] as $g | (.planTokens | num) as $pt | (.planCost | num) as $pc | (.designTokens | num) as $dt | (.designCost | num) as $dc | (.mergeTokens | num) as $mt | (.mergeCost | num) as $mc | ([$g[].tokenUsed] | add | num) as $st | ([$g[].costUsd] | add | num) as $sc | {perSubtask:$g, subtaskCount:($g | length), tokens:{plan:$pt, design:$dt, subtasks:$st, merge:$mt}, cost:{plan:$pc, design:$dc, subtasks:$sc, merge:$mc}, totalTokens:($pt + $dt + $st + $mt), totalCostUsd:($pc + $dc + $sc + $mc)}"
+        "queryExpression": "def num: if type == \"number\" then . else 0 end; (.joined // {}) as $j | [$j | to_entries[] | (.value.output // .value // {}) | {status:(.status // \"unknown\"), filesChanged:(.filesChanged // []), costUsd:(.costUsd | num), tokenUsed:(.tokenUsed | num)}] as $g | (.planTokens | num) as $pt | (.planCost | num) as $pc | (.mergeTokens | num) as $mt | (.mergeCost | num) as $mc | ([$g[].tokenUsed] | add | num) as $st | ([$g[].costUsd] | add | num) as $sc | {perSubtask:$g, subtaskCount:($g | length), tokens:{plan:$pt, subtasks:$st, merge:$mt}, cost:{plan:$pc, subtasks:$sc, merge:$mc}, totalTokens:($pt + $st + $mt), totalCostUsd:($pc + $sc + $mc)}"
       }
     }
   ],
   "outputParameters": {
     "changeBranch": "${workflow.input.changeBranch}",
     "groupIds": "${build_forks.output.result.groupIds}",
-    "subtasks": "${plan.output.structured.subtasks}",
+    "subtasks": "${openspec_plan.output.subtasks}",
     "merged": "${merge.output.merged}",
     "conflicts": "${merge.output.conflicts}",
     "mergeCostUsd": "${merge.output.costUsd}",

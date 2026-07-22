@@ -43,12 +43,11 @@ _DEFAULTS_DIR = Path(__file__).resolve().parents[1] / "workers" / "defaults" / "
 # Which built-in prompt (templateKey) a workflow's primary template field maps to.
 WORKFLOW_KEY = {
     "pr_review": "pr_review", "code_parallel": "code", "issue_to_pr": "code",
-    "address_pr": "code", "design_docs": "design",
+    "address_pr": "code",
 }
 # Launcher field (workflow input name) → built-in prompt key, for "load the default".
 FIELD_KEY = {
     "reviewPromptTemplate": "pr_review", "codePromptTemplate": "code",
-    "planPromptTemplate": "plan", "designPromptTemplate": "design",
     "fixPromptTemplate": "address_pr",
 }
 

@@ -174,20 +174,6 @@ def _r_address_pr(o: dict) -> ResultCard:
     return ResultCard("Feedback addressed", rows, url, "open PR comment")
 
 
-def _r_design_docs(o: dict) -> ResultCard:
-    files = o.get("filesChanged") or []
-    rows = [
-        ("docs written", str(len(files) if isinstance(files, list) else files)),
-        ("commit", str(o.get("designCommit") or "—")),
-        ("approved", "yes" if o.get("approved") else "no"),
-        ("review", str(o.get("reviewMode") or "—")),
-        ("iterations", str(o.get("iterations") or 0)),
-        ("tokens", str(o.get("tokenUsed", 0))),
-        ("cost", f"${float(o.get('costUsd') or 0):.2f}"),
-    ]
-    return ResultCard("Design docs written", rows, None)
-
-
 def _r_code_parallel(o: dict) -> ResultCard:
     subs = o.get("subtasks") or []
     merged = o.get("merged") or []
@@ -233,16 +219,12 @@ CATALOG: dict[str, WorkflowSpec] = {
             Field("issueNumber", "Issue", "gh_issue", help="issue number"),
             Field("base", "Base branch", "text", "main"),
             Field("backend", "Backend", "enum", "claude", choices=_BACKENDS,
-                  maps_to=("planAgent", "codeAgent"), help="plan + code backend"),
-            Field("design", "Create design docs?", "bool", False,
-                  help="explicit yes/no before code_parallel starts"),
-            Field("designHumanApproval", "Human design review", "bool", True,
-                  help="pause after every design pass; off = read-only coding-agent judge"),
+                  maps_to=("openspecPlanAgent", "codeAgent"), help="plan + code backend"),
+            Field("openspecHumanApproval", "Human plan review", "bool", True,
+                  help="pause after every OpenSpec plan pass; off = read-only coding-agent judge"),
             Field("approvePr", "Review before opening", "bool", False, tui_default=True,
                   help="pause to review/edit the drafted PR before anything hits the remote"),
-            Field("maxSubtasks", "Parallelism", "int", 4, help="max sub-tasks"),
-            Field("designAgent", "Design backend", "enum", "claude", choices=_BACKENDS, advanced=True),
-            Field("designMaxIterations", "Design iterations", "int", 5, advanced=True),
+            Field("openspecMaxIterations", "Plan iterations", "int", 5, advanced=True),
             Field("codePromptTemplate", "Coding prompt template", "template", "", advanced=True,
                   help="override the per-subtask coding prompt; inline text or @repo/path; blank = built-in (or .conductor/code.md)"),
             *_caps(300, 50.0),
@@ -261,15 +243,12 @@ CATALOG: dict[str, WorkflowSpec] = {
                   choices=("code_parallel", "coding_agent"),
                   help="code_parallel = decompose+parallel; coding_agent = single session"),
             Field("agent", "Backend", "enum", "claude", choices=_BACKENDS),
-            Field("design", "Create design docs?", "bool", False,
-                  help="asked only when the code_parallel engine is selected"),
-            Field("designHumanApproval", "Human design review", "bool", True,
-                  help="pause after every design pass; off = read-only coding-agent judge"),
-            Field("maxSubtasks", "Parallelism", "int", 4, advanced=True,
-                  help="max sub-tasks (code_parallel engine only)"),
+            Field("openspecHumanApproval", "Human plan review", "bool", True,
+                  help="pause after every OpenSpec plan pass (code_parallel engine only); "
+                       "off = read-only coding-agent judge"),
             Field("fixPromptTemplate", "Prompt template", "template", "", advanced=True,
                   help="override the coding prompt; inline text or @repo/path; blank = built-in (or .conductor/code.md)"),
-            Field("designMaxIterations", "Design iterations", "int", 5, advanced=True),
+            Field("openspecMaxIterations", "Plan iterations", "int", 5, advanced=True),
             *_caps(250, 50.0),
         ),
         target=_t_pr,
@@ -284,17 +263,12 @@ CATALOG: dict[str, WorkflowSpec] = {
             Field("instruction", "Instruction", "multiline", help="the coding goal"),
             Field("changeBranch", "Change branch", "text", "code-parallel"),
             Field("backend", "Backend", "enum", "claude", choices=_BACKENDS,
-                  maps_to=("planAgent", "codeAgent"), help="plan + code backend"),
-            Field("design", "Create design docs?", "bool", False,
-                  help="explicit yes/no before code_parallel starts"),
-            Field("designHumanApproval", "Human design review", "bool", True,
-                  help="pause after every design pass; off = read-only coding-agent judge"),
-            Field("maxSubtasks", "Parallelism", "int", 6, help="max sub-tasks"),
-            Field("designAgent", "Design backend", "enum", "claude", choices=_BACKENDS, advanced=True),
-            Field("planModel", "Plan model", "text", "", advanced=True),
+                  maps_to=("openspecPlanAgent", "codeAgent"), help="plan + code backend"),
+            Field("openspecHumanApproval", "Human plan review", "bool", True,
+                  help="pause after every OpenSpec plan pass; off = read-only coding-agent judge"),
+            Field("openspecPlanModel", "Plan model", "text", "", advanced=True),
             Field("codeModel", "Code model", "text", "", advanced=True),
-            Field("designModel", "Design model", "text", "", advanced=True),
-            Field("designMaxIterations", "Design iterations", "int", 5, advanced=True),
+            Field("openspecMaxIterations", "Plan iterations", "int", 5, advanced=True),
             Field("codePromptTemplate", "Coding prompt template", "template", "", advanced=True,
                   help="override the per-subtask coding prompt; inline text or @repo/path; blank = built-in (or .conductor/code.md)"),
             *_caps(500, 50.0),
@@ -302,33 +276,10 @@ CATALOG: dict[str, WorkflowSpec] = {
         target=_t_local,
         result=_r_code_parallel,
     ),
-    "design_docs": WorkflowSpec(
-        name="design_docs",
-        action="Generate design docs",
-        blurb="Write a coherent set of markdown design docs to a repo (review/edit them, "
-              "then code_parallel with design:false uses them).",
-        fields=(
-            Field("repoPath", "Repo path", "text", help="local directory"),
-            Field("instruction", "Instruction", "multiline", help="what to design"),
-            Field("backend", "Backend", "enum", "claude", choices=_BACKENDS,
-                  maps_to=("designAgent",)),
-            Field("designDir", "Docs dir", "text", "docs/design", advanced=True),
-            Field("designModel", "Model", "text", "", advanced=True),
-            Field("designPromptTemplate", "Prompt template", "template", "", advanced=True,
-                  help="override the design prompt; inline text or @repo/path; blank = built-in (or .conductor/design.md)"),
-            Field("designMaxTurns", "Max turns", "int", 500, advanced=True),
-            Field("designMaxBudgetUsd", "Max budget $", "float", 50.0, advanced=True),
-            Field("humanApproval", "Human design review", "bool", True,
-                  help="pause after every pass; off = read-only coding-agent judge"),
-            Field("designMaxIterations", "Design iterations", "int", 5, advanced=True),
-        ),
-        target=_t_local,
-        result=_r_design_docs,
-    ),
 }
 
 # Launcher order (github_demo intentionally excluded — plumbing smoke test, UX decision 4).
-LAUNCHABLE = ["pr_review", "issue_to_pr", "address_pr", "code_parallel", "design_docs"]
+LAUNCHABLE = ["pr_review", "issue_to_pr", "address_pr", "code_parallel"]
 
 # Workflow types the dashboard lists (all user-facing runs, incl. github_demo which still
 # appears once run via the CLI).

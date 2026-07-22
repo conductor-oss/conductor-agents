@@ -1,0 +1,11 @@
+{
+  "name": "openspec_status",
+  "description": "Report OpenSpec artifact completion status for a change (openspec status --json): applyRequires, per-artifact status/missingDeps.",
+  "retryCount": 2,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 3,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 120,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}
