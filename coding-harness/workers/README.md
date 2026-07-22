@@ -60,6 +60,11 @@ and watch agents work live — see [`../tui/README.md`](../tui/README.md).
 ### Prerequisites
 
 - **Conductor server** reachable (`CONDUCTOR_SERVER_URL`, default `http://localhost:8080/api`).
+  Default local backend is SQLite (`conductor server start`, zero extra deps). If a
+  parallel-heavy workflow (`code_parallel`, `openspec_plan`) fails with
+  `NonTransientException: [SQLITE_BUSY...]`, opt into the Postgres-backed alternative instead:
+  `CONDUCTOR_BACKEND=postgres` in `.env`, then `../run.sh` (brings up
+  [`../docker-compose.postgres.yml`](../docker-compose.postgres.yml) — requires Docker).
 - **At least one agent backend**, authenticated in the worker's environment:
   | Backend | `agent` value | Auth |
   |---|---|---|

@@ -115,7 +115,13 @@ with issue, PR, review, and push operations.
 - Python 3.13+, `jq`, and the `conductor` CLI.
 - The `openspec` CLI (`openspec_plan` shells out to it for all planning) — installed wherever
   workers run.
-- A reachable Conductor server. For local development: `conductor server start` (Java 21+).
+- A reachable Conductor server. For local development: `conductor server start` (Java 21+, SQLite
+  — no other services needed). If a parallel-heavy run (`code_parallel`, `openspec_plan`) fails
+  with `NonTransientException: [SQLITE_BUSY...]`, switch to the opt-in Postgres-backed server
+  instead: set `CONDUCTOR_BACKEND=postgres` in `.env` and rerun `./run.sh` — it brings up
+  [`docker-compose.postgres.yml`](docker-compose.postgres.yml) instead (requires Docker). Stop
+  any already-running SQLite server first (`conductor server stop`) — a leftover process can
+  keep answering on port 8080 and silently shadow the new container.
 - At least one authenticated backend:
   - Claude: `claude login` or `ANTHROPIC_API_KEY`.
   - Codex: `~/.codex/auth.json` or `OPENAI_API_KEY`.

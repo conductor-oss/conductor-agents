@@ -34,8 +34,14 @@ ensure_server() {
   fi
   case "$CONDUCTOR_SERVER_URL" in
     http://localhost:*|http://127.0.0.1:*)
-      echo "[coding-harness] starting local Conductor server…"
-      conductor server start
+      if [ "${CONDUCTOR_BACKEND:-sqlite}" = "postgres" ]; then
+        require docker
+        echo "[coding-harness] starting Postgres-backed Conductor server (docker compose)…"
+        docker compose -f docker-compose.postgres.yml up -d --wait
+      else
+        echo "[coding-harness] starting local Conductor server…"
+        conductor server start
+      fi
       ;;
     *)
       echo "ERROR: Conductor server is unreachable: $CONDUCTOR_SERVER_URL" >&2

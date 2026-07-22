@@ -272,6 +272,24 @@ def test_no_dangling_switch_branches(path: Path):
             )
 
 
+@pytest.mark.parametrize("path", WORKFLOW_FILES, ids=lambda p: p.stem)
+def test_no_do_while_nested_directly_inside_do_while(path: Path):
+    """Conductor does not support a DO_WHILE nested directly inside another
+    DO_WHILE's loopOver ('Nested Do While tasks are not supported... use a Sub
+    Workflow task inside the Do While task' — confirmed live: it silently stops
+    advancing after the first iteration with a parallel fan-out, no error, no
+    exception). A nested drain loop must be its own SUB_WORKFLOW instead."""
+    for t in _collect_tasks(_load(path)):
+        if t.get("type") != "DO_WHILE":
+            continue
+        for child in t.get("loopOver") or []:
+            assert child.get("type") != "DO_WHILE", (
+                f"{path.name}: DO_WHILE {child.get('taskReferenceName')!r} is nested "
+                f"directly inside DO_WHILE {t.get('taskReferenceName')!r} — "
+                "extract it into a SUB_WORKFLOW instead"
+            )
+
+
 def test_reshaped_workflows_present():
     stems = {p.stem for p in WORKFLOW_FILES}
     assert set(RESHAPED) <= stems, f"missing reshaped workflows: {set(RESHAPED) - stems}"
@@ -299,15 +317,26 @@ def test_openspec_plan_loop_wiring():
     tasks = _collect_tasks(wf)
     by_ref = {t["taskReferenceName"]: t for t in tasks if "taskReferenceName" in t}
 
-    # The outer loop itself.
+    # The outer loop itself. The artifact-generation drain loop is a SUB_WORKFLOW
+    # (openspec_artifact_drain), not an inline nested DO_WHILE — Conductor does not
+    # support a DO_WHILE nested directly inside another DO_WHILE.
     loop = by_ref.get("openspec_loop")
     assert loop and loop["type"] == "DO_WHILE", "openspec_loop DO_WHILE missing"
     body_refs = {t["taskReferenceName"] for t in loop["loopOver"]}
-    assert {"reset_pass", "artifact_loop", "capture_pass_result", "review_mode"} <= body_refs
+    assert {"artifact_drain", "capture_pass_result", "review_mode"} <= body_refs
+    drain = by_ref["artifact_drain"]
+    assert drain["type"] == "SUB_WORKFLOW"
+    assert drain["subWorkflowParam"]["name"] == "openspec_artifact_drain"
+    assert "artifact_loop" not in body_refs, (
+        "artifact_loop must not be inlined directly inside openspec_loop's DO_WHILE"
+    )
 
-    # The inner artifact-generation drain loop.
-    inner = by_ref.get("artifact_loop")
-    assert inner and inner["type"] == "DO_WHILE", "artifact_loop DO_WHILE missing"
+    # The drain sub-workflow's own inner loop.
+    drain_wf = _load(WORKFLOWS_DIR / "openspec_artifact_drain.json")
+    drain_tasks = _collect_tasks(drain_wf)
+    drain_by_ref = {t["taskReferenceName"]: t for t in drain_tasks if "taskReferenceName" in t}
+    inner = drain_by_ref.get("artifact_loop")
+    assert inner and inner["type"] == "DO_WHILE", "artifact_loop DO_WHILE missing in openspec_artifact_drain"
     inner_refs = {t["taskReferenceName"] for t in inner["loopOver"]}
     assert {"status", "select_ready", "fan_out_artifacts", "fan_join_artifacts",
             "merge_pass_progress", "capture_round"} <= inner_refs

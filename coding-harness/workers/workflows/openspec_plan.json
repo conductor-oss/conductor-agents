@@ -3,7 +3,7 @@
   "version": 1,
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
-  "description": "Deterministic, OpenSpec-CLI-driven replacement for design_docs + code_parallel's old freeform plan step. Scaffolds an OpenSpec change, drains its artifact dependency graph (typed CLI tasks select what's ready; a coding_agent per artifact writes content) each pass, then reuses design_docs.json's human-or-AI-judge DO_WHILE review loop verbatim. Approval parses the generated tasks.md into the subtasks[] fan-out code_parallel's FORK_JOIN_DYNAMIC expects; the bounded loop fails closed if nothing is ever approved.",
+  "description": "Deterministic, OpenSpec-CLI-driven replacement for design_docs + code_parallel's old freeform plan step. Scaffolds an OpenSpec change, drains its artifact dependency graph each pass via the openspec_artifact_drain sub-workflow (typed CLI tasks select what's ready; a coding_agent per artifact writes content) — a sub-workflow because Conductor does not support a DO_WHILE nested directly inside another DO_WHILE — then reuses design_docs.json's human-or-AI-judge DO_WHILE review loop verbatim. Approval parses the generated tasks.md into the subtasks[] fan-out code_parallel's FORK_JOIN_DYNAMIC expects; the bounded loop fails closed if nothing is ever approved.",
   "inputParameters": ["repoPath", "instruction", "changeBranch", "openspecPlanAgent", "openspecPlanModel", "openspecMaxTurns", "openspecMaxBudgetUsd", "openspecHumanApproval", "openspecMaxIterations"],
   "inputTemplate": {
     "openspecPlanAgent": "claude", "openspecPlanModel": "", "openspecMaxTurns": 500, "openspecMaxBudgetUsd": 50.0,
@@ -11,7 +11,6 @@
   },
   "variables": {
     "planApproved": false, "planFeedback": "", "planReview": "",
-    "generatedThisPass": [], "readyCount": 0,
     "lastRoundFilesChanged": [], "lastRoundCostUsd": 0, "lastRoundTokenUsed": 0,
     "lastChangeName": "", "lastChangeDir": "", "lastTasksPath": ""
   },
@@ -35,70 +34,24 @@
       },
       "loopOver": [
         {
-          "name": "reset_pass", "taskReferenceName": "reset_pass", "type": "SET_VARIABLE",
+          "name": "openspec_artifact_drain", "taskReferenceName": "artifact_drain", "type": "SUB_WORKFLOW",
+          "subWorkflowParam": {"name": "openspec_artifact_drain", "version": 1},
           "inputParameters": {
-            "generatedThisPass": [], "readyCount": 0,
-            "lastRoundFilesChanged": [], "lastRoundCostUsd": 0, "lastRoundTokenUsed": 0
+            "repoPath": "${workflow.input.repoPath}", "changeName": "${workflow.input.changeBranch}",
+            "goal": "${workflow.input.instruction}", "feedback": "${workflow.variables.planFeedback}",
+            "agent": "${workflow.input.openspecPlanAgent}", "model": "${workflow.input.openspecPlanModel}",
+            "maxTurns": "${workflow.input.openspecMaxTurns}", "maxBudgetUsd": "${workflow.input.openspecMaxBudgetUsd}"
           }
-        },
-        {
-          "name": "artifact_loop", "taskReferenceName": "artifact_loop", "type": "DO_WHILE", "evaluatorType": "graaljs",
-          "loopCondition": "(function(){ return $.artifact_loop['iteration'] < 8 && $.ready_count > 0; })();",
-          "inputParameters": {
-            "artifact_loop": "${artifact_loop.output}", "ready_count": "${workflow.variables.readyCount}"
-          },
-          "loopOver": [
-            {
-              "name": "openspec_status", "taskReferenceName": "status", "type": "SIMPLE",
-              "inputParameters": {"repoPath": "${workflow.input.repoPath}", "changeName": "${workflow.input.changeBranch}"}
-            },
-            {
-              "name": "select_ready", "taskReferenceName": "select_ready", "type": "JSON_JQ_TRANSFORM",
-              "inputParameters": {
-                "status": "${status.output}", "generated": "${workflow.variables.generatedThisPass}",
-                "repoPath": "${workflow.input.repoPath}", "changeName": "${workflow.input.changeBranch}",
-                "feedback": "${workflow.variables.planFeedback}", "goal": "${workflow.input.instruction}",
-                "agent": "${workflow.input.openspecPlanAgent}", "model": "${workflow.input.openspecPlanModel}",
-                "maxTurns": "${workflow.input.openspecMaxTurns}", "maxBudgetUsd": "${workflow.input.openspecMaxBudgetUsd}",
-                "queryExpression": ".repoPath as $r | .changeName as $cn | .feedback as $fb | .goal as $g | .agent as $ag | .model as $m | .maxTurns as $mt | .maxBudgetUsd as $mb | (.generated // []) as $gen | ((.status.artifacts // []) | map(select(.status != \"blocked\" and ((.id as $i | ($gen | index($i))) == null)))) as $ready | { dynamicTasks: [$ready[] | {name:\"openspec_generate_artifact\", taskReferenceName: (\"gen_\" + .id), type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"openspec_generate_artifact\", version:1}}], dynamicTasksInput: (reduce $ready[] as $a ({}; . + {((\"gen_\" + $a.id)): {repoPath:$r, changeName:$cn, artifact:$a.id, goal:$g, feedback:$fb, agent:$ag, model:$m, maxTurns:$mt, maxBudgetUsd:$mb}})), readyIds: [$ready[].id], readyCount: ($ready | length) }"
-              }
-            },
-            {
-              "name": "fan_out_artifacts", "taskReferenceName": "fan_out_artifacts", "type": "FORK_JOIN_DYNAMIC",
-              "dynamicForkTasksParam": "dynamicTasks", "dynamicForkTasksInputParamName": "dynamicTasksInput",
-              "inputParameters": {
-                "dynamicTasks": "${select_ready.output.result.dynamicTasks}",
-                "dynamicTasksInput": "${select_ready.output.result.dynamicTasksInput}"
-              }
-            },
-            {"name": "fan_join_artifacts", "taskReferenceName": "fan_join_artifacts", "type": "JOIN"},
-            {
-              "name": "merge_pass_progress", "taskReferenceName": "merge_pass_progress", "type": "JSON_JQ_TRANSFORM",
-              "inputParameters": {
-                "fanOutput": "${fan_join_artifacts.output}", "readyIds": "${select_ready.output.result.readyIds}",
-                "prevGenerated": "${workflow.variables.generatedThisPass}", "prevFiles": "${workflow.variables.lastRoundFilesChanged}",
-                "prevCost": "${workflow.variables.lastRoundCostUsd}", "prevTokens": "${workflow.variables.lastRoundTokenUsed}",
-                "queryExpression": ".prevGenerated as $pg | .prevFiles as $pf | .prevCost as $pc | .prevTokens as $pt | .readyIds as $rid | (.fanOutput // {}) as $fo | ($fo | to_entries | map(.value.output // .value // {})) as $vals | (if ($rid|length) > 0 then ([$vals[].filesChanged] | add // []) else $pf end) as $files | (if ($rid|length) > 0 then ((([$vals[].costUsd] | map(if type==\"number\" then . else 0 end) | add) // 0) + ($pc // 0)) else $pc end) as $cost | (if ($rid|length) > 0 then ((([$vals[].tokenUsed] | map(if type==\"number\" then . else 0 end) | add) // 0) + ($pt // 0)) else $pt end) as $tokens | { generated: (($pg + $rid) | unique), filesChanged: $files, costUsd: $cost, tokenUsed: $tokens }"
-              }
-            },
-            {
-              "name": "capture_round", "taskReferenceName": "capture_round", "type": "SET_VARIABLE",
-              "inputParameters": {
-                "generatedThisPass": "${merge_pass_progress.output.result.generated}",
-                "readyCount": "${select_ready.output.result.readyCount}",
-                "lastRoundFilesChanged": "${merge_pass_progress.output.result.filesChanged}",
-                "lastRoundCostUsd": "${merge_pass_progress.output.result.costUsd}",
-                "lastRoundTokenUsed": "${merge_pass_progress.output.result.tokenUsed}"
-              }
-            }
-          ]
         },
         {
           "name": "capture_pass_result", "taskReferenceName": "capture_pass_result", "type": "SET_VARIABLE",
           "inputParameters": {
-            "lastChangeName": "${status.output.changeName}",
-            "lastChangeDir": "${status.output.changeRoot}",
-            "lastTasksPath": "${status.output.artifactPaths.tasks.resolvedOutputPath}"
+            "lastChangeName": "${artifact_drain.output.changeName}",
+            "lastChangeDir": "${artifact_drain.output.changeDir}",
+            "lastTasksPath": "${artifact_drain.output.tasksPath}",
+            "lastRoundFilesChanged": "${artifact_drain.output.filesChanged}",
+            "lastRoundCostUsd": "${artifact_drain.output.costUsd}",
+            "lastRoundTokenUsed": "${artifact_drain.output.tokenUsed}"
           }
         },
         {

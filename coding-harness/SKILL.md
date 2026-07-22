@@ -199,6 +199,11 @@ flow as `/register`, including the SIMPLE-task worker gate.
   check the worker process, not the workflow.
 - **`openspec` CLI required**: `openspec_plan` shells out to it (via the `openspecops` worker
   module), so it must be installed on every host running workers.
+- If a run's logs show `NonTransientException: [SQLITE_BUSY]` / `[SQLITE_BUSY_SNAPSHOT]`, the
+  default local server's SQLite backend is hitting write-lock contention (common with
+  `code_parallel`/`openspec_plan`'s parallel fan-out). Suggest the opt-in Postgres-backed server:
+  `CONDUCTOR_BACKEND=postgres` in `.env`, then re-run `./run.sh` (needs Docker) — see
+  [`docker-compose.postgres.yml`](docker-compose.postgres.yml).
 
 Full reference: [`docs/CODING_AGENT_WORKER.md`](docs/CODING_AGENT_WORKER.md). User guide with
 complete input tables: [`workers/README.md`](workers/README.md).
