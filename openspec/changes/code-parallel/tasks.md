@@ -20,7 +20,7 @@ Test: test -f coding-harness/docs/reports/issue-ingestion/01-fetch-and-assembly.
 ## 3. Planner-wiring trace
 
 Files: coding-harness/docs/reports/issue-ingestion/02-planner-wiring.md
-Test: rg -q "openspec_plan.json" coding-harness/docs/reports/issue-ingestion/02-planner-wiring.md && rg -q "openspec_cli.py" coding-harness/docs/reports/issue-ingestion/02-planner-wiring.md
+Test: test -f coding-harness/docs/reports/issue-ingestion/02-planner-wiring.md && rg -q "openspec_plan.json" coding-harness/docs/reports/issue-ingestion/02-planner-wiring.md && rg -q "openspec_cli.py" coding-harness/docs/reports/issue-ingestion/02-planner-wiring.md
 
 - [ ] 3.1 Trace `code_parallel.json` → `openspec_plan.json`: show `instruction` flows through unchanged and reaches the planner via two independent paths.
 - [ ] 3.2 Document path (a): `openspec_plan.json:25` sets `instruction` as `openspec_new_change`'s `description`, becoming `openspec new change <name> --description <body>` — one CLI argument — via `openspecops/tasks.py:23` → `common/openspec_cli.py:43-47`. Cite the exact lines.
@@ -31,7 +31,7 @@ Test: rg -q "openspec_plan.json" coding-harness/docs/reports/issue-ingestion/02-
 ## 4. Loss-point risk register
 
 Files: coding-harness/docs/reports/issue-ingestion/03-risk-register.md
-Test: rg -q "possible-silent" coding-harness/docs/reports/issue-ingestion/03-risk-register.md && rg -q "fail-hard" coding-harness/docs/reports/issue-ingestion/03-risk-register.md
+Test: test -f coding-harness/docs/reports/issue-ingestion/03-risk-register.md && rg -q "possible-silent" coding-harness/docs/reports/issue-ingestion/03-risk-register.md && rg -q "fail-hard" coding-harness/docs/reports/issue-ingestion/03-risk-register.md
 
 - [ ] 4.1 Build a risk-register table with columns: loss point, `file:line` (where relevant), classification (confirmed hard cap / possible-silent / fail-hard-not-silent), and impact given the two-path architecture.
 - [ ] 4.2 Register the `openspec new change --description` CLI possibly treating the body as a short summary/first line as *possible-silent* on path (a), and note it is bypassed by path (b) — lower operational severity than it first appears.
@@ -41,7 +41,7 @@ Test: rg -q "possible-silent" coding-harness/docs/reports/issue-ingestion/03-ris
 ## 5. Recommendations, verification plan, and spec alignment
 
 Files: coding-harness/docs/reports/issue-ingestion/04-recommendations.md
-Test: rg -q "harness-issue-ingestion" coding-harness/docs/reports/issue-ingestion/04-recommendations.md && rg -q "round-trip" coding-harness/docs/reports/issue-ingestion/04-recommendations.md
+Test: test -f coding-harness/docs/reports/issue-ingestion/04-recommendations.md && rg -q "harness-issue-ingestion" coding-harness/docs/reports/issue-ingestion/04-recommendations.md && rg -q "round-trip" coding-harness/docs/reports/issue-ingestion/04-recommendations.md
 
 - [ ] 5.1 Recommend a black-box test of `openspec new change --description <body>` to confirm whether the full body persists into `proposal.md` or is treated as a one-line summary.
 - [ ] 5.2 Recommend a live round-trip test with a crafted issue body (containing `${...}`, quotes, backslashes, newlines, and a very large body) to confirm Conductor interpolation and JSON escaping round-trip losslessly and to find the payload-size/`ARG_MAX` trigger point.
