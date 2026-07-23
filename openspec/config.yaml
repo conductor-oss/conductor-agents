@@ -1,20 +1,12 @@
 schema: spec-driven
+rules:
+  tasks:
+  - 'Each numbered task group MUST be independent of every other group and file-disjoint:
+    no file may be listed under more than one group. Immediately under each `## N.
+    <title>` heading, before its checkbox items, add a `Files:` line listing every
+    file the group touches (comma-separated) and a `Test:` line with the command that
+    verifies it. Example:
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+    Files: path/a.py, path/b.py
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+    Test: pytest path/to/test_a.py'
