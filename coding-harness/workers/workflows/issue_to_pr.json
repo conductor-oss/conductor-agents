@@ -8,14 +8,21 @@
     "repo",
     "issueNumber",
     "base",
+    "approvePr",
     "openspecPlanAgent",
     "codeAgent",
     "openspecHumanApproval",
     "openspecMaxIterations",
-    "approvePr",
     "codePromptTemplate",
+    "codePromptTemplateSource",
     "maxTurns",
-    "maxBudgetUsd"
+    "maxBudgetUsd",
+    "modelOverrides",
+    "modelPolicy",
+    "modelPolicySha256",
+    "modelPolicySource",
+    "modelProfile",
+    "modelsConfig"
   ],
   "inputTemplate": {
     "base": "main",
@@ -25,10 +32,30 @@
     "openspecMaxIterations": 5,
     "approvePr": false,
     "codePromptTemplate": "",
+    "codePromptTemplateSource": "",
     "maxTurns": 300,
-    "maxBudgetUsd": 50.0
+    "maxBudgetUsd": 50.0,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
   },
   "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
     {
       "name": "issue_fetch",
       "taskReferenceName": "issue",
@@ -53,7 +80,7 @@
       "type": "SUB_WORKFLOW",
       "subWorkflowParam": {
         "name": "code_parallel",
-        "version": 1
+        "version": 3
       },
       "inputParameters": {
         "repoPath": "${clone.output.repoPath}",
@@ -64,8 +91,15 @@
         "openspecMaxIterations": "${workflow.input.openspecMaxIterations}",
         "codeAgent": "${workflow.input.codeAgent}",
         "codePromptTemplate": "${workflow.input.codePromptTemplate}",
+        "codePromptTemplateSource": "${workflow.input.codePromptTemplateSource}",
         "maxTurns": "${workflow.input.maxTurns}",
-        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}"
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
       }
     },
     {
@@ -82,7 +116,7 @@
           {
             "name": "pr_gate",
             "taskReferenceName": "pr_gate",
-            "type": "HUMAN",
+            "type": "WAIT",
             "inputParameters": {
               "workflow": "issue_to_pr",
               "issueNumber": "${workflow.input.issueNumber}",

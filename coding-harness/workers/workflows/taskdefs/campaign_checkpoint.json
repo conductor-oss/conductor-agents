@@ -1,0 +1,12 @@
+{
+  "name": "campaign_checkpoint",
+  "description": "Validate phase-aware WAIT checkpoint actions and enforce blocking check/profile selection rules.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 2,
+  "pollTimeoutSeconds": 120,
+  "responseTimeoutSeconds": 60,
+  "timeoutSeconds": 300,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "ownerEmail": "viren@orkes.io"
+}

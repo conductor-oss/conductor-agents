@@ -1,6 +1,6 @@
 {
   "name": "code_parallel",
-  "version": 1,
+  "version": 3,
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
   "description": "Parallelize the coding agent: openspec_plan drives the openspec CLI to produce a proposal/specs/design/tasks change (reviewed via a human-or-AI-judge loop) and deterministically parses tasks.md into independent sub-tasks, a JQ task reshapes them into a dynamic fork, FORK_JOIN_DYNAMIC runs a code_subtask (worktree->coding_agent->commit) per sub-task in parallel, then merge_worktrees merges the branches back into a change branch.",
@@ -17,8 +17,18 @@
     "codeAgent",
     "codeModel",
     "codePromptTemplate",
+    "codePromptTemplateSource",
     "maxTurns",
-    "maxBudgetUsd"
+    "maxBudgetUsd",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides",
+    "precomputedPlan",
+    "specContextPath",
+    "usePrecomputedPlan"
   ],
   "inputTemplate": {
     "changeBranch": "code-parallel",
@@ -31,10 +41,34 @@
     "codeAgent": "claude",
     "codeModel": "",
     "codePromptTemplate": "",
+    "codePromptTemplateSource": "",
     "maxTurns": 500,
-    "maxBudgetUsd": 50.0
+    "maxBudgetUsd": 50.0,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {},
+    "precomputedPlan": {},
+    "specContextPath": "",
+    "usePrecomputedPlan": false
   },
   "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
     {
       "name": "prepare_repo",
       "taskReferenceName": "prep",
@@ -69,7 +103,13 @@
         "openspecMaxTurns": "${workflow.input.openspecMaxTurns}",
         "openspecMaxBudgetUsd": "${workflow.input.openspecMaxBudgetUsd}",
         "openspecHumanApproval": "${workflow.input.openspecHumanApproval}",
-        "openspecMaxIterations": "${workflow.input.openspecMaxIterations}"
+        "openspecMaxIterations": "${workflow.input.openspecMaxIterations}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
       }
     },
     {
@@ -79,13 +119,23 @@
       "inputParameters": {
         "result": "${openspec_plan.output}",
         "changeDir": "${openspec_plan.output.changeDir}",
+        "precomputedPlan": "${workflow.input.precomputedPlan}",
+        "usePrecomputedPlan": "${workflow.input.usePrecomputedPlan}",
+        "specContextPath": "${workflow.input.specContextPath}",
         "repoPath": "${workflow.input.repoPath}",
         "codeModel": "${workflow.input.codeModel}",
         "codeAgent": "${workflow.input.codeAgent}",
         "codePromptTemplate": "${workflow.input.codePromptTemplate}",
+        "codePromptTemplateSource": "${workflow.input.codePromptTemplateSource}",
         "maxTurns": "${workflow.input.maxTurns}",
         "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-        "queryExpression": ".repoPath as $r | .codeModel as $m | .codeAgent as $ag | .codePromptTemplate as $ct | .maxTurns as $mt | .maxBudgetUsd as $mb | .changeDir as $cd | .result.subtasks as $subs | {dynamicTasks: [$subs[] | {name:\"code_subtask\", taskReferenceName:.id, type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"code_subtask\", version:1}}], dynamicTasksInput: (reduce $subs[] as $s ({}; . + ((($s.files // []) | join(\", \")) as $files | ($s.description + \"\\nTarget files: \" + $files + (if $s.testCmd then \"\\nYour check: \" + $s.testCmd else \"\" end)) as $desc | {($s.id): {repoPath:$r, name:$s.id, model:$m, agent:$ag, maxTurns:$mt, maxBudgetUsd:$mb, prompt:($desc + \"\\n\\nThe OpenSpec planning artifacts for this change are under \" + $cd + \" in your working directory — read proposal.md and design.md first, then specs/**/*.md, then your slice of tasks.md, before implementing.\"), promptTemplate:$ct, templateKey:\"code\", promptContext:{subtask:$desc}}}))), groupIds: ([$subs[].id] | join(\",\"))}"
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "queryExpression": ".repoPath as $r | .codeModel as $m | .codeAgent as $ag | .codePromptTemplate as $ct | .codePromptTemplateSource as $cts | .maxTurns as $mt | .maxBudgetUsd as $mb | .changeDir as $cd | .specContextPath as $sc | .modelProfile as $mp | .modelPolicy as $mpp | .modelPolicySource as $mps | .modelPolicySha256 as $mpsh | .modelsConfig as $mc | .modelOverrides as $mo | (if .usePrecomputedPlan then .precomputedPlan else .result end).subtasks as $subs | {dynamicTasks: [$subs[] | {name:\"code_subtask\", taskReferenceName:.id, type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"code_subtask\", version:2}}], dynamicTasksInput: (reduce $subs[] as $s ({}; . + ((($s.files // []) | join(\", \")) as $files | ($s.description + \"\\nTarget files: \" + $files + (if $s.testCmd then \"\\nYour check: \" + $s.testCmd else \"\" end)) as $desc | {($s.id): {repoPath:$r, name:$s.id, model:$m, agent:$ag, maxTurns:$mt, maxBudgetUsd:$mb, prompt:($desc + \"\\n\\nThe OpenSpec planning artifacts for this change are under \" + $cd + \" in your working directory — read proposal.md and design.md first, then specs/**/*.md, then your slice of tasks.md, before implementing.\"), promptTemplate:$ct, promptTemplateSource:$cts, templateKey:\"code\", promptContext:{subtask:$desc}, specContextPath:$sc, modelProfile:$mp, modelPolicy:$mpp, modelPolicySource:$mps, modelPolicySha256:$mpsh, modelsConfig:$mc, modelOverrides:$mo}}))), groupIds: ([$subs[].id] | join(\",\"))}"
       }
     },
     {

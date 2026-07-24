@@ -77,6 +77,14 @@ def test_target_and_result_helpers():
     assert catalog.short_repo("git@github.com:acme/app.git") == "acme/app"
 
 
+def test_local_checkout_paths_are_expanded_before_start(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    normalized = catalog.normalize_local_paths({"repoPath": "~/src/app"})
+    assert normalized["repoPath"] == str((tmp_path / "src" / "app").resolve())
+    normalized = catalog.normalize_local_paths({"specSource": "~/src/app/design/openspec"})
+    assert normalized["specSource"] == str((tmp_path / "src" / "app" / "design" / "openspec").resolve())
+
+
 def test_openspec_plan_is_bounded_review_loop():
     wf = _load("openspec_plan")
     assert wf["inputTemplate"]["openspecHumanApproval"] is True
@@ -85,7 +93,7 @@ def test_openspec_plan_is_bounded_review_loop():
     assert loop["type"] == "DO_WHILE" and loop["evaluatorType"] == "graaljs"
     assert "$.openspec_loop['iteration'] < $.max_iterations" in loop["loopCondition"]
     review = next(t for t in loop["loopOver"] if t["taskReferenceName"] == "review_mode")
-    assert any(t["type"] == "HUMAN" for t in review["decisionCases"]["true"])
+    assert any(t["type"] == "WAIT" for t in review["decisionCases"]["true"])
     judge = next(t for t in review["defaultCase"] if t["taskReferenceName"] == "plan_judge")
     assert judge["type"] == "SIMPLE" and judge["name"] == "coding_agent"
     assert judge["inputParameters"]["tools"] == ["Read", "Grep", "Glob"]
@@ -97,6 +105,14 @@ def test_openspec_plan_is_bounded_review_loop():
     assert set_review["inputParameters"]["planApproved"] == "${plan_judge.output.structured.approved}"
     assert set_review["inputParameters"]["planFeedback"] == "${plan_judge.output.structured.feedback}"
     assert set_review["inputParameters"]["planReview"] == "agent"
+
+
+@pytest.mark.parametrize(
+    "wf_name", ["pr_review", "issue_to_pr", "openspec_plan", "feature_campaign"]
+)
+def test_interactive_checkpoints_use_signalable_wait_tasks(wf_name):
+    tasks = list(_walk_tasks(_load(wf_name)["tasks"]))
+    assert not [task for task in tasks if task.get("type") == "HUMAN"]
 
 
 def test_no_llm_chat_complete_tasks_remain():
@@ -172,3 +188,13 @@ def test_code_parallel_internal_agent_budgets_are_fifty():
     merge = next(t for t in wf["tasks"] if t["taskReferenceName"] == "merge")
     assert plan["inputParameters"]["openspecMaxBudgetUsd"] == "${workflow.input.openspecMaxBudgetUsd}"
     assert merge["inputParameters"]["maxBudgetUsd"] == "${workflow.input.maxBudgetUsd}"
+
+
+def _walk_tasks(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_tasks(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_tasks(child)

@@ -1,11 +1,12 @@
 {
   "name": "pr_checkout",
-  "description": "Check out an existing PR by number into the repo (gh pr checkout). Input: repoPath, number, branch?, force?.",
+  "description": "Check out an existing PR by number into the repo (gh pr checkout). Input: repoPath, number, repo? (upstream owner/name), branch?, force?.",
   "retryCount": 2,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 0,
+  "timeoutSeconds": 86400,
   "responseTimeoutSeconds": 86400,
   "timeoutPolicy": "ALERT_ONLY",
-  "ownerEmail": "viren@orkes.io"
+  "ownerEmail": "viren@orkes.io",
+  "pollTimeoutSeconds": 60
 }

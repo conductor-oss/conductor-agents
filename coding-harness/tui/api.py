@@ -9,16 +9,34 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import httpx
 
 from . import catalog
+from .auth import ConductorCredentials, credentials_from_env
 
 TERMINAL = {"COMPLETED", "FAILED", "TERMINATED", "TIMED_OUT", "FAILED_WITH_TERMINAL_ERROR"}
 CODING_AGENT = "coding_agent"
 _WORKER_TASKS = {"coding_agent": "coding_agent", "gitops": "commit"}  # a representative task per module
+
+# These checkpoints are advanced through the task-by-reference endpoint.  Merely
+# checking that a workflow name exists is not enough: an older registered revision
+# may still contain HUMAN tasks with incompatible completion semantics.
+_SIGNAL_CHECKPOINTS = {
+    "pr_review": {"review_gate"},
+    "issue_to_pr": {"pr_gate"},
+    "address_pr": {"address_gate"},
+    "design_docs": {"design_review"},
+    "feature_campaign": {
+        "design_checkpoint",
+        "plan_checkpoint",
+        "wave_checkpoint",
+        "final_checkpoint",
+    },
+}
 
 
 class ConductorError(RuntimeError):
@@ -46,6 +64,35 @@ def _to_ms(v) -> int | None:
 
 def _now_ms() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
+def _registered_task_types(value) -> dict[str, str]:
+    """Collect task-reference/type pairs from all nested workflow constructs."""
+    found: dict[str, str] = {}
+
+    def visit(node) -> None:
+        if isinstance(node, dict):
+            ref = node.get("taskReferenceName")
+            task_type = node.get("type")
+            if isinstance(ref, str) and isinstance(task_type, str):
+                found[ref] = task_type
+            for child in node.values():
+                visit(child)
+        elif isinstance(node, list):
+            for child in node:
+                visit(child)
+
+    visit(value)
+    return found
+
+
+def _workflow_contract_current(name: str, definition) -> bool:
+    """Reject registered interactive workflows whose signal gates are stale."""
+    expected = _SIGNAL_CHECKPOINTS.get(name)
+    if not expected:
+        return True
+    task_types = _registered_task_types(definition)
+    return all(task_types.get(ref) == "WAIT" for ref in expected)
 
 
 def coerce_map(v) -> dict:
@@ -270,6 +317,37 @@ class PollState:
     workers: int
 
 
+@dataclass
+class Schedule:
+    name: str
+    workflow: str
+    cron: str
+    zone_id: str
+    paused: bool
+    input: dict = field(default_factory=dict)
+    raw: dict = field(default_factory=dict)
+
+
+@dataclass
+class PendingApproval:
+    task_id: str
+    task_ref: str
+    task_type: str
+    workflow_id: str
+    workflow: str
+    input: dict
+    scheduled_ms: int | None
+
+    @property
+    def legacy(self) -> bool:
+        return self.task_type == "HUMAN"
+
+    @property
+    def draft(self) -> dict:
+        value = self.input.get("draft") or {}
+        return value if isinstance(value, dict) else {"summary": str(value)}
+
+
 # --------------------------------------------------------------------------- pure parsers
 # (network-free; unit-tested against captured fixtures)
 
@@ -287,16 +365,18 @@ def parse_run(w: dict) -> Run:
 
 
 def workspace_path(run: "Run", tasks: list["TaskNode"] | None = None) -> str | None:
-    """Local filesystem dir where a run's code lives, if resolvable: code_parallel uses
+    """Local filesystem dir where a run's code lives, if resolvable: local workflows use
     the input `repoPath`; the GitHub flows surface it in the output or on the `git_clone`
     task. Existence/host is the caller's concern."""
-    p = (run.input or {}).get("repoPath") or (run.output or {}).get("repoPath")
+    p = (run.output or {}).get("worktreePath") or (run.output or {}).get("repoPath")
     if p:
         return p
     for t in (tasks or []):
+        if t.def_name == "workspace_prepare" and (t.output or {}).get("worktreePath"):
+            return t.output["worktreePath"]
         if t.def_name == "git_clone" and (t.output or {}).get("repoPath"):
             return t.output["repoPath"]
-    return None
+    return (run.input or {}).get("repoPath") or None
 
 
 def parse_execution(d: dict) -> tuple[Run, list[TaskNode]]:
@@ -324,9 +404,71 @@ def parse_execution(d: dict) -> tuple[Run, list[TaskNode]]:
 # --------------------------------------------------------------------------- client
 
 class ConductorClient:
-    def __init__(self, base_url: str, timeout: float = 10.0):
+    def __init__(self, base_url: str, timeout: float = 10.0,
+                 credentials: ConductorCredentials | None = None):
         self._base = base_url.rstrip("/")
+        self._credentials = credentials if credentials is not None else credentials_from_env()
         self._client = httpx.AsyncClient(base_url=self._base, timeout=timeout)
+        self._auth_token: str | None = None
+        self._auth_token_time = 0.0
+        self._auth_lock = asyncio.Lock()
+
+    async def _ensure_auth_token(self, *, force: bool = False,
+                                 stale_token: str | None = None) -> None:
+        """Acquire or refresh the API token without exposing credential values."""
+        if self._credentials is None:
+            return
+        now = time.monotonic()
+        if not force and self._auth_token and now - self._auth_token_time < 45 * 60:
+            return
+        async with self._auth_lock:
+            # Another request may have refreshed the rejected token while this one waited.
+            if force and stale_token is not None and self._auth_token != stale_token:
+                return
+            now = time.monotonic()
+            if not force and self._auth_token and now - self._auth_token_time < 45 * 60:
+                return
+            try:
+                response = await self._client.post("/token", json={
+                    "keyId": self._credentials.key,
+                    "keySecret": self._credentials.secret,
+                })
+            except httpx.HTTPError as exc:
+                raise ConductorError(f"Conductor authentication request failed: {exc}") from exc
+            if response.status_code >= 400:
+                raise ConductorError(
+                    f"Conductor authentication failed: HTTP {response.status_code}"
+                )
+            try:
+                token = (response.json() or {}).get("token")
+            except (ValueError, AttributeError) as exc:
+                raise ConductorError("Conductor authentication returned an invalid response") from exc
+            if not isinstance(token, str) or not token:
+                raise ConductorError("Conductor authentication response did not contain a token")
+            self._auth_token = token
+            self._auth_token_time = time.monotonic()
+
+    async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        """Send one API request with cached key/secret authentication when configured."""
+        await self._ensure_auth_token()
+        headers = dict(kwargs.pop("headers", None) or {})
+        if self._auth_token:
+            headers["X-Authorization"] = self._auth_token
+        sent_token = self._auth_token
+        try:
+            response = await self._client.request(method, path, headers=headers, **kwargs)
+        except httpx.HTTPError as exc:
+            raise ConductorError(f"{method} {path}: {exc}") from exc
+
+        # Match the SDK's invalid/expired-token behavior: refresh and retry once.
+        if response.status_code == 401 and self._credentials is not None:
+            await self._ensure_auth_token(force=True, stale_token=sent_token)
+            headers["X-Authorization"] = self._auth_token or ""
+            try:
+                response = await self._client.request(method, path, headers=headers, **kwargs)
+            except httpx.HTTPError as exc:
+                raise ConductorError(f"{method} {path}: {exc}") from exc
+        return response
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -338,10 +480,7 @@ class ConductorClient:
         await self.aclose()
 
     async def _get(self, path: str, **params):
-        try:
-            r = await self._client.get(path, params=params or None)
-        except httpx.HTTPError as e:
-            raise ConductorError(f"GET {path}: {e}") from e
+        r = await self._request("GET", path, params=params or None)
         if r.status_code >= 400:
             raise ConductorError(f"GET {path}: HTTP {r.status_code}")
         return r
@@ -393,11 +532,11 @@ class ConductorClient:
         out: dict[str, PollState] = {}
         now = _now_ms()
         for module, task_type in _WORKER_TASKS.items():
-            try:
-                r = await self._get("/tasks/queue/polldata", taskType=task_type)
-                data = r.json() or []
-            except ConductorError:
-                data = []
+            # Do not turn authentication, authorization, or transport failures into a
+            # misleading "server online, workers down" result. Callers already render a
+            # ConductorError as an unavailable server/preflight failure.
+            r = await self._get("/tasks/queue/polldata", taskType=task_type)
+            data = r.json() or []
             last = max((_to_ms(p.get("lastPollTime")) or 0 for p in data), default=0)
             age = (now - last) / 1000.0 if last else None
             out[module] = PollState(
@@ -410,47 +549,195 @@ class ConductorClient:
 
     async def workflow_registered(self, name: str) -> bool:
         try:
-            await self._get(f"/metadata/workflow/{name}")
-            return True
+            r = await self._get(f"/metadata/workflow/{name}")
+            return _workflow_contract_current(name, r.json())
         except ConductorError:
             return False
 
+    async def list_schedules(self) -> list[Schedule]:
+        r = await self._get("/scheduler/schedules")
+        values = r.json() or []
+        return [Schedule(
+            name=str(value.get("name") or ""),
+            workflow=str((value.get("startWorkflowRequest") or {}).get("name") or ""),
+            cron=str(value.get("cronExpression") or ""),
+            zone_id=str(value.get("zoneId") or "UTC"),
+            paused=bool(value.get("paused")),
+            input=coerce_map((value.get("startWorkflowRequest") or {}).get("input")),
+            raw=value,
+        ) for value in values if isinstance(value, dict)]
+
+    async def pending_approvals(self, *, page_size: int = 100) -> list[PendingApproval]:
+        """List every open signal checkpoint, including nested workflow ownership.
+
+        Some Conductor persistence/index combinations omit WAIT system tasks from
+        ``/tasks/search`` even though the execution reports them IN_PROGRESS. Keep task search
+        for efficient global HUMAN discovery, then inspect RUNNING executions as a compatibility
+        fallback so signal checkpoints cannot silently disappear from the inbox.
+        """
+        approvals: list[PendingApproval] = []
+        start = 0
+        while True:
+            r = await self._get("/tasks/search", start=start, size=page_size,
+                                sort="scheduledTime:DESC", freeText="*",
+                                query="status=IN_PROGRESS")
+            body = r.json() or {}
+            rows = body.get("results") or []
+            for task in rows:
+                task_type = str(task.get("taskType") or "")
+                inputs = coerce_map(task.get("input")) or coerce_map(task.get("inputData"))
+                if task_type not in ("WAIT", "HUMAN"):
+                    continue
+                if task_type == "WAIT" and (inputs.get("duration") or inputs.get("until")):
+                    continue
+                if task_type == "WAIT" and not isinstance(inputs.get("draft"), dict):
+                    task_id = str(task.get("taskId") or "")
+                    if task_id:
+                        try:
+                            detail = (await self._get(f"/tasks/{task_id}")).json() or {}
+                            inputs = detail.get("inputData") or inputs
+                        except ConductorError:
+                            pass
+                approvals.append(PendingApproval(
+                    task_id=str(task.get("taskId") or ""),
+                    task_ref=str(task.get("referenceTaskName") or task.get("taskRefName") or ""),
+                    task_type=task_type,
+                    workflow_id=str(task.get("workflowInstanceId") or task.get("workflowId") or ""),
+                    workflow=str(task.get("workflowType") or task.get("workflowName") or inputs.get("workflow") or ""),
+                    input=inputs,
+                    scheduled_ms=_to_ms(task.get("scheduledTime") or task.get("startTime")),
+                ))
+            total = int(body.get("totalHits") or len(rows))
+            start += len(rows)
+            if not rows or start >= total:
+                break
+
+        # WAIT is a system task and is not present in task-search results on every supported
+        # Conductor backend. Search running executions and merge their live WAIT tasks by task ID.
+        seen = {item.task_id for item in approvals}
+        workflow_start = 0
+        while True:
+            r = await self._get("/workflow/search", start=workflow_start, size=page_size,
+                                sort="startTime:DESC", freeText="*", query="status=RUNNING")
+            body = r.json() or {}
+            rows = body.get("results") or []
+
+            async def load_waits(row) -> list[PendingApproval]:
+                workflow_id = str(row.get("workflowId") or row.get("workflowInstanceId") or "")
+                if not workflow_id:
+                    return []
+                try:
+                    execution = (await self._get(
+                        f"/workflow/{workflow_id}", includeTasks="true")).json() or {}
+                except ConductorError:
+                    return []
+                workflow = str(execution.get("workflowName") or execution.get("workflowType") or
+                               row.get("workflowType") or row.get("workflowName") or "")
+                found: list[PendingApproval] = []
+                for task in execution.get("tasks") or []:
+                    if str(task.get("taskType") or task.get("type") or "") != "WAIT":
+                        continue
+                    if str(task.get("status") or "") != "IN_PROGRESS":
+                        continue
+                    inputs = coerce_map(task.get("inputData")) or coerce_map(task.get("input"))
+                    if inputs.get("duration") or inputs.get("until"):
+                        continue
+                    task_id = str(task.get("taskId") or "")
+                    if not task_id or task_id in seen:
+                        continue
+                    found.append(PendingApproval(
+                        task_id=task_id,
+                        task_ref=str(task.get("referenceTaskName") or
+                                     task.get("taskRefName") or ""),
+                        task_type="WAIT",
+                        workflow_id=str(task.get("workflowInstanceId") or workflow_id),
+                        workflow=workflow or str(inputs.get("workflow") or ""),
+                        input=inputs,
+                        scheduled_ms=_to_ms(task.get("scheduledTime") or task.get("startTime")),
+                    ))
+                return found
+
+            for found in await asyncio.gather(*(load_waits(row) for row in rows)):
+                for item in found:
+                    if item.task_id not in seen:
+                        approvals.append(item)
+                        seen.add(item.task_id)
+            total = int(body.get("totalHits") or len(rows))
+            workflow_start += len(rows)
+            if not rows or workflow_start >= total:
+                break
+
+        approvals.sort(key=lambda item: item.scheduled_ms or 0, reverse=True)
+        return approvals
+
     # -- mutations -----------------------------------------------------------
     async def start(self, name: str, payload: dict) -> str:
-        try:
-            r = await self._client.post(f"/workflow/{name}", json=payload)
-        except httpx.HTTPError as e:
-            raise ConductorError(f"start {name}: {e}") from e
+        r = await self._request("POST", f"/workflow/{name}", json=payload)
         if r.status_code >= 400:
             raise ConductorError(f"start {name}: HTTP {r.status_code} {r.text[:200]}")
         return r.text.strip().strip('"')
 
+    async def save_schedule(self, payload: dict) -> None:
+        r = await self._request("POST", "/scheduler/schedules", json=payload)
+        if r.status_code >= 400:
+            raise ConductorError(f"save schedule: HTTP {r.status_code} {r.text[:200]}")
+
+    async def delete_schedule(self, name: str) -> None:
+        r = await self._request("DELETE", f"/scheduler/schedules/{name}")
+        if r.status_code >= 400:
+            raise ConductorError(f"delete schedule {name}: HTTP {r.status_code}")
+
+    async def pause_schedule(self, name: str, paused: bool = True) -> None:
+        action = "pause" if paused else "resume"
+        r = await self._request("GET", f"/scheduler/schedules/{name}/{action}")
+        if r.status_code >= 400:
+            raise ConductorError(f"{action} schedule {name}: HTTP {r.status_code}")
+
+    async def run_schedule_now(self, schedule: Schedule) -> str:
+        request = schedule.raw.get("startWorkflowRequest") or {}
+        return await self.start(str(request.get("name") or schedule.workflow),
+                                coerce_map(request.get("input")))
+
     async def terminate(self, workflow_id: str, reason: str = "") -> None:
-        try:
-            r = await self._client.delete(f"/workflow/{workflow_id}", params={"reason": reason})
-        except httpx.HTTPError as e:
-            raise ConductorError(f"terminate: {e}") from e
+        r = await self._request("DELETE", f"/workflow/{workflow_id}",
+                                params={"reason": reason})
         if r.status_code >= 400:
             raise ConductorError(f"terminate: HTTP {r.status_code}")
 
     async def signal_task(self, workflow_id: str, task_ref: str, status: str,
-                          output: dict | None = None) -> None:
-        """Advance a paused HUMAN/WAIT task: POST /tasks/{wid}/{taskRef}/{status} with the
-        decision output as the body. status COMPLETED proceeds; FAILED_WITH_TERMINAL_ERROR
-        rejects (fails the run). The output map flows to `${taskRef.output.*}` downstream."""
-        try:
-            r = await self._client.post(
-                f"/tasks/{workflow_id}/{task_ref}/{status}", json=output or {})
-        except httpx.HTTPError as e:
-            raise ConductorError(f"signal {task_ref}: {e}") from e
+                          output: dict | None = None, *, task_type: str | None = None) -> None:
+        """Advance the pending HUMAN/WAIT task owned by ``workflow_id``.
+
+        Use the OSS task-by-reference synchronous endpoint.  The similarly named
+        ``/{workflowId}/{status}/signal/sync`` endpoint is Enterprise-only; on OSS its
+        path is mistakenly matched as ``/{workflowId}/{taskRefName}/{status}/sync`` and
+        the literal word ``signal`` is parsed as a TaskResult.Status, yielding HTTP 500.
+
+        The execution's actual reference name is required here.  Loop tasks therefore
+        correctly use generated refs such as ``design_review__1`` rather than the static
+        reference in the workflow definition.
+        """
+        if task_type == "HUMAN":
+            raise ConductorError(
+                f"signal {task_ref}: this execution uses a legacy HUMAN checkpoint; "
+                "register the current workflow definitions and relaunch the run"
+            )
+        body = output or {}
+        r = await self._request(
+            "POST", f"/tasks/{workflow_id}/{task_ref}/{status}/sync", json=body)
+        if r.status_code == 404:
+            r = await self._request(
+                "POST", f"/tasks/{workflow_id}/{task_ref}/{status}", json=body)
         if r.status_code >= 400:
             raise ConductorError(f"signal {task_ref}: HTTP {r.status_code} {r.text[:200]}")
+        if not r.content:
+            raise ConductorError(
+                f"signal {task_ref}: Conductor accepted the request but no pending "
+                "task was advanced"
+            )
 
     async def retry(self, workflow_id: str) -> None:
-        try:
-            r = await self._client.post(f"/workflow/{workflow_id}/retry",
-                                        params={"resumeSubworkflowTasks": "false"})
-        except httpx.HTTPError as e:
-            raise ConductorError(f"retry: {e}") from e
+        r = await self._request("POST", f"/workflow/{workflow_id}/retry",
+                                params={"resumeSubworkflowTasks": "false"})
         if r.status_code >= 400:
             raise ConductorError(f"retry: HTTP {r.status_code}")

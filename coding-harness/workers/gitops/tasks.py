@@ -10,6 +10,8 @@ pr_merge. The remote/PR ops authenticate through gh (`gh auth login` / `GH_TOKEN
 from __future__ import annotations
 
 import json as _json
+import os
+from pathlib import Path
 
 from conductor.client.worker.worker_task import worker_task
 
@@ -29,6 +31,164 @@ def _bool(val, default=False):
     if isinstance(val, bool):
         return val
     return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _items(val):
+    if isinstance(val, list):
+        return [str(x).strip() for x in val if str(x).strip()]
+    return [x.strip() for x in str(val or "").split(",") if x.strip()]
+
+
+def _relative_roots(val) -> list[str]:
+    roots: list[str] = []
+    for raw in _items(val):
+        path = Path(raw)
+        if path.is_absolute() or ".." in path.parts or str(path) in {"", "."}:
+            raise ValueError(f"materializedSourcePaths must be safe repository-relative paths: {raw}")
+        roots.append(path.as_posix().rstrip("/"))
+    return sorted(set(roots))
+
+
+def _slug(value: str) -> str:
+    try:
+        return github.repo_slug(value).lower()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+@worker_task(task_definition_name="workspace_prepare")
+def workspace_prepare(task):
+    """Create or resume an isolated run worktree from a local checkout or temp clone.
+
+    Uncommitted source changes are intentionally reported but excluded: git worktrees
+    always start from a committed ref. An inherited workspacePath is passed through so
+    nested workflows share the parent's run workspace without owning its cleanup.
+    """
+    i = task.input_data or {}
+    try:
+        inherited = str(i.get("workspacePath") or "").strip()
+        if inherited:
+            workspace = str(Path(inherited).expanduser().resolve())
+            inside = git.git(workspace, "rev-parse", "--is-inside-work-tree", check=False)
+            if inside.code != 0 or inside.stdout.strip() != "true":
+                raise ValueError(f"inherited workspacePath is not a git worktree: {workspace}")
+            source = str(Path(i.get("repoPath") or workspace).expanduser().resolve())
+            return ok(task, {
+                "sourceRepoPath": source,
+                "worktreePath": workspace,
+                "branch": git.git(workspace, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip(),
+                "baseCommit": git.head(workspace),
+                "ignoredSourceChanges": 0,
+                "ignoredSourcePaths": [],
+                "materializedSourcePaths": [],
+                "owned": False,
+                "resumed": True,
+                "sourceCloned": False,
+            }, [f"[workspace_prepare] inherited {workspace}"])
+
+        source_value = str(i.get("repoPath") or "").strip()
+        source_cloned = False
+        if source_value:
+            source = str(Path(source_value).expanduser().resolve())
+        else:
+            repo_url = str(i.get("repoUrl") or "").strip()
+            if not repo_url:
+                raise ValueError("workspace_prepare requires repoPath or repoUrl")
+            github.ensure_git_auth()
+            run_id = str(i.get("workflowId") or getattr(task, "workflow_instance_id", "")
+                         or getattr(task, "task_id", "workspace"))
+            source = str(Path(i.get("cloneDest") or
+                              f"/tmp/conductor-source-{git._safe_name(run_id)}").resolve())
+            inside = git.git(source, "rev-parse", "--is-inside-work-tree", check=False)
+            if inside.code != 0:
+                if os.path.exists(source):
+                    raise ValueError(f"clone destination exists but is not a git repository: {source}")
+                git.clone(github.clone_url(repo_url), source)
+            source_cloned = True
+
+        prepared = git.ensure_ready(source)
+        git.exclude_worktrees(source)
+        changes = sorted(git.status_files(source))
+        materialized_roots = _relative_roots(i.get("materializedSourcePaths"))
+        materialized = [path for path in changes if any(
+            path == root or path.startswith(root + "/") for root in materialized_roots)]
+        ignored = [path for path in changes if path not in materialized]
+
+        expected = {_slug(x) for x in _items(i.get("expectedRepos"))}
+        expected.discard("")
+        if expected and not source_cloned:
+            actual = {_slug(url) for url in git.remote_urls(source).values()}
+            if not (expected & actual):
+                raise ValueError(
+                    "local checkout remotes do not match the requested repository; "
+                    f"expected one of {sorted(expected)}, found {sorted(x for x in actual if x)}")
+
+        fetch_source = str(i.get("fetchSource") or "").strip()
+        fetch_refspec = str(i.get("fetchRefspec") or "").strip()
+        if fetch_refspec:
+            github.ensure_git_auth()
+            source_ref = github.clone_url(fetch_source) if fetch_source else "origin"
+            git.fetch_source(source, source_ref, fetch_refspec)
+
+        out = git.workspace_add(
+            source,
+            str(i.get("workflowId") or getattr(task, "workflow_instance_id", "")
+                or getattr(task, "task_id", "workspace")),
+            branch_name=str(i.get("branch") or "").strip() or None,
+            start_point=str(i.get("startPoint") or "HEAD"),
+            preserve_existing=_bool(i.get("preserveExisting"), True),
+        )
+        output = {
+            "sourceRepoPath": source,
+            "worktreePath": out["worktreePath"],
+            "branch": out["branch"],
+            "baseCommit": out["initialCommit"],
+            "ignoredSourceChanges": len(ignored),
+            "ignoredSourcePaths": ignored,
+            "materializedSourcePaths": materialized,
+            "owned": True,
+            "resumed": out["resumed"],
+            "sourceCloned": source_cloned,
+            "sourceHead": prepared["head"],
+        }
+        return ok(task, output, [
+            f"[workspace_prepare] {source} -> {out['worktreePath']} branch={out['branch']}",
+            f"[workspace_prepare] ignored source changes={len(ignored)} materialized={len(materialized)} resumed={out['resumed']}",
+        ])
+    except Exception as e:  # noqa: BLE001
+        return fail(task, "workspace_prepare", e)
+
+
+@worker_task(task_definition_name="workspace_cleanup")
+def workspace_cleanup(task):
+    """Optionally remove an owned run worktree while preserving all git branches."""
+    i = task.input_data or {}
+    try:
+        keep = _bool(i.get("keepWorktree"), True)
+        owned = _bool(i.get("owned"), False)
+        outcome = str(i.get("outcome") or "completed").strip().lower()
+        successful = outcome in {"completed", "success", "succeeded", "verified", "passed"}
+        if keep or not owned or not successful:
+            reason = "requested" if keep else ("inherited" if not owned else f"outcome={outcome}")
+            return ok(task, {
+                "removed": False,
+                "retained": True,
+                "reason": reason,
+                "worktreePath": i.get("worktreePath") or "",
+                "branch": i.get("branch") or "",
+            }, [f"[workspace_cleanup] retained ({reason})"])
+        result = git.worktree_remove_path(
+            str(i["sourceRepoPath"]), str(i["worktreePath"]), remove_nested=True)
+        return ok(task, {
+            "removed": True,
+            "retained": False,
+            "reason": "cleanup requested",
+            "worktreePath": i.get("worktreePath") or "",
+            "branch": i.get("branch") or "",
+            "removedPaths": result["removed"],
+        }, [f"[workspace_cleanup] removed {len(result['removed'])} worktree(s); branch retained"])
+    except Exception as e:  # noqa: BLE001
+        return fail(task, "workspace_cleanup", e)
 
 
 @worker_task(task_definition_name="prepare_repo")
@@ -74,7 +234,8 @@ def commit(task):
 def worktree_add(task):
     i = task.input_data or {}
     try:
-        out = git.worktree_add(i["repoPath"], i["name"])
+        out = git.worktree_add(i["repoPath"], i["name"],
+                               preserve_existing=_bool(i.get("preserveExisting"), False))
         return ok(task, out, [f"[worktree_add] {out['branch']} -> {out['worktreePath']} HEAD={out['initialCommit'][:7]}"])
     except Exception as e:  # noqa: BLE001
         return fail(task, "worktree_add", e)
@@ -186,13 +347,14 @@ def git_pull(task):
 
 @worker_task(task_definition_name="git_push")
 def git_push(task):
-    """Push a branch to a remote. Input: repoPath, branch?, remote?, setUpstream?,
-    forceWithLease?. Never a bare --force."""
+    """Push a branch to a remote. Input: repoPath, branch?, destinationBranch?,
+    remote?/remoteUrl?, setUpstream?, forceWithLease?. Never a bare --force."""
     i = task.input_data or {}
     try:
         github.ensure_git_auth()
         out = git.push(i["repoPath"], branch_name=i.get("branch") or None,
-                       remote=i.get("remote") or "origin",
+                       remote=i.get("remoteUrl") or i.get("remote") or "origin",
+                       destination_branch=i.get("destinationBranch") or None,
                        set_upstream=_bool(i.get("setUpstream"), True),
                        force_with_lease=_bool(i.get("forceWithLease")))
         return ok(task, out, [f"[git_push] {out['remote']} {out['branch']} HEAD={out['head'][:7]}"])
@@ -256,6 +418,28 @@ def pr_diff(task):
         return fail(task, "pr_diff", e)
 
 
+@worker_task(task_definition_name="local_diff")
+def local_diff(task):
+    """Build a local checkout's review diff against a freshly fetched remote branch.
+
+    The operation is deliberately review-only: it never alters files, stages, commits,
+    pushes, or checks out a branch.  The fetch updates the remote-tracking baseline so
+    the following coding-agent review has an accurate comparison point.
+    """
+    i = task.input_data or {}
+    try:
+        out = git.local_diff_against_remote(
+            i["repoPath"], remote=i.get("baseRemote") or "origin",
+            branch=i.get("baseBranch") or "main")
+        return ok(task, out, [
+            f"[local_diff] {out['baseRef']} {out['baseCommit'][:7]} "
+            f"files={len(out['changedFiles'])} untracked={len(out['untrackedFiles'])} "
+            f"chars={out['diffChars']} truncated={out['truncated']}",
+        ])
+    except Exception as e:  # noqa: BLE001
+        return fail(task, "local_diff", e)
+
+
 @worker_task(task_definition_name="pr_submit_review")
 def pr_submit_review(task):
     """Post a formal PR review (inline comments + summary + verdict) from the agent's
@@ -297,10 +481,15 @@ def pr_create(task):
 
 @worker_task(task_definition_name="pr_checkout")
 def pr_checkout(task):
-    """Check out an existing PR by number. Input: repoPath, number, branch?, force?."""
+    """Check out an existing PR by number.
+
+    ``repo`` optionally selects the upstream repository that owns the PR; the
+    checkout's origin remains the working repository (often a contributor fork).
+    """
     i = task.input_data or {}
     try:
         out = github.pr_checkout(i["repoPath"], _int(i["number"]),
+                                 pr_repo=i.get("repo") or None,
                                  branch=i.get("branch") or None, force=_bool(i.get("force")))
         return ok(task, out, [f"[pr_checkout] #{out['number']} -> {out['branch']} HEAD={out['head'][:7]}"])
     except Exception as e:  # noqa: BLE001
@@ -322,10 +511,11 @@ def pr_status(task):
 
 @worker_task(task_definition_name="pr_comment")
 def pr_comment(task):
-    """Post a comment on a PR. Input: repoPath, number, body."""
+    """Post a comment on a PR. Input: repoPath, number, body, repo?."""
     i = task.input_data or {}
     try:
-        out = github.pr_comment(i["repoPath"], _int(i["number"]), i.get("body") or "")
+        out = github.pr_comment(i["repoPath"], _int(i["number"]), i.get("body") or "",
+                                repo_ref=i.get("repo") or i.get("repoUrl") or None)
         return ok(task, out, [f"[pr_comment] #{out['number']} {out['url']}"])
     except Exception as e:  # noqa: BLE001
         return fail(task, "pr_comment", e)

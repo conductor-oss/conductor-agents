@@ -1,0 +1,12 @@
+{
+  "name": "openspec_finalize",
+  "description": "Mark verified OpenSpec tasks complete, validate, archive the change, and commit lifecycle artifacts.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "pollTimeoutSeconds": 120,
+  "responseTimeoutSeconds": 60,
+  "timeoutSeconds": 1800,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "ownerEmail": "viren@orkes.io"
+}

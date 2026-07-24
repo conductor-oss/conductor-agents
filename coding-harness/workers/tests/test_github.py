@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from common import github
 from common.exec import RunError, RunResult
-from gitops.tasks import pr_create, pr_submit_review
+from gitops.tasks import pr_checkout, pr_create, pr_submit_review
 
 
 class RecordingRun:
@@ -76,6 +77,48 @@ def test_pr_create_fill_and_draft_flags(fake_task_input, monkeypatch):
     assert rec.calls[0]["cmd"] == ["gh", "pr", "create", "--fill", "--draft"]
     assert result.output_data["number"] == 7
     assert result.output_data["draft"] is True
+
+
+# --- pr_checkout -------------------------------------------------------------
+
+def test_github_pr_checkout_scopes_fork_checkout_to_upstream_pr(fake_task_input, monkeypatch):
+    rec = RecordingRun(RunResult("", "", 0))
+    _patch(monkeypatch, rec)
+    monkeypatch.setattr("common.git._current_branch", lambda _: "fix/fork-pr")
+    monkeypatch.setattr("common.git.head", lambda _: "abcdef012345")
+
+    out = github.pr_checkout(
+        "/contributor-fork", 136, pr_repo="https://github.com/upstream/project.git",
+        branch="fix/fork-pr", force=True,
+    )
+
+    assert rec.calls == [{
+        "cmd": ["gh", "pr", "checkout", "136", "--repo", "upstream/project",
+                "--branch", "fix/fork-pr", "--force"],
+        "cwd": "/contributor-fork", "check": True, "payload": None,
+    }]
+    assert out == {"number": 136, "branch": "fix/fork-pr", "head": "abcdef012345"}
+
+
+def test_pr_checkout_uses_upstream_selector_but_keeps_local_checkout(fake_task_input, monkeypatch):
+    captured = {}
+
+    def checkout(repo_path, number, *, pr_repo=None, branch=None, force=False):
+        captured.update(repo_path=repo_path, number=number, pr_repo=pr_repo,
+                        branch=branch, force=force)
+        return {"number": number, "branch": branch, "head": "abcdef012345"}
+
+    monkeypatch.setattr("common.github.pr_checkout", checkout)
+    result = pr_checkout(fake_task_input(
+        repoPath="/contributor-fork", repo="upstream/project", number=136,
+        branch="fix/fork-pr", force="true",
+    ))
+
+    assert captured == {
+        "repo_path": "/contributor-fork", "number": 136,
+        "pr_repo": "upstream/project", "branch": "fix/fork-pr", "force": True,
+    }
+    assert result.output_data["branch"] == "fix/fork-pr"
 
 
 # --- pr_submit_review --------------------------------------------------------

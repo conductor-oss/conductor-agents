@@ -23,10 +23,13 @@ def main() -> None:
     p.add_argument("--editor", help="command to open a run's working folder "
                                     "(default: $VISUAL/$EDITOR, else code/cursor/…, else OS open)")
     p.add_argument("--no-notify", action="store_true", help="disable terminal bell + OS notifications")
+    p.add_argument("--no-workers", action="store_true",
+                   help="do not start local harness workers (use an externally managed worker fleet)")
     args = p.parse_args()
     settings = config.load(server=args.server, notify=not args.no_notify, model=args.model,
                            editor=args.editor)
-    HarnessApp(settings, resume=args.resume, start_dashboard=args.dashboard).run()
+    HarnessApp(settings, resume=args.resume, start_dashboard=args.dashboard,
+               manage_workers=not args.no_workers).run()
 
 
 if __name__ == "__main__":

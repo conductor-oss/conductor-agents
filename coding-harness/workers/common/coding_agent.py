@@ -130,7 +130,7 @@ WORKER_SYSTEM_APPEND = (
 )
 
 
-def _worktree_guard(worktree_abs: str) -> sdk.HookMatcher:
+def _worktree_guard(worktree_abs: str, write_roots: list[str] | None = None) -> sdk.HookMatcher:
     """A PreToolUse hook that denies Write/Edit escaping the worktree.
 
     This is the inner-layer guard the doc calls the only check that runs on EVERY
@@ -138,6 +138,14 @@ def _worktree_guard(worktree_abs: str) -> sdk.HookMatcher:
     ({} == no decision) so the permission flow (dontAsk + allowed_tools) decides.
     """
     root = os.path.realpath(worktree_abs)
+    # This can only tighten the normal worktree boundary.  Absolute paths and
+    # ``..`` escapes are rejected; an empty/omitted list preserves the existing
+    # whole-worktree contract for every current workflow.
+    allowed: list[str] = []
+    for value in write_roots or []:
+        candidate = os.path.realpath(os.path.join(root, str(value)))
+        if candidate == root or candidate.startswith(root + os.sep):
+            allowed.append(candidate)
 
     async def guard(input_data, tool_use_id, context):  # noqa: ANN001
         try:
@@ -154,6 +162,18 @@ def _worktree_guard(worktree_abs: str) -> sdk.HookMatcher:
                             "permissionDecisionReason": (
                                 f"Write to {target} escapes the worktree {root}; "
                                 "stay inside your working directory."
+                            ),
+                        }
+                    }
+                if allowed and not any(target == base or target.startswith(base + os.sep)
+                                       for base in allowed):
+                    return {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": (
+                                f"Write to {target} is outside this task's allowed write roots: "
+                                + ", ".join(allowed)
                             ),
                         }
                     }
@@ -306,6 +326,7 @@ async def run_coding_agent(
     include_file_tree: bool = True,
     include_repo_guide: bool = True,
     backend: str | None = None,
+    write_roots: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run one locked-down autonomous coding session to completion (async).
 
@@ -448,7 +469,7 @@ async def run_coding_agent(
         "tools": tools if tools is not None else DEFAULT_TOOLS,
         "allowed_tools": allowed_tools if allowed_tools is not None else DEFAULT_ALLOWED_TOOLS,
         "disallowed_tools": disallowed_tools if disallowed_tools is not None else DEFAULT_DISALLOWED_TOOLS,
-        "hooks": {"PreToolUse": [_worktree_guard(worktree_abs)]},
+        "hooks": {"PreToolUse": [_worktree_guard(worktree_abs, write_roots)]},
         "max_turns": max_turns,
         "stderr": stderr_lines.append,
     }

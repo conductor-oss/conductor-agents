@@ -4,13 +4,27 @@
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
   "description": "One pass of openspec_plan's artifact-generation drain loop, extracted into its own sub-workflow: Conductor does not support a DO_WHILE nested directly inside another DO_WHILE (confirmed live and in docs — 'Nested Do While tasks are not supported... use a Sub Workflow task inside the Do While task'). Repeatedly calls openspec_status, JQ-selects not-yet-generated-this-pass artifacts with status != blocked, and fans out openspec_generate_artifact sub-workflows for them, until nothing new is selectable.",
-  "inputParameters": ["repoPath", "changeName", "goal", "feedback", "agent", "model", "maxTurns", "maxBudgetUsd"],
-  "inputTemplate": {"feedback": "", "model": "", "maxTurns": 500, "maxBudgetUsd": 50.0},
+  "inputParameters": ["repoPath", "changeName", "goal", "feedback", "agent", "model", "maxTurns", "maxBudgetUsd", "modelProfile", "modelPolicy", "modelPolicySource", "modelPolicySha256", "modelsConfig", "modelOverrides"],
+  "inputTemplate": {"feedback": "", "model": "", "maxTurns": 500, "maxBudgetUsd": 50.0, "modelProfile": "", "modelPolicy": {}, "modelPolicySource": "", "modelPolicySha256": "", "modelsConfig": "", "modelOverrides": {}},
   "variables": {
     "generatedThisPass": [], "readyCount": 0,
     "filesChanged": [], "costUsd": 0, "tokenUsed": 0
   },
   "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
     {
       "name": "artifact_loop", "taskReferenceName": "artifact_loop", "type": "DO_WHILE", "evaluatorType": "graaljs",
       "loopCondition": "(function(){ return $.artifact_loop['iteration'] < 8 && $.ready_count > 0; })();",
@@ -30,7 +44,10 @@
             "feedback": "${workflow.input.feedback}", "goal": "${workflow.input.goal}",
             "agent": "${workflow.input.agent}", "model": "${workflow.input.model}",
             "maxTurns": "${workflow.input.maxTurns}", "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-            "queryExpression": ".repoPath as $r | .changeName as $cn | .feedback as $fb | .goal as $g | .agent as $ag | .model as $m | .maxTurns as $mt | .maxBudgetUsd as $mb | (.generated // []) as $gen | ((.status.artifacts // []) | map(select(.status != \"blocked\" and ((.id as $i | ($gen | index($i))) == null)))) as $ready | { dynamicTasks: [$ready[] | {name:\"openspec_generate_artifact\", taskReferenceName: (\"gen_\" + .id), type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"openspec_generate_artifact\", version:1}}], dynamicTasksInput: (reduce $ready[] as $a ({}; . + {((\"gen_\" + $a.id)): {repoPath:$r, changeName:$cn, artifact:$a.id, goal:$g, feedback:$fb, agent:$ag, model:$m, maxTurns:$mt, maxBudgetUsd:$mb}})), readyIds: [$ready[].id], readyCount: ($ready | length) }"
+            "modelProfile": "${workflow.input.modelProfile}", "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}", "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}", "modelOverrides": "${workflow.input.modelOverrides}",
+            "queryExpression": ".repoPath as $r | .changeName as $cn | .feedback as $fb | .goal as $g | .agent as $ag | .model as $m | .maxTurns as $mt | .maxBudgetUsd as $mb | .modelProfile as $mp | .modelPolicy as $mpp | .modelPolicySource as $mps | .modelPolicySha256 as $mpsh | .modelsConfig as $mc | .modelOverrides as $mo | (.generated // []) as $gen | ((.status.artifacts // []) | map(select(.status != \"blocked\" and ((.id as $i | ($gen | index($i))) == null)))) as $ready | { dynamicTasks: [$ready[] | {name:\"openspec_generate_artifact\", taskReferenceName: (\"gen_\" + .id), type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"openspec_generate_artifact\", version:1}}], dynamicTasksInput: (reduce $ready[] as $a ({}; . + {((\"gen_\" + $a.id)): {repoPath:$r, changeName:$cn, artifact:$a.id, goal:$g, feedback:$fb, agent:$ag, model:$m, maxTurns:$mt, maxBudgetUsd:$mb, modelProfile:$mp, modelPolicy:$mpp, modelPolicySource:$mps, modelPolicySha256:$mpsh, modelsConfig:$mc, modelOverrides:$mo}})), readyIds: [$ready[].id], readyCount: ($ready | length) }"
           }
         },
         {

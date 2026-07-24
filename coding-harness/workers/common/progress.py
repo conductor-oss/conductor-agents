@@ -32,7 +32,7 @@ from typing import Any
 from conductor.client.http.api.task_resource_api import TaskResourceApi
 from conductor.client.http.api_client import ApiClient
 from conductor.client.http.models.task_result_status import TaskResultStatus
-from conductor.client.configuration.configuration import Configuration
+from common.conductor_config import configuration_from_env
 
 log = logging.getLogger("coding_agent.progress")
 
@@ -44,7 +44,7 @@ _API: TaskResourceApi | None = None
 def _api() -> TaskResourceApi:
     global _API
     if _API is None:
-        _API = TaskResourceApi(ApiClient(configuration=Configuration()))
+        _API = TaskResourceApi(ApiClient(configuration=configuration_from_env()))
     return _API
 
 

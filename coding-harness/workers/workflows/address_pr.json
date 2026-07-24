@@ -13,8 +13,15 @@
     "openspecHumanApproval",
     "openspecMaxIterations",
     "fixPromptTemplate",
+    "fixPromptTemplateSource",
     "maxTurns",
-    "maxBudgetUsd"
+    "maxBudgetUsd",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
   ],
   "inputTemplate": {
     "engine": "code_parallel",
@@ -23,10 +30,30 @@
     "openspecHumanApproval": true,
     "openspecMaxIterations": 5,
     "fixPromptTemplate": "",
+    "fixPromptTemplateSource": "",
     "maxTurns": 250,
-    "maxBudgetUsd": 50.0
+    "maxBudgetUsd": 50.0,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
   },
   "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
     {
       "name": "pr_comments",
       "taskReferenceName": "fb",
@@ -62,7 +89,9 @@
             "type": "SIMPLE",
             "inputParameters": {
               "repoPath": "${clone.output.repoPath}",
-              "number": "${workflow.input.prNumber}"
+              "number": "${workflow.input.prNumber}",
+              "repo": "${workflow.input.repo}",
+              "branch": "${fb.output.head}"
             }
           },
           {
@@ -85,13 +114,22 @@
                     "prompt": "You are addressing review feedback on an open pull request. Make the minimal changes needed to address ALL of the feedback below; do not do unrelated work. When done, briefly state what you changed.\n\n${fb.output.feedback}",
                     "templateKey": "address_pr",
                     "promptTemplate": "${workflow.input.fixPromptTemplate}",
+                    "promptTemplateSource": "${workflow.input.fixPromptTemplateSource}",
                     "promptContext": {
                       "feedback": "${fb.output.feedback}"
                     },
                     "agent": "${workflow.input.agent}",
                     "model": "${workflow.input.model}",
                     "maxTurns": "${workflow.input.maxTurns}",
-                    "maxBudgetUsd": "${workflow.input.maxBudgetUsd}"
+                    "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+                    "modelRole": "code",
+                    "modelProfile": "${workflow.input.modelProfile}",
+                    "modelPolicy": "${workflow.input.modelPolicy}",
+                    "modelPolicySource": "${workflow.input.modelPolicySource}",
+                    "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                    "modelsConfig": "${workflow.input.modelsConfig}",
+                    "modelOverrides": "${workflow.input.modelOverrides}",
+                    "modelResolution": "${model_policy.output}"
                   }
                 },
                 {
@@ -112,7 +150,7 @@
                 "type": "SUB_WORKFLOW",
                 "subWorkflowParam": {
                   "name": "code_parallel",
-                  "version": 1
+                  "version": 3
                 },
                 "inputParameters": {
                   "repoPath": "${clone.output.repoPath}",
@@ -123,8 +161,15 @@
                   "openspecMaxIterations": "${workflow.input.openspecMaxIterations}",
                   "codeAgent": "${workflow.input.agent}",
                   "codePromptTemplate": "${workflow.input.fixPromptTemplate}",
+                  "codePromptTemplateSource": "${workflow.input.fixPromptTemplateSource}",
                   "maxTurns": "${workflow.input.maxTurns}",
-                  "maxBudgetUsd": "${workflow.input.maxBudgetUsd}"
+                  "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+                  "modelProfile": "${workflow.input.modelProfile}",
+                  "modelPolicy": "${workflow.input.modelPolicy}",
+                  "modelPolicySource": "${workflow.input.modelPolicySource}",
+                  "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                  "modelsConfig": "${workflow.input.modelsConfig}",
+                  "modelOverrides": "${workflow.input.modelOverrides}"
                 }
               }
             ]

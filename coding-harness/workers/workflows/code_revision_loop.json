@@ -1,0 +1,133 @@
+{
+  "name": "code_revision_loop",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "One safe bounded revision round inside an already-owned harness worktree.",
+  "inputParameters": [
+    "accepted",
+    "bestCommit",
+    "checks",
+    "findings",
+    "loopId",
+    "maxBudgetUsd",
+    "maxRounds",
+    "maxTurns",
+    "modelOverrides",
+    "modelPolicy",
+    "modelPolicySha256",
+    "modelPolicySource",
+    "modelProfile",
+    "modelResolution",
+    "modelsConfig",
+    "plateauCount",
+    "prompt",
+    "promptTemplate",
+    "promptTemplateSource",
+    "round",
+    "workflowId",
+    "worktreePath"
+  ],
+  "inputTemplate": {
+    "promptTemplate": "",
+    "promptTemplateSource": "",
+    "maxTurns": 250,
+    "maxBudgetUsd": 50.0,
+    "checks": [],
+    "findings": [],
+    "accepted": false,
+    "round": 1,
+    "maxRounds": 8,
+    "plateauCount": 0,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "revision_checkpoint",
+      "taskReferenceName": "restore_best",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "action": "restore",
+        "worktreePath": "${workflow.input.worktreePath}",
+        "workflowId": "${workflow.input.workflowId}",
+        "loopId": "${workflow.input.loopId}",
+        "commit": "${workflow.input.bestCommit}"
+      }
+    },
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "produce",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "worktreePath": "${workflow.input.worktreePath}",
+        "prompt": "${workflow.input.prompt}",
+        "promptTemplate": "${workflow.input.promptTemplate}",
+        "promptTemplateSource": "${workflow.input.promptTemplateSource}",
+        "model": "${workflow.input.modelResolution.roles.code.tiers[0].model}",
+        "agent": "${workflow.input.modelResolution.roles.code.tiers[0].agent}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "failSoft": true,
+        "modelRole": "code",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelResolution": "${model_policy.output}"
+      }
+    },
+    {
+      "name": "revision_checkpoint",
+      "taskReferenceName": "save_candidate",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "action": "save",
+        "worktreePath": "${workflow.input.worktreePath}",
+        "workflowId": "${workflow.input.workflowId}",
+        "loopId": "${workflow.input.loopId}",
+        "candidateId": "${workflow.input.round}"
+      }
+    },
+    {
+      "name": "revision_evaluate",
+      "taskReferenceName": "evaluate",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "checks": "${workflow.input.checks}",
+        "findings": "${workflow.input.findings}",
+        "accepted": "${workflow.input.accepted}",
+        "round": "${workflow.input.round}",
+        "maxRounds": "${workflow.input.maxRounds}",
+        "plateauCount": "${workflow.input.plateauCount}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "bestCommit": "${save_candidate.output.commit}",
+    "revisionHistory": "${evaluate.output}",
+    "usage": {
+      "tokens": "${produce.output.tokenUsed}",
+      "costUsd": "${produce.output.costUsd}"
+    }
+  }
+}

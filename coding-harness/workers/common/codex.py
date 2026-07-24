@@ -230,7 +230,7 @@ async def _run_codex_sdk(
          "output_tokens": (usage_total.get("output_tokens", 0)
                            + usage_total.get("reasoning_output_tokens", 0)),
          "cache_read_input_tokens": usage_total.get("cached_input_tokens", 0)},
-        model or "codex",
+        model or "codex:default",
     ) if usage_total else 0.0
 
     return {
@@ -386,7 +386,7 @@ def _run_codex_cli(
         {"input_tokens": usage.get("input_tokens", 0),
          "output_tokens": (usage.get("output_tokens", 0) + usage.get("reasoning_output_tokens", 0)),
          "cache_read_input_tokens": usage.get("cached_input_tokens", 0)},
-        model,
+        model or "codex:default",
     ) if usage else 0.0
     result_text = last_text.strip() or (json.dumps(structured) if structured else "")
     return {

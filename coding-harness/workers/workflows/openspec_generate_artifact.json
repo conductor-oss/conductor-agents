@@ -4,9 +4,23 @@
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
   "description": "One fan-out unit of openspec_plan: fetch one OpenSpec artifact's generation instructions (typed CLI task, not agent judgment) and run a coding_agent to write that artifact's content, addressing prior review feedback.",
-  "inputParameters": ["repoPath", "changeName", "artifact", "goal", "feedback", "agent", "model", "maxTurns", "maxBudgetUsd"],
-  "inputTemplate": {"feedback": "", "model": "", "maxTurns": 500, "maxBudgetUsd": 50.0},
+  "inputParameters": ["repoPath", "changeName", "artifact", "goal", "feedback", "agent", "model", "maxTurns", "maxBudgetUsd", "modelProfile", "modelPolicy", "modelPolicySource", "modelPolicySha256", "modelsConfig", "modelOverrides"],
+  "inputTemplate": {"feedback": "", "model": "", "maxTurns": 500, "maxBudgetUsd": 50.0, "modelProfile": "", "modelPolicy": {}, "modelPolicySource": "", "modelPolicySha256": "", "modelsConfig": "", "modelOverrides": {}},
   "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
     {
       "name": "openspec_instructions",
       "taskReferenceName": "instr",
@@ -38,7 +52,15 @@
         "model": "${workflow.input.model}",
         "maxTurns": "${workflow.input.maxTurns}",
         "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-        "prompt": "${build_prompt.output.result.prompt}"
+        "prompt": "${build_prompt.output.result.prompt}",
+        "modelRole": "plan",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelResolution": "${model_policy.output}"
       }
     }
   ],

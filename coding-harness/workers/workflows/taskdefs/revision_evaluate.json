@@ -1,0 +1,12 @@
+{
+  "name": "revision_evaluate",
+  "description": "Score bounded revision-loop candidates and decide retention or escalation.",
+  "retryCount": 2,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 2,
+  "timeoutSeconds": 60,
+  "responseTimeoutSeconds": 30,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "ownerEmail": "viren@orkes.io"
+}
