@@ -15,6 +15,10 @@ cd "$ROOT"
 load_harness_environment "$ROOT/.env"
 WORKER_PY="workers/.venv/bin/python"
 TUI_PY="tui/.venv/bin/python"
+# uv provisions PY_VERSION itself, so venvs never fall back to the system
+# python3 (which lacks claude-agent-sdk wheels on older interpreters).
+UV=uv
+PY_VERSION=3.13
 
 require() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -75,14 +79,14 @@ ensure_server() {
 }
 
 setup_workers() {
-  require python3
+  require uv
   require node
   require npm
   if [ ! -x "$WORKER_PY" ]; then
     echo "[coding-harness] creating worker environment…"
-    python3 -m venv workers/.venv
+    "$UV" venv --python "$PY_VERSION" workers/.venv
   fi
-  workers/.venv/bin/pip install -q -r workers/requirements.txt
+  "$UV" pip install -q --prerelease=explicit --python "$WORKER_PY" -r workers/requirements.txt
   npm install --silent --no-audit --no-fund --prefix workers/openspec
 }
 
@@ -109,15 +113,15 @@ case "${1:-run}" in
     register
     ;;
   tui)
-    require python3
+    require uv
     setup_workers
     # Keep the server-side contracts in lockstep with the TUI code. This also runs the
     # SIMPLE-task worker gate, so a newly added workflow cannot silently hang after launch.
     register
     if [ ! -x "$TUI_PY" ]; then
-      python3 -m venv tui/.venv
+      "$UV" venv --python "$PY_VERSION" tui/.venv
     fi
-    tui/.venv/bin/pip install -q -r tui/requirements.txt
+    "$UV" pip install -q --prerelease=explicit --python "$TUI_PY" -r tui/requirements.txt
     exec "$TUI_PY" -m tui
     ;;
   -h|--help|help)
