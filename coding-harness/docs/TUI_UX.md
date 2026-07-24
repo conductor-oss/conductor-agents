@@ -96,6 +96,11 @@ via the CLI; its runs still appear on the Dashboard.)
 **Step 2 — the form.** Required fields first, then common options, **Advanced** collapsed.
 Every field shows its default and inline validation. Example (`issue_to_pr`):
 
+Every coding form includes **Keep worktree**. GitHub forms also accept an optional
+**Local checkout**; chat maps a mentioned directory to the same `repoPath` input. The path is
+expanded before launch and the confirmation shows the source checkout, planned
+`.cc-worktrees/run-<workflow-id>` workspace, ignored dirty-change count, and retention choice.
+
 ```
 ┌ Resolve a GitHub issue into a PR ────────────────────────────────┐
 │ Repo *        [acme/app_______________]  (URL or owner/name)     │
@@ -168,20 +173,19 @@ Every field shows its default and inline validation. Example (`issue_to_pr`):
 
 ## HITL — responding to prompts
 
-**Shipped (review gates).** Two review gates are live: `pr_review` (`approve`) holds the
-drafted review before it posts; `issue_to_pr` (`approvePr`) holds the drafted PR before push +
-PR-create. Both default **off** (so `conductor workflow start` / automation run unattended) and
-**on when launched from the TUI** (form checkbox + chat both default them on). A paused run
-shows a **⏳ needs your review** banner in Run Detail and auto-opens an approval modal (re-open
-with **`a`**): **Approve** posts/opens (optionally the edited draft), **Reject** ends the run
-FAILED (nothing ships), **Edit** (`e`) round-trips the draft through a JSON file in your editor,
-**Esc** defers (the run stays paused). Built on Conductor's `HUMAN` task + a `SWITCH` on the
-boolean input; the TUI signals `POST /tasks/{wid}/{gateRef}/{COMPLETED|FAILED_WITH_TERMINAL_ERROR}`.
-See `../tui/README.md` and `CODING_AGENT_WORKER.md` §"Review gate".
+**Shipped (global Approval Inbox).** The `pr_review`, `address_pr`, and `issue_to_pr`
+publication gates appear in one global inbox. Press **`a`** from any screen to inspect pending
+signal-based WAIT tasks, including gates owned by nested executions. Timed WAITs are excluded;
+legacy HUMAN tasks are shown with a registration warning and are not sent through WAIT
+signaling. A five-second app-wide poll updates the header badge, removes resolved tasks, and
+deduplicates startup/native notifications.
 
-**Still designed-not-built:** the general attention surface below (Dashboard ⏳ float,
-header badge, `a`-jumps-to-oldest across runs, the plan-approval gate, the non-conforming
-HUMAN/WAIT JSON fallback). The two review gates above are the first concrete instance.
+The phase-aware modal offers **Approve**, **Revise with feedback**, **Stop**, and **Later**, with
+editable review/PR text. It signals the execution that owns the WAIT task, not necessarily the
+displayed parent. For `pr_review` and `address_pr`, Revise and Stop use `COMPLETED` plus a decision
+payload so the workflow can start a same-worktree follow-up or record suppression before any
+side effect. In LLM mode, bounded automatic revisions run first; an exhausted budget enters the
+same inbox. See `../tui/README.md` and `CODING_AGENT_WORKER.md` §"Approval and revision gate".
 
 Generic support for any Conductor WAIT/HUMAN gate (signaled with a status + structured
 output that downstream tasks read). Harness workflows adopt a small convention so prompts
@@ -220,11 +224,9 @@ header badge increments everywhere, and opening the run auto-opens the respond o
 - Non-conforming HUMAN/WAIT tasks (no convention payload): show the task's input as
   pretty JSON + a status picker (COMPLETED/FAILED) + a JSON output editor — power-user
   fallback so *any* workflow is operable.
-- **Proposed gate points in our workflows** (each an opt-in input, default off — separate
-  implementation change): `issue_to_pr`/`code_parallel` `approvePlan:true` → gate between
-  plan and fan-out (the highest-leverage checkpoint: cheap before, expensive after);
-  `issue_to_pr` `approvePr:true` → gate before pr_create; `address_pr` `approveChanges:true`
-  → gate before git_push.
+- **Publication gate points:** `issue_to_pr` holds before push/PR creation, `pr_review` holds
+  before posting, and `address_pr` holds before pushing. `pr_review` and `address_pr` can run
+  bounded LLM-judged producer revisions before they require human attention.
 
 ## 4. Terminate · retry · re-run
 

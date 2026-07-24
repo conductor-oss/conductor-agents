@@ -18,6 +18,7 @@ from ..api import ConductorError
 from ..chat import tools
 from ..chat.llm import ChatEngine
 from ..chat.prompt import system_prompt
+from ..widgets.factory_bar import FactoryTopBar
 from ..widgets.modals import ConfirmModal
 
 
@@ -36,6 +37,7 @@ class Chat(Screen):
         self._cost = 0.0
 
     def compose(self) -> ComposeResult:
+        yield FactoryTopBar()
         yield Static("", id="chat_header")
         yield VerticalScroll(id="transcript")
         yield Input(placeholder="Ask the harness…  (/help for commands)", id="chat_input")
@@ -134,6 +136,9 @@ class Chat(Screen):
         elif cmd in ("templates", "t"):
             from .templates import TemplatesScreen
             self.app.push_screen(TemplatesScreen())
+        elif cmd in ("models", "m"):
+            from .model_profiles import ModelProfiles
+            self.app.push_screen(ModelProfiles())
         elif cmd in ("o", "open"):
             self.action_open_last(arg or None)
         elif cmd in ("folder", "edit"):
@@ -154,6 +159,7 @@ class Chat(Screen):
                          "/dashboard   open the fleet dashboard\n"
                          "/sessions    browse & resume past chats\n"
                          "/templates   manage prompt templates (edit/new/delete)\n"
+                         "/models      manage workflow model profiles\n"
                          "/open [id]   open a run's live view (last started if no id)\n"
                          "/folder [id] open a run's working folder in your editor\n"
                          "/register    update task + workflow definitions on this server\n"

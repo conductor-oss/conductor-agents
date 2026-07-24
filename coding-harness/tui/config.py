@@ -1,7 +1,8 @@
 """Runtime settings for the TUI.
 
-Inherits the same environment the `conductor` CLI uses (``CONDUCTOR_SERVER_URL``),
-so no separate auth/config: point the TUI at whatever server the workers poll.
+Inherits the same environment the workers and `conductor` CLI use:
+``CONDUCTOR_SERVER_URL`` plus the optional ``CONDUCTOR_AUTH_KEY`` and
+``CONDUCTOR_AUTH_SECRET`` authentication pair.
 """
 
 from __future__ import annotations

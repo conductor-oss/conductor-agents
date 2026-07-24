@@ -1,0 +1,12 @@
+{
+  "name": "revision_checkpoint",
+  "description": "Idempotently save or restore a candidate only inside a harness-owned worktree.",
+  "retryCount": 2,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 2,
+  "timeoutSeconds": 300,
+  "responseTimeoutSeconds": 120,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "ownerEmail": "viren@orkes.io"
+}

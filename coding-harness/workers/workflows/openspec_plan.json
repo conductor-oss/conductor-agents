@@ -4,10 +4,11 @@
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
   "description": "Deterministic, OpenSpec-CLI-driven replacement for design_docs + code_parallel's old freeform plan step. Scaffolds an OpenSpec change, drains its artifact dependency graph each pass via the openspec_artifact_drain sub-workflow (typed CLI tasks select what's ready; a coding_agent per artifact writes content) — a sub-workflow because Conductor does not support a DO_WHILE nested directly inside another DO_WHILE — then reuses design_docs.json's human-or-AI-judge DO_WHILE review loop verbatim. Approval parses the generated tasks.md into the subtasks[] fan-out code_parallel's FORK_JOIN_DYNAMIC expects; the bounded loop fails closed if nothing is ever approved.",
-  "inputParameters": ["repoPath", "instruction", "changeBranch", "openspecPlanAgent", "openspecPlanModel", "openspecMaxTurns", "openspecMaxBudgetUsd", "openspecHumanApproval", "openspecMaxIterations"],
+  "inputParameters": ["repoPath", "instruction", "changeBranch", "openspecPlanAgent", "openspecPlanModel", "openspecMaxTurns", "openspecMaxBudgetUsd", "openspecHumanApproval", "openspecMaxIterations", "modelProfile", "modelPolicy", "modelPolicySource", "modelPolicySha256", "modelsConfig", "modelOverrides"],
   "inputTemplate": {
     "openspecPlanAgent": "claude", "openspecPlanModel": "", "openspecMaxTurns": 500, "openspecMaxBudgetUsd": 50.0,
-    "openspecHumanApproval": true, "openspecMaxIterations": 5
+    "openspecHumanApproval": true, "openspecMaxIterations": 5,
+    "modelProfile": "", "modelPolicy": {}, "modelPolicySource": "", "modelPolicySha256": "", "modelsConfig": "", "modelOverrides": {}
   },
   "variables": {
     "planApproved": false, "planFeedback": "", "planReview": "",
@@ -15,6 +16,20 @@
     "lastChangeName": "", "lastChangeDir": "", "lastTasksPath": ""
   },
   "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
     {
       "name": "openspec_new_change",
       "taskReferenceName": "new_change",
@@ -40,7 +55,10 @@
             "repoPath": "${workflow.input.repoPath}", "changeName": "${workflow.input.changeBranch}",
             "goal": "${workflow.input.instruction}", "feedback": "${workflow.variables.planFeedback}",
             "agent": "${workflow.input.openspecPlanAgent}", "model": "${workflow.input.openspecPlanModel}",
-            "maxTurns": "${workflow.input.openspecMaxTurns}", "maxBudgetUsd": "${workflow.input.openspecMaxBudgetUsd}"
+            "maxTurns": "${workflow.input.openspecMaxTurns}", "maxBudgetUsd": "${workflow.input.openspecMaxBudgetUsd}",
+            "modelProfile": "${workflow.input.modelProfile}", "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}", "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}", "modelOverrides": "${workflow.input.modelOverrides}"
           }
         },
         {
@@ -60,7 +78,7 @@
           "decisionCases": {
             "true": [
               {
-                "name": "plan_review", "taskReferenceName": "plan_review", "type": "HUMAN",
+                "name": "plan_review", "taskReferenceName": "plan_review", "type": "WAIT",
                 "inputParameters": {
                   "workflow": "openspec_plan", "repoPath": "${workflow.input.repoPath}", "changeDir": "${workflow.variables.lastChangeDir}",
                   "draft": {
@@ -85,6 +103,9 @@
                 "model": "${workflow.input.openspecPlanModel}",
                 "maxTurns": "${workflow.input.openspecMaxTurns}",
                 "maxBudgetUsd": "${workflow.input.openspecMaxBudgetUsd}",
+                "templateKey": "openspec-plan-judge",
+                "promptTemplate": "",
+                "promptTemplateSource": "builtin:openspec-plan-judge",
                 "tools": ["Read", "Grep", "Glob"],
                 "schema": {
                   "type": "object",
@@ -94,7 +115,15 @@
                     "feedback": {"type": "string"}
                   }
                 },
-                "prompt": "Act as a read-only OpenSpec planning judge. Read every artifact under ${workflow.variables.lastChangeDir}/ (proposal.md, specs/**/*.md, design.md, tasks.md) and compare them with the requested change below. Judge whether the artifacts are complete, internally consistent, and implementable, and — critically — whether tasks.md's numbered task groups are genuinely independent and file-disjoint (each group must declare a `Files:` line and a `Test:` line, and no file may repeat across groups). Approve only when all of that holds. Return the required structured output with approved (boolean) and concise actionable feedback (string). Do not edit any files.\n\nRequested change:\n${workflow.input.instruction}"
+                "prompt": "Act as a read-only OpenSpec planning judge. Read every artifact under ${workflow.variables.lastChangeDir}/ (proposal.md, specs/**/*.md, design.md, tasks.md) and compare them with the requested change below. Judge whether the artifacts are complete, internally consistent, and implementable, and — critically — whether tasks.md's numbered task groups are genuinely independent and file-disjoint (each group must declare a `Files:` line and a `Test:` line, and no file may repeat across groups). Approve only when all of that holds. Return the required structured output with approved (boolean) and concise actionable feedback (string). Do not edit any files.\n\nRequested change:\n${workflow.input.instruction}",
+                "modelRole": "judge",
+                "modelProfile": "${workflow.input.modelProfile}",
+                "modelPolicy": "${workflow.input.modelPolicy}",
+                "modelPolicySource": "${workflow.input.modelPolicySource}",
+                "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                "modelsConfig": "${workflow.input.modelsConfig}",
+                "modelOverrides": "${workflow.input.modelOverrides}",
+                "modelResolution": "${model_policy.output}"
               }
             },
             {

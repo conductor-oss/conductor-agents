@@ -1,0 +1,202 @@
+{
+  "updateTime": 1784527270887,
+  "name": "automation_dispatch",
+  "description": "Claim one GitHub revision and fire the corresponding long-running child without blocking future sweeps.",
+  "version": 1,
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "github_automation_claim",
+      "taskReferenceName": "claim",
+      "inputParameters": {
+        "attempt": "${workflow.input.attempt}",
+        "claimId": "${workflow.workflowId}",
+        "kind": "${workflow.input.kind}",
+        "number": "${workflow.input.number}",
+        "repo": "${workflow.input.repo}",
+        "revision": "${workflow.input.revision}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "claim_gate",
+      "taskReferenceName": "claim_gate",
+      "inputParameters": {
+        "claimed": "${claim.output.claimed}"
+      },
+      "type": "SWITCH",
+      "decisionCases": {
+        "true": [
+          {
+            "name": "start_automation_child",
+            "taskReferenceName": "start_child",
+            "inputParameters": {
+              "startWorkflow": {
+                "correlationId": "automation-${workflow.input.kind}-${workflow.input.number}-${workflow.input.revision}",
+                "input": {
+                  "agent": "${workflow.input.agent}",
+                  "approvalJudgePromptTemplate": "${workflow.input.approvalJudgePromptTemplate}",
+                  "approvalJudgePromptTemplateSource": "${workflow.input.approvalJudgePromptTemplateSource}",
+                  "approvalMode": "${workflow.input.approvalMode}",
+                  "automation": true,
+                  "automationClaim": {
+                    "attempt": "${workflow.input.attempt}",
+                    "kind": "${workflow.input.kind}",
+                    "number": "${workflow.input.number}",
+                    "revision": "${workflow.input.revision}"
+                  },
+                  "codeAgent": "${workflow.input.agent}",
+                  "codePromptTemplate": "${workflow.input.codePromptTemplate}",
+                  "codePromptTemplateSource": "${workflow.input.codePromptTemplateSource}",
+                  "designJudgePromptTemplate": "${workflow.input.designJudgePromptTemplate}",
+                  "designJudgePromptTemplateSource": "${workflow.input.designJudgePromptTemplateSource}",
+                  "designPromptTemplate": "${workflow.input.designPromptTemplate}",
+                  "designPromptTemplateSource": "${workflow.input.designPromptTemplateSource}",
+                  "fixPromptTemplate": "${workflow.input.fixPromptTemplate}",
+                  "fixPromptTemplateSource": "${workflow.input.fixPromptTemplateSource}",
+                  "issueNumber": "${workflow.input.number}",
+                  "judgeAgent": "${workflow.input.judgeAgent}",
+                  "judgeMaxBudgetUsd": "${workflow.input.judgeMaxBudgetUsd}",
+                  "judgeMaxTurns": "${workflow.input.judgeMaxTurns}",
+                  "judgeModel": "${workflow.input.judgeModel}",
+                  "maxApprovalRevisions": "${workflow.input.maxApprovalRevisions}",
+                  "model": "${workflow.input.model}",
+                  "planAgent": "${workflow.input.agent}",
+                  "planPromptTemplate": "${workflow.input.planPromptTemplate}",
+                  "planPromptTemplateSource": "${workflow.input.planPromptTemplateSource}",
+                  "prNumber": "${workflow.input.number}",
+                  "repo": "${workflow.input.repo}",
+                  "reviewPromptTemplate": "${workflow.input.reviewPromptTemplate}",
+                  "reviewPromptTemplateSource": "${workflow.input.reviewPromptTemplateSource}",
+                  "verificationProfile": "${workflow.input.verificationProfile}",
+                  "modelProfile": "${workflow.input.modelProfile}",
+                  "modelPolicy": "${workflow.input.modelPolicy}",
+                  "modelPolicySource": "${workflow.input.modelPolicySource}",
+                  "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                  "modelsConfig": "${workflow.input.modelsConfig}",
+                  "modelOverrides": "${workflow.input.modelOverrides}"
+                },
+                "name": "${workflow.input.childWorkflow}",
+                "version": 1
+              }
+            },
+            "type": "START_WORKFLOW",
+            "decisionCases": {},
+            "defaultCase": []
+          },
+          {
+            "name": "github_automation_state",
+            "taskReferenceName": "record_child",
+            "inputParameters": {
+              "attempt": "${workflow.input.attempt}",
+              "kind": "${workflow.input.kind}",
+              "number": "${workflow.input.number}",
+              "repo": "${workflow.input.repo}",
+              "revision": "${workflow.input.revision}",
+              "status": "started",
+              "workflowId": "${start_child.output.workflowId}"
+            },
+            "type": "SIMPLE",
+            "decisionCases": {},
+            "defaultCase": []
+          }
+        ]
+      },
+      "defaultCase": [],
+      "evaluatorType": "value-param",
+      "expression": "claimed"
+    }
+  ],
+  "inputParameters": [
+    "agent",
+    "approvalJudgePromptTemplate",
+    "approvalJudgePromptTemplateSource",
+    "approvalMode",
+    "attempt",
+    "childWorkflow",
+    "codePromptTemplate",
+    "codePromptTemplateSource",
+    "designJudgePromptTemplate",
+    "designJudgePromptTemplateSource",
+    "designPromptTemplate",
+    "designPromptTemplateSource",
+    "fixPromptTemplate",
+    "fixPromptTemplateSource",
+    "judgeAgent",
+    "judgeMaxBudgetUsd",
+    "judgeMaxTurns",
+    "judgeModel",
+    "kind",
+    "maxApprovalRevisions",
+    "model",
+    "modelOverrides",
+    "modelPolicy",
+    "modelPolicySha256",
+    "modelPolicySource",
+    "modelProfile",
+    "modelsConfig",
+    "number",
+    "planPromptTemplate",
+    "planPromptTemplateSource",
+    "repo",
+    "reviewPromptTemplate",
+    "reviewPromptTemplateSource",
+    "revision",
+    "verificationProfile"
+  ],
+  "outputParameters": {
+    "childWorkflowId": "${start_child.output.workflowId}",
+    "claimed": "${claim.output.claimed}"
+  },
+  "schemaVersion": 2,
+  "restartable": true,
+  "ownerEmail": "harness@conductor.local",
+  "timeoutPolicy": "TIME_OUT_WF",
+  "timeoutSeconds": 300,
+  "inputTemplate": {
+    "agent": "",
+    "approvalJudgePromptTemplate": "",
+    "approvalJudgePromptTemplateSource": "",
+    "approvalMode": "human",
+    "codePromptTemplate": "",
+    "codePromptTemplateSource": "",
+    "designJudgePromptTemplate": "",
+    "designJudgePromptTemplateSource": "",
+    "designPromptTemplate": "",
+    "designPromptTemplateSource": "",
+    "fixPromptTemplate": "",
+    "fixPromptTemplateSource": "",
+    "judgeAgent": "",
+    "judgeMaxBudgetUsd": 5,
+    "judgeMaxTurns": 50,
+    "judgeModel": "",
+    "maxApprovalRevisions": 2,
+    "model": "",
+    "planPromptTemplate": "",
+    "planPromptTemplateSource": "",
+    "reviewPromptTemplate": "",
+    "reviewPromptTemplateSource": "",
+    "verificationProfile": "",
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "overwriteTags": false
+}

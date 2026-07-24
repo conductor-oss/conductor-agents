@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .auth import AuthConfigurationError, credentials_from_env
+
 
 @dataclass(frozen=True)
 class RegistrationResult:
@@ -28,6 +30,11 @@ async def register_definitions(server_url: str, timeout_s: float = 180.0) -> Reg
     script = script_path()
     if not script.is_file():
         return RegistrationResult(False, f"registration script not found: {script}")
+
+    try:
+        credentials_from_env()
+    except AuthConfigurationError as exc:
+        return RegistrationResult(False, str(exc))
 
     env = os.environ.copy()
     env["CONDUCTOR_SERVER_URL"] = server_url

@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from tui import api
+from tui import api, templates
 from tui.chat import llm, prompt, tools
 from tui.chat.session import Session, SessionStore
 from tui.tests.test_screens import FakeClient
@@ -74,6 +74,69 @@ async def test_start_injects_gate_default_unless_overridden():
 
 
 @pytest.mark.asyncio
+async def test_chat_start_consults_user_template_library():
+    path = templates.save(
+        "Fix PR feedback", "Use this exact fix template: {{feedback}}",
+        workflows=("address_pr",))
+    fc = FakeClient()
+    ctx, _ = _ctx(fc)
+    out = await tools.dispatch(
+        "start_workflow",
+        {"workflow": "address_pr",
+         "inputs": {"repo": "acme/app", "prNumber": 7}},
+        ctx,
+    )
+    payload = fc.started[-1][1]
+    assert payload["fixPromptTemplate"] == "Use this exact fix template: {{feedback}}"
+    assert payload["fixPromptTemplateSource"] == f"user:{path}"
+    assert f"fixPromptTemplate=user:{path}" in out
+
+
+@pytest.mark.asyncio
+async def test_chat_start_blocks_ambiguous_template_role():
+    for name in ("Fix one", "Fix two"):
+        templates.save(name, name, workflows=("address_pr",))
+    fc = FakeClient()
+    ctx, _ = _ctx(fc)
+    out = await tools.dispatch(
+        "start_workflow",
+        {"workflow": "address_pr",
+         "inputs": {"repo": "acme/app", "prNumber": 7}},
+        ctx,
+    )
+    assert "multiple equally specific templates" in out
+    assert "No workflow was started" in out
+    assert not fc.started
+
+
+@pytest.mark.asyncio
+async def test_chat_schedule_consults_user_template_library():
+    path = templates.save(
+        "Scheduled review", "SCHEDULED REVIEW {{diff}}",
+        workflows=("pr_review_sweep",))
+
+    class ScheduleClient(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.saved_schedules = []
+
+        async def save_schedule(self, payload):
+            self.saved_schedules.append(payload)
+
+    fc = ScheduleClient()
+    ctx, _ = _ctx(fc)
+    out = await tools.dispatch(
+        "save_schedule",
+        {"workflow": "pr_review_sweep", "repo": "acme/app"},
+        ctx,
+    )
+    assert "saved schedule" in out
+    inputs = fc.saved_schedules[0]["startWorkflowRequest"]["input"]
+    assert inputs["reviewPromptTemplate"] == "SCHEDULED REVIEW {{diff}}"
+    assert inputs["reviewPromptTemplateSource"] == f"user:{path}"
+
+
+@pytest.mark.asyncio
 async def test_code_parallel_starts_without_a_design_choice():
     # OpenSpec planning always runs now — no design:true/false gate to satisfy.
     fc = FakeClient()
@@ -89,6 +152,25 @@ async def test_start_workflow_declined():
     out = await tools.dispatch("start_workflow",
                                {"workflow": "pr_review", "inputs": {"repo": "acme/app", "prNumber": 7}}, ctx)
     assert "declined" in out and not fc.started
+
+
+@pytest.mark.asyncio
+async def test_start_workflow_blocks_stale_registered_definition():
+    fc = FakeClient()
+
+    async def stale(_name):
+        return False
+
+    fc.workflow_registered = stale
+    ctx, _ = _ctx(fc)
+    out = await tools.dispatch(
+        "start_workflow",
+        {"workflow": "pr_review", "inputs": {"repo": "acme/app", "prNumber": 7}},
+        ctx,
+    )
+    assert "missing or stale" in out
+    assert "Run /register" in out
+    assert not fc.started
 
 
 @pytest.mark.asyncio
@@ -148,6 +230,28 @@ async def test_list_runs_shape():
     assert "pr_review" in out and "COMPLETED" in out
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("action", "suppressed"), [("revise", False), ("stop", True)])
+async def test_chat_revise_and_stop_fail_approval_closed(action, suppressed):
+    class ApprovalClient(FakeClient):
+        async def pending_approvals(self):
+            return [api.PendingApproval(
+                task_id="task-1", task_ref="review_gate", task_type="WAIT",
+                workflow_id="wf-child", workflow="pr_review",
+                input={"draft": {"summary": "draft"}}, scheduled_ms=1)]
+
+    fc = ApprovalClient()
+    ctx, _ = _ctx(fc)
+    payload = {"task_id": "task-1", "action": action}
+    if action == "revise":
+        payload["feedback"] = "Correct the line anchor."
+    out = await tools.dispatch("decide_approval", payload, ctx)
+    assert f"{action} recorded" in out
+    wid, ref, status, output = fc.signals[-1]
+    assert (wid, ref, status) == ("wf-child", "review_gate", "COMPLETED")
+    assert output["suppressed"] is suppressed
+
+
 def test_prompt_mentions_workflows():
     p = prompt.system_prompt("http://localhost:8080/api")
     for wf in ("pr_review", "issue_to_pr", "address_pr", "code_parallel"):
@@ -157,6 +261,7 @@ def test_prompt_mentions_workflows():
     assert "register_workflows" in p
     assert "ambiguous" in p
     assert "always plan through" in p and "OpenSpec" in p and "skip planning" in p
+    assert "isolated git worktree" in p
 
 
 # --------------------------------------------------------------------------- llm loop (stubbed)

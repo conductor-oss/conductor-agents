@@ -40,7 +40,10 @@ class Preflight(Static):
         if not server_ok:
             t.append("\n  server unreachable — is Conductor running / --server correct?", style="red")
         elif not def_ok:
-            t.append(f"\n  {workflow_name} not registered — use /register in chat or g on the dashboard", style="red")
+            t.append(
+                f"\n  {workflow_name} is missing or stale — use /register in chat or g on the dashboard",
+                style="red",
+            )
         elif not workers_ok:
             t.append("\n  workers not polling — run `python main.py`; the run will hang until they do",
                      style="yellow")

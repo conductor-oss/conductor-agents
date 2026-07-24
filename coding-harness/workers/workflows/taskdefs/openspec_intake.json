@@ -1,0 +1,12 @@
+{
+  "name": "openspec_intake",
+  "description": "Resolve, pin, validate, and normalize a complete OpenSpec change from local, git, or public HTTPS archive sources.",
+  "retryCount": 2,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
+  "retryDelaySeconds": 5,
+  "pollTimeoutSeconds": 120,
+  "responseTimeoutSeconds": 60,
+  "timeoutSeconds": 1800,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "ownerEmail": "viren@orkes.io"
+}

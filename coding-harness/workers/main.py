@@ -3,17 +3,18 @@
 Imports every selected task package so the ``@worker_task`` decorators register
 their functions, then starts the Conductor poller. Which task modules load is
 controlled by the ``WORKER_MODULES`` env var (comma separated); the default
-(``coding_agent,gitops,openspecops``) covers every workflow (code_parallel,
-issue_to_pr, pr_review, address_pr, github_demo, and the openspec_plan /
+(``coding_agent,gitops,campaign,openspec,openspecops,automation,model_policy,revision``)
+covers every workflow (code_parallel, feature_campaign, issue_to_pr, pr_review,
+address_pr, github_demo, openspec_development, and the openspec_plan /
 openspec_generate_artifact / code_subtask sub-workflows).
 
     CONDUCTOR_SERVER_URL=http://localhost:8080/api python main.py
 
 ``coding_agent`` drives the Claude Agent SDK / OpenAI Codex / Google Gemini sessions
 (CPU/RAM-heavy); ``gitops`` holds the lightweight git + GitHub (gh) tasks;
-``openspecops`` shells out to the `openspec` CLI (must be installed on the worker
-host — see coding-harness/README.md prerequisites). Split them across hosts with
-``WORKER_MODULES`` per host if desired.
+``openspec``/``openspecops`` shell out to the `openspec` CLI (must be installed on
+the worker host — see coding-harness/README.md prerequisites). Split them across
+hosts with ``WORKER_MODULES`` per host if desired.
 """
 
 from __future__ import annotations
@@ -23,9 +24,9 @@ import logging
 import os
 
 from conductor.client.automator.task_handler import TaskHandler
-from conductor.client.configuration.configuration import Configuration
+from common.conductor_config import configuration_from_env
 
-DEFAULT_MODULES = "coding_agent,gitops,openspecops"
+DEFAULT_MODULES = "coding_agent,gitops,campaign,openspec,openspecops,automation,model_policy,revision"
 
 
 def main() -> None:
@@ -40,8 +41,10 @@ def main() -> None:
         importlib.import_module(mod)
         log.info("loaded worker module: %s", mod)
 
-    config = Configuration()
-    log.info("polling Conductor at %s", os.environ.get("CONDUCTOR_SERVER_URL", "<unset>"))
+    config = configuration_from_env()
+    auth_mode = "key/secret" if config.authentication_settings is not None else "none"
+    log.info("polling Conductor at %s (authentication=%s)",
+             os.environ.get("CONDUCTOR_SERVER_URL", "<unset>"), auth_mode)
     with TaskHandler(configuration=config, scan_for_annotated_workers=True) as handler:
         handler.start_processes()
         handler.join_processes()

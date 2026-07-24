@@ -1,0 +1,22 @@
+{
+  "name": "conductor-pr-review-acme-widgets",
+  "description": "Review each new PR head revision once",
+  "cronExpression": "0 */10 * ? * *",
+  "zoneId": "America/Los_Angeles",
+  "paused": false,
+  "runCatchupScheduleInstances": false,
+  "startWorkflowRequest": {
+    "name": "pr_review_sweep",
+    "version": 1,
+    "input": {
+      "repo": "acme/widgets",
+      "approvalMode": "human",
+      "reviewPromptTemplate": "@.github/conductor-review.md",
+      "reviewPromptTemplateSource": "schedule:repo-reference",
+      "maxNew": 5,
+      "maxActive": 5
+    },
+    "taskToDomain": {},
+    "priority": 0
+  }
+}

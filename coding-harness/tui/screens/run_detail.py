@@ -14,6 +14,7 @@ from textual.widgets import Footer, Static, Tree
 
 from .. import catalog, format as fmt, notify
 from ..api import ConductorError, RunDetail, TaskNode
+from ..widgets.factory_bar import FactoryTopBar
 from ..widgets.modals import ApprovalModal, ConfirmModal, LogsModal
 from ..widgets.result_card import ResultCard
 from ..widgets.task_tree import TaskTree
@@ -46,6 +47,7 @@ class RunDetail(Screen):
         self._gate_prompted: set[str] = set()
 
     def compose(self) -> ComposeResult:
+        yield FactoryTopBar()
         yield Static("", id="detail_header")
         with Horizontal(id="detail_body"):
             yield TaskTree()
@@ -102,7 +104,25 @@ class RunDetail(Screen):
         t.append(f"{fmt.status_glyph(run.status)} {run.status}", style=fmt.status_color(run.status))
         t.append(f" · {fmt.duration(run.duration_ms())} · "
                  f"{fmt.tokens(tokens)} tok · {fmt.cost(cost)}", style="grey62")
-        if run.running and d.pending_gate():
+        gate = d.pending_gate() if run.running else None
+        if gate and gate.input.get("workflow") == "feature_campaign":
+            phase = gate.input.get("phase") or "checkpoint"
+            wave = gate.input.get("wave")
+            draft = gate.input.get("draft") or {}
+            profile_data = draft.get("profiles") or {}
+            checks = draft.get("checks") or {}
+            t.append(f" · phase={phase}", style="cyan")
+            if wave not in (None, ""):
+                t.append(f" wave={wave}", style="cyan")
+            if profile_data:
+                t.append(f" profiles={profile_data}", style="grey62")
+            if isinstance(checks, dict) and "blockingPassed" in checks:
+                t.append(" checks=pass" if checks.get("blockingPassed") else " checks=BLOCKED",
+                         style="green" if checks.get("blockingPassed") else "bold red")
+            changes = d.file_changes()
+            if changes:
+                t.append(f" Δfiles={len(changes)}", style="yellow")
+        if gate:
             t.append("  ⏳ needs your review — press a", style="bold yellow")
         self.query_one("#detail_header", Static).update(t)
 
@@ -139,11 +159,22 @@ class RunDetail(Screen):
     def _open_gate(self, gate: TaskNode) -> None:
         draft = (gate.input or {}).get("draft") or {}
         wf = gate.input.get("workflow") or (self.detail.run.workflow if self.detail else "")
+        if wf == "feature_campaign":
+            draft = dict(draft)
+            draft.setdefault("phase", gate.input.get("phase"))
+            draft.setdefault("wave", gate.input.get("wave"))
+        # A design WAIT carries its isolated worktree path.  Passing it to the
+        # modal lets the reviewer inspect the actual generated markdown before
+        # approving, without trusting paths supplied in the draft itself.
+        workspace_path = gate.input.get("repoPath")
+        if not workspace_path and self.detail:
+            workspace_path = self.detail.workspace()
         self._gate_open = True
         self.app.push_screen(ApprovalModal(
             wf, draft,
             pr_number=gate.input.get("prNumber"),
             issue_number=gate.input.get("issueNumber"),
+            workspace_path=workspace_path,
             on_decision=lambda status, output: self._on_gate_decision(gate, status, output),
         ))
 
@@ -165,12 +196,14 @@ class RunDetail(Screen):
     async def signal_gate(self, gate: TaskNode, status: str, output: dict) -> None:
         try:
             # A pending gate may belong to a recursed SUB_WORKFLOW. Signal the workflow
-            # that owns the HUMAN task, not necessarily the run opened in this screen.
+            # that owns the checkpoint task, not necessarily the run opened in this screen.
             await self.app.client.signal_task(gate.workflow_id or self._id,
-                                              gate.ref, status, output)
+                                              gate.ref, status, output, task_type=gate.type)
             if gate.input.get("workflow") == "openspec_plan" and status == "COMPLETED":
                 self.notify("plan approved — continuing…" if output.get("approved")
                             else "feedback submitted — revising the plan…")
+            elif gate.input.get("workflow") == "feature_campaign":
+                self.notify(f"campaign action submitted: {output.get('action', 'continue')}")
             else:
                 self.notify("approved — posting…" if status == "COMPLETED"
                             else "rejected — the run will fail")

@@ -1,0 +1,163 @@
+{
+  "updateTime": 1784527268930,
+  "name": "campaign_subtask",
+  "description": "One resumable feature-campaign DAG task: create an isolated worktree, run a file-scoped coding session, and commit only successful work. Agent exhaustion is returned as data for the parent checkpoint.",
+  "version": 1,
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "worktree_add",
+      "taskReferenceName": "campaign_worktree",
+      "inputParameters": {
+        "name": "campaign-w${workflow.input.wave}-${workflow.input.task.id}",
+        "preserveExisting": true,
+        "repoPath": "${workflow.input.repoPath}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "campaign_code",
+      "inputParameters": {
+        "agent": "${workflow.input.agent}",
+        "allowedWriteRoots": "${workflow.input.task.files}",
+        "contextFiles": [
+          "${workflow.input.specContextPath}"
+        ],
+        "failSoft": true,
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "model": "${workflow.input.model}",
+        "prompt": "Implement DAG task ${workflow.input.task.id}: ${workflow.input.task.description}\n\nDependencies are already integrated. Acceptance criteria: ${workflow.input.task.acceptanceCriteria}\nPlanned checks: ${workflow.input.task.checks}\nWrite only within: ${workflow.input.task.files}\nCheckpoint feedback: ${workflow.input.feedback}\nRun relevant focused checks, but do not commit or push.",
+        "promptContext": {
+          "feedback": "${workflow.input.feedback}",
+          "files": "${workflow.input.task.files}",
+          "subtask": "${workflow.input.task.description}"
+        },
+        "promptTemplate": "${workflow.input.codePromptTemplate}",
+        "promptTemplateSource": "${workflow.input.codePromptTemplateSource}",
+        "resumeSessionId": "${workflow.input.resumeSessionId}",
+        "templateKey": "code",
+        "worktreePath": "${campaign_worktree.output.worktreePath}",
+        "modelRole": "code",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelResolution": "${model_policy.output}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "campaign_commit_gate",
+      "taskReferenceName": "campaign_commit_gate",
+      "inputParameters": {
+        "status": "${campaign_code.output.status}"
+      },
+      "type": "SWITCH",
+      "decisionCases": {
+        "success": [
+          {
+            "name": "commit",
+            "taskReferenceName": "campaign_commit",
+            "inputParameters": {
+              "message": "feature campaign: ${workflow.input.task.id}",
+              "repoPath": "${campaign_worktree.output.worktreePath}"
+            },
+            "type": "SIMPLE",
+            "decisionCases": {},
+            "defaultCase": []
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "campaign_no_commit",
+          "taskReferenceName": "campaign_no_commit",
+          "type": "NOOP",
+          "decisionCases": {},
+          "defaultCase": []
+        }
+      ],
+      "evaluatorType": "value-param",
+      "expression": "status"
+    }
+  ],
+  "inputParameters": [
+    "agent",
+    "codePromptTemplate",
+    "codePromptTemplateSource",
+    "feedback",
+    "maxBudgetUsd",
+    "maxTurns",
+    "model",
+    "modelOverrides",
+    "modelPolicy",
+    "modelPolicySha256",
+    "modelPolicySource",
+    "modelProfile",
+    "modelsConfig",
+    "repoPath",
+    "resumeSessionId",
+    "specContextPath",
+    "task",
+    "wave"
+  ],
+  "outputParameters": {
+    "branch": "${campaign_worktree.output.branch}",
+    "costUsd": "${campaign_code.output.costUsd}",
+    "error": "${campaign_code.output.error}",
+    "filesChanged": "${campaign_code.output.filesChanged}",
+    "numTurns": "${campaign_code.output.numTurns}",
+    "promptTemplate": "${campaign_code.output.promptTemplate}",
+    "retryable": "${campaign_code.output.retryable}",
+    "sessionId": "${campaign_code.output.sessionId}",
+    "status": "${campaign_code.output.status}",
+    "taskId": "${workflow.input.task.id}",
+    "tokenUsed": "${campaign_code.output.tokenUsed}",
+    "worktreePath": "${campaign_worktree.output.worktreePath}",
+    "worktreeResumed": "${campaign_worktree.output.resumed}"
+  },
+  "schemaVersion": 2,
+  "restartable": true,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "inputTemplate": {
+    "agent": "",
+    "codePromptTemplate": "",
+    "codePromptTemplateSource": "",
+    "feedback": "",
+    "maxBudgetUsd": 50,
+    "maxTurns": 500,
+    "model": "",
+    "resumeSessionId": "",
+    "specContextPath": "",
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "overwriteTags": false
+}

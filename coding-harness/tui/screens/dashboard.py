@@ -14,7 +14,7 @@ from textual.widgets import DataTable, Footer, Input, Static
 
 from .. import format as fmt, notify
 from ..api import ConductorError, Run, TERMINAL
-from ..widgets.worker_health import WorkerHealth
+from ..widgets.factory_bar import FactoryTopBar
 
 _FILTERS = ["ALL", "RUNNING", "FAILED"]
 _RUNNING = {"RUNNING", "SCHEDULED", "IN_PROGRESS", "PAUSED"}
@@ -30,6 +30,9 @@ class Dashboard(Screen):
         Binding("o", "open_browser", "browser"),
         Binding("e", "open_folder", "editor"),
         Binding("t", "templates", "templates"),
+        Binding("m", "model_profiles", "models"),
+        Binding("a", "approvals", "approvals"),
+        Binding("s", "automations", "automations"),
         Binding("g", "register_workflows", "register"),
         Binding("r", "refresh_now", "refresh"),
         Binding("q", "quit_app", "quit"),
@@ -44,7 +47,7 @@ class Dashboard(Screen):
         self._search = ""
 
     def compose(self) -> ComposeResult:
-        yield WorkerHealth(self.app.client)
+        yield FactoryTopBar()
         with Vertical():
             self._search_input = Input(placeholder="filter: target / id / workflow …", id="filter")
             self._search_input.display = False
@@ -64,10 +67,6 @@ class Dashboard(Screen):
     # ------------------------------------------------------------------ data
     @work(exclusive=True, group="dash")
     async def refresh_data(self) -> None:
-        health = self.query_one(WorkerHealth)
-        server_ok = await health.refresh_health()
-        if not server_ok:
-            return
         try:
             self._runs = await self.app.client.search_runs(limit=50)
         except ConductorError:
@@ -144,6 +143,10 @@ class Dashboard(Screen):
     def action_refresh_now(self) -> None:
         self.refresh_data()
 
+    def action_model_profiles(self) -> None:
+        from .model_profiles import ModelProfiles
+        self.app.push_screen(ModelProfiles())
+
     def action_cycle_filter(self) -> None:
         self._filter = (self._filter + 1) % len(_FILTERS)
         self._repopulate()
@@ -200,6 +203,14 @@ class Dashboard(Screen):
     def action_templates(self) -> None:
         from .templates import TemplatesScreen
         self.app.push_screen(TemplatesScreen())
+
+    def action_approvals(self) -> None:
+        from .approvals import ApprovalInbox
+        self.app.push_screen(ApprovalInbox())
+
+    def action_automations(self) -> None:
+        from .automations import AutomationsScreen
+        self.app.push_screen(AutomationsScreen())
 
     @work(exclusive=True, group="registration")
     async def action_register_workflows(self) -> None:
@@ -264,6 +275,8 @@ class HelpModal(Screen):
             ("o", "open in browser (Conductor UI)"),
             ("e", "open working folder in editor"),
             ("t", "manage prompt templates"),
+            ("a", "approval inbox"),
+            ("s", "manage automations"),
             ("g", "register/update workflow definitions"),
             ("r", "refresh now"),
             ("t", "terminate (run detail)"),

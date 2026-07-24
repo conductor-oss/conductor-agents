@@ -1,0 +1,7 @@
+{
+  "name": "conductor-openspec-runtime",
+  "private": true,
+  "dependencies": {
+    "@fission-ai/openspec": "1.6.0"
+  }
+}

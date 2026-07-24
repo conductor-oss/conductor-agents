@@ -33,6 +33,69 @@ _AUTH_DONE = False
 HARNESS_MARKER = "<!-- conductor-harness -->"
 
 
+def authenticated_login() -> str:
+    """Return the GitHub login backing gh authentication (never a token)."""
+    ensure_git_auth()
+    result = run(["gh", "api", "user", "--jq", ".login"], check=True)
+    return (result.stdout or "").strip()
+
+
+def api_json(path: str, *, paginate: bool = False) -> list | dict:
+    """Read a GitHub REST resource through gh using the configured identity."""
+    ensure_git_auth()
+    args = ["gh", "api", path]
+    if paginate:
+        args += ["--paginate", "--slurp"]
+    result = run(args, check=True)
+    parsed = json.loads(result.stdout or ("[]" if paginate else "{}"))
+    if paginate and isinstance(parsed, list) and parsed and all(isinstance(x, list) for x in parsed):
+        return [item for page in parsed for item in page]
+    return parsed
+
+
+def list_open_pulls(repo_or_url: str) -> list[dict]:
+    slug = repo_slug(repo_or_url)
+    data = api_json(
+        f"repos/{slug}/pulls?state=open&per_page=100",
+        paginate=True,
+    )
+    return list(data) if isinstance(data, list) else []
+
+
+def list_open_issues(repo_or_url: str) -> list[dict]:
+    slug = repo_slug(repo_or_url)
+    data = api_json(
+        f"repos/{slug}/issues?state=open&per_page=100",
+        paginate=True,
+    )
+    # GitHub's issues endpoint also returns PRs.
+    return [item for item in data if not item.get("pull_request")] if isinstance(data, list) else []
+
+
+def issue_comments(repo_or_url: str, number: int) -> list[dict]:
+    data = api_json(
+        f"repos/{repo_slug(repo_or_url)}/issues/{int(number)}/comments?per_page=100",
+        paginate=True,
+    )
+    return list(data) if isinstance(data, list) else []
+
+
+def post_issue_comment(repo_or_url: str, number: int, body: str) -> dict:
+    """Post a marker/comment without placing secret values on the command line."""
+    ensure_git_auth()
+    fd, path = tempfile.mkstemp(suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"body": body}, handle)
+        result = run([
+            "gh", "api", f"repos/{repo_slug(repo_or_url)}/issues/{int(number)}/comments",
+            "--method", "POST", "--input", path,
+        ], check=True)
+        return json.loads(result.stdout or "{}")
+    finally:
+        os.unlink(path)
+
+
 def ensure_git_auth() -> bool:
     """Configure git to use gh as its credential helper (once per process).
     Returns True if gh auth is available. Safe/idempotent; never raises."""
@@ -200,12 +263,17 @@ def pr_create(repo: str, *, title: str, body: str = "", base: str | None = None,
     return {"created": True, "number": number, "url": url, "draft": draft}
 
 
-def pr_checkout(repo: str, number: int, *, branch: str | None = None,
-                force: bool = False) -> dict:
+def pr_checkout(repo: str, number: int, *, pr_repo: str | None = None,
+                branch: str | None = None, force: bool = False) -> dict:
     """Check out an existing PR by number into ``repo`` so the harness can iterate
     on it. Returns the local branch + head."""
     ensure_git_auth()
     args = ["pr", "checkout", str(number)]
+    # A fork checkout's origin is the contributor repository, where the PR number
+    # does not exist.  Select the upstream repository for PR lookup while keeping
+    # the current checkout's origin intact for a later contributor-branch push.
+    if pr_repo:
+        args += ["--repo", repo_slug(pr_repo)]
     if branch:
         args += ["--branch", branch]
     if force:
@@ -263,12 +331,16 @@ def pr_status(repo: str, number: int | None = None) -> dict:
     }
 
 
-def pr_comment(repo: str, number: int, body: str) -> dict:
+def pr_comment(repo: str, number: int, body: str, *, repo_ref: str | None = None) -> dict:
     """Post a comment on a PR. Always appends HARNESS_MARKER (invisible in rendered
     markdown) so pr_comments can recognize and skip harness-authored comments."""
     ensure_git_auth()
     tagged = f"{body}\n\n{HARNESS_MARKER}" if HARNESS_MARKER not in body else body
-    r = _gh(repo, "pr", "comment", str(number), "--body", tagged)
+    if repo_ref:
+        r = run(["gh", "pr", "comment", str(number), "--repo", repo_slug(repo_ref),
+                 "--body", tagged], check=True)
+    else:
+        r = _gh(repo, "pr", "comment", str(number), "--body", tagged)
     url = (r.stdout or "").strip().splitlines()[-1] if r.stdout.strip() else ""
     return {"commented": True, "number": number, "url": url}
 
