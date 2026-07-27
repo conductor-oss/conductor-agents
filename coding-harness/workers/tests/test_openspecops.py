@@ -92,6 +92,35 @@ def test_openspec_new_change_fails_closed_on_bad_json(monkeypatch, fake_task_inp
     assert _failed(result)
 
 
+def test_openspec_new_change_slugifies_branch_shaped_name(monkeypatch, fake_task_input, tmp_path):
+    """`changeBranch` values like `harness/issue-42` (a valid git branch name)
+    must be coerced into a valid OpenSpec kebab-case slug before being passed
+    to `openspec new change`, which rejects `/` outright."""
+    rec = RecordingRun(json.dumps({
+        "change": {"id": "harness-issue-42", "path": "p", "schema": "spec-driven"}
+    }))
+    monkeypatch.setattr(openspec_cli, "run", rec)
+    task = fake_task_input(repoPath=str(tmp_path), name="harness/issue-42")
+    result = openspec_new_change(task)
+    assert _completed(result)
+    assert rec.calls[0][:4] == ["openspec", "new", "change", "harness-issue-42"]
+
+
+# --- slugify_change_name (pure function) -------------------------------------
+
+@pytest.mark.parametrize("raw,expected", [
+    ("add-x", "add-x"),
+    ("harness/issue-42", "harness-issue-42"),
+    ("Add Auth_Flow", "add-auth-flow"),
+    ("feature/ABC-123_Fix bug", "feature-abc-123-fix-bug"),
+    ("123-start-with-digit", "change-123-start-with-digit"),
+    ("--leading-and-trailing--", "leading-and-trailing"),
+    ("___", "change"),
+])
+def test_slugify_change_name(raw, expected):
+    assert openspec_cli.slugify_change_name(raw) == expected
+
+
 # --- openspec_status / openspec_instructions ---------------------------------
 
 def test_openspec_status_returns_parsed_json(monkeypatch, fake_task_input, tmp_path):
