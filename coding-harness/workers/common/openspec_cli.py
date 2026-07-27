@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 import yaml
 
@@ -40,8 +41,21 @@ def _run_json(repo: str, *args: str) -> dict:
         ) from e
 
 
+def slugify_change_name(name: str) -> str:
+    """Coerce an arbitrary identifier (e.g. a git branch name like
+    `harness/issue-42`) into a valid OpenSpec change slug: lowercase letters,
+    numbers, and hyphens, starting with a letter, with no leading/trailing or
+    consecutive hyphens. Callers pass branch-shaped names (which allow `/`,
+    `_`, uppercase) straight through to `openspec new change`, which enforces
+    strict kebab-case and rejects anything else."""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    if not slug or not slug[0].isalpha():
+        slug = f"change-{slug}" if slug else "change"
+    return slug
+
+
 def new_change(repo: str, name: str, *, description: str | None = None) -> dict:
-    args = ["new", "change", name]
+    args = ["new", "change", slugify_change_name(name)]
     if description:
         args += ["--description", description]
     return _run_json(repo, *args)
