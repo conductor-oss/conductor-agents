@@ -363,6 +363,15 @@ def test_openspec_plan_loop_wiring():
     drain = by_ref["artifact_drain"]
     assert drain["type"] == "SUB_WORKFLOW"
     assert drain["subWorkflowParam"]["name"] == "openspec_artifact_drain"
+    # openspec_new_change slugifies workflow.input.changeBranch (a git branch
+    # name, e.g. "harness/issue-42") into a valid OpenSpec change slug; every
+    # downstream call (openspec_status, openspec_instructions, ...) must key
+    # off that returned slug, not the raw branch name, or they 404/fail the
+    # CLI's kebab-case validation the same way openspec_new_change used to.
+    assert drain["inputParameters"]["changeName"] == "${new_change.output.changeName}", (
+        "artifact_drain must key off new_change's slugified changeName, "
+        "not the raw workflow.input.changeBranch"
+    )
     assert "artifact_loop" not in body_refs, (
         "artifact_loop must not be inlined directly inside openspec_loop's DO_WHILE"
     )

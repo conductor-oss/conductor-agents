@@ -52,7 +52,7 @@
           "name": "openspec_artifact_drain", "taskReferenceName": "artifact_drain", "type": "SUB_WORKFLOW",
           "subWorkflowParam": {"name": "openspec_artifact_drain", "version": 1},
           "inputParameters": {
-            "repoPath": "${workflow.input.repoPath}", "changeName": "${workflow.input.changeBranch}",
+            "repoPath": "${workflow.input.repoPath}", "changeName": "${new_change.output.changeName}",
             "goal": "${workflow.input.instruction}", "feedback": "${workflow.variables.planFeedback}",
             "agent": "${workflow.input.openspecPlanAgent}", "model": "${workflow.input.openspecPlanModel}",
             "maxTurns": "${workflow.input.openspecMaxTurns}", "maxBudgetUsd": "${workflow.input.openspecMaxBudgetUsd}",
