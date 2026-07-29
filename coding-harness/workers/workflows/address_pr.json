@@ -5,38 +5,32 @@
   "ownerEmail": "viren@orkes.io",
   "description": "Address review feedback on an open PR: consolidate the PR's comments (conversation + reviews + inline, skipping the harness's own), clone + check out the PR branch, do the coding work (code_parallel by default, or a single coding_agent session), commit, push to the same branch (updating the PR), and reply with a summary.",
   "inputParameters": [
-    "agent",
-    "design",
-    "designHumanApproval",
-    "designMaxIterations",
+    "repo",
+    "prNumber",
     "engine",
+    "agent",
+    "model",
+    "openspecHumanApproval",
+    "openspecMaxIterations",
     "fixPromptTemplate",
     "fixPromptTemplateSource",
-    "maxBudgetUsd",
-    "maxSubtasks",
     "maxTurns",
-    "model",
-    "modelOverrides",
-    "modelPolicy",
-    "modelPolicySha256",
-    "modelPolicySource",
+    "maxBudgetUsd",
     "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
     "modelsConfig",
-    "planPromptTemplate",
-    "planPromptTemplateSource",
-    "prNumber",
-    "repo"
+    "modelOverrides"
   ],
   "inputTemplate": {
     "engine": "code_parallel",
-    "agent": "",
+    "agent": "claude",
     "model": "",
-    "design": false,
-    "designHumanApproval": true,
-    "designMaxIterations": 5,
+    "openspecHumanApproval": true,
+    "openspecMaxIterations": 5,
     "fixPromptTemplate": "",
     "fixPromptTemplateSource": "",
-    "maxSubtasks": 4,
     "maxTurns": 250,
     "maxBudgetUsd": 50.0,
     "modelProfile": "",
@@ -44,9 +38,7 @@
     "modelPolicySource": "",
     "modelPolicySha256": "",
     "modelsConfig": "",
-    "modelOverrides": {},
-    "planPromptTemplate": "",
-    "planPromptTemplateSource": ""
+    "modelOverrides": {}
   },
   "tasks": [
     {
@@ -164,16 +156,12 @@
                   "repoPath": "${clone.output.repoPath}",
                   "instruction": "Address the following review feedback on an open pull request. Make the minimal changes needed to address ALL of it; do not do unrelated work.\n\n${fb.output.feedback}",
                   "changeBranch": "${fb.output.head}",
-                  "design": "${workflow.input.design}",
-                  "designAgent": "${workflow.input.agent}",
-                  "designHumanApproval": "${workflow.input.designHumanApproval}",
-                  "designMaxIterations": "${workflow.input.designMaxIterations}",
-                  "planAgent": "${workflow.input.agent}",
-                  "planPromptTemplate": "${workflow.input.planPromptTemplate}",
-                  "planPromptTemplateSource": "${workflow.input.planPromptTemplateSource}",
+                  "openspecPlanAgent": "${workflow.input.agent}",
+                  "openspecHumanApproval": "${workflow.input.openspecHumanApproval}",
+                  "openspecMaxIterations": "${workflow.input.openspecMaxIterations}",
                   "codeAgent": "${workflow.input.agent}",
                   "codePromptTemplate": "${workflow.input.fixPromptTemplate}",
-                  "maxSubtasks": "${workflow.input.maxSubtasks}",
+                  "codePromptTemplateSource": "${workflow.input.fixPromptTemplateSource}",
                   "maxTurns": "${workflow.input.maxTurns}",
                   "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
                   "modelProfile": "${workflow.input.modelProfile}",
@@ -197,13 +185,31 @@
             }
           },
           {
+            "name": "compose_reply",
+            "taskReferenceName": "compose_reply",
+            "type": "JSON_JQ_TRANSFORM",
+            "inputParameters": {
+              "engine": "${workflow.input.engine}",
+              "prNumber": "${workflow.input.prNumber}",
+              "head": "${fb.output.head}",
+              "agentResult": "${code.output.result}",
+              "proposalText": "${cp.output.proposalText}",
+              "subtasks": "${cp.output.subtasks}",
+              "findings": "${cp.output.verificationFindings}",
+              "verified": "${cp.output.verified}",
+              "totalTokens": "${cp.output.totalTokens}",
+              "totalCostUsd": "${cp.output.totalCostUsd}",
+              "queryExpression": "def num: if type == \"number\" then . else 0 end; if (.engine == \"coding_agent\") then (\"Addressed the review feedback on this PR.\\n\\n- Engine: `coding_agent`\\n- Branch: `\" + .head + \"`\\n\\n\" + (.agentResult // \"See the latest commits for the changes.\")) else ((.subtasks // []) as $subs | ($subs | map(\"- **\" + (.id // \"?\") + \"**: \" + (.description // \"\")) | join(\"\\n\")) as $subtaskList | ((.findings // []) | map(\"- \" + .) | join(\"\\n\")) as $findingsList | (\"Addressed the review feedback on PR #\" + (.prNumber | tostring) + \".\\n\\n## Summary\\n\" + (.proposalText // \"(no proposal text available)\") + \"\\n\\n## Subtasks\\n\" + (if $subtaskList == \"\" then \"_none_\" else $subtaskList end) + \"\\n\\n## Verification\\n- Verified: \" + ((.verified // false) | tostring) + \"\\n- Findings:\\n\" + (if $findingsList == \"\" then \"_none_\" else $findingsList end) + \"\\n\\n## Cost\\n- Tokens: \" + ((.totalTokens | num) | tostring) + \"\\n- Cost: $\" + ((.totalCostUsd | num) | tostring) + \"\\n\\n---\\n_Engine: `code_parallel`, branch `\" + .head + \"`._\")) end"
+            }
+          },
+          {
             "name": "pr_comment",
             "taskReferenceName": "reply",
             "type": "SIMPLE",
             "inputParameters": {
               "repoPath": "${clone.output.repoPath}",
               "number": "${workflow.input.prNumber}",
-              "body": "Addressed the review feedback on this PR.\n\n- Engine: `${workflow.input.engine}`\n- Branch: `${fb.output.head}`\n\nSee the latest commits for the changes."
+              "body": "${compose_reply.output.result}"
             }
           }
         ]

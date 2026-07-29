@@ -50,7 +50,7 @@ done
 
 echo "[register] workflows (sub-workflows first)…"
 # Sub-workflows must be available before workflows that pin their version.
-for wf in design_docs code_subtask campaign_subtask code_revision_loop code_parallel feature_campaign openspec_development github_demo local_review issue_to_pr address_pr pr_review automation_reset automation_dispatch pr_review_sweep pr_address_sweep issue_resolution_sweep; do
+for wf in openspec_generate_artifact openspec_artifact_drain openspec_plan campaign_subtask code_revision_loop code_subtask code_parallel feature_campaign openspec_development github_demo local_review issue_to_pr address_pr pr_review automation_reset automation_dispatch pr_review_sweep pr_address_sweep issue_resolution_sweep; do
   f="workflows/$wf.json"
   version=$(jq -r '.version' "$f")
   if conductor workflow get "$wf" >/dev/null 2>&1; then

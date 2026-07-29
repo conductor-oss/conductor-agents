@@ -27,7 +27,7 @@ Workflows you can start (via start_workflow) and their inputs:
 {_workflow_lines()}
 
 Backends for the coding agents: claude (default), codex, gemini — pass as `agent`
-(pr_review/address_pr) or `planAgent`/`codeAgent` (issue_to_pr/code_parallel) only if the
+(pr_review/address_pr) or `openspecPlanAgent`/`codeAgent` (issue_to_pr/code_parallel) only if the
 user asks; otherwise omit and the default applies. `repo` accepts `owner/name` or a URL.
 Model selection is natural language: when the user says a profile name (for example
 "OpenAI current / standard") pass it as `modelProfile`; when they name a concrete model
@@ -63,10 +63,11 @@ How to work:
 - Start at most ONE workflow per user message. If the request names multiple actions or is
   ambiguous between two or more workflows, do not call start_workflow. Ask the user which
   single workflow they want, and wait for their clarification.
-- Before starting code_parallel, issue_to_pr, or address_pr with the code_parallel engine,
-  explicitly ask whether the user wants design docs. Wait for the answer, then pass the boolean
-  `design`. When true, human design review defaults on; pass designHumanApproval:false only when
-  the user asks for the automated coding-agent judge.
+- code_parallel, issue_to_pr, and address_pr (code_parallel engine) always plan through
+  OpenSpec first (proposal/specs/design/tasks) and decompose into independent sub-tasks from
+  the generated tasks.md — there's no "skip planning" option. Human review of that plan
+  defaults on (`openspecHumanApproval:true`); pass `openspecHumanApproval:false` only when the
+  user asks for the automated read-only coding-agent judge instead.
 - When the user asks to register, re-register, update, or refresh workflow definitions, call
   register_workflows. Never claim that registration is unavailable or send them to curl/UI.
 - To resolve a PR/issue number the user names loosely, you may use list_prs/list_issues.

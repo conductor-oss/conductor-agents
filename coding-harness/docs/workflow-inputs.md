@@ -30,7 +30,7 @@ explicit override for that task role.
 
 Required: `repo`, `prNumber`.
 
-Optional: `engine` = `"code_parallel"`; `agent` = `"claude"`; `model` = `""`; `design` = `false`; `designHumanApproval` = `true`; `designMaxIterations` = `5`; `fixPromptTemplate` = `""`; `fixPromptTemplateSource` = `""`; `planPromptTemplate` = `""`; `planPromptTemplateSource` = `""`; `maxSubtasks` = `4`; `maxTurns` = `250`; `maxBudgetUsd` = `50.0`.
+Optional: `engine` = `"code_parallel"`; `agent` = `"claude"`; `model` = `""`; `openspecHumanApproval` = `true`; `openspecMaxIterations` = `5`; `fixPromptTemplate` = `""`; `fixPromptTemplateSource` = `""`; `maxTurns` = `250`; `maxBudgetUsd` = `50.0`.
 
 ## `automation_dispatch` (internal)
 
@@ -52,7 +52,7 @@ Optional: `agent` = `"claude"`; `model` = `""`; `maxTurns` = `500`; `maxBudgetUs
 
 Required: `repoPath`, `instruction`.
 
-Optional: `changeBranch` = `"code-parallel"`; `design` = `false`; `designAgent` = `"claude"`; `designModel` = `""`; `designDir` = `"docs/design"`; `designMaxTurns` = `500`; `designHumanApproval` = `true`; `designMaxIterations` = `5`; `planAgent` = `"claude"`; `planModel` = `""`; `planMaxTurns` = `500`; `planPromptTemplate` = `""`; `planPromptTemplateSource` = `""`; `codeAgent` = `"claude"`; `codeModel` = `""`; `codePromptTemplate` = `""`; `codePromptTemplateSource` = `""`; `maxSubtasks` = `6`; `maxTurns` = `500`; `maxBudgetUsd` = `50.0`; `precomputedPlan` = `{}`; `specContextPath` = `""`; `usePrecomputedPlan` = `false`.
+Optional: `changeBranch` = `"code-parallel"`; `openspecPlanAgent` = `"claude"`; `openspecPlanModel` = `""`; `openspecMaxTurns` = `500`; `openspecMaxBudgetUsd` = `50.0`; `openspecHumanApproval` = `true`; `openspecMaxIterations` = `5`; `codeAgent` = `"claude"`; `codeModel` = `""`; `codePromptTemplate` = `""`; `codePromptTemplateSource` = `""`; `maxTurns` = `500`; `maxBudgetUsd` = `50.0`; `precomputedPlan` = `{}`; `specContextPath` = `""`; `usePrecomputedPlan` = `false`; `verifyMaxIterations` = `3`.
 
 ## `code_revision_loop` (internal)
 
@@ -64,13 +64,25 @@ Optional: `promptTemplate` = `""`; `promptTemplateSource` = `""`; `maxTurns` = `
 
 Required: `repoPath`, `name`, `prompt`, `model`, `agent`.
 
-Optional: `promptTemplate` = `""`; `promptTemplateSource` = `""`; `templateKey` = `"code"`; `promptContext` = `{}`; `maxTurns` = `250`; `maxBudgetUsd` = `50.0`; `specContextPath` = `""`.
+Optional: `promptTemplate` = `""`; `promptTemplateSource` = `""`; `templateKey` = `"code"`; `promptContext` = `{}`; `maxTurns` = `250`; `maxBudgetUsd` = `50.0`; `specContextPath` = `""`; `allowedTools` = `[]`.
 
-## `design_docs`
+## `openspec_plan` (internal)
 
-Required: `repoPath`, `instruction`.
+Required: `repoPath`, `instruction`, `changeBranch`.
 
-Optional: `designDir` = `"docs/design"`; `designAgent` = `"claude"`; `designModel` = `""`; `designPromptTemplate` = `""`; `designPromptTemplateSource` = `""`; `designMaxTurns` = `500`; `designMaxBudgetUsd` = `50.0`; `humanApproval` = `true`; `designMaxIterations` = `5`.
+Optional: `openspecPlanAgent` = `"claude"`; `openspecPlanModel` = `""`; `openspecMaxTurns` = `500`; `openspecMaxBudgetUsd` = `50.0`; `openspecHumanApproval` = `true`; `openspecMaxIterations` = `5`.
+
+## `openspec_artifact_drain` (internal)
+
+Required: `repoPath`, `changeName`, `goal`, `agent`.
+
+Optional: `feedback` = `""`; `model` = `""`; `maxTurns` = `500`; `maxBudgetUsd` = `50.0`.
+
+## `openspec_generate_artifact` (internal)
+
+Required: `repoPath`, `changeName`, `artifact`, `goal`, `agent`.
+
+Optional: `feedback` = `""`; `model` = `""`; `maxTurns` = `500`; `maxBudgetUsd` = `50.0`.
 
 ## `feature_campaign`
 
@@ -94,7 +106,7 @@ Optional: `issueLabel` = `"conductor:auto"`; `approvalMode` = `"human"`; `agent`
 
 Required: `repo`, `issueNumber`.
 
-Optional: `base` = `"main"`; `planAgent` = `"claude"`; `codeAgent` = `"claude"`; `designAgent` = `"claude"`; `design` = `false`; `designHumanApproval` = `true`; `designMaxIterations` = `5`; `approvePr` = `false`; `planPromptTemplate` = `""`; `planPromptTemplateSource` = `""`; `codePromptTemplate` = `""`; `codePromptTemplateSource` = `""`; `maxSubtasks` = `4`; `maxTurns` = `300`; `maxBudgetUsd` = `50.0`.
+Optional: `base` = `"main"`; `approvePr` = `false`; `openspecPlanAgent` = `"claude"`; `codeAgent` = `"claude"`; `openspecHumanApproval` = `true`; `openspecMaxIterations` = `5`; `codePromptTemplate` = `""`; `codePromptTemplateSource` = `""`; `maxTurns` = `300`; `maxBudgetUsd` = `50.0`.
 
 ## `local_review`
 

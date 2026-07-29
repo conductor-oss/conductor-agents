@@ -44,7 +44,7 @@ _DEFAULTS_DIR = Path(__file__).resolve().parents[1] / "workers" / "defaults" / "
 # Which built-in prompt (templateKey) a workflow's primary template field maps to.
 WORKFLOW_KEY = {
     "local_review": "local_review", "pr_review": "pr_review", "code_parallel": "code", "issue_to_pr": "code",
-    "address_pr": "code", "design_docs": "design", "feature_campaign": "code",
+    "address_pr": "code", "feature_campaign": "code",
     "openspec_development": "code",
     "pr_review_sweep": "pr_review", "pr_address_sweep": "address_pr",
     "issue_resolution_sweep": "code",
@@ -59,7 +59,6 @@ PRIMARY_FIELD = {
     "code_parallel": "codePromptTemplate",
     "issue_to_pr": "codePromptTemplate",
     "address_pr": "fixPromptTemplate",
-    "design_docs": "designPromptTemplate",
     "feature_campaign": "codePromptTemplate",
     "openspec_development": "codePromptTemplate",
     "pr_review_sweep": "reviewPromptTemplate",

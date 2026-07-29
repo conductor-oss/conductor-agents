@@ -201,6 +201,63 @@ def test_complete_tasks_marks_every_open_checkbox(tmp_path):
     assert path.read_text() == "- [x] first\n- [x] done\n  - [x] nested\n"
 
 
+def test_finalize_archives_in_place_for_code_parallels_same_repo_case(monkeypatch, tmp_git_repo, fake_task_input):
+    """code_parallel.json's verification-gate archive step calls openspec_finalize
+    directly with writebackRepoPath == writebackProjectPath == the merged worktree
+    and sameRepo: true — no adapter needed. This exercises exactly that shape:
+    no new branch is created (the caller already checked one out), checkboxes are
+    completed before validate/archive, and validate/archive use the proven CLI
+    invocation shape (positional id, --yes)."""
+    change_id = "add-greeting"
+    change = tmp_git_repo / "openspec" / "changes" / change_id
+    change.mkdir(parents=True)
+    (change / "proposal.md").write_text("# Greeting\n")
+    (change / "tasks.md").write_text("- [ ] Add greeting\n")
+    calls: list[list[str]] = []
+
+    def fake_run(args, *, cwd, allow_failure=False):
+        calls.append(args)
+        return {"exitCode": 0, "data": {}, "stdout": "{}", "stderr": ""}
+
+    monkeypatch.setattr(openspec, "_run", fake_run)
+    task = fake_task_input(
+        writebackRepoPath=str(tmp_git_repo), writebackProjectPath=str(tmp_git_repo),
+        changeId=change_id, sameRepo=True, forceAddPaths=[],
+    )
+    result = openspec.openspec_finalize(task).output_data
+
+    assert result["archived"] is True
+    assert (change / "tasks.md").read_text() == "- [x] Add greeting\n"
+    assert calls[0] == ["validate", change_id, "--type", "change", "--strict",
+                        "--no-interactive", "--json"]
+    assert calls[1] == ["archive", change_id, "--yes"]
+    # sameRepo: no new branch created; stays on whatever the caller already checked out.
+    current = git.git(str(tmp_git_repo), "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    assert result["branch"] == current
+
+
+def test_finalize_aborts_archive_when_validate_fails(monkeypatch, tmp_git_repo, fake_task_input):
+    change_id = "add-greeting"
+    change = tmp_git_repo / "openspec" / "changes" / change_id
+    change.mkdir(parents=True)
+    (change / "tasks.md").write_text("- [ ] Add greeting\n")
+
+    def fake_run(args, *, cwd, allow_failure=False):
+        if args[0] == "validate":
+            raise RuntimeError("openspec validate add-greeting failed (1): strict mode violation")
+        raise AssertionError("archive must not run after a failed validate")
+
+    monkeypatch.setattr(openspec, "_run", fake_run)
+    task = fake_task_input(
+        writebackRepoPath=str(tmp_git_repo), writebackProjectPath=str(tmp_git_repo),
+        changeId=change_id, sameRepo=True,
+    )
+    result = openspec.openspec_finalize(task)
+    assert result.status.value == "FAILED"
+    # The change is not archived: it's still under changes/, not changes/archive/.
+    assert change.is_dir()
+
+
 def test_pinned_cli_accepts_a_complete_spec_driven_change(tmp_path):
     binary = Path(openspec._openspec_bin())
     if not binary.is_file():

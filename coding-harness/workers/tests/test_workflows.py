@@ -40,8 +40,9 @@ TASKDEFS_DIR = WORKFLOWS_DIR / "taskdefs"
 WORKFLOW_FILES = sorted(WORKFLOWS_DIR.glob("*.json"))
 TASKDEF_FILES = sorted(TASKDEFS_DIR.glob("*.json"))
 
-# The four workflows PR #5 reshaped with the iterative design-review gate.
-RESHAPED = ("code_parallel", "address_pr", "issue_to_pr", "design_docs")
+# The four workflows PR #5 reshaped with the iterative design-review gate
+# (design_docs was replaced by openspec_plan when planning moved to OpenSpec).
+RESHAPED = ("code_parallel", "address_pr", "issue_to_pr", "openspec_plan")
 
 # ``${<token>...}`` interpolation: capture the leading reference identifier.
 INTERP = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)")
@@ -189,10 +190,18 @@ def test_prompt_template_inputs_always_declare_provenance_source():
             assert source in defaults, f"{path.name}: {source} has no inputTemplate default"
 
 
+# openspec_generate_artifact's "write" step is deliberately not template-overridable: its
+# prompt is fully determined by the artifact's typed `openspec instructions` output, not
+# freeform guidance (see SKILL.md / workers/README.md prompt-template sections).
+_NO_TEMPLATE_OVERRIDE = {("openspec_generate_artifact", "write")}
+
+
 def test_every_coding_agent_exposes_template_override_and_source():
     for path in WORKFLOW_FILES:
         for task in _collect_tasks(_load(path)):
             if task.get("type") != "SIMPLE" or task.get("name") != "coding_agent":
+                continue
+            if (path.stem, task.get("taskReferenceName")) in _NO_TEMPLATE_OVERRIDE:
                 continue
             inputs = task.get("inputParameters") or {}
             assert "promptTemplate" in inputs, (
@@ -299,6 +308,24 @@ def test_no_dangling_switch_branches(path: Path):
             )
 
 
+@pytest.mark.parametrize("path", WORKFLOW_FILES, ids=lambda p: p.stem)
+def test_no_do_while_nested_directly_inside_do_while(path: Path):
+    """Conductor does not support a DO_WHILE nested directly inside another
+    DO_WHILE's loopOver ('Nested Do While tasks are not supported... use a Sub
+    Workflow task inside the Do While task' — confirmed live: it silently stops
+    advancing after the first iteration with a parallel fan-out, no error, no
+    exception). A nested drain loop must be its own SUB_WORKFLOW instead."""
+    for t in _collect_tasks(_load(path)):
+        if t.get("type") != "DO_WHILE":
+            continue
+        for child in t.get("loopOver") or []:
+            assert child.get("type") != "DO_WHILE", (
+                f"{path.name}: DO_WHILE {child.get('taskReferenceName')!r} is nested "
+                f"directly inside DO_WHILE {t.get('taskReferenceName')!r} — "
+                "extract it into a SUB_WORKFLOW instead"
+            )
+
+
 def test_reshaped_workflows_present():
     stems = {p.stem for p in WORKFLOW_FILES}
     assert set(RESHAPED) <= stems, f"missing reshaped workflows: {set(RESHAPED) - stems}"
@@ -318,44 +345,71 @@ def test_reshaped_gate_references_resolve(name: str):
     assert not dangling, f"{name}: gate references unknown task refs: {dangling}"
 
 
-def test_design_docs_loop_wiring():
-    """design_docs is the heart of the PR #5 design-review gate; assert its
-    iterative DO_WHILE / SWITCH structure is intact and internally consistent."""
-    wf = _load(WORKFLOWS_DIR / "design_docs.json")
+def test_openspec_plan_loop_wiring():
+    """openspec_plan is the OpenSpec-driven successor to the PR #5 design-review
+    gate; assert its iterative DO_WHILE / SWITCH structure is intact and
+    internally consistent (same human-or-AI-judge mechanism, ported verbatim)."""
+    wf = _load(WORKFLOWS_DIR / "openspec_plan.json")
     tasks = _collect_tasks(wf)
     by_ref = {t["taskReferenceName"]: t for t in tasks if "taskReferenceName" in t}
 
-    # The loop itself.
-    loop = by_ref.get("design_loop")
-    assert loop and loop["type"] == "DO_WHILE", "design_loop DO_WHILE missing"
+    # The outer loop itself. The artifact-generation drain loop is a SUB_WORKFLOW
+    # (openspec_artifact_drain), not an inline nested DO_WHILE — Conductor does not
+    # support a DO_WHILE nested directly inside another DO_WHILE.
+    loop = by_ref.get("openspec_loop")
+    assert loop and loop["type"] == "DO_WHILE", "openspec_loop DO_WHILE missing"
     body_refs = {t["taskReferenceName"] for t in loop["loopOver"]}
-    assert {"design", "capture_design_result", "review_mode"} <= body_refs
+    assert {"artifact_drain", "capture_pass_result", "review_mode"} <= body_refs
+    drain = by_ref["artifact_drain"]
+    assert drain["type"] == "SUB_WORKFLOW"
+    assert drain["subWorkflowParam"]["name"] == "openspec_artifact_drain"
+    # openspec_new_change slugifies workflow.input.changeBranch (a git branch
+    # name, e.g. "harness/issue-42") into a valid OpenSpec change slug; every
+    # downstream call (openspec_status, openspec_instructions, ...) must key
+    # off that returned slug, not the raw branch name, or they 404/fail the
+    # CLI's kebab-case validation the same way openspec_new_change used to.
+    assert drain["inputParameters"]["changeName"] == "${new_change.output.changeName}", (
+        "artifact_drain must key off new_change's slugified changeName, "
+        "not the raw workflow.input.changeBranch"
+    )
+    assert "artifact_loop" not in body_refs, (
+        "artifact_loop must not be inlined directly inside openspec_loop's DO_WHILE"
+    )
+
+    # The drain sub-workflow's own inner loop.
+    drain_wf = _load(WORKFLOWS_DIR / "openspec_artifact_drain.json")
+    drain_tasks = _collect_tasks(drain_wf)
+    drain_by_ref = {t["taskReferenceName"]: t for t in drain_tasks if "taskReferenceName" in t}
+    inner = drain_by_ref.get("artifact_loop")
+    assert inner and inner["type"] == "DO_WHILE", "artifact_loop DO_WHILE missing in openspec_artifact_drain"
+    inner_refs = {t["taskReferenceName"] for t in inner["loopOver"]}
+    assert {"status", "select_ready", "fan_out_artifacts", "fan_join_artifacts",
+            "merge_pass_progress", "capture_round"} <= inner_refs
 
     # The in-loop human-vs-judge review switch, both branches wired.
     review_mode = by_ref.get("review_mode")
     assert review_mode and review_mode["type"] == "SWITCH"
     human_branch = {t["taskReferenceName"] for t in review_mode["decisionCases"]["true"]}
-    assert {"design_review", "set_human_review"} <= human_branch
+    assert {"plan_review", "set_human_review"} <= human_branch
     # v3 approvals use signal-based WAIT tasks so they can be discovered and
-    # acted on through the global approval inbox. Legacy HUMAN tasks are shown
-    # separately because they cannot use the WAIT signaling path.
-    assert by_ref["design_review"]["type"] == "WAIT"
+    # acted on through the global approval inbox; legacy HUMAN tasks cannot be
+    # signaled through that path.
+    assert by_ref["plan_review"]["type"] == "WAIT"
     judge_branch = {t["taskReferenceName"] for t in review_mode["defaultCase"]}
-    assert {"design_judge", "set_judge_review"} <= judge_branch
+    assert {"plan_judge", "set_judge_review"} <= judge_branch
 
-    # The post-loop approval gate: approve -> commit, else -> fail closed.
+    # The post-loop approval gate: approve -> commit + parse tasks.md, else -> fail closed.
     approval = by_ref.get("approval_result")
     assert approval and approval["type"] == "SWITCH"
-    assert by_ref["commit_design"]["taskReferenceName"] in {
-        t["taskReferenceName"] for t in approval["decisionCases"]["true"]
-    }
+    approved_refs = {t["taskReferenceName"] for t in approval["decisionCases"]["true"]}
+    assert {"commit_plan", "parse_tasks"} <= approved_refs
     assert any(t["type"] == "TERMINATE" for t in approval["defaultCase"]), (
-        "design_docs must fail closed when no design is approved"
+        "openspec_plan must fail closed when no plan is approved"
     )
 
     # Every SET_VARIABLE writes only variables declared on the workflow.
     declared = set(wf.get("variables", {}))
-    assert declared, "design_docs should declare loop variables"
+    assert declared, "openspec_plan should declare loop variables"
     for t in tasks:
         if t.get("type") == "SET_VARIABLE":
             unknown = set(t.get("inputParameters", {})) - declared

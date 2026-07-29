@@ -32,7 +32,7 @@ In a second terminal, point the harness at any local checkout:
 ```bash
 export CONDUCTOR_SERVER_URL=http://localhost:8080/api
 conductor workflow start --workflow code_parallel --input \
-  '{"repoPath":"/absolute/path/to/repo","instruction":"Add a health endpoint and tests","design":false}'
+  '{"repoPath":"/absolute/path/to/repo","instruction":"Add a health endpoint and tests"}'
 ```
 
 The checkout is used as a source repository. The workflow creates a persistent
@@ -99,6 +99,11 @@ Ask chat to “register/update the workflows”, use `/register`, or press `g` o
 whenever definitions change. The TUI confirms the target server, updates the definitions, and
 runs the SIMPLE-task worker gate before reporting success. Chat starts at most one workflow per
 user message; when the requested action is ambiguous, it asks which workflow you want first.
+Every `code_parallel` path always plans through OpenSpec first (proposal/specs/design/tasks) —
+there's no "skip planning" toggle. That plan goes through an iterative human review gate by
+default: approve to continue to coding, or give feedback for another planning pass. You can opt
+into an automated structured judge instead; its read-only review uses the `coding_agent` worker.
+The plan loop is capped at five passes by default and can be raised with `openspecMaxIterations`.
 Before a form, chat, or schedule launch, the TUI resolves every applicable prompt role from the
 local template library and records its source in the workflow input; unmatched roles fall through
 to repo `.conductor/<key>.md` files and bundled defaults in the worker.
@@ -109,11 +114,6 @@ For a pre-commit review of the files already in your checkout, ask chat to “re
 changes in `~/src/app`” or choose **Review local changes**. That starts `local_review`, which
 uses that directory directly and compares staged, unstaged, untracked, and locally committed-ahead
 changes to `origin/main` by default. It does not alter the checkout or post anything to GitHub.
-Before any `code_parallel` path starts, chat also asks whether you want design docs. Choosing
-design enables an iterative human review gate by default: approve to continue to coding, or give
-feedback for another design pass. You can opt into an automated structured judge instead; its
-read-only review uses the `coding_agent` worker. The design loop is capped at five passes by
-default and can be raised with `designMaxIterations`.
 
 ## How it works
 
@@ -125,10 +125,21 @@ Conductor workflow
   └─ gitops workers → commit, merge, push, GitHub PR/review operations
 ```
 
-`code_parallel` is the coding core. It asks a read-only agent to decompose the goal,
-creates a dynamic Conductor fork, implements each independent slice in its own worktree,
-then merges the branches and aggregates files, tokens, and cost. The GitHub workflows wrap
-that core with issue, PR, review, and push operations.
+`code_parallel` is the coding core. Its `openspec_plan` sub-workflow drives the `openspec` CLI
+through a proposal/specs/design/tasks change — reviewed via the same human-or-AI-judge loop —
+and deterministically parses the generated `tasks.md` into independent sub-tasks; `code_parallel`
+then creates a dynamic Conductor fork, implements each independent slice in its own worktree,
+merges the branches, and aggregates files, tokens, and cost. After merging, a bounded verification
+loop actually runs each sub-task's declared `Test:` command and a read-only semantic judge against
+the OpenSpec artifacts; on failure it runs one consolidated fixup pass and re-checks, and on
+exhausting the iteration cap (`verifyMaxIterations`) it fails closed with no PR. Once verification
+passes, `code_parallel` hands control back to its caller with the OpenSpec change still in place —
+so `issue_to_pr` and `address_pr` never ship an unverified PR, and reviewers see the actual
+proposal/specs/tasks in the PR diff itself. `code_parallel` does not archive the change: archiving
+is a manual, out-of-band step a human runs (e.g. via `openspec archive`) after the PR merges. The
+GitHub workflows wrap that core with issue, PR, review, and push operations, and
+compose their PR body/reply from the verified run's actual proposal text, sub-task list,
+verification findings, and cost.
 
 For larger work, `feature_campaign` adds durable WAIT checkpoints after design, plan,
 each integrated wave, and final verification. Its agents resume by session ID, DAG tasks
@@ -163,9 +174,17 @@ opened as a draft PR. It never accepts credential values in workflow inputs.
 
 ## Prerequisites
 
-- Python 3.13+, Node.js 20.19+, npm, `jq`, and the `conductor` CLI. The harness installs the
-  pinned `@fission-ai/openspec` 1.6.0 worker dependency locally.
-- A reachable Conductor server. For local development: `conductor server start` (Java 21+).
+- Python 3.13+, Node.js 20.19+, npm, `jq`, and the `conductor` CLI.
+- The `openspec` CLI: `openspec_plan`/`openspecops` shell out to a copy installed wherever workers
+  run (on `PATH`); `openspec_development` uses its own pinned `@fission-ai/openspec` 1.6.0 worker
+  dependency, which the harness installs locally via npm.
+- A reachable Conductor server. For local development: `conductor server start` (Java 21+, SQLite
+  — no other services needed). If a parallel-heavy run (`code_parallel`, `openspec_plan`) fails
+  with `NonTransientException: [SQLITE_BUSY...]`, switch to the opt-in Postgres-backed server
+  instead: set `CONDUCTOR_BACKEND=postgres` in `.env` and rerun `./run.sh` — it brings up
+  [`docker-compose.postgres.yml`](docker-compose.postgres.yml) instead (requires Docker). Stop
+  any already-running SQLite server first (`conductor server stop`) — a leftover process can
+  keep answering on port 8080 and silently shadow the new container.
 - At least one authenticated backend:
   - Claude: `claude login` or `ANTHROPIC_API_KEY`.
   - Codex: `~/.codex/auth.json` or `OPENAI_API_KEY`.

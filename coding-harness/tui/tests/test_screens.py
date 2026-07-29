@@ -530,10 +530,10 @@ def _pr_review_gate_execution() -> dict:
 
 
 def _design_gate_execution() -> dict:
-    return {"workflowId": "wf-design-gate", "workflowType": "design_docs", "status": "RUNNING", "startTime": 1000,
+    return {"workflowId": "wf-design-gate", "workflowType": "openspec_plan", "status": "RUNNING", "startTime": 1000,
             "input": {"repoPath": "/tmp/app", "instruction": "Design the change"},
-            "tasks": [{"referenceTaskName": "design", "taskDefName": "coding_agent", "taskType": "SIMPLE", "status": "COMPLETED", "taskId": "d1", "outputData": {"filesChanged": ["docs/design/architecture.md"]}},
-                      {"referenceTaskName": "design_review", "taskType": "WAIT", "status": "IN_PROGRESS", "taskId": "design-review-1", "inputData": {"workflow": "design_docs", "draft": {"designDir": "docs/design", "filesChanged": ["docs/design/architecture.md"], "summary": "Initial design"}}}]}
+            "tasks": [{"referenceTaskName": "gen_proposal", "taskDefName": "coding_agent", "taskType": "SIMPLE", "status": "COMPLETED", "taskId": "d1", "outputData": {"filesChanged": ["openspec/changes/c1/proposal.md"]}},
+                      {"referenceTaskName": "plan_review", "taskType": "WAIT", "status": "IN_PROGRESS", "taskId": "design-review-1", "inputData": {"workflow": "openspec_plan", "draft": {"changeDir": "/tmp/app/openspec/changes/c1", "filesChanged": ["openspec/changes/c1/proposal.md"], "summary": "Initial plan"}}}]}
 
 
 def _campaign_gate_execution() -> dict:
@@ -545,6 +545,29 @@ def _campaign_gate_execution() -> dict:
                                      "draft": {"readyTasks": ["api", "ui"],
                                                "checks": {"blockingPassed": True},
                                                "profiles": {"wave": "fast", "final": "full"}}}}]}
+
+
+def test_openspec_plan_draft_renders_embedded_proposal_text():
+    from tui.widgets.modals import ApprovalModal
+    modal = ApprovalModal("openspec_plan", {
+        "changeDir": "/tmp/app/openspec/changes/c1",
+        "filesChanged": ["openspec/changes/c1/proposal.md"],
+        "summary": "Initial plan",
+        "proposalText": "## Why\n\nUsers need a greeting.\n",
+    })
+    rendered = modal._draft_text().plain
+    assert "proposal.md:" in rendered
+    assert "Users need a greeting." in rendered
+
+
+def test_openspec_plan_draft_omits_proposal_section_when_absent():
+    from tui.widgets.modals import ApprovalModal
+    modal = ApprovalModal("openspec_plan", {
+        "changeDir": "/tmp/app/openspec/changes/c1",
+        "filesChanged": ["openspec/changes/c1/proposal.md"],
+        "summary": "Initial plan",
+    })
+    assert "proposal.md:" not in modal._draft_text().plain
 
 
 def test_pending_gate_detection():
@@ -593,7 +616,7 @@ async def test_run_detail_gate_stop_routes_to_suppression_branch():
 
 
 @pytest.mark.asyncio
-async def test_design_gate_requests_changes_with_feedback_and_keeps_loop_alive():
+async def test_openspec_plan_gate_requests_changes_with_feedback_and_keeps_loop_alive():
     fc = FakeClient(execution=_design_gate_execution())
     app = _app(fc)
     async with app.run_test(size=(140, 45)) as pilot:
@@ -601,23 +624,23 @@ async def test_design_gate_requests_changes_with_feedback_and_keeps_loop_alive()
         from tui.widgets.modals import ApprovalModal
         await pilot.pause(0.2); app.push_screen(RunDetail("wf-design-gate")); await pilot.pause(0.6)
         assert isinstance(app.screen, ApprovalModal)
-        assert app.focused is app.screen.query_one("#design_feedback")
+        assert app.focused is app.screen.query_one("#plan_feedback")
         await pilot.press(*"rollback")
         await pilot.click("#reject"); await pilot.pause(0.5)
         _, ref, status, output = fc.signals[-1]
-        assert ref == "design_review" and status == "COMPLETED"
+        assert ref == "plan_review" and status == "COMPLETED"
         assert output == {"approved": False, "feedback": "rollback"}
 
 
 @pytest.mark.asyncio
-async def test_design_gate_views_changed_file_from_its_isolated_worktree(tmp_path, monkeypatch):
+async def test_openspec_plan_gate_views_changed_file_from_its_isolated_worktree(tmp_path, monkeypatch):
     from tui import edit
     from tui.widgets.modals import ApprovalModal, FileListModal, FilePreviewModal
     from textual.widgets import Static
 
-    design_file = tmp_path / "docs" / "design" / "architecture.md"
-    design_file.parent.mkdir(parents=True)
-    design_file.write_text("# Architecture\n\nA durable design review.", encoding="utf-8")
+    plan_file = tmp_path / "openspec" / "changes" / "c1" / "proposal.md"
+    plan_file.parent.mkdir(parents=True)
+    plan_file.write_text("# Proposal\n\nA durable plan review.", encoding="utf-8")
     execution = _design_gate_execution()
     execution["input"]["repoPath"] = str(tmp_path)
     execution["tasks"][1]["inputData"]["repoPath"] = str(tmp_path)
@@ -633,18 +656,18 @@ async def test_design_gate_views_changed_file_from_its_isolated_worktree(tmp_pat
         assert isinstance(app.screen, FileListModal)
         await pilot.press("enter"); await pilot.pause(0.2)
         assert isinstance(app.screen, FilePreviewModal)
-        assert "A durable design review." in app.screen.query_one("#file_preview", Static).render().plain
+        assert "A durable plan review." in app.screen.query_one("#file_preview", Static).render().plain
         await pilot.click("#open_editor"); await pilot.pause(0.1)
-        assert opened == [str(design_file)]
+        assert opened == [str(plan_file)]
 
 
 @pytest.mark.asyncio
-async def test_nested_design_gate_approves_owning_subworkflow():
+async def test_nested_openspec_plan_gate_approves_owning_subworkflow():
     class NestedGateClient(FakeClient):
         async def get_run(self, wid, recurse=True, only_running=False):
             _, children = api.parse_execution(_design_gate_execution())
             parent = api.TaskNode(
-                ref="design", def_name="design_docs", type="SUB_WORKFLOW",
+                ref="openspec_plan", def_name="openspec_plan", type="SUB_WORKFLOW",
                 status="IN_PROGRESS", task_id="parent-design", output={},
                 workflow_id="wf-parent", sub_workflow_id="wf-design-gate",
                 children=children,
@@ -662,7 +685,7 @@ async def test_nested_design_gate_approves_owning_subworkflow():
         assert isinstance(app.screen, ApprovalModal)
         await pilot.click("#approve"); await pilot.pause(0.5)
         wid, ref, status, output = fc.signals[-1]
-        assert wid == "wf-design-gate" and ref == "design_review"
+        assert wid == "wf-design-gate" and ref == "plan_review"
         assert status == "COMPLETED"
         assert output == {"approved": True, "feedback": ""}
 

@@ -1,0 +1,9 @@
+{
+  "name": "openspec_run_subtask_check",
+  "description": "Execute one code_parallel subtask's declared tasks.md Test: command for real against the merged worktree and report {id, passed, exitCode, output} — the deterministic half of the post-merge verification loop's per-subtask check.",
+  "retryCount": 0,
+  "timeoutSeconds": 600,
+  "responseTimeoutSeconds": 600,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "ownerEmail": "viren@orkes.io"
+}

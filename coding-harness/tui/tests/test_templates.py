@@ -66,7 +66,7 @@ def test_repo_scoping_parse_and_filter():
 
 def test_default_prompt_reads_shipped_defaults():
     # the TUI reads the same canonical files the worker uses
-    for key in ("pr_review", "code", "plan", "design", "address_pr"):
+    for key in ("pr_review", "code", "address_pr"):
         assert templates.default_prompt(key), f"no shipped default for {key}"
     assert "{{diff}}" in templates.default_prompt("pr_review")
     assert templates.default_prompt("nope") is None
@@ -98,53 +98,54 @@ def test_no_frontmatter_uses_stem_and_full_body():
 
 
 def test_apply_user_templates_routes_every_role_and_records_sources():
-    fix_path = templates.save(
-        "Fix comments", "FIX {{feedback}}", workflows=("address_pr",))
+    code_path = templates.save(
+        "Code style", "CODE {{subtask}}", workflows=("feature_campaign",),
+        fields=("codePromptTemplate",))
     plan_path = templates.save(
-        "Planning rules", "PLAN {{instruction}}", workflows=("address_pr",),
+        "Planning rules", "PLAN {{instruction}}", workflows=("feature_campaign",),
         fields=("planPromptTemplate",))
 
     payload, applied = templates.apply_user_templates(
-        "address_pr", {"repo": "acme/app", "prNumber": 7})
+        "feature_campaign", {"repoPath": "/tmp/repo", "instruction": "ship"})
 
-    assert payload["fixPromptTemplate"] == "FIX {{feedback}}"
-    assert payload["fixPromptTemplateSource"] == f"user:{fix_path}"
+    assert payload["codePromptTemplate"] == "CODE {{subtask}}"
+    assert payload["codePromptTemplateSource"] == f"user:{code_path}"
     assert payload["planPromptTemplate"] == "PLAN {{instruction}}"
     assert payload["planPromptTemplateSource"] == f"user:{plan_path}"
     assert {(item.field, item.source) for item in applied} == {
-        ("fixPromptTemplate", f"user:{fix_path}"),
+        ("codePromptTemplate", f"user:{code_path}"),
         ("planPromptTemplate", f"user:{plan_path}"),
     }
 
 
 def test_apply_user_templates_prefers_repo_and_explicit_values():
     templates.save(
-        "Global plan", "GLOBAL", workflows=("issue_to_pr",),
-        fields=("planPromptTemplate",))
+        "Global code", "GLOBAL", workflows=("issue_to_pr",),
+        fields=("codePromptTemplate",))
     repo_path = templates.save(
-        "Repo plan", "REPO", workflows=("issue_to_pr",), repos=("acme/app",),
-        fields=("planPromptTemplate",))
+        "Repo code", "REPO", workflows=("issue_to_pr",), repos=("acme/app",),
+        fields=("codePromptTemplate",))
 
     payload, _ = templates.apply_user_templates(
-        "issue_to_pr", {"repo": "acme/app", "planPromptTemplate": "EXPLICIT"})
-    assert payload["planPromptTemplate"] == "EXPLICIT"
-    assert payload["planPromptTemplateSource"] == "input:inline"
+        "issue_to_pr", {"repo": "acme/app", "codePromptTemplate": "EXPLICIT"})
+    assert payload["codePromptTemplate"] == "EXPLICIT"
+    assert payload["codePromptTemplateSource"] == "input:inline"
 
     payload, _ = templates.apply_user_templates(
         "issue_to_pr", {"repo": "acme/app"})
-    assert payload["planPromptTemplate"] == "REPO"
-    assert payload["planPromptTemplateSource"] == f"user:{repo_path}"
+    assert payload["codePromptTemplate"] == "REPO"
+    assert payload["codePromptTemplateSource"] == f"user:{repo_path}"
 
 
 def test_apply_user_templates_blocks_ambiguous_role():
-    for name in ("Plan A", "Plan B"):
+    for name in ("Fix A", "Fix B"):
         templates.save(name, name, workflows=("address_pr",),
-                       fields=("planPromptTemplate",))
+                       fields=("fixPromptTemplate",))
     try:
         templates.apply_user_templates("address_pr", {"repo": "acme/app"})
     except templates.TemplateSelectionError as exc:
-        assert "address_pr.planPromptTemplate" in str(exc)
-        assert "Plan A" in str(exc) and "Plan B" in str(exc)
+        assert "address_pr.fixPromptTemplate" in str(exc)
+        assert "Fix A" in str(exc) and "Fix B" in str(exc)
     else:
         raise AssertionError("ambiguous template role did not block the launch")
 

@@ -1,0 +1,9 @@
+{
+  "name": "openspec_validate_change",
+  "description": "Run `openspec validate <id> --strict` for real without raising on failure, so the post-merge verification loop can fold spec validity into its pass/fail gate and let the fixup pass correct a broken proposal/design/specs/tasks.md instead of crashing later at archive time.",
+  "retryCount": 0,
+  "timeoutSeconds": 120,
+  "responseTimeoutSeconds": 120,
+  "timeoutPolicy": "TIME_OUT_WF",
+  "ownerEmail": "viren@orkes.io"
+}

@@ -427,16 +427,16 @@ class ApprovalModal(ModalScreen):
                     with Horizontal(classes="field-row"):
                         yield Label("Attached server confirmed")
                         yield Switch(value=False, id="campaign_attached")
-                elif self._workflow == "design_docs":
-                    yield Label("Feedback for the next design pass", classes="muted")
-                    yield TextArea("", id="design_feedback")
+                elif self._workflow == "openspec_plan":
+                    yield Label("Feedback for the next OpenSpec plan pass", classes="muted")
+                    yield TextArea("", id="plan_feedback")
                 elif self._workflow in ("pr_review", "address_pr", "issue_to_pr"):
                     yield Label("Revision feedback (required for Revise)", classes="muted")
                     yield TextArea("", id="approval_feedback")
             hint = ("Choose a phase-aware action; Later leaves this checkpoint open indefinitely"
                     if self._workflow == "feature_campaign"
-                    else "View files (f), then approve the design or request another pass"
-                    if self._workflow == "design_docs"
+                    else "View files (f), then approve the plan or request another pass"
+                    if self._workflow == "openspec_plan"
                     else "edit then Approve to post the edited version")
             yield Static(hint, classes="muted", id="approval_hint")
             yield Static("", id="approval_error", classes="banner-error")
@@ -449,14 +449,14 @@ class ApprovalModal(ModalScreen):
                     yield Button("Run checks", id="campaign_run_checks")
                     yield Button("Set profiles", id="campaign_set_profiles")
                     yield Button("Stop", variant="error", id="campaign_stop")
-                elif self._workflow != "design_docs":
+                elif self._workflow != "openspec_plan":
                     yield Button("Edit ✎", id="edit")
-                elif self._workflow == "design_docs":
+                elif self._workflow == "openspec_plan":
                     yield Button("View files", id="design_files")
                 if self._workflow != "feature_campaign":
-                    reject_label = "Request changes ↻" if self._workflow == "design_docs" else "Revise ↻"
+                    reject_label = "Request changes ↻" if self._workflow == "openspec_plan" else "Revise ↻"
                     yield Button(reject_label, variant="warning", id="reject")
-                    if self._workflow != "design_docs":
+                    if self._workflow != "openspec_plan":
                         yield Button("Stop", variant="error", id="stop")
                 yield Button("Later", id="defer")
 
@@ -464,8 +464,8 @@ class ApprovalModal(ModalScreen):
         self.query_one("#approval_error", Static).display = False
         if self._workflow == "feature_campaign":
             self.query_one("#approve", Button).focus()
-        elif self._workflow == "design_docs":
-            self.query_one("#design_feedback", TextArea).focus()
+        elif self._workflow == "openspec_plan":
+            self.query_one("#plan_feedback", TextArea).focus()
         else:
             self.query_one("#approve", Button).focus()
 
@@ -473,8 +473,8 @@ class ApprovalModal(ModalScreen):
         if self._workflow == "feature_campaign":
             phase = str(self._draft.get("phase") or "checkpoint").replace("_", " ")
             return f"Feature campaign — {phase} checkpoint"
-        if self._workflow == "design_docs":
-            return "Review the design before coding starts"
+        if self._workflow == "openspec_plan":
+            return "Review the OpenSpec plan before coding starts"
         if self._workflow == "issue_to_pr":
             tgt = f" for issue #{self._issue_number}" if self._issue_number else ""
             return f"Review the pull request{tgt} before it opens"
@@ -500,14 +500,18 @@ class ApprovalModal(ModalScreen):
                     t.append(json.dumps(value, indent=2, default=str) if isinstance(value, (dict, list)) else str(value))
                     t.append("\n")
             return t
-        if self._workflow == "design_docs":
-            t.append("Design directory: ", style="bold")
-            t.append(str(d.get("designDir", "docs/design")) + "\n")
+        if self._workflow == "openspec_plan":
+            t.append("Change directory: ", style="bold")
+            t.append(str(d.get("changeDir", "")) + "\n")
             files = d.get("filesChanged") or []
             t.append("Files changed: ", style="bold")
             t.append(", ".join(str(x) for x in files) if isinstance(files, list) else str(files))
             t.append("\n\nAgent summary:\n", style="bold")
             t.append(str(d.get("summary", "")).strip() + "\n")
+            proposal_text = str(d.get("proposalText", "")).strip()
+            if proposal_text:
+                t.append("\nproposal.md:\n", style="bold")
+                t.append(proposal_text + "\n")
             return t
         if self._workflow == "issue_to_pr":
             t.append("Title: ", style="bold"); t.append(f"{d.get('title', '')}\n")
@@ -600,7 +604,7 @@ class ApprovalModal(ModalScreen):
             return
         if self._workflow == "feature_campaign":
             output = self._campaign_output("continue")
-        elif self._workflow == "design_docs":
+        elif self._workflow == "openspec_plan":
             output = {"approved": True, "feedback": ""}
         elif self._workflow == "issue_to_pr":
             output = {"approved": True, "action": "approve", "title": draft.get("title", ""),
@@ -656,10 +660,10 @@ class ApprovalModal(ModalScreen):
         if self._workflow == "feature_campaign":
             self._campaign_action("stop")
             return
-        if self._workflow == "design_docs":
-            feedback = self.query_one("#design_feedback", TextArea).text.strip()
+        if self._workflow == "openspec_plan":
+            feedback = self.query_one("#plan_feedback", TextArea).text.strip()
             if not feedback:
-                self._error("Add actionable feedback before requesting another design pass.")
+                self._error("Add actionable feedback before requesting another plan pass.")
                 return
             self._decide("COMPLETED", {"approved": False, "feedback": feedback})
             return

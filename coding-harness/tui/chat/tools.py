@@ -100,10 +100,10 @@ TOOLS = [
             "routes automatically unless executionMode is set, and may pause when it selects a campaign. "
             "Every coding workflow accepts keepWorktree (default true). GitHub workflows also "
             "accept optional repoPath for a local source checkout; the run uses an isolated worktree. "
-            "For code_parallel, issue_to_pr, and address_pr with engine=code_parallel, "
-            "inputs MUST include design:true or design:false after asking the user. "
+            "code_parallel, issue_to_pr, and address_pr with engine=code_parallel always plan "
+            "through OpenSpec first — there is no design toggle to ask about. "
             "local_review compares the supplied checkout to baseRemote/baseBranch and is read-only; "
-            "it never commits, pushes, or posts. Optional inputs (agent/backend, engine, design, maxSubtasks, model, base, …) "
+            "it never commits, pushes, or posts. Optional inputs (agent/backend, engine, openspecHumanApproval, model, base, …) "
             "may be included; anything omitted uses the workflow default. pr_review and "
             "issue_to_pr pause for human review by default when started here (the drafted "
             "comments / PR are shown before they post); pass approve:false (pr_review) or "
@@ -316,12 +316,6 @@ async def _start(i: dict, ctx: ToolContext) -> str:
         inputs = _apply_model_choice(wf, inputs)
     except ProfileError as exc:
         return f"error: {exc} No workflow was started."
-    uses_code_parallel = wf in ("code_parallel", "issue_to_pr") or (
-        wf == "address_pr" and inputs.get("engine", "code_parallel") == "code_parallel"
-    )
-    if uses_code_parallel and not isinstance(inputs.get("design"), bool):
-        return (f"design choice required for {wf}: ask the user whether to create design "
-                "docs, then pass design:true or design:false. No workflow was started.")
     missing = [k for k in _required_inputs(wf) if k not in inputs or inputs.get(k) in (None, "")]
     if missing:
         return f"missing required inputs for {wf}: {', '.join(missing)} — ask the user for them."

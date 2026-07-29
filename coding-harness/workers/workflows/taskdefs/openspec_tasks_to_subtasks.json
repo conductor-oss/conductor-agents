@@ -1,0 +1,9 @@
+{
+  "name": "openspec_tasks_to_subtasks",
+  "description": "Deterministically parse a generated tasks.md into the independent, file-disjoint subtasks[] array ({id, description, files, testCmd}) that feeds code_parallel's FORK_JOIN_DYNAMIC fan-out. Fails closed on any file claimed by more than one task group.",
+  "retryCount": 0,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 60,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}
