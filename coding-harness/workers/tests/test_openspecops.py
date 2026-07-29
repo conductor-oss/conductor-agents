@@ -11,13 +11,17 @@ import json
 
 import pytest
 
-from common import openspec_cli
+import openspecops.tasks as openspecops_tasks
+from common import openspec_cli, tool_policy
 from common.tasks_md import TasksMdError, parse_tasks_md
 from openspecops.tasks import (
     openspec_instructions,
     openspec_new_change,
+    openspec_read_proposal,
+    openspec_run_subtask_check,
     openspec_status,
     openspec_tasks_to_subtasks,
+    openspec_validate_change,
 )
 
 
@@ -104,6 +108,18 @@ def test_openspec_new_change_slugifies_branch_shaped_name(monkeypatch, fake_task
     result = openspec_new_change(task)
     assert _completed(result)
     assert rec.calls[0][:4] == ["openspec", "new", "change", "harness-issue-42"]
+
+
+def test_tasks_rule_tells_the_planner_test_commands_must_be_a_single_invocation():
+    """The planning agent must be told what the coding agent is actually
+    permitted to run, or it writes Test: lines (shell pipes, &&, `test`, a bare
+    `python`) that get denied or misparsed downstream — see design.md's
+    post-implementation-fixes history for the live failures this prevents."""
+    rule = openspec_cli.TASKS_RULE
+    for phrase in ("exactly one program invocation", "python3", "pytest"):
+        assert phrase in rule
+    for forbidden in ("`|`", "`&&`", "`test`"):
+        assert forbidden in rule
 
 
 # --- slugify_change_name (pure function) -------------------------------------
@@ -220,3 +236,146 @@ def test_parse_tasks_md_dedupes_slug_collisions():
     )
     subtasks = parse_tasks_md(text)
     assert [s["id"] for s in subtasks] == ["setup", "setup-2"]
+
+
+# --- superseded validate/archive tasks are removed ---------------------------
+
+def test_bespoke_validate_and_archive_tasks_are_removed():
+    import openspecops.tasks as openspecops_tasks
+    assert not hasattr(openspecops_tasks, "openspec_change_validation")
+    assert not hasattr(openspecops_tasks, "openspec_archive")
+    assert not hasattr(openspec_cli, "validate_changes")
+    assert not hasattr(openspec_cli, "archive")
+
+
+# --- openspec_run_subtask_check (real command execution) --------------------
+
+def test_openspec_run_subtask_check_reports_pass(fake_task_input, tmp_path):
+    task = fake_task_input(repoPath=str(tmp_path), id="setup", testCmd="python3 -c \"print('ok')\"")
+    result = openspec_run_subtask_check(task)
+    assert _completed(result)
+    assert result.output_data["passed"] is True
+    assert result.output_data["exitCode"] == 0
+    assert result.output_data["id"] == "setup"
+
+
+def test_openspec_run_subtask_check_reports_failure(fake_task_input, tmp_path):
+    task = fake_task_input(repoPath=str(tmp_path), id="setup", testCmd="python3 -c \"raise SystemExit(1)\"")
+    result = openspec_run_subtask_check(task)
+    assert _completed(result)
+    assert result.output_data["passed"] is False
+    assert result.output_data["exitCode"] == 1
+
+
+def test_openspec_run_subtask_check_requires_repo_path(fake_task_input):
+    task = fake_task_input(repoPath="", testCmd="pytest")
+    result = openspec_run_subtask_check(task)
+    assert _failed(result)
+
+
+def test_openspec_run_subtask_check_passes_without_a_declared_command(fake_task_input, tmp_path):
+    task = fake_task_input(repoPath=str(tmp_path), id="docs-only", testCmd="")
+    result = openspec_run_subtask_check(task)
+    assert _completed(result)
+    assert result.output_data["passed"] is True
+
+
+def test_openspec_run_subtask_check_reports_missing_binary_as_a_failed_check(fake_task_input, tmp_path):
+    """A Test: command whose binary isn't on PATH (e.g. `python` on a host that
+    only has `python3`) must surface as passed=false so the verification loop's
+    fixup pass gets a turn — not as a worker-level task failure that aborts the
+    whole FORK_JOIN_DYNAMIC and the run with it."""
+    task = fake_task_input(repoPath=str(tmp_path), id="setup",
+                           testCmd="definitely-not-a-real-binary-xyz --version")
+    result = openspec_run_subtask_check(task)
+    assert _completed(result)
+    assert result.output_data["passed"] is False
+    assert "definitely-not-a-real-binary-xyz" in result.output_data["log"]
+
+
+# --- openspec_read_proposal ---------------------------------------------------
+
+def test_openspec_read_proposal_returns_exact_content(fake_task_input, tmp_path):
+    change_dir = tmp_path / "openspec" / "changes" / "add-x"
+    change_dir.mkdir(parents=True)
+    (change_dir / "proposal.md").write_text("## Why\n\nBecause reasons.\n")
+    task = fake_task_input(changeDir=str(change_dir))
+    result = openspec_read_proposal(task)
+    assert _completed(result)
+    assert result.output_data["proposalText"] == "## Why\n\nBecause reasons.\n"
+
+
+def test_openspec_read_proposal_fails_closed_on_missing_file(fake_task_input, tmp_path):
+    task = fake_task_input(changeDir=str(tmp_path / "nope"))
+    result = openspec_read_proposal(task)
+    assert _failed(result)
+
+
+# --- openspec_validate_change --------------------------------------------------
+
+class _FakeCompletedProcess:
+    def __init__(self, returncode, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_openspec_validate_change_reports_valid(monkeypatch, fake_task_input, tmp_path):
+    payload = {"items": [{"id": "add-x", "type": "change", "valid": True, "issues": []}]}
+
+    def fake_run(cmd, **kwargs):
+        assert cmd[:3] == [openspec_cli.BIN, "validate", "add-x"]
+        assert "--strict" in cmd and "--no-interactive" in cmd and "--json" in cmd
+        return _FakeCompletedProcess(0, stdout=json.dumps(payload))
+
+    monkeypatch.setattr(openspecops_tasks.subprocess, "run", fake_run)
+    task = fake_task_input(repoPath=str(tmp_path), changeId="add-x")
+    result = openspec_validate_change(task)
+    assert _completed(result)
+    assert result.output_data["valid"] is True
+    assert result.output_data["issues"] == []
+
+
+def test_openspec_validate_change_reports_invalid_without_raising(monkeypatch, fake_task_input, tmp_path):
+    """A broken proposal/design/specs/tasks.md must surface as a failed check the
+    verification loop's fixup pass can act on — never a worker crash — or the
+    workflow dies at `archive_change` (openspec_finalize) time instead."""
+    payload = {"items": [{"id": "add-x", "type": "change", "valid": False,
+                          "issues": [{"message": "missing Scenario for Requirement X"}]}]}
+
+    def fake_run(cmd, **kwargs):
+        return _FakeCompletedProcess(1, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(openspecops_tasks.subprocess, "run", fake_run)
+    task = fake_task_input(repoPath=str(tmp_path), changeId="add-x")
+    result = openspec_validate_change(task)
+    assert _completed(result)
+    assert result.output_data["valid"] is False
+    assert result.output_data["issues"] == [{"message": "missing Scenario for Requirement X"}]
+
+
+def test_openspec_validate_change_requires_repo_path_and_change_id(fake_task_input):
+    task = fake_task_input(repoPath="", changeId="")
+    result = openspec_validate_change(task)
+    assert _failed(result)
+
+
+# --- tool_policy.allowed_tools_for_test_command ------------------------------
+
+def test_allow_pattern_for_default_covered_command_is_a_noop():
+    assert tool_policy.allowed_tools_for_test_command("pytest tests/test_a.py") == \
+        tool_policy.DEFAULT_ALLOWED_TOOLS
+
+
+def test_allow_pattern_for_non_default_command_is_appended():
+    allowed = tool_policy.allowed_tools_for_test_command("make check")
+    assert allowed[:-1] == tool_policy.DEFAULT_ALLOWED_TOOLS
+    assert allowed[-1] == "Bash(make *)"
+
+
+def test_allow_pattern_documented_compound_command_limitation():
+    # `cd` is not itself an allowed token, so a chained command's first token
+    # ("cd") produces a pattern that won't cover the rest of the chain — a known,
+    # documented limitation rather than something this helper resolves.
+    pattern = tool_policy.test_command_allow_pattern("cd tests && pytest")
+    assert pattern == "Bash(cd *)"

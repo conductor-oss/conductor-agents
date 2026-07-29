@@ -78,13 +78,18 @@
           "decisionCases": {
             "true": [
               {
+                "name": "openspec_read_proposal", "taskReferenceName": "read_proposal", "type": "SIMPLE",
+                "inputParameters": {"changeDir": "${workflow.variables.lastChangeDir}"}
+              },
+              {
                 "name": "plan_review", "taskReferenceName": "plan_review", "type": "WAIT",
                 "inputParameters": {
                   "workflow": "openspec_plan", "repoPath": "${workflow.input.repoPath}", "changeDir": "${workflow.variables.lastChangeDir}",
                   "draft": {
                     "kind": "openspec_plan", "changeDir": "${workflow.variables.lastChangeDir}",
                     "filesChanged": "${workflow.variables.lastRoundFilesChanged}",
-                    "summary": "OpenSpec artifacts generated under ${workflow.variables.lastChangeDir}. Review proposal.md, specs/**, design.md, and tasks.md (independent, file-disjoint task groups feed the parallel coding fan-out)."
+                    "proposalText": "${read_proposal.output.proposalText}",
+                    "summary": "OpenSpec artifacts generated under ${workflow.variables.lastChangeDir}. proposal.md is included below; also review specs/**, design.md, and tasks.md (independent, file-disjoint task groups feed the parallel coding fan-out)."
                   }
                 }
               },

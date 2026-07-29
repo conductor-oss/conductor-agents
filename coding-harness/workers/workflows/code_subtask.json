@@ -6,6 +6,7 @@
   "description": "One parallel sub-task of code_parallel: create a git worktree/branch, run the coding_agent in it, and commit the changes on that branch so merge_worktrees can merge it back.",
   "inputParameters": [
     "agent",
+    "allowedTools",
     "maxBudgetUsd",
     "maxTurns",
     "model",
@@ -38,6 +39,7 @@
     "modelsConfig": "",
     "modelOverrides": {}
     ,"specContextPath": ""
+    ,"allowedTools": []
   },
   "tasks": [
     {
@@ -81,6 +83,7 @@
         "agent": "${workflow.input.agent}",
         "maxTurns": "${workflow.input.maxTurns}",
         "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "allowedTools": "${workflow.input.allowedTools}",
         "modelRole": "code",
         "modelProfile": "${workflow.input.modelProfile}",
         "modelPolicy": "${workflow.input.modelPolicy}",

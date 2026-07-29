@@ -129,8 +129,17 @@ Conductor workflow
 through a proposal/specs/design/tasks change — reviewed via the same human-or-AI-judge loop —
 and deterministically parses the generated `tasks.md` into independent sub-tasks; `code_parallel`
 then creates a dynamic Conductor fork, implements each independent slice in its own worktree,
-merges the branches, and aggregates files, tokens, and cost. The GitHub workflows wrap that core
-with issue, PR, review, and push operations.
+merges the branches, and aggregates files, tokens, and cost. After merging, a bounded verification
+loop actually runs each sub-task's declared `Test:` command and a read-only semantic judge against
+the OpenSpec artifacts; on failure it runs one consolidated fixup pass and re-checks, and on
+exhausting the iteration cap (`verifyMaxIterations`) it fails closed with no PR. Once verification
+passes, `code_parallel` hands control back to its caller with the OpenSpec change still in place —
+so `issue_to_pr` and `address_pr` never ship an unverified PR, and reviewers see the actual
+proposal/specs/tasks in the PR diff itself. `code_parallel` does not archive the change: archiving
+is a manual, out-of-band step a human runs (e.g. via `openspec archive`) after the PR merges. The
+GitHub workflows wrap that core with issue, PR, review, and push operations, and
+compose their PR body/reply from the verified run's actual proposal text, sub-task list,
+verification findings, and cost.
 
 For larger work, `feature_campaign` adds durable WAIT checkpoints after design, plan,
 each integrated wave, and final verification. Its agents resume by session ID, DAG tasks

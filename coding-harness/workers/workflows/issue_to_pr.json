@@ -103,6 +103,21 @@
       }
     },
     {
+      "name": "compose_pr_body",
+      "taskReferenceName": "compose_pr_body",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "issueNumber": "${workflow.input.issueNumber}",
+        "proposalText": "${cp.output.proposalText}",
+        "subtasks": "${cp.output.subtasks}",
+        "findings": "${cp.output.verificationFindings}",
+        "verified": "${cp.output.verified}",
+        "totalTokens": "${cp.output.totalTokens}",
+        "totalCostUsd": "${cp.output.totalCostUsd}",
+        "queryExpression": "def num: if type == \"number\" then . else 0 end; (.subtasks // []) as $subs | ($subs | map(\"- **\" + (.id // \"?\") + \"**: \" + (.description // \"\")) | join(\"\\n\")) as $subtaskList | ((.findings // []) | map(\"- \" + .) | join(\"\\n\")) as $findingsList | (\"Closes #\" + (.issueNumber | tostring) + \"\\n\\n## Summary\\n\" + (.proposalText // \"(no proposal text available)\") + \"\\n\\n## Subtasks\\n\" + (if $subtaskList == \"\" then \"_none_\" else $subtaskList end) + \"\\n\\n## Verification\\n- Verified: \" + ((.verified // false) | tostring) + \"\\n- Findings:\\n\" + (if $findingsList == \"\" then \"_none_\" else $findingsList end) + \"\\n\\n## Cost\\n- Tokens: \" + ((.totalTokens | num) | tostring) + \"\\n- Cost: $\" + ((.totalCostUsd | num) | tostring) + \"\\n\\n---\\n_Automated resolution by the Conductor coding harness (code_parallel)._\")"
+      }
+    },
+    {
       "name": "approve_gate",
       "taskReferenceName": "approve_gate",
       "type": "SWITCH",
@@ -124,7 +139,7 @@
               "subtasks": "${cp.output.subtasks}",
               "draft": {
                 "title": "Resolve #${workflow.input.issueNumber}: ${issue.output.title}",
-                "body": "Closes #${workflow.input.issueNumber}\n\nAutomated resolution by the Conductor coding harness (code_parallel).\n\n> ${issue.output.title}",
+                "body": "${compose_pr_body.output.result}",
                 "base": "${workflow.input.base}",
                 "head": "harness/issue-${workflow.input.issueNumber}"
               }
@@ -143,7 +158,7 @@
         "gatedTitle": "${pr_gate.output.title}",
         "gatedBody": "${pr_gate.output.body}",
         "autoTitle": "Resolve #${workflow.input.issueNumber}: ${issue.output.title}",
-        "autoBody": "Closes #${workflow.input.issueNumber}\n\nAutomated resolution by the Conductor coding harness (code_parallel).\n\n> ${issue.output.title}",
+        "autoBody": "${compose_pr_body.output.result}",
         "queryExpression": "if (.approvePr == true or .approvePr == \"true\") then { title: .gatedTitle, body: .gatedBody } else { title: .autoTitle, body: .autoBody } end"
       }
     },

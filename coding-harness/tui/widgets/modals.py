@@ -508,6 +508,10 @@ class ApprovalModal(ModalScreen):
             t.append(", ".join(str(x) for x in files) if isinstance(files, list) else str(files))
             t.append("\n\nAgent summary:\n", style="bold")
             t.append(str(d.get("summary", "")).strip() + "\n")
+            proposal_text = str(d.get("proposalText", "")).strip()
+            if proposal_text:
+                t.append("\nproposal.md:\n", style="bold")
+                t.append(proposal_text + "\n")
             return t
         if self._workflow == "issue_to_pr":
             t.append("Title: ", style="bold"); t.append(f"{d.get('title', '')}\n")

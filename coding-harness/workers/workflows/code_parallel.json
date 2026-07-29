@@ -28,7 +28,8 @@
     "modelOverrides",
     "precomputedPlan",
     "specContextPath",
-    "usePrecomputedPlan"
+    "usePrecomputedPlan",
+    "verifyMaxIterations"
   ],
   "inputTemplate": {
     "changeBranch": "code-parallel",
@@ -52,7 +53,12 @@
     "modelOverrides": {},
     "precomputedPlan": {},
     "specContextPath": "",
-    "usePrecomputedPlan": false
+    "usePrecomputedPlan": false,
+    "verifyMaxIterations": 3
+  },
+  "variables": {
+    "verifyPassed": false, "verifyFindings": [], "verifyChecks": {},
+    "verifyFixupTokens": 0, "verifyFixupCost": 0
   },
   "tasks": [
     {
@@ -113,6 +119,14 @@
       }
     },
     {
+      "name": "openspec_read_proposal",
+      "taskReferenceName": "read_proposal",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "changeDir": "${openspec_plan.output.changeDir}"
+      }
+    },
+    {
       "name": "build_forks",
       "taskReferenceName": "build_forks",
       "type": "JSON_JQ_TRANSFORM",
@@ -135,7 +149,7 @@
         "modelPolicySha256": "${workflow.input.modelPolicySha256}",
         "modelsConfig": "${workflow.input.modelsConfig}",
         "modelOverrides": "${workflow.input.modelOverrides}",
-        "queryExpression": ".repoPath as $r | .codeModel as $m | .codeAgent as $ag | .codePromptTemplate as $ct | .codePromptTemplateSource as $cts | .maxTurns as $mt | .maxBudgetUsd as $mb | .changeDir as $cd | .specContextPath as $sc | .modelProfile as $mp | .modelPolicy as $mpp | .modelPolicySource as $mps | .modelPolicySha256 as $mpsh | .modelsConfig as $mc | .modelOverrides as $mo | (if .usePrecomputedPlan then .precomputedPlan else .result end).subtasks as $subs | {dynamicTasks: [$subs[] | {name:\"code_subtask\", taskReferenceName:.id, type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"code_subtask\", version:2}}], dynamicTasksInput: (reduce $subs[] as $s ({}; . + ((($s.files // []) | join(\", \")) as $files | ($s.description + \"\\nTarget files: \" + $files + (if $s.testCmd then \"\\nYour check: \" + $s.testCmd else \"\" end)) as $desc | {($s.id): {repoPath:$r, name:$s.id, model:$m, agent:$ag, maxTurns:$mt, maxBudgetUsd:$mb, prompt:($desc + \"\\n\\nThe OpenSpec planning artifacts for this change are under \" + $cd + \" in your working directory — read proposal.md and design.md first, then specs/**/*.md, then your slice of tasks.md, before implementing.\"), promptTemplate:$ct, promptTemplateSource:$cts, templateKey:\"code\", promptContext:{subtask:$desc}, specContextPath:$sc, modelProfile:$mp, modelPolicy:$mpp, modelPolicySource:$mps, modelPolicySha256:$mpsh, modelsConfig:$mc, modelOverrides:$mo}}))), groupIds: ([$subs[].id] | join(\",\"))}"
+        "queryExpression": ".repoPath as $r | .codeModel as $m | .codeAgent as $ag | .codePromptTemplate as $ct | .codePromptTemplateSource as $cts | .maxTurns as $mt | .maxBudgetUsd as $mb | .changeDir as $cd | .specContextPath as $sc | .modelProfile as $mp | .modelPolicy as $mpp | .modelPolicySource as $mps | .modelPolicySha256 as $mpsh | .modelsConfig as $mc | .modelOverrides as $mo | [\"Read\",\"Write\",\"Edit\",\"Glob\",\"Grep\",\"Bash(python *)\",\"Bash(python3 *)\",\"Bash(node *)\",\"Bash(npm *)\",\"Bash(npx *)\",\"Bash(cat *)\",\"Bash(ls *)\",\"Bash(pytest *)\",\"Bash(go *)\",\"Bash(cargo *)\",\"Bash(git status*)\",\"Bash(git diff*)\",\"Bash(git log*)\",\"Bash(git mv *)\",\"Bash(git rm *)\",\"Bash(mv *)\",\"Bash(rm *)\",\"Bash(mkdir *)\",\"Bash(cp *)\",\"Bash(touch *)\"] as $dat | def patternfor(cmd): (cmd // \"\" | if (length) == 0 then null else (split(\" \")[0] | \"Bash(\" + . + \" *)\") end); def allowfor(cmd): (patternfor(cmd)) as $p | (if $p == null or ($dat | index($p) != null) then $dat else ($dat + [$p]) end); (if .usePrecomputedPlan then .precomputedPlan else .result end).subtasks as $subs | { dynamicTasks: [$subs[] | {name:\"code_subtask\", taskReferenceName:.id, type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"code_subtask\", version:2}}], dynamicTasksInput: (reduce $subs[] as $s ({}; . + ((($s.files // []) | join(\", \")) as $files | ($s.description + \"\\nTarget files: \" + $files + (if $s.testCmd then \"\\nYour check: \" + $s.testCmd else \"\" end)) as $desc | {($s.id): {repoPath:$r, name:$s.id, model:$m, agent:$ag, maxTurns:$mt, maxBudgetUsd:$mb, prompt:($desc + \"\\n\\nThe OpenSpec planning artifacts for this change are under \" + $cd + \" in your working directory — read proposal.md and design.md first, then specs/**/*.md, then your slice of tasks.md, before implementing.\"), promptTemplate:$ct, promptTemplateSource:$cts, templateKey:\"code\", promptContext:{subtask:$desc}, specContextPath:$sc, allowedTools: allowfor($s.testCmd), modelProfile:$mp, modelPolicy:$mpp, modelPolicySource:$mps, modelPolicySha256:$mpsh, modelsConfig:$mc, modelOverrides:$mo}}))), groupIds: ([$subs[].id] | join(\",\")) }"
       }
     },
     {
@@ -166,6 +180,156 @@
       }
     },
     {
+      "name": "verify_loop", "taskReferenceName": "verify_loop", "type": "DO_WHILE", "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ return $.verify_loop['iteration'] < $.max_verify_iterations && $.verify_passed !== true; })();",
+      "inputParameters": {
+        "verify_loop": "${verify_loop.output}", "max_verify_iterations": "${workflow.input.verifyMaxIterations}",
+        "verify_passed": "${workflow.variables.verifyPassed}"
+      },
+      "loopOver": [
+        {
+          "name": "openspec_tasks_to_subtasks", "taskReferenceName": "reparse_tasks", "type": "SIMPLE",
+          "inputParameters": {
+            "tasksPath": "${openspec_plan.output.changeDir}/tasks.md"
+          }
+        },
+        {
+          "name": "build_checks", "taskReferenceName": "build_checks", "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "repoPath": "${workflow.input.repoPath}",
+            "checksList": "${reparse_tasks.output.subtasks}",
+            "queryExpression": ".repoPath as $r | .checksList as $subs | [\"Read\",\"Write\",\"Edit\",\"Glob\",\"Grep\",\"Bash(python *)\",\"Bash(python3 *)\",\"Bash(node *)\",\"Bash(npm *)\",\"Bash(npx *)\",\"Bash(cat *)\",\"Bash(ls *)\",\"Bash(pytest *)\",\"Bash(go *)\",\"Bash(cargo *)\",\"Bash(git status*)\",\"Bash(git diff*)\",\"Bash(git log*)\",\"Bash(git mv *)\",\"Bash(git rm *)\",\"Bash(mv *)\",\"Bash(rm *)\",\"Bash(mkdir *)\",\"Bash(cp *)\",\"Bash(touch *)\"] as $dat | def patternfor(cmd): (cmd // \"\" | if (length) == 0 then null else (split(\" \")[0] | \"Bash(\" + . + \" *)\") end); { dynamicTasks: [$subs[] | {name:\"openspec_run_subtask_check\", taskReferenceName:(\"check_\"+.id), type:\"SIMPLE\"}], dynamicTasksInput: (reduce $subs[] as $c ({}; . + {(\"check_\"+$c.id): {repoPath:$r, id:$c.id, testCmd:($c.testCmd // \"\")}})), fixupAllowedTools: (reduce ($subs[] | patternfor(.testCmd)) as $p ($dat; if $p == null or (index($p) != null) then . else . + [$p] end)) }"
+          }
+        },
+        {
+          "name": "checks_fan_out", "taskReferenceName": "checks_fan_out", "type": "FORK_JOIN_DYNAMIC",
+          "dynamicForkTasksParam": "dynamicTasks", "dynamicForkTasksInputParamName": "dynamicTasksInput",
+          "inputParameters": {
+            "dynamicTasks": "${build_checks.output.result.dynamicTasks}",
+            "dynamicTasksInput": "${build_checks.output.result.dynamicTasksInput}"
+          }
+        },
+        {
+          "name": "checks_join", "taskReferenceName": "checks_join", "type": "JOIN"
+        },
+        {
+          "name": "checks_summary", "taskReferenceName": "checks_summary", "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "joined": "${checks_join.output}",
+            "queryExpression": "(.joined // {}) as $j | [$j | to_entries[] | (.value.output // .value // {})] as $results | {allPassed: ([$results[] | (.passed // false)] | all), results: $results}"
+          }
+        },
+        {
+          "name": "openspec_validate_change", "taskReferenceName": "validate_spec", "type": "SIMPLE",
+          "inputParameters": {
+            "repoPath": "${workflow.input.repoPath}",
+            "changeId": "${openspec_plan.output.changeName}"
+          }
+        },
+        {
+          "name": "coding_agent", "taskReferenceName": "verify_judge", "type": "SIMPLE",
+          "inputParameters": {
+            "worktreePath": "${workflow.input.repoPath}",
+            "agent": "${workflow.input.codeAgent}", "model": "${workflow.input.codeModel}",
+            "maxTurns": "${workflow.input.maxTurns}", "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+            "templateKey": "code-parallel-verify-judge",
+            "promptTemplate": "", "promptTemplateSource": "builtin:code-parallel-verify-judge",
+            "tools": ["Read", "Grep", "Glob"],
+            "schema": {
+              "type": "object", "required": ["passed", "findings"],
+              "properties": {"passed": {"type": "boolean"}, "findings": {"type": "array", "items": {"type": "string"}}}
+            },
+            "prompt": "Act as a read-only correctness judge. Compare the current diff on this branch against the OpenSpec planning artifacts under ${openspec_plan.output.changeDir}/ (proposal.md, design.md, specs/**/*.md, tasks.md): is the implementation complete and consistent with every requirement and task? This round's real test-command results: ${checks_summary.output.result}. Note: each Test: command is executed as a single program invocation with no shell (no pipes, &&, or command substitution) — a failure whose output mentions a missing binary or a denied/unrecognized command reflects a malformed tasks.md Test: line, not necessarily a defect in the implementation; call that out explicitly in your findings rather than treating it as a missing feature. Return the required structured output with passed (boolean) and concise findings (array of strings). Do not edit any files.",
+            "modelRole": "review",
+            "modelProfile": "${workflow.input.modelProfile}", "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}", "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}", "modelOverrides": "${workflow.input.modelOverrides}",
+            "modelResolution": "${model_policy.output}"
+          }
+        },
+        {
+          "name": "verify_round", "taskReferenceName": "verify_round", "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "checks": "${checks_summary.output.result}", "judge": "${verify_judge.output.structured}",
+            "specValid": "${validate_spec.output.valid}", "specIssues": "${validate_spec.output.issues}",
+            "queryExpression": "{ passed: ((.checks.allPassed // false) and (.judge.passed // false) and (.specValid // false)), notPassed: (((.checks.allPassed // false) and (.judge.passed // false) and (.specValid // false)) | not), checks: .checks, findings: ((.judge.findings // []) + (if (.specValid // false) then [] else [(\"OpenSpec validate failed: \" + ((.specIssues // []) | map(.message // (. | tostring)) | join(\"; \")))] end)) }"
+          }
+        },
+        {
+          "name": "verify_round_state", "taskReferenceName": "verify_round_state", "type": "SET_VARIABLE",
+          "inputParameters": {
+            "verifyPassed": "${verify_round.output.result.passed}",
+            "verifyFindings": "${verify_round.output.result.findings}",
+            "verifyChecks": "${verify_round.output.result.checks}"
+          }
+        },
+        {
+          "name": "verify_action", "taskReferenceName": "verify_action", "type": "SWITCH", "evaluatorType": "value-param", "expression": "notPassed",
+          "inputParameters": {"notPassed": "${verify_round.output.result.notPassed}"},
+          "decisionCases": {
+            "true": [
+              {
+                "name": "coding_agent", "taskReferenceName": "verify_fixup", "type": "SIMPLE",
+                "inputParameters": {
+                  "worktreePath": "${workflow.input.repoPath}",
+                  "agent": "${workflow.input.codeAgent}", "model": "${workflow.input.codeModel}",
+                  "maxTurns": "${workflow.input.maxTurns}", "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+                  "allowedTools": "${build_checks.output.result.fixupAllowedTools}",
+                  "templateKey": "code-parallel-verify-fixup",
+                  "promptTemplate": "", "promptTemplateSource": "builtin:code-parallel-verify-fixup",
+                  "prompt": "The parallel implementation in this worktree failed verification. Fix every issue below, then stop — do not re-architect beyond what's needed to pass. Failing test-command results: ${verify_round.output.result.checks}. Findings (semantic judge and any OpenSpec spec-validity failure): ${verify_round.output.result.findings}. The OpenSpec planning artifacts are under ${openspec_plan.output.changeDir}/ (proposal.md, design.md, specs/**/*.md, tasks.md) if you need to re-check requirements. Note: each Test: command in tasks.md is executed as a single program invocation with no shell — if a failure is because the declared Test: command uses a pipe, &&, command substitution, a missing/misnamed binary (e.g. `python` where only `python3` exists), or anything you're denied permission to run, the fix is to simplify that Test: line in tasks.md to one plain invocation of the tool actually available (prefer pytest/npm/npx/go/cargo/node/python3), not to work around it or install something. Note: if a finding starts with `OpenSpec validate failed:`, the defect is in the OpenSpec artifacts themselves (malformed spec deltas, a missing Scenario, an inconsistent proposal/tasks.md) — fix the artifact under ${openspec_plan.output.changeDir}/ that `openspec validate` flagged, not the application code, unless the code and the spec genuinely disagree.",
+                  "modelRole": "code",
+                  "modelProfile": "${workflow.input.modelProfile}", "modelPolicy": "${workflow.input.modelPolicy}",
+                  "modelPolicySource": "${workflow.input.modelPolicySource}", "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                  "modelsConfig": "${workflow.input.modelsConfig}", "modelOverrides": "${workflow.input.modelOverrides}",
+                  "modelResolution": "${model_policy.output}"
+                }
+              },
+              {
+                "name": "commit", "taskReferenceName": "verify_fixup_commit", "type": "SIMPLE",
+                "inputParameters": {"repoPath": "${workflow.input.repoPath}", "message": "code_parallel: verification fixup"}
+              },
+              {
+                "name": "verify_fixup_usage", "taskReferenceName": "verify_fixup_usage", "type": "JSON_JQ_TRANSFORM",
+                "inputParameters": {
+                  "prevTokens": "${workflow.variables.verifyFixupTokens}", "prevCost": "${workflow.variables.verifyFixupCost}",
+                  "newTokens": "${verify_fixup.output.tokenUsed}", "newCost": "${verify_fixup.output.costUsd}",
+                  "queryExpression": "def num: if type == \"number\" then . else 0 end; {tokens: ((.prevTokens|num) + (.newTokens|num)), cost: ((.prevCost|num) + (.newCost|num))}"
+                }
+              },
+              {
+                "name": "verify_fixup_usage_state", "taskReferenceName": "verify_fixup_usage_state", "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "verifyFixupTokens": "${verify_fixup_usage.output.result.tokens}",
+                  "verifyFixupCost": "${verify_fixup_usage.output.result.cost}"
+                }
+              }
+            ]
+          },
+          "defaultCase": []
+        }
+      ]
+    },
+    {
+      "name": "verify_gate", "taskReferenceName": "verify_gate", "type": "SWITCH", "evaluatorType": "value-param", "expression": "passed",
+      "inputParameters": {"passed": "${workflow.variables.verifyPassed}"},
+      "decisionCases": {
+        "false": [
+          {
+            "name": "verify_failed", "taskReferenceName": "verify_failed", "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "FAILED",
+              "terminationReason": "code_parallel verification did not pass within ${workflow.input.verifyMaxIterations} iterations.",
+              "workflowOutput": {
+                "verified": false, "findings": "${workflow.variables.verifyFindings}", "checks": "${workflow.variables.verifyChecks}"
+              }
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
       "name": "aggregate",
       "taskReferenceName": "aggregate",
       "type": "JSON_JQ_TRANSFORM",
@@ -176,7 +340,9 @@
         "planCost": "${openspec_plan.output.costUsd}",
         "mergeTokens": "${merge.output.tokenUsed}",
         "mergeCost": "${merge.output.costUsd}",
-        "queryExpression": "def num: if type == \"number\" then . else 0 end; (.joined // {}) as $j | [$j | to_entries[] | (.value.output // .value // {}) | {status:(.status // \"unknown\"), filesChanged:(.filesChanged // []), costUsd:(.costUsd | num), tokenUsed:(.tokenUsed | num)}] as $g | (.planTokens | num) as $pt | (.planCost | num) as $pc | (.mergeTokens | num) as $mt | (.mergeCost | num) as $mc | ([$g[].tokenUsed] | add | num) as $st | ([$g[].costUsd] | add | num) as $sc | {perSubtask:$g, subtaskCount:($g | length), tokens:{plan:$pt, subtasks:$st, merge:$mt}, cost:{plan:$pc, subtasks:$sc, merge:$mc}, totalTokens:($pt + $st + $mt), totalCostUsd:($pc + $sc + $mc)}"
+        "verifyTokens": "${workflow.variables.verifyFixupTokens}",
+        "verifyCost": "${workflow.variables.verifyFixupCost}",
+        "queryExpression": "def num: if type == \"number\" then . else 0 end; (.joined // {}) as $j | [$j | to_entries[] | (.value.output // .value // {}) | {status:(.status // \"unknown\"), filesChanged:(.filesChanged // []), costUsd:(.costUsd | num), tokenUsed:(.tokenUsed | num)}] as $g | (.planTokens | num) as $pt | (.planCost | num) as $pc | (.mergeTokens | num) as $mt | (.mergeCost | num) as $mc | (.verifyTokens | num) as $vt | (.verifyCost | num) as $vc | ([$g[].tokenUsed] | add | num) as $st | ([$g[].costUsd] | add | num) as $sc | {perSubtask:$g, subtaskCount:($g | length), tokens:{plan:$pt, subtasks:$st, merge:$mt, verify:$vt}, cost:{plan:$pc, subtasks:$sc, merge:$mc, verify:$vc}, totalTokens:($pt + $st + $mt + $vt), totalCostUsd:($pc + $sc + $mc + $vc)}"
       }
     }
   ],
@@ -184,9 +350,13 @@
     "changeBranch": "${workflow.input.changeBranch}",
     "groupIds": "${build_forks.output.result.groupIds}",
     "subtasks": "${openspec_plan.output.subtasks}",
+    "proposalText": "${read_proposal.output.proposalText}",
     "merged": "${merge.output.merged}",
     "conflicts": "${merge.output.conflicts}",
     "mergeCostUsd": "${merge.output.costUsd}",
+    "verified": "${workflow.variables.verifyPassed}",
+    "verificationFindings": "${workflow.variables.verifyFindings}",
+    "verificationChecks": "${workflow.variables.verifyChecks}",
     "totalTokens": "${aggregate.output.result.totalTokens}",
     "totalCostUsd": "${aggregate.output.result.totalCostUsd}",
     "summary": "${aggregate.output.result}"

@@ -185,13 +185,31 @@
             }
           },
           {
+            "name": "compose_reply",
+            "taskReferenceName": "compose_reply",
+            "type": "JSON_JQ_TRANSFORM",
+            "inputParameters": {
+              "engine": "${workflow.input.engine}",
+              "prNumber": "${workflow.input.prNumber}",
+              "head": "${fb.output.head}",
+              "agentResult": "${code.output.result}",
+              "proposalText": "${cp.output.proposalText}",
+              "subtasks": "${cp.output.subtasks}",
+              "findings": "${cp.output.verificationFindings}",
+              "verified": "${cp.output.verified}",
+              "totalTokens": "${cp.output.totalTokens}",
+              "totalCostUsd": "${cp.output.totalCostUsd}",
+              "queryExpression": "def num: if type == \"number\" then . else 0 end; if (.engine == \"coding_agent\") then (\"Addressed the review feedback on this PR.\\n\\n- Engine: `coding_agent`\\n- Branch: `\" + .head + \"`\\n\\n\" + (.agentResult // \"See the latest commits for the changes.\")) else ((.subtasks // []) as $subs | ($subs | map(\"- **\" + (.id // \"?\") + \"**: \" + (.description // \"\")) | join(\"\\n\")) as $subtaskList | ((.findings // []) | map(\"- \" + .) | join(\"\\n\")) as $findingsList | (\"Addressed the review feedback on PR #\" + (.prNumber | tostring) + \".\\n\\n## Summary\\n\" + (.proposalText // \"(no proposal text available)\") + \"\\n\\n## Subtasks\\n\" + (if $subtaskList == \"\" then \"_none_\" else $subtaskList end) + \"\\n\\n## Verification\\n- Verified: \" + ((.verified // false) | tostring) + \"\\n- Findings:\\n\" + (if $findingsList == \"\" then \"_none_\" else $findingsList end) + \"\\n\\n## Cost\\n- Tokens: \" + ((.totalTokens | num) | tostring) + \"\\n- Cost: $\" + ((.totalCostUsd | num) | tostring) + \"\\n\\n---\\n_Engine: `code_parallel`, branch `\" + .head + \"`._\")) end"
+            }
+          },
+          {
             "name": "pr_comment",
             "taskReferenceName": "reply",
             "type": "SIMPLE",
             "inputParameters": {
               "repoPath": "${clone.output.repoPath}",
               "number": "${workflow.input.prNumber}",
-              "body": "Addressed the review feedback on this PR.\n\n- Engine: `${workflow.input.engine}`\n- Branch: `${fb.output.head}`\n\nSee the latest commits for the changes."
+              "body": "${compose_reply.output.result}"
             }
           }
         ]

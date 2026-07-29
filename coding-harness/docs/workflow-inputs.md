@@ -52,7 +52,7 @@ Optional: `agent` = `"claude"`; `model` = `""`; `maxTurns` = `500`; `maxBudgetUs
 
 Required: `repoPath`, `instruction`.
 
-Optional: `changeBranch` = `"code-parallel"`; `openspecPlanAgent` = `"claude"`; `openspecPlanModel` = `""`; `openspecMaxTurns` = `500`; `openspecMaxBudgetUsd` = `50.0`; `openspecHumanApproval` = `true`; `openspecMaxIterations` = `5`; `codeAgent` = `"claude"`; `codeModel` = `""`; `codePromptTemplate` = `""`; `codePromptTemplateSource` = `""`; `maxTurns` = `500`; `maxBudgetUsd` = `50.0`; `precomputedPlan` = `{}`; `specContextPath` = `""`; `usePrecomputedPlan` = `false`.
+Optional: `changeBranch` = `"code-parallel"`; `openspecPlanAgent` = `"claude"`; `openspecPlanModel` = `""`; `openspecMaxTurns` = `500`; `openspecMaxBudgetUsd` = `50.0`; `openspecHumanApproval` = `true`; `openspecMaxIterations` = `5`; `codeAgent` = `"claude"`; `codeModel` = `""`; `codePromptTemplate` = `""`; `codePromptTemplateSource` = `""`; `maxTurns` = `500`; `maxBudgetUsd` = `50.0`; `precomputedPlan` = `{}`; `specContextPath` = `""`; `usePrecomputedPlan` = `false`; `verifyMaxIterations` = `3`.
 
 ## `code_revision_loop` (internal)
 
@@ -64,7 +64,7 @@ Optional: `promptTemplate` = `""`; `promptTemplateSource` = `""`; `maxTurns` = `
 
 Required: `repoPath`, `name`, `prompt`, `model`, `agent`.
 
-Optional: `promptTemplate` = `""`; `promptTemplateSource` = `""`; `templateKey` = `"code"`; `promptContext` = `{}`; `maxTurns` = `250`; `maxBudgetUsd` = `50.0`; `specContextPath` = `""`.
+Optional: `promptTemplate` = `""`; `promptTemplateSource` = `""`; `templateKey` = `"code"`; `promptContext` = `{}`; `maxTurns` = `250`; `maxBudgetUsd` = `50.0`; `specContextPath` = `""`; `allowedTools` = `[]`.
 
 ## `openspec_plan` (internal)
 

@@ -547,6 +547,29 @@ def _campaign_gate_execution() -> dict:
                                                "profiles": {"wave": "fast", "final": "full"}}}}]}
 
 
+def test_openspec_plan_draft_renders_embedded_proposal_text():
+    from tui.widgets.modals import ApprovalModal
+    modal = ApprovalModal("openspec_plan", {
+        "changeDir": "/tmp/app/openspec/changes/c1",
+        "filesChanged": ["openspec/changes/c1/proposal.md"],
+        "summary": "Initial plan",
+        "proposalText": "## Why\n\nUsers need a greeting.\n",
+    })
+    rendered = modal._draft_text().plain
+    assert "proposal.md:" in rendered
+    assert "Users need a greeting." in rendered
+
+
+def test_openspec_plan_draft_omits_proposal_section_when_absent():
+    from tui.widgets.modals import ApprovalModal
+    modal = ApprovalModal("openspec_plan", {
+        "changeDir": "/tmp/app/openspec/changes/c1",
+        "filesChanged": ["openspec/changes/c1/proposal.md"],
+        "summary": "Initial plan",
+    })
+    assert "proposal.md:" not in modal._draft_text().plain
+
+
 def test_pending_gate_detection():
     run, tasks = api.parse_execution(_pr_review_gate_execution())
     d = api.RunDetail(run=run, tasks=tasks)
