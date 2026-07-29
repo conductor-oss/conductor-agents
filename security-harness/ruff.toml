@@ -7,7 +7,13 @@
 line-length = 120
 
 [lint]
-# Default select is E4/E7/E9/F. Drop the purely-stylistic members we don't want to fight.
+# Pin the intended rule set explicitly: pyflakes `F` (undefined names, unused imports/vars)
+# plus the critical `E4`/`E7`/`E9` pycodestyle checks. This used to be ruff's implicit default
+# with no `select` set, but newer ruff versions default to a much broader rule set (bugbear,
+# security, pylint, etc.) — pin it so `make lint` doesn't drift when the venv picks up a new
+# ruff release (installed unpinned via `pip install ruff` in the venv-ci target).
+select = ["E4", "E7", "E9", "F"]
+# Drop the purely-stylistic members we don't want to fight.
 ignore = [
     "E401",  # multiple imports on one line (grouped stdlib imports are intentional)
     "E402",  # module import not at top (sys.path bootstrap before local imports; already # noqa'd)
