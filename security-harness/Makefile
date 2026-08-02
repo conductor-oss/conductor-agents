@@ -6,7 +6,6 @@ ROOT  := $(shell pwd)
 VENV  := $(ROOT)/workers/.venv
 PY    := $(VENV)/bin/python
 PIP   := $(VENV)/bin/pip
-export CONDUCTOR_SERVER_URL ?= http://localhost:8080/api
 export REPORTS_DIR          ?= $(ROOT)/reports
 export STATE_DIR            ?= $(ROOT)/state
 
@@ -17,7 +16,8 @@ help: ## List targets
 	  awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 server: ## Start the local Conductor server (OSS, AI tasks enabled)
-	@env -u CONDUCTOR_CONFIG_FILE conductor server start
+	@bash -c 'source "$(ROOT)/conductor/env.sh"; sc_load_conductor_environment "$(ROOT)"; \
+		sc_require_local_oss "make server"; env -u CONDUCTOR_CONFIG_FILE conductor server start'
 
 server-stop: ## Stop the local Conductor server
 	@conductor server stop
@@ -41,7 +41,9 @@ $(PY):
 	@echo "venv ready: $(VENV)"
 
 workers: venv ## Run workers on the host (recon + browser; foreground, ctrl-c to stop)
-	@cd $(ROOT)/workers && REPORTS_DIR=$(REPORTS_DIR) WORKER_MODULES=$(WORKER_MODULES) $(PY) main.py
+	@bash -c 'source "$(ROOT)/conductor/env.sh"; sc_load_conductor_environment "$(ROOT)"; \
+		cd "$(ROOT)/workers"; REPORTS_DIR="$(REPORTS_DIR)" WORKER_MODULES="$(WORKER_MODULES)" \
+		exec "$(PY)" main.py'
 
 WORKER_MODULES ?= recon,browser,dast,sast,codenav,api,rag,httptool,codeexec,oob,safety,hc
 
@@ -111,6 +113,10 @@ venv-ci: $(CIVENV_MARK) ## Build the CI venv (worker deps + pytest + ruff; no Ch
 
 lint: venv-ci ## Lint workers/ + bench/ with ruff (config: ruff.toml)
 	@$(VENV)/bin/ruff check $(ROOT)/workers $(ROOT)/bench
+	@bash -n $(ROOT)/run.sh $(ROOT)/scan $(ROOT)/assess $(ROOT)/sast \
+		$(ROOT)/conductor/env.sh $(ROOT)/conductor/ensure-stack.sh \
+		$(ROOT)/conductor/register.sh $(ROOT)/conductor/schedule.sh \
+		$(ROOT)/conductor/rag-setup.sh
 
 test-ci: venv-ci ## CI unit tests (no Chromium download; pure-logic tests only)
 	@$(VENV)/bin/python -m pytest $(ROOT)/tests -q

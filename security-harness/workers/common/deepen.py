@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import re
 
-from common import features, tradecraft
+from common import evidence as evidence_mod
+from common import tradecraft
 
 # Each family is attempted up to MAX_VARIANTS times (escalated variants, each informed by the prior
 # attempt's lesson) before it counts as "covered". Exhaustion is DEPTH-based: the give-up gate keeps
@@ -121,26 +122,6 @@ INTERNAL_TARGET_CORPUS: tuple = tradecraft.signatures("egress_bypass", (
     "169.254.169.254", "[::ffff:169.254.169.254]", "[::ffff:a9fe:a9fe]", "[fd00:ec2::254]",
     "2852039166", "0xa9fea9fe", "metadata.google.internal", "100.100.100.200",
 ))
-
-# Substrings that indicate a POSITIVE confirmation oracle fired. CRITICAL: these must be
-# SERVER-EMITTED signals, never tokens that appear in the attacker's own payload (e.g. "union
-# select", "sleep(", "<script>") — otherwise the agent's payload echoed back would falsely confirm.
-_CONFIRM_HINTS = (
-    # OOB collaborator callbacks (decisive for blind vectors)
-    "oob hit", "oob_hit", "inbound hit", "canary hit", "callback received",
-    # server-side command execution / file disclosure (UNIX + Windows server-file content)
-    "uid=", "gid=", "root:x:0:0", "/proc/self/environ",
-    "[boot loader]", "[fonts]", "for 16-bit app support",          # win.ini / system.ini content
-    # SSTI: the DISTINCTIVE arithmetic product 1337*1337 (server-evaluated; never in the literal
-    # payload, which carries the expression {{1337*1337}}, not the result). 7*7=49 is too common
-    # to confirm on, so the ladder uses this distinctive product.
-    "1787569",
-    # database-engine ERROR strings (emitted by the server, not the payload)
-    "you have an error in your sql", "sqlstate", "ora-00", "ora-01", "sqlite_error",
-    "syntax error near", "syntax error at or near", "unterminated quoted string",
-    "psqlexception", "sqlexception", "mysqlsyntaxerror", "queryfailederror",
-)
-
 
 def _norm(text) -> str:
     return str(text or "").lower()
@@ -248,51 +229,110 @@ def next_family(state: dict, max_variants: int = MAX_VARIANTS) -> dict | None:
     return {**detail.get(fam, {"family": fam}), "tries": tries}
 
 
-def detect_confirmation(result: dict, oob_hits: list | None = None,
-                        sink_class: str = "") -> tuple[bool, str]:
-    """Decide whether an attempt CONFIRMS exploitation from a code_exec result + OOB hits.
-    Confirmation requires a positive oracle -- an OOB inbound hit or a decisive in-band signal --
-    never merely a 200 or a reflected echo. For an SSRF sink, the in-band oracle is the internal-reach
-    DIFFERENTIAL (features.internal_reach): an internal target reached past the egress denylist."""
-    if oob_hits:
-        return True, f"OOB inbound hit ({len(oob_hits)} canary callback(s)) -- server-side execution confirmed"
-    res = result if isinstance(result, dict) else {}
-    # explicit agent/sandbox finding
-    for f in (res.get("result", {}) or {}).get("findings", []) or []:
-        if isinstance(f, dict) and (f.get("confirmed") is True):
-            return True, str(f.get("evidence") or f.get("title") or "sandbox-reported confirmation")
-    blob = _norm((res.get("stdout") or "")) + " " + _norm(
-        " ".join(str(e) for e in (res.get("result", {}) or {}).get("evidence", []) or []))
-    # SSRF internal-reach oracle (gated on the ssrf sink so a backend 401/health body in an unrelated
-    # auth test can't false-confirm): a non-403 backend response from an internal target = reach.
-    if sink_class == "ssrf":
-        reached, ev = features.internal_reach(blob)
-        if reached:
-            return True, ev
-    hit = next((h for h in _CONFIRM_HINTS if h in blob), "")
-    if hit:
-        return True, f"in-band oracle matched ('{hit}')"
-    return False, ""
+def detect_confirmation(result: dict | None = None, oob_hits: list | None = None,
+                        sink_class: str = "", *, oob_verification: dict | None = None,
+                        inband_verification: dict | None = None) -> tuple[bool, str]:
+    """Decide whether an attempt confirms exploitation from trusted verifier receipts.
+
+    ``result``, ``oob_hits``, and ``sink_class`` remain accepted for call-site
+    compatibility, but are intentionally not confirmation inputs.  They can be
+    authored by generated code or the LLM.  Confirmation accepts only a typed,
+    replayable receipt produced by a dedicated verifier worker: an OOB callback
+    receipt (``oob_check/v1``) or an in-band oracle receipt (``inband_check/v1``,
+    SSRF differential / RCE arithmetic echo) -- never stdout heuristics.
+    """
+    del result, oob_hits, sink_class
+    ok, ev = evidence_mod.oob_confirmation(oob_verification)
+    if ok:
+        return ok, ev
+    return evidence_mod.inband_confirmation(inband_verification)
+
+
+def action_gate(state: dict, action_type: str, family: str) -> dict:
+    """Authorize the next deepening action before generated code is executed.
+
+    The model may choose the concrete payload, but not the technique family or
+    progression.  A conclusion is passed to ``gate_conclude``; all executable
+    actions must use the deterministic next family.
+    """
+    if action_type == "conclude":
+        return {"allow": True, "reason": "conclusion-deferred-to-gate", "expected_family": ""}
+    expected = next_family(state)
+    if expected is None:
+        return {"allow": False, "reason": "ladder-exhausted", "expected_family": ""}
+    requested = str(family or "")
+    if requested != expected["family"]:
+        return {
+            "allow": False,
+            "reason": "unexpected-family",
+            "expected_family": expected["family"],
+            "directive": f"Execute the required next family '{expected['family']}', not '{requested or '(missing)'}'.",
+        }
+    return {"allow": True, "reason": "next-family-authorized", "expected_family": expected["family"]}
+
+
+def classify_attempt(result: dict | None) -> str:
+    """'genuine' | 'policy_refused' | 'infra_unavailable', from code_exec's own ``failure_class``.
+
+    Absence of ``failure_class`` means the sandbox actually launched and ran the code -- a real
+    attempt against the target, whatever its outcome (a non-zero exit or timeout INSIDE the
+    container is still real signal, not infra noise). Policy refusals (insufficient capability,
+    a misconfigured egress mode) are deterministic -- retrying changes nothing. Infra failures
+    (docker unavailable, an unusable egress jail, a launch exception) are transient -- the
+    payload never reached the target, so they must not count as a "try" or a completed
+    exercise attempt. An unrecognized ``failure_class`` value fails OPEN to 'genuine' so an
+    unanticipated shape never silently blocks ladder progress."""
+    fc = str((result or {}).get("failure_class") or "")
+    return {"policy": "policy_refused", "infra": "infra_unavailable"}.get(fc, "genuine")
 
 
 def observe(state: dict, family: str, lesson: str, *, result: dict | None = None,
-            oob_hits: list | None = None, max_variants: int = MAX_VARIANTS) -> dict:
+            oob_hits: list | None = None, oob_verification: dict | None = None,
+            inband_verification: dict | None = None,
+            max_variants: int = MAX_VARIANTS) -> dict:
     """Record ONE attempt against `family`: bump its try count, store the lesson, and set the
-    confirmed flag if an oracle fired. Returns the updated state (pure: caller persists it)."""
+    confirmed flag if an oracle fired. Returns the updated state (pure: caller persists it).
+
+    An attempt that never reached the target (a policy refusal or an infra failure -- see
+    ``classify_attempt``) does NOT bump `tries`: it must not count toward ladder exhaustion
+    (a false "not-exploitable" verdict from sandbox noise) or toward the operation-ledger tag
+    the caller derives from `last_observation` (a false "objective exercised")."""
     state = {**state}
     ledger = {**(state.get("ledger") or {})}
-    fam = family if family in (state.get("ladder") or []) else None
-    confirmed, ev = detect_confirmation(result or {}, oob_hits, sink_class=str(state.get("sink_class") or ""))
+    result = result or {}
+    gate = action_gate(state, "code", family)
+    fam = family if gate.get("allow") else None
+    classification = classify_attempt(result)
+    confirmed, ev = detect_confirmation(
+        result, oob_hits, sink_class=str(state.get("sink_class") or ""),
+        oob_verification=oob_verification, inband_verification=inband_verification,
+    )
+    state["last_observation"] = {
+        "family": str(family or ""),
+        "accepted": bool(fam),
+        "reason": gate.get("reason", ""),
+        "classification": classification,
+    }
     if fam:
         slot = {**(ledger.get(fam) or {})}
-        slot["tries"] = int(slot.get("tries") or 0) + 1
-        slot["outcome"] = "confirmed" if confirmed else "blocked"
+        if classification == "genuine":
+            slot["tries"] = int(slot.get("tries") or 0) + 1
+            slot["outcome"] = "confirmed" if confirmed else "blocked"
+            state["consecutive_infra_failures"] = 0
+        elif classification == "policy_refused":
+            slot["outcome"] = "policy_refused"
+            slot["policy_reason"] = str(result.get("refused_reason") or result.get("error") or "")
+            state["policy_refused"] = True
+        else:  # infra_unavailable
+            slot["outcome"] = "infra_unavailable"
+            slot["infra_failures"] = int(slot.get("infra_failures") or 0) + 1
+            state["consecutive_infra_failures"] = int(state.get("consecutive_infra_failures") or 0) + 1
         if lesson:
             slot["lesson"] = str(lesson)[:400]
         ledger[fam] = slot
     state["ledger"] = ledger
     lessons = list(state.get("lessons") or [])
-    if lesson and fam:
+    if lesson and fam and classification == "genuine":
         lessons.append({"family": fam, "lesson": str(lesson)[:400]})
     state["lessons"] = lessons[-12:]
     if confirmed:
@@ -308,21 +348,42 @@ def exhausted(state: dict, max_variants: int = MAX_VARIANTS) -> bool:
     return len(under_tried(state, max_variants)) == 0
 
 
-def gate_conclude(state: dict, proposed_confirmed: bool, max_variants: int = MAX_VARIANTS) -> dict:
+# How many CONSECUTIVE infra-unavailable attempts (docker down, jail unusable, launch exception --
+# see classify_attempt) the walk tolerates before giving up on this hypothesis. Small and bounded:
+# large enough to ride out one flaky container start, small enough that a genuinely dead sandbox
+# doesn't burn the whole per-sink step budget retrying the same non-attempt.
+INFRA_CIRCUIT_BREAKER = 3
+
+
+def gate_conclude(state: dict, proposed_confirmed: bool = False, max_variants: int = MAX_VARIANTS,
+                  infra_circuit_breaker: int = INFRA_CIRCUIT_BREAKER) -> dict:
     """THE no-premature-give-up guard (design-doc Theorem 2).
 
     Returns {allow, reason, directive}:
-      * allow=True  iff the agent confirmed (proposed_confirmed or state.confirmed) OR the ladder is
-                    exhausted. The conclusion is accepted and the loop ends.
+      * allow=True  iff a verifier receipt confirmed state.confirmed, the ladder is genuinely
+                    exhausted, the hypothesis was policy-refused, or the sandbox proved
+                    persistently unavailable. The conclusion is accepted and the loop ends.
       * allow=False iff the agent tries to conclude "not exploitable" while untried families remain.
                     The conclusion is REJECTED and `directive` tells the agent exactly what to try
-                    next (untried families + lessons learned) -- i.e. try harder, differently."""
-    confirmed = bool(proposed_confirmed) or bool(state.get("confirmed"))
+                    next (untried families + lessons learned) -- i.e. try harder, differently.
+
+    Policy-refused and infra-unavailable are checked BEFORE exhaustion so neither can be
+    mistaken for "we tried everything and the target held" -- they mean we never really tried."""
+    # ``proposed_confirmed`` is retained only to avoid breaking older workflow
+    # inputs.  A model's self-assessment is never evidence.
+    del proposed_confirmed
+    confirmed = bool(state.get("confirmed"))
     if confirmed:
-        return {"allow": True, "reason": "confirmed", "directive": ""}
+        return {"allow": True, "reason": "confirmed", "confirmed": True, "directive": ""}
+    if state.get("policy_refused"):
+        return {"allow": True, "reason": "policy-refused", "confirmed": False, "directive": "",
+                "verdict": "not-attempted-policy-refused"}
+    if int(state.get("consecutive_infra_failures") or 0) >= infra_circuit_breaker:
+        return {"allow": True, "reason": "infra-unavailable", "confirmed": False, "directive": "",
+                "verdict": "not-attempted-infra-unavailable"}
     if exhausted(state, max_variants):
         return {"allow": True, "reason": "ladder-exhausted",
-                "directive": "", "verdict": "not-exploitable-after-exhaustive-escalation"}
+                "confirmed": False, "directive": "", "verdict": "not-exploitable-after-exhaustive-escalation"}
     fresh = untried(state)
     remaining = under_tried(state, max_variants)
     families_line = (
@@ -331,7 +392,7 @@ def gate_conclude(state: dict, proposed_confirmed: bool, max_variants: int = MAX
     )
     return {
         "allow": False,
-        "reason": "premature-giveup-blocked",
+        "reason": "premature-giveup-blocked", "confirmed": False,
         "directive": (
             "DO NOT conclude yet. You have not exhausted the escalation ladder for this "
             f"{state.get('sink_class')} sink. " + families_line

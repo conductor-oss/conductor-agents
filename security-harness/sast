@@ -29,6 +29,11 @@
 #   ./sast /path/to/code --target "acme-api @ abcd123"
 set -euo pipefail
 
+SC_REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$SC_REPO_ROOT/conductor/env.sh"
+sc_load_conductor_environment "$SC_REPO_ROOT"
+
 WF="sast_report"
 SOURCE=""; TARGET=""; WAIT=true; NO_BOOTSTRAP=false; DEEP=false; MAX_STEPS="10"
 
@@ -61,7 +66,7 @@ SOURCE="$ABS"
 
 # Bring the stack up (server + workflows + worker fleet) unless told not to. Idempotent.
 if ! $NO_BOOTSTRAP; then
-  export SC_REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+  export SC_REPO_ROOT
   source "$SC_REPO_ROOT/conductor/ensure-stack.sh"
   sc_ensure_stack "$WF"
 fi

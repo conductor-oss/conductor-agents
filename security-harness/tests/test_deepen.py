@@ -65,7 +65,9 @@ def test_gate_blocks_premature_giveup():
 def test_gate_allows_on_confirmation_even_if_not_exhausted():
     """Early exit on success: an oracle hit ends the walk immediately, ladder not exhausted."""
     st = deepen.init_state({"title": "SQLi", "category": "injection"})
-    st = deepen.observe(st, "time-blind", lesson="5s delay", result={}, oob_hits=[{"token": "t"}])
+    receipt = {"verification": "oob_check/v1", "available": True, "hit": True,
+               "hits": [{"token": "t", "path": "/c/t"}]}
+    st = deepen.observe(st, "error-based", lesson="blind callback", result={}, oob_verification=receipt)
     assert st["confirmed"] is True
     assert deepen.exhausted(st) is False
     g = deepen.gate_conclude(st, proposed_confirmed=False)
@@ -90,13 +92,16 @@ def test_gate_allows_on_exhaustion_with_not_exploitable_verdict():
     assert g.get("verdict") == "not-exploitable-after-exhaustive-escalation"
 
 
-def test_detect_confirmation_sources():
-    assert deepen.detect_confirmation({}, oob_hits=[{"token": "x"}])[0] is True
-    assert deepen.detect_confirmation({"stdout": "uid=0(root) gid=0"})[0] is True
-    assert deepen.detect_confirmation({"result": {"findings": [{"confirmed": True, "title": "rce"}]}})[0] is True
+def test_detect_confirmation_requires_a_verifier_receipt():
+    receipt = {"verification": "oob_check/v1", "available": True, "hit": True,
+               "hits": [{"token": "x", "path": "/c/x"}]}
+    assert deepen.detect_confirmation(oob_verification=receipt)[0] is True
+    assert deepen.detect_confirmation({}, oob_hits=[{"token": "x"}])[0] is False
+    assert deepen.detect_confirmation({"stdout": "uid=0(root) gid=0"})[0] is False
+    assert deepen.detect_confirmation({"result": {"findings": [{"confirmed": True, "title": "rce"}]}})[0] is False
     assert deepen.detect_confirmation({"stdout": "HTTP 200 OK, nothing reflected"})[0] is False
-    # server-emitted SQL error confirms; the attacker's OWN payload echoed back must NOT
-    assert deepen.detect_confirmation({"stdout": "SQLITE_ERROR: ... syntax error near \"'\""})[0] is True
+    # Until a typed in-band verifier exists, stdout is never proof -- even a real-looking server error.
+    assert deepen.detect_confirmation({"stdout": "SQLITE_ERROR: ... syntax error near \"'\""})[0] is False
     assert deepen.detect_confirmation({"stdout": "I sent q=' UNION SELECT 1,2,3-- and got 200"})[0] is False
 
 
@@ -151,33 +156,45 @@ def test_ssrf_focus_brief_surfaces_the_full_internal_target_corpus():
     assert "[::1]" not in deepen.focus_brief(deepen.init_state({"title": "SQLi", "category": "injection"}))
 
 
-def test_ssrf_internal_reach_oracle_distinguishes_block_from_reach():
-    """The other half of the false-negative: a 403 'blocked in this cluster' is BLOCKED, but a
-    non-403 backend response from an internal target (health body, internal OpenAPI, or a backend
-    INVALID_TOKEN proving traversal) is a CONFIRMED internal reach. Gated on the ssrf sink so an
-    unrelated auth-test 401 cannot false-confirm."""
+def test_ssrf_stdout_is_a_lead_until_a_typed_verifier_exists():
+    """Generated code can print an arbitrary backend-looking response. It is a useful lead, not a
+    proof, until a typed differential/replay verifier is added."""
     block = {"stdout": "http://127.0.0.1:8080/actuator/env -> 403 "
                         "{\"message\":\"HTTP calls to this domain are blocked in this cluster\"}"}
     reach_401 = {"stdout": "http://[::1]:8080/actuator/env -> 401 "
                            "{\"error\":\"INVALID_TOKEN\",\"message\":\"Token cannot be null or empty\"}"}
     reach_docs = {"stdout": "http://[::1]:8080/api-docs -> 200 {\"openapi\":\"3.0\"}"}
-    assert deepen.detect_confirmation(block, sink_class="ssrf")[0] is False        # BLOCKED, not confirmed
-    assert deepen.detect_confirmation(reach_401, sink_class="ssrf")[0] is True     # backend traversal proof
-    assert deepen.detect_confirmation(reach_docs, sink_class="ssrf")[0] is True    # internal OpenAPI reached
-    # the SAME backend-401 in a non-SSRF sink must NOT confirm (guard against false positives)
+    assert deepen.detect_confirmation(block, sink_class="ssrf")[0] is False
+    assert deepen.detect_confirmation(reach_401, sink_class="ssrf")[0] is False
+    assert deepen.detect_confirmation(reach_docs, sink_class="ssrf")[0] is False
     assert deepen.detect_confirmation(reach_401, sink_class="sqli")[0] is False
-    # observe() threads the sink_class through, so an ssrf reach flips state.confirmed
     st = deepen.init_state({"objective_id": "INFRA-SSRF", "title": "SSRF", "category": "ssrf"})
-    st = deepen.observe(st, "ipv6-bypass", lesson="v4 blocked, trying [::1]", result=reach_401)
-    assert st["confirmed"] is True and "internal SSRF reach" in st["confirm_evidence"]
+    st = deepen.observe(st, "canonical-internal", lesson="v4 blocked, trying [::1]", result=reach_401)
+    assert st["confirmed"] is False
 
 
-def test_ssti_distinctive_product_and_winfile_oracles():
-    """Phase 2 per-class oracles: the distinctive SSTI product confirms (7*7=49 does not), and
-    Windows server-file content confirms traversal."""
-    assert deepen.detect_confirmation({"stdout": "task output: 1787569"})[0] is True
+def test_stdout_oracles_are_not_confirmation_receipts():
+    assert deepen.detect_confirmation({"stdout": "task output: 1787569"})[0] is False
     assert deepen.detect_confirmation({"stdout": "result is 49"})[0] is False
-    assert deepen.detect_confirmation({"stdout": "[boot loader]\ntimeout=30"})[0] is True
+    assert deepen.detect_confirmation({"stdout": "[boot loader]\ntimeout=30"})[0] is False
+
+
+def test_action_gate_only_allows_the_deterministic_next_family():
+    st = deepen.init_state({"title": "SQLi", "category": "injection"})
+    assert deepen.action_gate(st, "code", "boolean-blind")["allow"] is False
+    allowed = deepen.action_gate(st, "code", "error-based")
+    assert allowed["allow"] is True and allowed["expected_family"] == "error-based"
+    st = deepen.observe(st, "error-based", lesson="no error", result={})
+    assert deepen.action_gate(st, "code", "boolean-blind")["allow"] is True
+    rejected = deepen.observe(st, "time-blind", lesson="should not count", result={})
+    assert rejected["ledger"] == st["ledger"]
+    assert rejected["last_observation"]["reason"] == "unexpected-family"
+
+
+def test_model_claim_cannot_override_the_confirmation_gate():
+    st = deepen.init_state({"title": "SQLi", "category": "injection"})
+    gate = deepen.gate_conclude(st, proposed_confirmed=True)
+    assert gate["allow"] is False and gate["confirmed"] is False
 
 
 def test_init_state_carries_hypothesis_identifiers_and_attempt_op_tags():
@@ -197,3 +214,115 @@ def test_init_state_carries_hypothesis_identifiers_and_attempt_op_tags():
     st2 = deepen.init_state({"objective_id": "INFRA-RCE-INJECTION", "category": "sqli", "title": "SQLi"})
     op2 = deepen.attempt_op(st2, "error-based", "no error reflected")
     assert op2["type"] == "injection_attempt" and "cve_id" not in op2 and op2["family"] == "error-based"
+
+
+# --- Infra-vs-genuine attempt classification -----------------------------------------------
+# code_exec tags its own pre-flight refusals with failure_class ("policy" | "infra"); a normal
+# completed run (whatever its exit code) carries no failure_class at all. Neither a policy
+# refusal nor an infra failure may count as a genuine ladder try -- otherwise sandbox/config
+# noise falsely exhausts the ladder ("not-exploitable") or falsely satisfies an objective's
+# completion gate (which trusts the mere presence of an attempt_op).
+
+def test_classify_attempt():
+    assert deepen.classify_attempt({"ok": True, "stdout": "200"}) == "genuine"
+    assert deepen.classify_attempt({"ok": False}) == "genuine"                       # ran, exited non-zero
+    assert deepen.classify_attempt({}) == "genuine"
+    assert deepen.classify_attempt(None) == "genuine"
+    assert deepen.classify_attempt({"failure_class": "policy"}) == "policy_refused"
+    assert deepen.classify_attempt({"failure_class": "infra"}) == "infra_unavailable"
+    assert deepen.classify_attempt({"failure_class": "something-new"}) == "genuine"  # fail open
+
+
+def test_observe_infra_failure_does_not_increment_tries_or_confirm():
+    st = deepen.init_state({"title": "SQLi", "category": "injection"})
+    fam = st["ladder"][0]
+    st = deepen.observe(st, fam, lesson="docker down",
+                        result={"ok": False, "error": "docker not available on the worker host",
+                                "failure_class": "infra"})
+    assert st["ledger"].get(fam, {}).get("tries") is None  # never bumped
+    assert st["ledger"][fam]["outcome"] == "infra_unavailable"
+    assert st["ledger"][fam]["infra_failures"] == 1
+    assert st["consecutive_infra_failures"] == 1
+    assert st.get("confirmed") is not True
+    assert st["last_observation"]["classification"] == "infra_unavailable"
+
+
+def test_observe_policy_refusal_does_not_increment_tries_and_is_sticky():
+    st = deepen.init_state({"title": "SQLi", "category": "injection"})
+    fam = st["ladder"][0]
+    st = deepen.observe(st, fam, lesson="capability too low",
+                        result={"ok": False, "error": "refused: capability", "failure_class": "policy",
+                                "refused_reason": "code_exec needs capability level 2 but the campaign is authorized to level 1"})
+    assert st["ledger"].get(fam, {}).get("tries") is None
+    assert st["ledger"][fam]["outcome"] == "policy_refused"
+    assert "capability level 2" in st["ledger"][fam]["policy_reason"]
+    assert st["policy_refused"] is True
+
+
+def test_observe_genuine_attempt_still_increments_tries_and_resets_breaker():
+    st = deepen.init_state({"title": "SQLi", "category": "injection"})
+    fam = st["ladder"][0]
+    st = deepen.observe(st, fam, lesson="infra blip",
+                        result={"failure_class": "infra"})
+    assert st["consecutive_infra_failures"] == 1
+    st = deepen.observe(st, fam, lesson="ran this time, no error reflected",
+                        result={"ok": False, "stdout": "200 generic"})
+    assert st["ledger"][fam]["tries"] == 1            # the genuine attempt counted
+    assert st["ledger"][fam]["outcome"] == "blocked"
+    assert st["consecutive_infra_failures"] == 0      # reset by the genuine observation
+
+
+def test_observe_lessons_list_excludes_infra_noise():
+    st = deepen.init_state({"title": "SQLi", "category": "injection"})
+    fam = st["ladder"][0]
+    st = deepen.observe(st, fam, lesson="docker down", result={"failure_class": "infra"})
+    assert st["lessons"] == []
+    st = deepen.observe(st, fam, lesson="parameterized, no leak", result={"ok": False, "stdout": "200"})
+    assert len(st["lessons"]) == 1 and st["lessons"][0]["lesson"] == "parameterized, no leak"
+
+
+def test_gate_conclude_policy_refused_short_circuits_before_exhaustion():
+    st = deepen.init_state({"title": "SQLi", "category": "injection"})
+    fam = st["ladder"][0]
+    st = deepen.observe(st, fam, lesson="no permission",
+                        result={"failure_class": "policy", "error": "refused: capability"})
+    gate = deepen.gate_conclude(st)
+    assert gate["allow"] is True and gate["confirmed"] is False
+    assert gate["reason"] == "policy-refused"
+    assert gate["verdict"] == "not-attempted-policy-refused"
+
+
+def test_gate_conclude_infra_circuit_breaker_trips_before_exhaustion():
+    st = deepen.init_state({"title": "SQLi", "category": "injection"})
+    fam = st["ladder"][0]
+    for _ in range(deepen.INFRA_CIRCUIT_BREAKER):
+        st = deepen.observe(st, fam, lesson="docker down", result={"failure_class": "infra"})
+    # zero genuine tries anywhere -- exhaustion would ordinarily be far off
+    assert all(deepen._tries(st, f) == 0 for f in st["ladder"])
+    gate = deepen.gate_conclude(st)
+    assert gate["allow"] is True and gate["confirmed"] is False
+    assert gate["reason"] == "infra-unavailable"
+    assert gate["verdict"] == "not-attempted-infra-unavailable"
+
+
+def test_gate_conclude_infra_failures_below_breaker_still_demands_more_trying():
+    st = deepen.init_state({"title": "SQLi", "category": "injection"})
+    fam = st["ladder"][0]
+    st = deepen.observe(st, fam, lesson="docker down", result={"failure_class": "infra"})
+    gate = deepen.gate_conclude(st)
+    assert gate["allow"] is False  # not yet at the breaker threshold, and ladder isn't exhausted
+
+
+def test_infra_and_policy_never_satisfy_the_completion_gate_via_attempt_op():
+    """The severe form of the bug: a single infra-classified attempt must never produce an
+    attempt_op the caller would record into the operation ledger -- feature_exercise trusts the
+    mere PRESENCE of that op type to mark INFRA-RCE-INJECTION/-SUPPLY-CHAIN/-SECRET-SURFACE
+    'completed'. This mirrors the deepen_observe worker's accepted-and-genuine gating."""
+    st = deepen.init_state({"objective_id": "INFRA-RCE-INJECTION", "category": "sqli", "title": "SQLi"})
+    fam = st["ladder"][0]
+    st = deepen.observe(st, fam, lesson="docker down", result={"failure_class": "infra"})
+    last_obs = st["last_observation"]
+    accepted = bool(last_obs.get("accepted"))
+    genuine = last_obs.get("classification") == "genuine"
+    op = deepen.attempt_op(st, fam, "docker down", confirmed=False) if (accepted and genuine) else {}
+    assert op == {}, "an infra-failed attempt must not emit a completion-eligible operation"

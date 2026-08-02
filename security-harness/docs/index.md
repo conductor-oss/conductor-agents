@@ -52,6 +52,7 @@ Security scans are long-running, parallel, and failure-prone — exactly the pro
 - :material-shield-lock: **[Authorization](authorization.md)** — capability levels and the safety governor
 - :material-key: **[Authentication & SSO](authentication.md)** — supply credentials, capture SSO sessions
 - :material-sitemap: **[Architecture](architecture.md)** — the loop, the catalog spine, the worker layout
+- :material-target: **[Live exploitation roadmap](live-exploit-roadmap.md)** — how documentation-led application use, proof, and learning are being hardened
 - :material-file-document: **[Outputs](outputs.md)** — reports, findings, SARIF, dossier
 - :material-robot: **[Agent skill](https://github.com/conductor-oss/conductor-agents/blob/main/security-harness/SKILL.md)** — safe operating instructions for AI assistants
 

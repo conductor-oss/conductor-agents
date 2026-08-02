@@ -85,6 +85,8 @@
 #   --embed-model <id>      Embedding model (default 'text-embedding-3-small').
 #   --oob <url>             OOB collaborator base URL for blind SSRF/exfil/exec confirmation.
 #                           Defaults to a running collaborator (see `make oob`) if present.
+#   --allow-no-oob          Permit a capability>=2 run with NO OOB collaborator. Blind
+#                           SSRF/RCE/exfil then stay UNCONFIRMED (never reported as clean).
 #   --agent                 Also run the ReAct browser agent during the surface phase.
 #   --no-wait               Start and return immediately.
 #   --no-bootstrap          Don't auto-start the local server / workers; assume they're running
@@ -98,6 +100,11 @@
 #       --id 'admin=key:K,secret:S,tokenurl:https://app.example.com/api/token'
 set -euo pipefail
 
+SC_REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$SC_REPO_ROOT/conductor/env.sh"
+sc_load_conductor_environment "$SC_REPO_ROOT"
+
 WF="deep_assess"
 URL=""; SOURCE=""; SCOPE=""; AUTH=false; WAIT=true; AGENT=false; NO_BOOTSTRAP=false; AUTH_PROBE_PATHS_JSON="[]"
 LOGIN_URL=""; USERNAME=""; PASSWORD=""; MAXPAGES=""
@@ -106,7 +113,7 @@ LOOP_MODEL=""; PROVIDER=""; LOOP_PROVIDER=""; EMBED_PROVIDER=""; EMBED_MODEL=""
 IDS_JSON="[]"; FIRST_TOKEN=""; FIRST_HEADER=""; FIRST_SCHEME=""; NID=0
 DOCS_JSON="[]"
 MANIFEST_PATH=""; CAPABILITY=""; KILL_SWITCH=""; PURPLE=false; PROFILE=""; REQUIRE_TENANTS=""; RESILIENCE=false; HUNT=false
-LEAVE_EVIDENCE=false; OBJECTIVES_JSON="[]"; INITIAL_FOCUS=""
+LEAVE_EVIDENCE=false; OBJECTIVES_JSON="[]"; INITIAL_FOCUS=""; ALLOW_NO_OOB=false
 
 # Pre-pass: an optional TARGET profile (profiles/<name>.json or a path) supplies
 # platform hints (auth header/scheme + token-exchange body, protected probe paths,
@@ -230,6 +237,7 @@ while [ $# -gt 0 ]; do
     --embed-provider)    EMBED_PROVIDER="${2:-}"; shift ;;
     --embed-model)       EMBED_MODEL="${2:-}"; shift ;;
     --oob)               OOB="${2:-}"; shift ;;
+    --allow-no-oob)      ALLOW_NO_OOB=true ;;
     --auth-probe-path)   AUTH_PROBE_PATHS_JSON=$(jq -c --arg p "${2:-}" '. + [$p]' <<<"${AUTH_PROBE_PATHS_JSON:-[]}"); shift ;;
     --no-bootstrap)      NO_BOOTSTRAP=true ;;
     -h|--help)    usage 0 ;;
@@ -247,7 +255,7 @@ command -v curl >/dev/null || { echo "ERROR: curl required" >&2; exit 1; }
 # Bring the stack up (server + workflows + worker fleet) unless told not to. Idempotent: each
 # piece is skipped if already healthy. Without workers polling, the campaign would hang.
 if ! $NO_BOOTSTRAP; then
-  export SC_REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+  export SC_REPO_ROOT
   source "$SC_REPO_ROOT/conductor/ensure-stack.sh"
   sc_ensure_stack "$WF"
 fi
@@ -293,7 +301,7 @@ fi
 # OOB collaborator: use --oob if given, else auto-detect a running one from its state file.
 # When set, exploit agents can plant canaries (sc.oob()) and the verifier confirms blind
 # SSRF/exfil/exec via inbound hits. Absent -> blind vectors stay unconfirmed (in-band only).
-OOB_STATE="$(cd "$(dirname "$0")" && pwd)/workers/oob/state.json"
+OOB_STATE="${SC_OOB_STATE_FILE:-$(cd "$(dirname "$0")" && pwd)/workers/oob/state.json}"
 if [ -z "$OOB" ] && [ -f "$OOB_STATE" ]; then
   OOB="$(jq -r '.public_base_url // empty' "$OOB_STATE" 2>/dev/null || true)"
   [ -n "$OOB" ] && echo "ℹ  using OOB collaborator $OOB (from workers/oob/state.json)"
@@ -342,6 +350,20 @@ if [ "${EFFCAP:-1}" -ge 2 ] 2>/dev/null && command -v docker >/dev/null 2>&1; th
     echo "   Re-run --capability 2 only after the image exists. Aborting." >&2
     exit 1
   fi
+fi
+
+# Preflight: blind vulnerability classes (SSRF/RCE/exfil) are CONFIRMED only via an out-of-band
+# collaborator. A capability>=2 campaign will attempt them; with no OOB every blind attempt is
+# structurally unconfirmable, so a "0 runtime-confirmed" report must never be mistaken for
+# assurance. Refuse unless the operator explicitly accepts an in-band-only run.
+if [ "${EFFCAP:-1}" -ge 2 ] 2>/dev/null && [ -z "$OOB" ] && ! $ALLOW_NO_OOB; then
+  echo "ERROR: capability-$EFFCAP campaign with no OOB collaborator. Blind SSRF/RCE/exfil cannot" >&2
+  echo "       be confirmed without one, so their absence from findings would be meaningless." >&2
+  echo "       Start a collaborator first:" >&2
+  echo "           make oob" >&2
+  echo "       or re-run with --allow-no-oob to accept an in-band-only run (blind vectors will be" >&2
+  echo "       reported UNCONFIRMED, never as clean). Aborting." >&2
+  exit 1
 fi
 
 input=$(jq -n \
@@ -409,7 +431,7 @@ while true; do
   ST=$(printf '%s' "$J" | jq -r '.status // empty' 2>/dev/null || true)
   case "$ST" in
     COMPLETED) echo " ✓ COMPLETED"
-      printf '%s' "$J" | jq -r '"  risk: \(.output.risk_rating // "n/a")   confirmed: \((.output.confirmed_findings // [])|length) (rejected \((.output.rejected_findings // [])|length))   blind leads: \((.output.blind_leads // [])|length)\n  passes: \(.output.passes_run // 1)   hypotheses tried: \((.output.tried_signatures // [])|length)   cleanup: removed \((.output.cleanup.deleted // [])|length), residue \((.output.cleanup.residue // [])|length)\n  report: \(.output.report_dir // "n/a")\n  pdf: \(.output.pdf // "n/a")"'
+      printf '%s' "$J" | jq -r '"  live-confirmed: \(.output.live_risk_rating // "n/a")   source-candidate: \(.output.source_candidate_rating // "n/a")   confirmed: \((.output.confirmed_findings // [])|length) (rejected \((.output.rejected_findings // [])|length))   blind leads: \((.output.blind_leads // [])|length)\n  passes: \(.output.passes_run // 1)   hypotheses tried: \((.output.tried_signatures // [])|length)   cleanup: removed \((.output.cleanup.deleted // [])|length), residue \((.output.cleanup.residue // [])|length)\n  report: \(.output.report_dir // "n/a")\n  pdf: \(.output.pdf // "n/a")"'
       exit 0 ;;
     FAILED|TERMINATED|TIMED_OUT) echo " ✗ $ST"
       printf '%s' "$J" | jq -r '"  reason: \(.reasonForIncompletion // "see UI")"'

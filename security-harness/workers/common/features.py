@@ -258,7 +258,13 @@ def build_inventory(app_model: dict | None, surface: dict | None,
                     docs_digest: dict | None, playbook: dict | None = None,
                     max_features: int = 60) -> list[dict]:
     """Merge every available feature/endpoint signal into a deduped, prioritised inventory.
-    Defensive: every source is optional (app_model.features is frequently sparse on real targets)."""
+    Defensive: every source is optional (app_model.features is frequently sparse on real targets).
+
+    PLAN_V3 Phase 0.1: the COMPLETE inventory is retained. ``max_features`` is now the *tail
+    threshold*, not a hard cap: features ranked past it are tagged ``tail=True`` (and carry their
+    ``rank``) rather than discarded, so tail-risk classification (`feature_graph`), the scheduling
+    reservation, and the per-feature coverage ledger can reach the long tail instead of silently
+    losing it to the popularity sort."""
     app_model = app_model if isinstance(app_model, dict) else {}
     surface = surface if isinstance(surface, dict) else {}
     docs_digest = docs_digest if isinstance(docs_digest, dict) else {}
@@ -326,13 +332,22 @@ def build_inventory(app_model: dict | None, surface: dict | None,
         f["prio"] = _prio(f["method"], f["path"], f["inputs"], f["sink_hints"])
         out.append(f)
     out.sort(key=lambda x: (-x["prio"], x["id"]))
-    rest = out[:max_features]
+    for rank, f in enumerate(out):
+        f["rank"] = rank
+        # Beyond the priority cut = the long tail the sweep would previously have dropped.
+        f["tail"] = rank >= max_features
     # Engine workflow-definition injectable fields (INLINE.expression, HTTP.uri, ...) are the
-    # HIGHEST-value injection surface for an orchestration platform — always included, never
-    # truncated (they'd otherwise lose the cap race against many REST features).
+    # HIGHEST-value injection surface for an orchestration platform — always core, never tail.
     deffeats = definition_field_features(playbook)
+    for f in deffeats:
+        f.setdefault("rank", -1)
+        f["tail"] = False
     have = {f["id"] for f in deffeats}
-    return deffeats + [f for f in rest if f["id"] not in have]
+    # Retain the COMPLETE inventory (PLAN_V3 Phase 0.1): the tail is tagged, not discarded.
+    # Downstream cost stays bounded because the triage sweep still takes only the top
+    # `sweep_candidates` (highest-prio first); the tail is reached deliberately by the
+    # scheduling reservation, and its untested state is provable in `feature_coverage`.
+    return deffeats + [f for f in out if f["id"] not in have]
 
 
 def input_bearing(feature: dict) -> bool:
@@ -342,9 +357,21 @@ def input_bearing(feature: dict) -> bool:
     return bool(feature.get("inputs")) or feature.get("method") in ("POST", "PUT", "PATCH", "DELETE")
 
 
-def sweep_candidates(inventory: list, max_candidates: int = 40) -> list[dict]:
-    """Input-bearing features, highest-priority first, bounded."""
-    return [f for f in (inventory or []) if input_bearing(f)][:max_candidates]
+def sweep_candidates(inventory: list, max_candidates: int = 40,
+                     include_ids: set | list | None = None) -> list[dict]:
+    """Input-bearing features, highest-priority first, bounded. ``include_ids`` force-includes the
+    named features even when they rank past the cap (PLAN_V3 Phase 2: the scheduling reservation
+    uses this to pull specific untested TAIL features into the triage sweep that would otherwise
+    lose the priority race). The forced set is itself bounded by the reservation, so the total
+    stays bounded (constraint C3)."""
+    inv = [f for f in (inventory or []) if input_bearing(f)]
+    top = inv[:max_candidates]
+    if not include_ids:
+        return top
+    want = set(include_ids)
+    have = {f.get("id") for f in top}
+    extra = [f for f in inv if f.get("id") in want and f.get("id") not in have]
+    return top + extra
 
 
 def feature_coverage(inventory: list | None, probed: list | None,

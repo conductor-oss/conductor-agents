@@ -40,6 +40,28 @@ def test_residual_risk_no_findings_still_honest():
     assert "not overall security" in rr.lower() or "only what was tested" in rr.lower()
 
 
+def test_dossier_includes_tail_coverage_and_residual(monkeypatch):
+    """PLAN_V3 Phase 3: the dossier carries the corner/neglected tail-coverage table and its
+    residual sentence when a feature graph + coverage are supplied."""
+    from common import feature_graph as fg
+    inv = [
+        {"id": "GET:/admin/x", "method": "GET", "path": "/admin/x", "source": "model",
+         "inputs": [{"name": "q", "location": "query"}], "sink_hints": [], "tail": True},
+        {"id": "GET:/api/profile", "method": "GET", "path": "/api/profile", "source": "surface",
+         "inputs": [], "sink_hints": [], "tail": False},
+    ]
+    graph = fg.build_graph(inv)
+    feature_cov = {"per_feature": [{"id": "GET:/admin/x", "status": "untested"}]}
+    doc = dossier.build(
+        authorization={}, fingerprint="fp", app_model={}, personas=[],
+        documented_invariants=[], coverage_summary={}, confirmed=[], rejected=[], blind=[],
+        contradictions=[], feature_graph=graph, feature_coverage=feature_cov)
+    assert doc["tail_coverage"]["omitted_count"] >= 1
+    # the admin (source-only, untested) feature shows up as omitted residual
+    assert any(o["id"] == "GET:/admin/x" for o in doc["tail_coverage"]["omitted"])
+    assert "neglected" in doc["residual_risk"].lower() or "tail" in doc["residual_risk"].lower()
+
+
 def test_build_assembles_all_sections():
     doc = dossier.build(
         authorization={"reason": "authorized"}, fingerprint="fp1",

@@ -1,0 +1,11 @@
+{
+  "name": "schedule_feature_campaign",
+  "description": "PLAN_V3 Phase 2: budget-bounded tail reservation. Given the feature graph, per-feature coverage, and the slots already budgeted for this pass, return which untested tail features to seed hypotheses for -- reserving a configurable share of explore/exploit slots with bucket diversity, without lifting the campaign's global caps.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 60,
+  "responseTimeoutSeconds": 30,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "ALERT_ONLY",
+  "concurrentExecLimit": 0
+}

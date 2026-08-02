@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 PORT = int(os.environ.get("SC_PROXY_PORT", "8888"))
 ALLOW = [h.strip().lower() for h in (os.environ.get("SC_ALLOW") or "").split(",") if h.strip()]
+BLOCK = [h.strip().lower() for h in (os.environ.get("SC_BLOCK") or "").split(",") if h.strip()]
 
 
 def _allowed(host: str) -> bool:
@@ -32,6 +33,11 @@ def _allowed(host: str) -> bool:
     if not host:
         return False
     return any(host == a or host.endswith("." + a) for a in ALLOW)
+
+
+def _blocked(host: str) -> bool:
+    host = (host or "").lower().split(":")[0]
+    return any(host == b or host.endswith("." + b) for b in BLOCK)
 
 
 def _pipe(a: socket.socket, b: socket.socket):
@@ -69,7 +75,7 @@ class Proxy(BaseHTTPRequestHandler):
 
     def do_CONNECT(self):  # HTTPS tunnel
         host, _, port = self.path.partition(":")
-        if not _allowed(host):
+        if not _allowed(host) or _blocked(host):
             return self._deny()
         try:
             upstream = socket.create_connection((host, int(port or 443)), timeout=15)
@@ -82,7 +88,7 @@ class Proxy(BaseHTTPRequestHandler):
 
     def _http(self):  # plain HTTP forward
         host = urlparse(self.path).hostname or (self.headers.get("Host") or "").split(":")[0]
-        if not _allowed(host):
+        if not _allowed(host) or _blocked(host):
             return self._deny()
         try:
             import urllib.request
@@ -111,7 +117,7 @@ class Proxy(BaseHTTPRequestHandler):
 
 def main():
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Proxy)
-    print(f"egress proxy on :{PORT} allow={ALLOW}", flush=True)
+    print(f"egress proxy on :{PORT} allow={ALLOW} block={BLOCK}", flush=True)
     srv.serve_forever()
 
 

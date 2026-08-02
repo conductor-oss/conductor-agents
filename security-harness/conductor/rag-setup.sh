@@ -7,6 +7,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$ROOT/conductor/env.sh"
+sc_load_conductor_environment "$ROOT"
+sc_require_local_oss "rag-setup.sh"
 : "${PGVECTOR_URL:=jdbc:postgresql://localhost:5433/vectordb}"
 
 echo "→ starting pgvector"

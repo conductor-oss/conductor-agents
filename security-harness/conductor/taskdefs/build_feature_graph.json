@@ -1,0 +1,11 @@
+{
+  "name": "build_feature_graph",
+  "description": "PLAN_V3 Phases 1+3: enrich the retained feature inventory into a tail-aware graph (per-feature exploration buckets + a popularity-independent tail-risk score), compute the per-feature coverage ledger over the whole inventory, and roll both into the corner/neglected tail-coverage accounting for the residual-risk report.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 120,
+  "responseTimeoutSeconds": 90,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "ALERT_ONLY",
+  "concurrentExecLimit": 0
+}

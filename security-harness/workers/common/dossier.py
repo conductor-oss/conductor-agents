@@ -48,7 +48,7 @@ def build_attack_graph(confirmed: list, hypotheses: list | None = None) -> dict:
 
 def residual_risk(confirmed: list, coverage_summary: dict | None, blind: list | None,
                   contradictions: list | None, feature_exercise: dict | None = None,
-                  attempts: int | None = None) -> str:
+                  attempts: int | None = None, tail_residual: str = "") -> str:
     """One-paragraph residual-risk statement (spec 26): what remains unknown / untested.
 
     ``attempts`` = number of objective exploit attempts actually made. When it is 0 and nothing was
@@ -82,6 +82,8 @@ def residual_risk(confirmed: list, coverage_summary: dict | None, blind: list | 
             + ", ".join(str(x) for x in pending)
             + "."
         )
+    if tail_residual:
+        parts.append(tail_residual)      # PLAN_V3 Phase 3: neglected/tail features left untested
     if not parts:
         parts.append("No confirmed findings; note that this reflects only what was tested, not overall security.")
     return " ".join(parts)
@@ -92,11 +94,21 @@ def build(*, authorization: dict, fingerprint: str, app_model: dict, personas: l
           rejected: list, blind: list, contradictions: list,
           cleanup: dict | None = None, coverage_ledger: list | None = None,
           attack_graph: dict | None = None, operation_ledger: list | None = None,
-          feature_exercise: dict | None = None, feeds_as_of: str | None = None) -> dict:
+          feature_exercise: dict | None = None, feeds_as_of: str | None = None,
+          feature_graph: dict | None = None, feature_coverage: dict | None = None,
+          prior_confirmed: list | None = None, channels: dict | None = None) -> dict:
     """Assemble the spec-26 living dossier from the run's artifacts, incl. the E9
-    compliance rollup (OWASP/ASVS) and the re-runnable regression bundle."""
+    compliance rollup (OWASP/ASVS), the re-runnable regression bundle, and (PLAN_V3 Phase 3)
+    the corner/neglected feature tail-coverage accounting."""
+    from common import cleanup_status as cleanup_status_mod
     from common import compliance as compliance_mod
+    from common import feature_graph as feature_graph_mod
+    from common import memory as memory_mod
     from common import regression as regression_mod
+    tail_cov = feature_graph_mod.tail_coverage(
+        feature_graph, feature_coverage, confirmed=confirmed, rejected=rejected
+    ) if feature_graph else {}
+    cleanup = cleanup_status_mod.summarize(cleanup) if cleanup else cleanup
     return {
         "authorization": authorization or {},
         "fingerprint": fingerprint,
@@ -113,12 +125,16 @@ def build(*, authorization: dict, fingerprint: str, app_model: dict, personas: l
         "attack_graph": attack_graph or build_attack_graph(confirmed),
         "operation_ledger": operation_ledger or [],
         "feature_exercise": feature_exercise or {},
+        "feature_coverage": feature_coverage or {},
+        "tail_coverage": tail_cov,
         "feeds_as_of": feeds_as_of or "",
         "regression": regression_mod.bundle(confirmed),
+        "regression_diff": memory_mod.regression_diff(prior_confirmed, confirmed, channels=channels),
         "cleanup": cleanup or {},
         "residual_risk": residual_risk(
             confirmed, coverage_summary, blind, contradictions, feature_exercise,
             attempts=sum(1 for o in (operation_ledger or [])
                          if (o.get("type") or o.get("kind")) == "objective_attempt"),
+            tail_residual=feature_graph_mod.residual_sentence(tail_cov),
         ),
     }

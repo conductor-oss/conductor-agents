@@ -35,11 +35,14 @@ from common import deps as deps_mod
 from common import coverage as coverage_mod
 from common import deepen as deepen_mod
 from common import dossier as dossier_mod
+from common import evidence_state as evidence_state_mod
 from common import feature_exercise as feature_mod
+from common import feature_graph as feature_graph_mod
 from common import features as features_mod
 from common import identity as identity_mod
 from common import memory
 from common import personas as personas_mod
+from common import report_gate as report_gate_mod
 from common import scope as scope_mod
 from common import substrates as substrates_mod
 from common import trace as trace_mod
@@ -822,10 +825,112 @@ def build_feature_inventory(task):
             inp.get("playbook") if isinstance(inp.get("playbook"), dict) else {},
         )
         candidates = features_mod.sweep_candidates(inventory)
+        tail = sum(1 for f in inventory if f.get("tail"))
         return {"inventory": inventory, "candidates": candidates,
-                "total": len(inventory), "candidate_count": len(candidates)}
+                "total": len(inventory), "candidate_count": len(candidates),
+                "tail_count": tail}
     except Exception as exc:
         return {"inventory": [], "candidates": [], "total": 0, "candidate_count": 0, "error": str(exc)}
+
+
+@worker_task(task_definition_name="classify_evidence_state")
+def classify_evidence_state(task):
+    """PLAN_V3 section 5.4: stamp each triage finding with its evidence-state rung (source_only /
+    source_attested / runtime_reproduced / runtime_oob_confirmed) and split the single triage risk
+    rating into a LIVE-confirmed rating (driven only by runtime-confirmed findings) and a
+    SOURCE-candidate rating. Never raises; on error it passes the triage through with the
+    source-candidate rating set to the original triage rating so reporting is never blocked."""
+    inp = task.input_data or {}
+    triage = inp.get("triage") if isinstance(inp.get("triage"), dict) else {}
+    confirmed = inp.get("confirmed") if isinstance(inp.get("confirmed"), list) else []
+    surface = inp.get("surface") if isinstance(inp.get("surface"), list) else []
+    try:
+        return evidence_state_mod.annotate(triage, confirmed=confirmed, surface=surface)
+    except Exception as exc:
+        return {"triage": triage,
+                "live_risk_rating": evidence_state_mod.NONE_RATING,
+                "source_candidate_rating": (triage or {}).get("risk_rating", "Info"),
+                "evidence_state_counts": {}, "confirmed_count": len(confirmed),
+                "oob_confirmed_count": 0, "error": str(exc)}
+
+
+@worker_task(task_definition_name="report_quality_gate")
+def report_quality_gate(task):
+    """PLAN_V3 Phase 6.2: gate the generated report Markdown before PDF. Redacts secret-like
+    literals, strips PDF-hostile characters, and validates required sections + Markdown table
+    syntax. Returns the cleaned Markdown (safe to render) plus the violation list. Never raises;
+    on error it passes the input through unchanged so reporting is never blocked by the gate."""
+    inp = task.input_data or {}
+    md = inp.get("markdown") or inp.get("report_md") or ""
+    try:
+        result = report_gate_mod.check(
+            md,
+            required_sections=inp.get("required_sections"),
+            tail_expected=bool(inp.get("tail_expected")),
+            deep=bool(inp.get("deep", True)))
+        return {"markdown": result["markdown"], "ok": result["ok"],
+                "violations": result["violations"], "redactions": result["redactions"]}
+    except Exception as exc:
+        return {"markdown": md, "ok": True, "violations": [], "redactions": [], "error": str(exc)}
+
+
+@worker_task(task_definition_name="build_feature_graph")
+def build_feature_graph(task):
+    """PLAN_V3 Phases 1+3: enrich the retained inventory into a tail-aware feature graph (per-feature
+    exploration buckets + a popularity-INDEPENDENT tail-risk score -- this folds in
+    `classify_tail_features`), compute the per-feature coverage ledger over the WHOLE inventory
+    (Phase 0.2, wiring the previously-dead `features.feature_coverage`), and roll both up into the
+    per-bucket tail-coverage accounting used by the residual-risk report section. Never raises."""
+    inp = task.input_data or {}
+
+    def _l(k):
+        return inp.get(k) if isinstance(inp.get(k), list) else []
+
+    try:
+        inventory = _l("inventory")
+        graph = feature_graph_mod.build_graph(inventory)
+        feature_cov = features_mod.feature_coverage(inventory, _l("probed"), _l("operations"))
+        tail_cov = feature_graph_mod.tail_coverage(
+            graph, feature_cov, confirmed=_l("confirmed"), rejected=_l("rejected"))
+        return {"feature_graph": graph, "feature_coverage": feature_cov,
+                "tail_coverage": tail_cov,
+                "tail_total": graph.get("tail_total", 0),
+                "omitted_count": tail_cov.get("omitted_count", 0)}
+    except Exception as exc:
+        return {"feature_graph": {"features": [], "buckets": {}}, "feature_coverage": {},
+                "tail_coverage": {}, "tail_total": 0, "omitted_count": 0, "error": str(exc)}
+
+
+@worker_task(task_definition_name="schedule_feature_campaign")
+def schedule_feature_campaign(task):
+    """PLAN_V3 Phase 2: budget-bounded tail reservation. Given the feature graph, the per-feature
+    coverage, and the slots ALREADY budgeted for this pass, return which untested tail features to
+    seed hypotheses for -- reserving a configurable share of explore/exploit slots with bucket
+    diversity, WITHOUT lifting the campaign's global caps (constraints C1/C3). The reserved ids are
+    consumed by `build_mandatory_hypotheses` (feature-sweep seeding). Never raises."""
+    inp = task.input_data or {}
+
+    def _i(k, d):
+        try:
+            return int(inp.get(k, d))
+        except (TypeError, ValueError):
+            return d
+
+    try:
+        graph = inp.get("feature_graph") if isinstance(inp.get("feature_graph"), dict) else {}
+        coverage = inp.get("feature_coverage") if isinstance(inp.get("feature_coverage"), dict) else {}
+        covered = inp.get("covered_ids") if isinstance(inp.get("covered_ids"), list) else []
+        reservation = feature_graph_mod.reserve(
+            graph, coverage,
+            explore_slots=_i("explore_slots", 0),
+            exploit_slots=_i("exploit_slots", 0),
+            covered_ids=set(covered))
+        return {"reservation": reservation,
+                "reserved_explore": reservation.get("explore", []),
+                "reserved_exploit": reservation.get("exploit", [])}
+    except Exception as exc:
+        return {"reservation": {"explore": [], "exploit": []},
+                "reserved_explore": [], "reserved_exploit": [], "error": str(exc)}
 
 
 def _triage_one(feat, base_url, ident, auth, scope, oob_base):
@@ -875,7 +980,10 @@ def feature_triage(task):
         labels = [k for k, v in identities.items() if k != "anon" and isinstance(v, dict) and v.get("value")]
         ident = labels[0] if labels else "anon"
         auth = identities.get(ident) if isinstance(identities.get(ident), dict) else {}
-        candidates = features_mod.sweep_candidates(inventory)
+        # PLAN_V3 Phase 2: the scheduling reservation force-includes untested tail features that
+        # rank past the priority cap, so the neglected surface actually gets the cheap triage probe.
+        reserved = inp.get("reserved_ids") if isinstance(inp.get("reserved_ids"), list) else []
+        candidates = features_mod.sweep_candidates(inventory, include_ids=reserved)
         signals, probed = [], []
         for feat in candidates:
             # workflow-definition fields can't be host-probed (they need define+run) -> deep only
@@ -927,16 +1035,40 @@ def deepen_observe(task):
             family,
             lesson,
             result=inp.get("result") if isinstance(inp.get("result"), dict) else {},
-            oob_hits=inp.get("oob_hits") if isinstance(inp.get("oob_hits"), list) else [],
+            oob_verification=inp.get("oob_verification") if isinstance(inp.get("oob_verification"), dict) else {},
+            inband_verification=inp.get("inband_verification") if isinstance(inp.get("inband_verification"), dict) else {},
         )
         # Deterministic family/CVE-tagged op so technique_coverage + the cve_attempt completion gate
         # see this attempt even when the agent's code didn't call sc.injection_attempt/sc.cve_attempt.
-        op = deepen_mod.attempt_op(new, family, lesson, confirmed=bool(new.get("confirmed"))) if family else {}
+        # GENUINE only: a policy-refused or infra-unavailable attempt never reached the target, so it
+        # must never satisfy an INFRA-RCE-INJECTION/INFRA-SUPPLY-CHAIN/INFRA-SECRET-SURFACE completion
+        # gate (those gates trust the mere PRESENCE of this op type -- see feature_exercise.py).
+        last_obs = new.get("last_observation") or {}
+        accepted = bool(last_obs.get("accepted"))
+        genuine = last_obs.get("classification") == "genuine"
+        op = deepen_mod.attempt_op(new, family, lesson, confirmed=bool(new.get("confirmed"))) if (accepted and genuine) else {}
         return {"state": new, "brief": deepen_mod.focus_brief(new),
                 "next_family": deepen_mod.next_family(new), "operation": op,
-                "confirmed": bool(new.get("confirmed")), "exhausted": deepen_mod.exhausted(new)}
+                "confirmed": bool(new.get("confirmed")), "accepted_family": accepted,
+                "exhausted": deepen_mod.exhausted(new)}
     except Exception as exc:
         return {"state": state, "brief": "", "confirmed": False, "error": str(exc)}
+
+
+@worker_task(task_definition_name="deepen_action_gate")
+def deepen_action_gate(task):
+    """Authorize a generated deepening action before it reaches ``code_exec``."""
+    inp = task.input_data or {}
+    state = inp.get("state") if isinstance(inp.get("state"), dict) else {}
+    try:
+        return deepen_mod.action_gate(
+            state,
+            str(inp.get("action_type") or ""),
+            str(inp.get("family") or ""),
+        )
+    except Exception as exc:
+        # An authorization failure must never become an execution permission.
+        return {"allow": False, "reason": "action-gate-error", "directive": "Do not execute; regenerate a valid action.", "error": str(exc)}
 
 
 @worker_task(task_definition_name="deepen_gate")
@@ -952,8 +1084,10 @@ def deepen_gate(task):
         g = deepen_mod.gate_conclude(state, proposed)
         return g
     except Exception as exc:
-        # fail-safe: on error, ALLOW conclusion (never trap the loop) but record the error
-        return {"allow": True, "reason": "gate-error", "directive": "", "error": str(exc)}
+        # Fail closed. A broken evidence gate must not turn an LLM conclusion into
+        # a confirmed finding; the bounded workflow loop will terminate safely.
+        return {"allow": False, "reason": "gate-error", "confirmed": False,
+                "directive": "Do not conclude or execute until the gate can be evaluated.", "error": str(exc)}
 
 
 @worker_task(task_definition_name="evaluate_campaign_progress")
@@ -1072,7 +1206,11 @@ def build_dossier(task):
             attack_graph=_d("attack_graph"),
             operation_ledger=_l("operation_ledger"),
             feature_exercise=_d("feature_exercise"),
-            feeds_as_of=str(inp.get("feeds_as_of") or ""))
+            feeds_as_of=str(inp.get("feeds_as_of") or ""),
+            feature_graph=_d("feature_graph"),
+            feature_coverage=_d("feature_coverage"),
+            prior_confirmed=_l("prior_confirmed"),
+            channels={"oob": bool(str(inp.get("oob_base") or "").strip()), "inband": True})
         report_dir = inp.get("report_dir") or ""
         written = ""
         if report_dir and os.path.isdir(report_dir):
@@ -1081,7 +1219,8 @@ def build_dossier(task):
                 json.dump(doc, fh, indent=2)
         return {"dossier": doc, "attack_graph": doc["attack_graph"],
                 "residual_risk": doc["residual_risk"], "compliance": doc["compliance"],
-                "regression": doc["regression"], "written": written}
+                "regression": doc["regression"], "regression_diff": doc.get("regression_diff", {}),
+                "written": written, "tail_coverage": doc.get("tail_coverage", {})}
     except Exception as exc:
         return {"dossier": {}, "attack_graph": {"nodes": [], "edges": []},
                 "residual_risk": "", "error": str(exc)}
@@ -1117,6 +1256,7 @@ def memory_save(task):
             gaps=_list("gaps"),
             coverage=inp.get("coverage") if isinstance(inp.get("coverage"), dict) else {},
             documented_invariants=_list("documented_invariants"),
+            channels={"oob": bool(str(inp.get("oob_base") or "").strip()), "inband": True},
             run_id=run_id)
         path = memory.save(fp, state)
         memory.append_history(fp, {"run_id": run_id, "ts": state["updated"],

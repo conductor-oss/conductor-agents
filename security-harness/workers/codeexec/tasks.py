@@ -14,8 +14,9 @@ Safety model:
     non-root user, ``--cap-drop ALL``, ``--security-opt no-new-privileges``,
     read-only rootfs (+ tmpfs), no host mounts except the per-run workspace volume,
     pids/memory/cpu caps, and a hard wall-clock timeout.
-  - Network: the ``sc`` session refuses any out-of-scope host. (A network-level
-    egress allow-list via proxy is the planned hardening before aggressive prod runs.)
+  - Network: an internal Docker network plus allow-listing egress proxy permits
+    only the target and collaborator hosts. Direct collaborator access is blocked
+    from the sandbox so generated code cannot manufacture its own OOB proof.
   - Auditability: created resources are ledgered for cleanup; every object the agent
     makes is name-prefixed ``sc-pentest-<runid>-``; tokens are injected via env and
     never echoed.
@@ -79,8 +80,8 @@ def code_exec(task):
     inp = task.input_data or {}
     code = inp.get("code")
     if not isinstance(code, str) or not code.strip():
-        return {"ok": False, "error": "no code provided", "stdout": "", "stderr": "",
-                "result": {}, "created_resources": []}
+        return {"ok": False, "error": "no code provided", "failure_class": "infra",
+                "stdout": "", "stderr": "", "result": {}, "created_resources": []}
 
     # Capability gate (spec 15.1): operating the product (running agent-authored code
     # that drives multi-step state-changing flows) is a level-2 action -- level-3 when
@@ -92,7 +93,7 @@ def code_exec(task):
     except (TypeError, ValueError):
         capability_max = 1
     if needed > capability_max:
-        return {"ok": False, "error": "refused: capability",
+        return {"ok": False, "error": "refused: capability", "failure_class": "policy",
                 "refused_reason": (f"code_exec needs capability level {needed} but the campaign "
                                    f"is authorized to level {capability_max}"),
                 "stdout": "", "stderr": "", "result": {}, "created_resources": []}
@@ -114,6 +115,7 @@ def code_exec(task):
     docker = _docker()
     if not docker:
         return {"ok": False, "error": "docker not available on the worker host",
+                "failure_class": "infra",
                 "stdout": "", "stderr": "", "result": {}, "created_resources": []}
 
     log.info("code_exec: run_id=%s agent=%s egress=%s code_len=%d", run_id, agent[:12], EGRESS_MODE, len(code))
@@ -155,6 +157,7 @@ def code_exec(task):
         return {
             "ok": False,
             "error": "refused: insecure code_exec egress mode",
+            "failure_class": "policy",
             "refused_reason": "SC_CODEEXEC_EGRESS must be 'jail'; bridge mode is not permitted",
             "stdout": "", "stderr": "", "result": {}, "created_resources": [],
         }
@@ -163,6 +166,7 @@ def code_exec(task):
         return {
             "ok": False,
             "error": "refused: egress jail unavailable",
+            "failure_class": "infra",
             "refused_reason": "code_exec fails closed when its target/OOB allow-list network cannot be established",
             "stdout": "", "stderr": "", "result": {}, "created_resources": [],
         }
@@ -215,7 +219,7 @@ def code_exec(task):
         stdout = (exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         stderr = (exc.stderr or b"").decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
     except Exception as exc:  # never let a step crash the loop
-        return {"ok": False, "error": f"container launch failed: {exc}",
+        return {"ok": False, "error": f"container launch failed: {exc}", "failure_class": "infra",
                 "stdout": stdout[:OUT_LIMIT], "stderr": stderr[:OUT_LIMIT],
                 "result": {}, "created_resources": []}
 

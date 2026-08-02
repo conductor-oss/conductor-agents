@@ -16,15 +16,50 @@
 # back to this file's location. The fallback uses BASH_SOURCE under bash; if sourced from a shell
 # without it, the caller-set SC_REPO_ROOT is what keeps resolution correct.
 _SC_ROOT="${SC_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-_SC_BASE="${CONDUCTOR_SERVER_URL:-http://localhost:8080/api}"; _SC_BASE="${_SC_BASE%/api}"
+# shellcheck disable=SC1091
+source "$_SC_ROOT/conductor/env.sh"
+sc_load_conductor_environment "$_SC_ROOT"
+_SC_API="${CONDUCTOR_SERVER_URL%/}"
+_SC_BASE="${_SC_API%/api}"
 _SC_PY="$_SC_ROOT/workers/.venv/bin/python"
 _SC_WORKER_MODULES="${WORKER_MODULES:-recon,browser,dast,sast,codenav,api,rag,httptool,codeexec,oob,safety,hc}"
 _SC_WORKER_LOG="${SC_WORKER_LOG:-/tmp/sc-workers.log}"
 _SC_SERVER_LOG="${SC_SERVER_LOG:-/tmp/sc-conductor-server.log}"
+_SC_ACCESS_TOKEN="${CONDUCTOR_AUTH_TOKEN:-}"
 
-_sc_http() { curl -s -o /dev/null -w '%{http_code}' --max-time "${2:-5}" "$1" 2>/dev/null || echo 000; }
+_sc_http() {
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time "${2:-5}" "$1" 2>/dev/null) || {
+    echo 000
+    return
+  }
+  echo "$code"
+}
 
-_sc_server_up() { [ "$(_sc_http "$_SC_BASE/health")" = "200" ]; }
+_sc_server_up() { conductor workflow list >/dev/null 2>&1; }
+
+_sc_ensure_access_token() {
+  [ -z "$_SC_ACCESS_TOKEN" ] || return 0
+  [ -n "${CONDUCTOR_AUTH_KEY:-}" ] || return 0
+  local body response
+  body=$(jq -nc --arg key "$CONDUCTOR_AUTH_KEY" --arg secret "$CONDUCTOR_AUTH_SECRET" \
+    '{keyId:$key,keySecret:$secret}')
+  response=$(printf '%s' "$body" | curl -sS --max-time 10 \
+    -H 'Content-Type: application/json' --data-binary @- "$_SC_API/token") || return 1
+  _SC_ACCESS_TOKEN=$(printf '%s' "$response" | jq -r '.token // empty')
+  [ -n "$_SC_ACCESS_TOKEN" ]
+}
+
+_sc_api_get() {
+  local url="$1" output_var="$2" response
+  _sc_ensure_access_token || return 1
+  if [ -n "$_SC_ACCESS_TOKEN" ]; then
+    response=$(curl -sS --max-time 5 -H "X-Authorization: $_SC_ACCESS_TOKEN" "$url") || return 1
+  else
+    response=$(curl -sS --max-time 5 "$url") || return 1
+  fi
+  printf -v "$output_var" '%s' "$response"
+}
 
 # Workers are LIVE iff a fleet process exists AND a core queue was polled within the last 15s.
 # The process check matters: right after `pkill`, the server still reports a <15s-old lastPollTime
@@ -33,18 +68,41 @@ _sc_server_up() { [ "$(_sc_http "$_SC_BASE/health")" = "200" ]; }
 _sc_workers_live() {
   pgrep -f "main.py" >/dev/null 2>&1 || return 1
   local pd last now
-  pd="$(curl -s --max-time 5 "$_SC_BASE/api/tasks/queue/polldata?taskType=http_request" 2>/dev/null)"
+  _sc_api_get "$_SC_API/tasks/queue/polldata?taskType=http_request" pd || return 1
   last="$(printf '%s' "$pd" | jq -r '[.[].lastPollTime]|max // 0' 2>/dev/null || echo 0)"
   [ "${last:-0}" -gt 0 ] || return 1
   now=$(( $(date +%s) * 1000 ))
   [ $(( now - last )) -lt 15000 ]
 }
 
-_sc_registered() { [ "$(_sc_http "$_SC_BASE/api/metadata/workflow/$1")" = "200" ]; }
+_sc_registered() { conductor workflow get "$1" >/dev/null 2>&1; }
 
 _sc_ensure_server() {
   if _sc_server_up; then echo "ℹ  conductor server: up"; return 0; fi
   command -v conductor >/dev/null || { echo "ERROR: conductor CLI not found; cannot start the server." >&2; return 1; }
+  local http_code server_type
+  http_code=$(_sc_http "$_SC_API/metadata/workflow")
+  if [ -n "$http_code" ] && [ "$http_code" != "000" ]; then
+    if [ "$http_code" = "401" ] || [ "$http_code" = "403" ]; then
+      echo "ERROR: Conductor is reachable at $CONDUCTOR_SERVER_URL, but authentication/authorization failed." >&2
+      echo "       Check CONDUCTOR_AUTH_KEY and CONDUCTOR_AUTH_SECRET (or CONDUCTOR_AUTH_TOKEN)." >&2
+    else
+      echo "ERROR: Conductor is reachable at $CONDUCTOR_SERVER_URL (HTTP $http_code)," >&2
+      echo "       but 'conductor workflow list' failed. Run that command directly for details." >&2
+    fi
+    return 1
+  fi
+  server_type=$(printf '%s' "${CONDUCTOR_SERVER_TYPE:-OSS}" | tr '[:upper:]' '[:lower:]')
+  case "$CONDUCTOR_SERVER_URL" in
+    http://localhost:*|http://127.0.0.1:*) ;;
+    *) echo "ERROR: Conductor server is unreachable: $CONDUCTOR_SERVER_URL" >&2; return 1 ;;
+  esac
+  if [ -n "${CONDUCTOR_AUTH_KEY:-}${CONDUCTOR_AUTH_SECRET:-}${CONDUCTOR_AUTH_TOKEN:-}" ] || \
+     [ "$server_type" = "enterprise" ]; then
+    echo "ERROR: Authenticated/Enterprise Conductor is unreachable at $CONDUCTOR_SERVER_URL." >&2
+    echo "       Refusing to start a local OSS server in its place." >&2
+    return 1
+  fi
   echo "ℹ  conductor server: starting (logs: $_SC_SERVER_LOG) …"
   env -u CONDUCTOR_CONFIG_FILE conductor server start >"$_SC_SERVER_LOG" 2>&1 || true
   for _ in $(seq 1 60); do _sc_server_up && { echo "ℹ  conductor server: ready"; return 0; }; sleep 1; done

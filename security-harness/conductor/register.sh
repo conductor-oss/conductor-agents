@@ -5,6 +5,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$ROOT/conductor/env.sh"
+sc_load_conductor_environment "$ROOT"
 TASKDEFS="$ROOT/conductor/taskdefs"
 WORKFLOWS="$ROOT/conductor/workflows"
 PROMPTS="$ROOT/prompts"
@@ -12,7 +15,6 @@ KB="$ROOT/knowledge/owasp-remediation.md"
 BUILD="$(mktemp -d)"
 trap 'rm -rf "$BUILD"' EXIT
 
-: "${CONDUCTOR_SERVER_URL:=http://localhost:8080/api}"
 echo "→ Conductor server: $CONDUCTOR_SERVER_URL"
 
 command -v conductor >/dev/null || { echo "ERROR: conductor CLI not found on PATH"; exit 1; }

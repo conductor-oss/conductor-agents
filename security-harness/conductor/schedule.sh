@@ -4,6 +4,11 @@
 # Default cron: daily at 02:00 (Quartz: seconds minutes hours day month dow).
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$ROOT/conductor/env.sh"
+sc_load_conductor_environment "$ROOT"
+
 URL="${1:?usage: schedule.sh <url> [cron] [source_path]}"
 CRON="${2:-0 0 2 * * ?}"
 SRC="${3:-}"

@@ -26,6 +26,13 @@ def test_forbids_empty_manifest_allows(monkeypatch):
     assert sandbox_sc._forbids("DELETE", "https://app.test/anything") is False
 
 
+def test_oob_destination_is_not_a_sandbox_scope_target(monkeypatch):
+    monkeypatch.setattr(sandbox_sc, "OOB_BASE", "https://oob.example.test")
+    monkeypatch.setattr(sandbox_sc, "SCOPE", {"in_scope_hosts": ["app.test"]})
+    assert sandbox_sc.in_scope("https://app.test/api/workflows") is True
+    assert sandbox_sc.in_scope("https://oob.example.test/c/canary") is False
+
+
 def test_sandbox_forbids_agrees_with_canonical_authz(monkeypatch):
     manifest = {"forbidden_operations": ["DELETE */api/cluster/*"],
                 "protected_records": ["token_"]}

@@ -16,7 +16,7 @@ import logging
 import os
 
 from conductor.client.automator.task_handler import TaskHandler
-from conductor.client.configuration.configuration import Configuration
+from common.conductor_config import configuration_from_env
 
 
 def main() -> None:
@@ -31,8 +31,10 @@ def main() -> None:
         importlib.import_module(mod)
         log.info("loaded worker module: %s", mod)
 
-    config = Configuration()
-    log.info("polling Conductor at %s", os.environ.get("CONDUCTOR_SERVER_URL", "<unset>"))
+    config = configuration_from_env()
+    auth_mode = "key/secret" if config.authentication_settings is not None else "none"
+    log.info("polling Conductor at %s (authentication=%s)",
+             os.environ.get("CONDUCTOR_SERVER_URL", "<unset>"), auth_mode)
     with TaskHandler(configuration=config, scan_for_annotated_workers=True) as handler:
         handler.start_processes()
         handler.join_processes()

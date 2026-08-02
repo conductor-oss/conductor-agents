@@ -59,7 +59,7 @@ try:
         _state = json.load(_fh)
 except (OSError, ValueError):
     _state = {}
-for _key in ("created", "evidence", "findings", "oob", "operations"):
+for _key in ("created", "evidence", "findings", "oob", "operations", "inband"):
     if not isinstance(_state.get(_key), list):
         _state[_key] = []
 
@@ -70,12 +70,15 @@ def _host(url: str) -> str:
 
 
 def in_scope(url: str) -> bool:
-    """True iff url's host is an allowed scope host (or the OOB collaborator)."""
+    """True iff url's host is an allowed target-scope host.
+
+    OOB URLs are values to plant in the target application, never destinations
+    that generated sandbox code may fetch directly.  This prevents a sandbox
+    step from manufacturing the callback used as blind-exploitation evidence.
+    """
     h = _host(url)
     if not h:
         return False
-    if OOB_BASE and h == _host(OOB_BASE):
-        return True
     hosts = [x.lower() for x in (SCOPE.get("in_scope_hosts") or [])]
     if h in hosts:
         return True
@@ -198,6 +201,17 @@ def oob(label: str = "probe") -> str:
     return url
 
 
+def inband_probe(oracle: str, **spec):
+    """Record an IN-BAND oracle PLAN for the trusted verifier to RE-ISSUE independently (it never
+    trusts this sandbox's own responses -- only a verifier receipt can confirm). ``oracle`` is
+    'ssrf_differential' or 'rce_arithmetic'; ``spec`` carries the request spec(s) + markers/operands:
+      inband_probe('ssrf_differential', control={req}, test={req}, markers=[...])
+      inband_probe('rce_arithmetic', request={req}, operand_a=1337, operand_b=7919)
+    where each ``req`` is {method, path|url, headers, body, identity}."""
+    _state["inband"].append({"oracle": str(oracle), **spec})
+    flush()
+
+
 def created(method: str, url: str, identity: str | None = None):
     """Record a resource you created (usually so a DELETE can tear it down)."""
     _state["created"].append({"method": (method or "DELETE").upper(), "url": url,
@@ -269,7 +283,7 @@ def _task_types(obj) -> list[str]:
         if isinstance(value, dict):
             if isinstance(value.get("type"), str):
                 out.add(value["type"].upper())
-            for key in ("tasks", "forkTasks", "loopOver", "decisionCases", "defaultCase"):
+            for key in ("tasks", "forkTasks", "loopOver", "decisionCases", "defaultCase", "workflowDef"):
                 child = value.get(key)
                 if child is not None:
                     walk(child)

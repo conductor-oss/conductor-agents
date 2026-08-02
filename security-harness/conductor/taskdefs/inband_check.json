@@ -1,0 +1,11 @@
+{
+  "name": "inband_check",
+  "description": "PLAN_V3 5.4 runtime: independently re-issue an in-band exploitation oracle (SSRF differential / RCE arithmetic echo) recorded by sc.inband_probe() and emit a typed inband_check/v1 receipt. Confirmation never trusts sandbox stdout. Never raises.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 0,
+  "timeoutSeconds": 60,
+  "responseTimeoutSeconds": 30,
+  "pollTimeoutSeconds": 60,
+  "timeoutPolicy": "ALERT_ONLY",
+  "concurrentExecLimit": 0
+}

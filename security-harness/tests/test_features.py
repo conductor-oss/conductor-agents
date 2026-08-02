@@ -34,6 +34,24 @@ def test_build_inventory_merges_all_sources():
     assert {"name": "bpmn", "location": "body"} in imp["inputs"]
 
 
+def test_build_inventory_retains_full_tail_not_truncated():
+    """PLAN_V3 Phase 0.1: features past the priority cut are TAGGED (rank/tail), never dropped."""
+    app_model = {"features": [
+        {"name": f"f{i}", "endpoints": [f"GET /api/thing{i:03d}"]} for i in range(80)
+    ]}
+    inv = features.build_inventory(app_model, {}, {}, max_features=60)
+    # all 80 features survive (nothing truncated) and every one carries a rank + tail flag.
+    ranked = [f for f in inv if f.get("rank", -1) >= 0]
+    assert len(ranked) == 80
+    assert all("tail" in f for f in ranked)
+    tail = [f for f in ranked if f["tail"]]
+    core = [f for f in ranked if not f["tail"]]
+    assert len(core) == 60 and len(tail) == 20      # 60 threshold, 20 in the retained tail
+    # the whole inventory is coverable now (was capped at 60 before)
+    cov = features.feature_coverage(inv, [], [])
+    assert cov["total_features"] == len(inv)
+
+
 def test_search_feature_prioritised_via_cue_and_sink_hint():
     app_model = {
         "features": [{"name": "s", "endpoints": ["GET /api/search", "GET /api/health"]}],
@@ -53,6 +71,19 @@ def test_input_bearing_and_sweep_candidates():
            {"id": "b", "method": "GET", "inputs": [], "prio": 9}]
     cand = features.sweep_candidates(inv)
     assert [c["id"] for c in cand] == ["a"]   # only the input-bearing one
+
+
+def test_sweep_candidates_reservation_force_include():
+    """PLAN_V3 Phase 2: a reserved tail feature past the cap is force-included into the sweep."""
+    inv = [{"id": f"POST:/f{i}", "method": "POST", "inputs": [{"name": "x", "location": "body"}]}
+           for i in range(50)]
+    inv.append({"id": "POST:/admin/tail", "method": "POST",
+                "inputs": [{"name": "x", "location": "body"}], "tail": True})
+    top = features.sweep_candidates(inv, max_candidates=40)
+    assert "POST:/admin/tail" not in {c["id"] for c in top}     # loses the priority race
+    reserved = features.sweep_candidates(inv, max_candidates=40, include_ids={"POST:/admin/tail"})
+    assert "POST:/admin/tail" in {c["id"] for c in reserved}    # reservation pulls it in
+    assert len(reserved) == 41                                  # bounded: top 40 + the 1 reserved
 
 
 def test_classify_reflection_each_class():

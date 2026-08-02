@@ -18,6 +18,11 @@ import os
 import requests
 from conductor.client.worker.worker_task import worker_task
 
+from common import evidence as evidence_mod
+from common import inband_oracle
+from common.auth import auth_headers
+from common.net import reachable_url
+
 log = logging.getLogger(__name__)
 STATE = os.path.join(os.path.dirname(__file__), "state.json")
 TIMEOUT = 10
@@ -52,6 +57,8 @@ def oob_check(task):
     # Accept full canary URLs too: take the path segment after /c/.
     norm = []
     for t in tokens:
+        if isinstance(t, dict):
+            t = t.get("token") or t.get("url") or ""
         t = str(t)
         if "/c/" in t:
             t = t.split("/c/", 1)[1].split("/")[0].split("?")[0]
@@ -60,7 +67,7 @@ def oob_check(task):
 
     port = _port()
     if port is None:
-        return {"available": False, "hit": False, "count": 0, "tokens": norm,
+        return {"verification": "oob_check/v1", "available": False, "hit": False, "count": 0, "tokens": norm,
                 "hits": [], "note": "no OOB collaborator configured (workers/oob/state.json missing)"}
 
     # Cf-Connecting-Ip / X-Forwarded-For carry the REAL source (through the tunnel),
@@ -90,7 +97,7 @@ def oob_check(task):
     sample = [{"token": h.get("token"), "method": h.get("method"), "path": h.get("path"),
                "source_ip": _src(h), "user_agent": _ua(h), "ts": h.get("ts")} for h in all_hits[:20]]
     return {
-        "available": True,
+        "verification": "oob_check/v1", "available": True,
         "hit": len(all_hits) > 0,               # target-originated hits only
         "count": len(all_hits),
         "self_hits_excluded": len(self_hits),    # transparency: sandbox's own probes
@@ -100,3 +107,57 @@ def oob_check(task):
         "user_agents": sorted({_ua(h) for h in all_hits if _ua(h)}),
         "hits": sample,
     }
+
+
+def _issue(req: dict, identities: dict, base_url: str) -> dict:
+    """Re-issue ONE request from a recorded spec {method, path|url, headers, body, identity} using
+    the same auth resolution as the product HTTP tool, and return {status, body}. This runs in the
+    trusted verifier -- it does NOT reuse any response the sandbox captured."""
+    req = req or {}
+    method = str(req.get("method") or "GET").upper()
+    url = req.get("url") or ((base_url or "").rstrip("/") + "/" + str(req.get("path") or "").lstrip("/"))
+    headers = dict(req.get("headers") or {})
+    ident = req.get("identity")
+    if ident and isinstance(identities, dict):
+        headers.update(auth_headers(identities.get(ident)))
+    kwargs = {"headers": headers, "timeout": TIMEOUT, "allow_redirects": False, "verify": False}
+    body = req.get("body")
+    if isinstance(body, (dict, list)):
+        kwargs["json"] = body
+    elif body is not None:
+        kwargs["data"] = body
+    r = requests.request(method, reachable_url(url), **kwargs)
+    return {"status": r.status_code, "body": r.text[:20000]}
+
+
+@worker_task(task_definition_name="inband_check", thread_count=2)
+def inband_check(task):
+    """Independently RE-ISSUE an in-band exploitation oracle and emit a typed inband_check/v1
+    receipt (the only in-band proof `deepen.detect_confirmation` accepts). The exploit sandbox
+    records the oracle PLAN via sc.inband_probe() (which requests to send + markers/operands); this
+    trusted worker re-sends them ITSELF and computes the verdict with inband_oracle, so confirmation
+    never depends on sandbox stdout. Never raises -- an error/absence is 'not confirmed', not a
+    failure (keeps the verifier sound)."""
+    inp = task.input_data or {}
+    probe = inp.get("probe")
+    if isinstance(probe, list):
+        probe = probe[0] if probe else None
+    unavailable = {"verification": evidence_mod.INBAND_VERIFIER, "available": False, "confirmed": False}
+    if not isinstance(probe, dict):
+        return {**unavailable, "note": "no in-band probe plan recorded"}
+    identities = inp.get("identities") if isinstance(inp.get("identities"), dict) else {}
+    base = str(inp.get("base_url") or "")
+    oracle = probe.get("oracle")
+    try:
+        if oracle == "ssrf_differential":
+            ctl = _issue(probe.get("control") or {}, identities, base)
+            tst = _issue(probe.get("test") or {}, identities, base)
+            res = inband_oracle.ssrf_differential(ctl, tst, probe.get("markers") or [])
+        elif oracle == "rce_arithmetic":
+            resp = _issue(probe.get("request") or {}, identities, base)
+            res = inband_oracle.rce_arithmetic(resp.get("body"), probe.get("operand_a"), probe.get("operand_b"))
+        else:
+            return {**unavailable, "note": f"unknown oracle '{oracle}'"}
+        return {"verification": evidence_mod.INBAND_VERIFIER, "available": True, **res}
+    except Exception as exc:
+        return {**unavailable, "error": str(exc)}

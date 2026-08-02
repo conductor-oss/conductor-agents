@@ -251,20 +251,6 @@
       }
     },
     {
-      "name": "feature_triage",
-      "taskReferenceName": "feature_triage",
-      "type": "SIMPLE",
-      "optional": true,
-      "inputParameters": {
-        "inventory": "${build_feature_inventory.output.inventory}",
-        "identities": "${reverify_identities.output.identities}",
-        "scope": "${normalize_target.output.scope}",
-        "base_url": "${normalize_target.output.base_url}",
-        "capability_max": "${normalize_target.output.capability_max}",
-        "oob_base": "${workflow.input.oob_base}"
-      }
-    },
-    {
       "name": "fp_version",
       "taskReferenceName": "fp_version",
       "type": "JSON_JQ_TRANSFORM",
@@ -280,7 +266,10 @@
       "inputParameters": {
         "tried_signatures": "${normalize_target.output.prior_state.tried_signatures}",
         "gaps": "${normalize_target.output.prior_state.gaps}",
-        "focus_directive": "${caps.output.result.initial_focus}"
+        "focus_directive": "${caps.output.result.initial_focus}",
+        "reserved_ids": [],
+        "probed_features": [],
+        "triage_signals_v": []
       }
     },
     {
@@ -394,6 +383,21 @@
           }
         },
         {
+          "name": "feature_triage",
+          "taskReferenceName": "feature_triage",
+          "type": "SIMPLE",
+          "optional": true,
+          "inputParameters": {
+            "inventory": "${build_feature_inventory.output.inventory}",
+            "identities": "${reverify_identities.output.identities}",
+            "scope": "${normalize_target.output.scope}",
+            "base_url": "${normalize_target.output.base_url}",
+            "capability_max": "${normalize_target.output.capability_max}",
+            "oob_base": "${workflow.input.oob_base}",
+            "reserved_ids": "${workflow.variables.reserved_ids}"
+          }
+        },
+        {
           "name": "hunt_inject",
           "taskReferenceName": "hunt_inject",
           "type": "JSON_JQ_TRANSFORM",
@@ -490,6 +494,53 @@
             "operation_ledger": "${accumulate.output.result.operation_ledger}",
             "deepen_states": "${accumulate.output.result.deepen_states}",
             "halt": "${accumulate.output.result.halt}"
+          }
+        },
+        {
+          "name": "build_feature_graph",
+          "taskReferenceName": "build_feature_graph_pass",
+          "type": "SIMPLE",
+          "optional": true,
+          "inputParameters": {
+            "inventory": "${build_feature_inventory.output.inventory}",
+            "probed": "${feature_triage.output.probed}",
+            "operations": "${accumulate.output.result.operation_ledger}",
+            "confirmed": "${accumulate.output.result.all_confirmed}",
+            "rejected": "${accumulate.output.result.all_rejected}"
+          }
+        },
+        {
+          "name": "schedule_feature_campaign",
+          "taskReferenceName": "schedule_feature_campaign",
+          "type": "SIMPLE",
+          "optional": true,
+          "inputParameters": {
+            "feature_graph": "${build_feature_graph_pass.output.feature_graph}",
+            "feature_coverage": "${build_feature_graph_pass.output.feature_coverage}",
+            "explore_slots": "${workflow.input.max_hypotheses}",
+            "exploit_slots": "${workflow.input.max_exploit_steps}",
+            "covered_ids": "${workflow.variables.reserved_ids}"
+          }
+        },
+        {
+          "name": "merge_reserved",
+          "taskReferenceName": "merge_reserved",
+          "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "prior": "${workflow.variables.reserved_ids}",
+            "explore": "${schedule_feature_campaign.output.reserved_explore}",
+            "exploit": "${schedule_feature_campaign.output.reserved_exploit}",
+            "queryExpression": "((.prior // []) + (.explore // []) + (.exploit // [])) | unique"
+          }
+        },
+        {
+          "name": "set_reserved",
+          "taskReferenceName": "set_reserved",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "reserved_ids": "${merge_reserved.output.result}",
+            "probed_features": "${feature_triage.output.probed}",
+            "triage_signals_v": "${feature_triage.output.triage_signals}"
           }
         },
         {
@@ -661,6 +712,19 @@
       }
     },
     {
+      "name": "build_feature_graph",
+      "taskReferenceName": "build_feature_graph",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "inventory": "${build_feature_inventory.output.inventory}",
+        "probed": "${workflow.variables.probed_features}",
+        "operations": "${workflow.variables.operation_ledger}",
+        "confirmed": "${workflow.variables.all_confirmed}",
+        "rejected": "${workflow.variables.all_rejected}"
+      }
+    },
+    {
       "name": "build_dossier",
       "taskReferenceName": "build_dossier",
       "type": "SIMPLE",
@@ -681,7 +745,11 @@
         "attack_graph": "${workflow.variables.attack_graph}",
         "operation_ledger": "${workflow.variables.operation_ledger}",
         "feature_exercise": "${workflow.variables.feature_exercise}",
-        "feeds_as_of": "${dep_cve_scan.output.feeds_as_of}"
+        "feeds_as_of": "${dep_cve_scan.output.feeds_as_of}",
+        "feature_graph": "${build_feature_graph.output.feature_graph}",
+        "feature_coverage": "${build_feature_graph.output.feature_coverage}",
+        "prior_confirmed": "${normalize_target.output.prior_state.all_confirmed}",
+        "oob_base": "${workflow.input.oob_base}"
       }
     },
     {
@@ -754,11 +822,26 @@
       }
     },
     {
+      "name": "classify_evidence_state",
+      "taskReferenceName": "evidence_state",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "triage": "${parse_triage.output.result}",
+        "confirmed": "${workflow.variables.all_confirmed}",
+        "surface": "${surface_sub.output.findings}"
+      }
+    },
+    {
       "name": "prep_report",
       "taskReferenceName": "prep_report",
       "type": "JSON_JQ_TRANSFORM",
       "inputParameters": {
-        "triage": "${parse_triage.output.result}",
+        "triage": "${evidence_state.output.triage}",
+        "live_risk_rating": "${evidence_state.output.live_risk_rating}",
+        "source_candidate_rating": "${evidence_state.output.source_candidate_rating}",
+        "evidence_state_counts": "${evidence_state.output.evidence_state_counts}",
+        "confirmed_count": "${evidence_state.output.confirmed_count}",
+        "oob_confirmed_count": "${evidence_state.output.oob_confirmed_count}",
         "app_model": "${parse_app_model.output.result}",
         "confirmed": "${workflow.variables.all_confirmed}",
         "rejected": "${workflow.variables.all_rejected}",
@@ -773,14 +856,16 @@
         "coverage_ledger": "${coverage_final.output.summary}",
         "residual_risk": "${build_dossier.output.residual_risk}",
         "attack_graph": "${build_dossier.output.attack_graph}",
+        "regression_diff": "${build_dossier.output.regression_diff}",
         "compliance": "${build_dossier.output.compliance}",
         "auth_verified": "${reverify_identities.output.auth_verified}",
         "auth_note": "${reverify_identities.output.auth_note}",
         "adequacy": "${normalize_target.output.identity_adequacy}",
         "operation_ledger": "${workflow.variables.operation_ledger}",
         "feature_exercise": "${workflow.variables.feature_exercise}",
+        "tail_coverage": "${build_dossier.output.tail_coverage}",
         "feeds_as_of": "${dep_cve_scan.output.feeds_as_of}",
-        "queryExpression": "((.identities // {}) | keys) as $ids | (($ids | map(select(. != \"anon\"))) | length) as $privids | { target: .target, triage: .triage, app_model: .app_model, personas: (.personas // []), confirmed_findings: (.confirmed // []), rejected_findings: (.rejected // []), blind_leads: (.blind // []), residual_risk: (.residual_risk // \"\"), attack_graph: (.attack_graph // {nodes:[],edges:[]}), operation_ledger: (.operation_ledger // []), product_feature_exercise: (.feature_exercise // {}), feeds_as_of: (.feeds_as_of // \"\"), compliance: (.compliance // {}), auth: { verified: (.auth_verified // \"unknown\"), note: (.auth_note // \"\") }, identity_adequacy: (.adequacy // {}), cleanup: { removed: ((.cleanup.deleted // []) | length), residue: (.cleanup.residue // []), retained: (.cleanup.retained // []), leave_evidence: (.cleanup.leave_evidence // false) }, coverage: { identities_tested: $ids, cross_tenant_testable: (.adequacy.cross_tenant // ($privids >= 2)), cross_tenant_note: (if $privids >= 2 then \"tested with \" + ($privids|tostring) + \" distinct identities\" else \"NOT tested for cross-tenant/BOLA isolation: only \" + ($privids|tostring) + \" privileged identity supplied (need >=2 distinct-tenant credentials)\" end), matrix: ((.coverage_ledger.by_dimension) // {}), status_totals: ((.coverage_ledger.by_status) // {}), untested: ((.coverage_ledger.untested_keys) // []) }, surface_stats: { urls: ((.surface.urls // []) | length), forms: ((.surface.forms // []) | length), endpoints: ((.surface.endpoints // []) | length), passes_run: (.passes // 1), hypotheses_tried: ((.tried // []) | length) } } | tojson"
+        "queryExpression": "((.identities // {}) | keys) as $ids | (($ids | map(select(. != \"anon\"))) | length) as $privids | { target: .target, triage: .triage, risk: { live_confirmed: (.live_risk_rating // \"None\"), source_candidate: (.source_candidate_rating // \"Info\"), evidence_state_counts: (.evidence_state_counts // {}), confirmed_count: (.confirmed_count // 0), oob_confirmed_count: (.oob_confirmed_count // 0) }, app_model: .app_model, personas: (.personas // []), confirmed_findings: (.confirmed // []), rejected_findings: (.rejected // []), blind_leads: (.blind // []), residual_risk: (.residual_risk // \"\"), attack_graph: (.attack_graph // {nodes:[],edges:[]}), regression: (.regression_diff // {}), operation_ledger: (.operation_ledger // []), product_feature_exercise: (.feature_exercise // {}), tail_coverage: (.tail_coverage // {}), feeds_as_of: (.feeds_as_of // \"\"), compliance: (.compliance // {}), auth: { verified: (.auth_verified // \"unknown\"), note: (.auth_note // \"\") }, identity_adequacy: (.adequacy // {}), cleanup: { removed: ((.cleanup.deleted // []) | length), residue: (.cleanup.residue // []), retained: (.cleanup.retained // []), leave_evidence: (.cleanup.leave_evidence // false) }, coverage: { identities_tested: $ids, cross_tenant_testable: (.adequacy.cross_tenant // ($privids >= 2)), cross_tenant_note: (if $privids >= 2 then \"tested with \" + ($privids|tostring) + \" distinct identities\" else \"NOT tested for cross-tenant/BOLA isolation: only \" + ($privids|tostring) + \" privileged identity supplied (need >=2 distinct-tenant credentials)\" end), matrix: ((.coverage_ledger.by_dimension) // {}), status_totals: ((.coverage_ledger.by_status) // {}), untested: ((.coverage_ledger.untested_keys) // []) }, surface_stats: { urls: ((.surface.urls // []) | length), forms: ((.surface.forms // []) | length), endpoints: ((.surface.endpoints // []) | length), passes_run: (.passes // 1), hypotheses_tried: ((.tried // []) | length) } } | tojson"
       }
     },
     {
@@ -810,11 +895,21 @@
       }
     },
     {
+      "name": "report_quality_gate",
+      "taskReferenceName": "report_gate",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "markdown": "${sanitize_md.output.result}",
+        "deep": true,
+        "tail_expected": true
+      }
+    },
+    {
       "name": "report_pdf",
       "taskReferenceName": "report_pdf",
       "type": "GENERATE_PDF",
       "inputParameters": {
-        "markdown": "${sanitize_md.output.result}",
+        "markdown": "${report_gate.output.markdown}",
         "pageSize": "A4",
         "theme": "default",
         "baseFontSize": 10,
@@ -840,7 +935,7 @@
         "surface": "${surface_sub.output.surface}",
         "plan": "${parse_app_model.output.result}",
         "active_findings": "${workflow.variables.all_confirmed}",
-        "report_md": "${report_md.output.result}",
+        "report_md": "${report_gate.output.markdown}",
         "pdf_location": "${report_pdf.output.result.location}",
         "dossier": "${build_dossier.output.dossier}"
       }
@@ -863,8 +958,9 @@
         "coverage": "${coverage_final.output.summary}",
         "documented_invariants": "${docs_sub.output.digest.documented_invariants}",
         "feature_exercise": "${workflow.variables.feature_exercise}",
-        "triage_signals": "${feature_triage.output.triage_signals}",
-        "deepen_states": "${workflow.variables.deepen_states}"
+        "triage_signals": "${workflow.variables.triage_signals_v}",
+        "deepen_states": "${workflow.variables.deepen_states}",
+        "oob_base": "${workflow.input.oob_base}"
       }
     }
   ],
@@ -872,6 +968,8 @@
     "scan_id": "${workflow.workflowId}",
     "target": "${normalize_target.output.target}",
     "risk_rating": "${parse_triage.output.result.risk_rating}",
+    "live_risk_rating": "${evidence_state.output.live_risk_rating}",
+    "source_candidate_rating": "${evidence_state.output.source_candidate_rating}",
     "counts": "${parse_triage.output.result.counts}",
     "confirmed_findings": "${workflow.variables.all_confirmed}",
     "rejected_findings": "${workflow.variables.all_rejected}",

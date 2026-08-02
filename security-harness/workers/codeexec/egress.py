@@ -62,6 +62,17 @@ def _proxy_allowlist(docker):
     return []
 
 
+def _proxy_blocklist(docker):
+    rc, out = _run([docker, "inspect", "-f",
+                    "{{range .Config.Env}}{{println .}}{{end}}", PROXY])
+    if rc != 0:
+        return None
+    for line in out.splitlines():
+        if line.startswith("SC_BLOCK="):
+            return [h for h in line[len("SC_BLOCK="):].split(",") if h]
+    return []
+
+
 @contextmanager
 def _setup_lock():
     """Serialize jail setup across the worker's concurrent code_exec threads so 4
@@ -113,8 +124,11 @@ def _ensure_jail_locked(docker, target_url: str, oob_base: str) -> dict | None:
         return None
 
     existing = _proxy_allowlist(docker)
+    existing_block = _proxy_blocklist(docker)
+    blocked = {oh} if oh else set()
     need = allow if existing is None else (allow | set(existing))
-    if existing is None or set(existing) != need:
+    need_block = blocked if existing_block is None else (blocked | set(existing_block))
+    if existing is None or existing_block is None or set(existing) != need or set(existing_block) != need_block:
         # (Re)create the proxy with the (unioned) allow-list.
         _run([docker, "rm", "-f", PROXY])
         rc, out = _run([
@@ -122,6 +136,7 @@ def _ensure_jail_locked(docker, target_url: str, oob_base: str) -> dict | None:
             "--network", INT_NET,
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "-e", f"SC_ALLOW={','.join(sorted(need))}",
+            "-e", f"SC_BLOCK={','.join(sorted(need_block))}",
             "-e", f"SC_PROXY_PORT={PROXY_PORT}",
             IMAGE, "python", "/opt/sc/egress_proxy.py",
         ])

@@ -173,10 +173,66 @@ def detect_contradictions(documented_invariants: list, confirmed: list) -> list:
     return out
 
 
+def _channel_available(finding: dict, channels: dict | None) -> bool:
+    """Was the confirmation channel a prior finding relies on actually usable THIS run?
+
+    An OOB-confirmed finding needs the out-of-band collaborator; an in-band-reproduced finding
+    needs the exploit/verifier path. With ``channels`` unknown (None), assume available so prior
+    behaviour is preserved. This is what lets us tell 'could not retest' apart from 'remediated'.
+    """
+    if not channels:
+        return True
+    needs_oob = (str(finding.get("source_tool") or "") == "oob_confirmed"
+                 or str(finding.get("evidence_state") or "") == "runtime_oob_confirmed")
+    return bool(channels.get("oob", True)) if needs_oob else bool(channels.get("inband", True))
+
+
+def regression_diff(prior_confirmed: list | None, new_confirmed: list | None,
+                    *, channels: dict | None = None) -> dict:
+    """Run-to-run delta of confirmed findings that NEVER reports 'could not retest' as 'remediated'.
+
+    For each prior confirmed finding: ``reconfirmed`` (seen again this run), ``untestable`` (its
+    confirmation channel was unavailable -- e.g. OOB was down -- so absence is meaningless), or
+    ``not_reobserved`` (the channel WAS available and it did not recur -- a remediation candidate to
+    verify). Plus findings ``new`` this run. Pure; the report renders this and ``merge_run`` mirrors
+    the same lifecycle into the persisted state.
+    """
+    prior_confirmed = prior_confirmed or []
+    new_by_sig = {signature(f): f for f in (new_confirmed or [])}
+    prior_sigs, items = set(), []
+    reconfirmed = untestable = not_reobserved = 0
+    for f in prior_confirmed:
+        sig = signature(f)
+        prior_sigs.add(sig)
+        title = f.get("title") or f.get("category") or sig
+        if sig in new_by_sig:
+            reconfirmed += 1
+            items.append({"title": title, "status": "reconfirmed"})
+        elif not _channel_available(f, channels):
+            untestable += 1
+            items.append({"title": title, "status": "untestable",
+                          "reason": "confirmation channel unavailable this run; NOT retested (not remediated)"})
+        else:
+            not_reobserved += 1
+            items.append({"title": title, "status": "not_reobserved",
+                          "reason": "channel available but did not recur (possible remediation -- verify)"})
+    new_items = [{"title": f.get("title") or sig, "status": "new"}
+                 for sig, f in new_by_sig.items() if sig not in prior_sigs]
+    return {
+        "prior_loaded": len(prior_confirmed),
+        "reconfirmed": reconfirmed,
+        "untestable": untestable,
+        "not_reobserved": not_reobserved,
+        "new_this_run": len(new_items),
+        "items": items + new_items,
+    }
+
+
 def merge_run(prior: dict, *, fp: str, host: str, app_version: str,
               new_confirmed: list, new_rejected: list, new_blind: list,
               new_tried: list, gaps: list, coverage: dict,
               documented_invariants: list | None = None,
+              channels: dict | None = None,
               run_id: str, now: str | None = None) -> tuple[dict, dict]:
     """Merge one run's results into the prior knowledge model.
 
@@ -195,6 +251,7 @@ def merge_run(prior: dict, *, fp: str, host: str, app_version: str,
     merged: dict[str, dict] = {}
     stale = 0
     reconfirmed = 0
+    untestable = 0
 
     # Carry prior confirmed forward, applying lifecycle transitions.
     for f in prior_conf:
@@ -209,7 +266,12 @@ def merge_run(prior: dict, *, fp: str, host: str, app_version: str,
             reconfirmed += 1
         else:
             g = dict(f)
-            if released:
+            if not _channel_available(f, channels):
+                # Could not retest (e.g. OOB collaborator down): NOT evidence of remediation.
+                g["lifecycle"] = "untestable"
+                g["untestable_reason"] = "confirmation channel unavailable this run; not retested (not remediated)"
+                untestable += 1
+            elif released:
                 g["lifecycle"] = "stale"
                 g["stale_reason"] = f"not re-observed after release {prior_version} -> {app_version}"
                 stale += 1
@@ -241,6 +303,7 @@ def merge_run(prior: dict, *, fp: str, host: str, app_version: str,
         "prior_loaded": len(prior_conf),
         "reconfirmed": reconfirmed,
         "stale_revalidated": stale,
+        "untestable": untestable,
         "total_confirmed": len(merged),
         "released": released,
         "new_this_run": len(new_confirmed or []),

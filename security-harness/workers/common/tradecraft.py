@@ -50,3 +50,29 @@ def signatures(key: str, default: tuple) -> tuple:
     if isinstance(data, list) and data:
         return tuple(str(x) for x in data)
     return default
+
+
+def mapping(key: str, default: dict) -> dict:
+    """Overlay a YAML string->value map (e.g. the tail-risk weights, the tail-bucket cue lists)
+    onto an in-code default dict. A key present in the YAML replaces the default's value for that
+    key; keys absent from the YAML keep their default. Non-dict / empty → keep default entirely.
+
+    This is the config-lineage seam (PLAN_V3 C2) for the corner-case-coverage tunables: the
+    numbers ship as data so the benchmark/hill-climber can move them under the ratify gate rather
+    than being hardcoded literals."""
+    data = load().get(key)
+    if not isinstance(data, dict) or not data:
+        return dict(default)
+    merged = dict(default)
+    for k, v in data.items():
+        merged[str(k)] = v
+    return merged
+
+
+def number(key: str, default: float) -> float:
+    """Overlay a single YAML scalar (e.g. a reservation fraction) onto an in-code numeric default.
+    Non-numeric / absent → keep default."""
+    data = load().get(key)
+    if isinstance(data, (int, float)) and not isinstance(data, bool):
+        return float(data)
+    return default

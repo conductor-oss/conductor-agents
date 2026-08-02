@@ -66,6 +66,13 @@ When you're done: `make down` tears everything down.
 > **CI / shared server:** pass `--no-bootstrap` (or `SC_NO_BOOTSTRAP=1`) to skip auto-start and manage the stack yourself:
 > `make server && make register && make workers`
 
+For Enterprise/Orkes, export `CONDUCTOR_SERVER_URL`, `CONDUCTOR_AUTH_KEY`, and
+`CONDUCTOR_AUTH_SECRET` (or place them in the gitignored `.env`). All Conductor-facing CLI
+entrypoints, registration, and host workers inherit the same connection settings. Docker workers
+also inherit the credentials; set `CONDUCTOR_SERVER_URL_IN_DOCKER` when the host URL is not
+container-reachable. Explicit process values override `.env`. A reachable 401/403 or an
+unreachable authenticated/Enterprise endpoint is never replaced by local OSS.
+
 Without `--authorized`, the workflow stops at the authorization gate by design — this is intentional:
 
 ```bash

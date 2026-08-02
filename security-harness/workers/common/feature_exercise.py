@@ -71,7 +71,7 @@ def _started_workflows(operations: list[dict]) -> dict[str, dict]:
         if op.get("type") == "workflow_started":
             key = name or str(op.get("execution_id") or "")
             if key:
-                started[key] = {**op, "task_types": sorted(registered.get(name, set()))}
+                started[key] = {**op, "task_types": sorted(set(op.get("task_types") or []) | registered.get(name, set()))}
     return started
 
 
@@ -120,7 +120,9 @@ def injection_sinks(sast_findings: list | None) -> list[dict]:
         if not isinstance(f, dict):
             continue
         blob = " ".join(str(f.get(k) or "") for k in ("title", "evidence", "description", "category")).lower()
-        if any(hint in blob for hint in _INJECTION_SINK_HINTS):
+        # Also include anything with a recognizable sink CLASS (e.g. a "Formatted-SQL DAO" finding
+        # that names no generic 'inject' token) -- closes the detection-vs-class-hint asymmetry.
+        if any(hint in blob for hint in _INJECTION_SINK_HINTS) or injection_sink_class(f):
             out.append(f)
     return out
 
@@ -154,6 +156,46 @@ def injection_sink_class(finding: dict) -> str:
         if any(h in blob for h in hints):
             return klass
     return "code-eval" if "inject" in blob else ""
+
+
+# Committed credential/key/signing-secret leads: the campaign must try to USE the secret against
+# the live target (forge a token / authenticate), not just report that it is in the source.
+_SECRET_LEAK_HINTS = (
+    "jwt secret", "signing secret", "default jwt", "default secret", "hardcoded secret",
+    "hardcoded password", "hardcoded credential", "committed secret", "committed credential",
+    "committed password", "private key", "client secret", "clientsecret", "access key",
+    "accesskey", "secret key", "hmac", "api key", "apikey",
+)
+
+# Secret-leaking management/debug endpoints (Actuator env/heapdump, etc.): the campaign must PROBE
+# them on the live host to see if they are reachable unauthenticated and leak secrets.
+_EXPOSED_MGMT_HINTS = (
+    "actuator", "/env", "heapdump", "management endpoint", "debug endpoint", "admin endpoint",
+    "jolokia", "configprops", "threaddump",
+)
+
+
+def _sast_matches(sast_findings: list | None, hints: tuple) -> list[dict]:
+    out = []
+    for f in sast_findings or []:
+        if not isinstance(f, dict):
+            continue
+        blob = " ".join(str(f.get(k) or "") for k in ("title", "evidence", "description", "category")).lower()
+        if any(h in blob for h in hints):
+            out.append(f)
+    return out
+
+
+def secret_leads(sast_findings: list | None) -> list[dict]:
+    """SAST/secret-scan findings naming a committed credential/key/signing-secret -- source-only
+    until USED against the live target (e.g. a JWT forged with the leaked secret authenticates)."""
+    return _sast_matches(sast_findings, _SECRET_LEAK_HINTS)
+
+
+def exposed_mgmt_leads(sast_findings: list | None) -> list[dict]:
+    """Findings naming a secret-leaking management/debug endpoint -- a config risk only if the
+    endpoint is actually reachable + leaks secrets on the deployment, which must be PROBED live."""
+    return _sast_matches(sast_findings, _EXPOSED_MGMT_HINTS)
 
 
 def _catalog_entry(catalog_objectives: list | None, objective_id: str) -> dict:
@@ -311,15 +353,31 @@ def evaluate(
         else:
             pending.append("INFRA-RCE-INJECTION")
 
+    # Source/SAST-flagged committed secrets and secret-leaking management endpoints force an ACTIVE
+    # use-the-secret / probe-the-endpoint attempt (INFRA-SECRET-SURFACE) -- a committed-secret hit is
+    # not proof the deployment is exploitable (production may override the default).
+    secret_lead_findings = secret_leads(sast_findings) + exposed_mgmt_leads(sast_findings)
+    secret_required = bool(secret_lead_findings) and "INFRA-SECRET-SURFACE" not in required and "INFRA-SECRET-SURFACE" not in focused
+    if secret_required:
+        if _objective_exercised("INFRA-SECRET-SURFACE", ops):
+            completed.append("INFRA-SECRET-SURFACE")
+        elif cap < 2:
+            blocked.append({"id": "INFRA-SECRET-SURFACE",
+                            "reason": "requires capability >=2 to use the leaked secret / probe the endpoint"})
+        else:
+            pending.append("INFRA-SECRET-SURFACE")
+
     workflow_defs = [op for op in ops if op.get("type") == "workflow_registered"]
     workflow_runs = list(_started_workflows(ops).values())
-    task_types = sorted({t for op in workflow_defs for t in (op.get("task_types") or [])})
+    task_types = sorted({t for op in (workflow_defs + workflow_runs) for t in (op.get("task_types") or [])})
     cve_attempts = [op for op in ops if op.get("type") == "cve_attempt"]
     all_required = required + [x for x in focused if x not in required]
     if cve_required:
         all_required.append("INFRA-SUPPLY-CHAIN")
     if injection_required:
         all_required.append("INFRA-RCE-INJECTION")
+    if secret_required:
+        all_required.append("INFRA-SECRET-SURFACE")
     all_required = list(dict.fromkeys(all_required))
     completed = list(dict.fromkeys(completed))
     pending = list(dict.fromkeys(pending))
@@ -538,6 +596,8 @@ def mandatory_hypotheses(
     labels = _identity_labels(identities)
     sinks = injection_sinks(sast_findings)
     exec_sinks = [s for s in sinks if injection_sink_class(s) in _EXEC_FAMILY]
+    secret_lds = secret_leads(sast_findings)
+    mgmt_lds = exposed_mgmt_leads(sast_findings)
     hypotheses: list[dict] = []
 
     for objective_id in status["pending"]:
@@ -562,6 +622,45 @@ def mandatory_hypotheses(
                 "mandatory": True,
                 "mandatory_kind": "sast_injection",
             })
+            continue
+        if objective_id == "INFRA-SECRET-SURFACE" and (secret_lds or mgmt_lds):
+            if secret_lds:
+                names = "; ".join((s.get("title") or s.get("location") or "committed secret")[:80] for s in secret_lds[:3])
+                hypotheses.append({
+                    "id": "MAND-SECRET-USE",
+                    "title": f"Use SAST-flagged committed secret(s) against the live target: {names}",
+                    "objective_id": "INFRA-SECRET-SURFACE",
+                    "category": "secret-use",
+                    "target": names,
+                    "rationale": "A committed signing secret/credential is only a source hint until USED against the live deployment. Forge a token with it (or authenticate) and call a protected endpoint -- if production overrides the default this is refuted, not confirmed.",
+                    "identities": labels[:1],
+                    "test_plan": [
+                        "Extract the committed secret/key value from the SAST finding.",
+                        "Forge a JWT signed with the leaked secret (or authenticate with the leaked credential) asserting a privileged sub/role.",
+                        "Call a protected endpoint (secrets/RBAC/admin) with the forged token as an unauthenticated attacker.",
+                        "Confirm via the authz DIFFERENTIAL: the forged token returns protected data while a control token signed with a RANDOM key is rejected. Rejection of the leaked-secret token => the deployment overrides the default (refuted).",
+                    ],
+                    "expected_evidence": "A protected endpoint returns privileged data to a token forged with the committed secret while a random-key control token is rejected -- not a mere 200.",
+                    "blind": False, "mandatory": True, "mandatory_kind": "secret_use",
+                })
+            if mgmt_lds:
+                names = "; ".join((s.get("title") or s.get("location") or "management endpoint")[:80] for s in mgmt_lds[:3])
+                hypotheses.append({
+                    "id": "MAND-MGMT-PROBE",
+                    "title": f"Probe SAST-flagged management/debug endpoint(s) on the live host: {names}",
+                    "objective_id": "INFRA-SECRET-SURFACE",
+                    "category": "exposed-management",
+                    "target": names,
+                    "rationale": "A fully-enabled Actuator (or similar) in config is a risk only if reachable unauthenticated on the deployment; a reachable /env or /heapdump leaks the very secrets other findings depend on.",
+                    "identities": labels[:1],
+                    "test_plan": [
+                        "Derive the management base path from the finding (e.g. /actuator).",
+                        "GET the sensitive management endpoints unauthenticated: /actuator/env, /actuator/heapdump, /actuator/configprops.",
+                        "Confirm via a 2xx returning a distinctive internal marker (env property names, heap content); a 401/403/404 refutes reachability.",
+                    ],
+                    "expected_evidence": "An unauthenticated 2xx from /actuator/env (or heapdump) containing internal config/secret markers -- a 401/403/404 refutes it.",
+                    "blind": False, "mandatory": True, "mandatory_kind": "exposed_management",
+                })
             continue
         if objective_id == "INFRA-SUPPLY-CHAIN":
             # Attempt EVERY version-matched lead (not just the top one) — one deep-exploitation
