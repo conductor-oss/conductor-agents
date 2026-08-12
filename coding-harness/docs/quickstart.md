@@ -38,10 +38,10 @@ The command returns a workflow ID. Monitor it with:
 conductor workflow get-execution <workflowId> -c
 ```
 
-The supplied directory remains on its current branch with all local edits intact. Agents work
-in `<repoPath>/.cc-worktrees/run-<workflow-id>` from committed `HEAD`; uncommitted and untracked
-source changes are reported but intentionally excluded. Add `"keepWorktree": false` to clean the
-workspace after a successful run.
+The supplied directory remains on its current branch with its index and local edits intact. Agents
+work in `<repoPath>/.cc-worktrees/run-<workflow-id>` on a newly created branch whose baseline
+includes every Git-visible committed, staged, unstaged, and untracked path. Add
+`"keepWorktree": false` to clean the workspace after a successful run; the outcome branch remains.
 
 ## Review local changes before committing
 
@@ -70,9 +70,10 @@ conductor workflow start --workflow feature_campaign -i \
   '{"repoPath":"/absolute/path/to/repo","instruction":"Implement the new subsystem"}'
 ```
 
-The branch defaults to `feature-campaign/<workflow-id>`. Open the run in the TUI to respond
-to design, plan, wave, attached-server, and final-verification checkpoints. The campaign keeps
-the branch local; it does not push or create a pull request.
+The branch defaults to `feature-campaign/<workflow-id>` and is committed after successful final
+verification. Open the run in the TUI to respond to design, plan, wave, attached-server, and
+final-verification checkpoints. Set `createPr: true` to push the verified branch and open a PR;
+otherwise the campaign remains local.
 
 To drive development from an apply-ready OpenSpec change in the same repository:
 
@@ -101,15 +102,12 @@ For a public HTTPS archive, set `specWritebackRepo` to the GitHub repository whe
 change must be archived. Auto mode chooses `code_parallel` or `feature_campaign`; set
 `executionMode` only when you need an explicit override.
 
-## Runtime timeouts
+## Runtime deadlines
 
-Runtime deadlines are configured only on Conductor task definitions. The workers do not wrap
-Claude, Codex, Gemini, git, or merge-conflict sessions in an additional wall-clock timeout, and
-the workflows do not expose a `timeoutS` input. For example, the shipped `coding_agent` task
-definition currently uses `responseTimeoutSeconds: 86400`, `pollTimeoutSeconds: 300`,
-`timeoutSeconds: 86400`, and `timeoutPolicy: TIME_OUT_WF`. Change those task-definition values
-when deployment-specific timeout behavior is required, then re-register with
-`./run.sh register`.
+There are none. Workflows and task definitions use zero/unset timeout fields, and workers do not
+wrap Claude, Codex, Gemini, git, checks, HTTP requests, or merge-conflict sessions in wall-clock
+deadlines. Work runs until completion or explicit cancellation; missing workers are diagnosed
+through registration and queue health instead of timers.
 
 ## Optional TUI
 

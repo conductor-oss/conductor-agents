@@ -4,9 +4,155 @@
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 2,
-  "pollTimeoutSeconds": 120,
-  "responseTimeoutSeconds": 60,
-  "timeoutSeconds": 300,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "pollTimeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "campaign_validate_plan_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "plan": {
+          "description": "Planner DAG to validate: an object with a 'tasks' array, or the tasks array itself.",
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "tasks": {
+                  "type": "array"
+                }
+              }
+            },
+            {
+              "type": "array"
+            }
+          ]
+        },
+        "maxTasks": {
+          "type": "integer",
+          "default": 25,
+          "description": "Maximum number of tasks the plan may contain before validation fails."
+        },
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the repo checkout. When set and the plan is valid, the normalized plan is written under it and directory write-roots are rejected."
+        },
+        "planPath": {
+          "type": "string",
+          "default": ".conductor-code/campaign-plan.json",
+          "description": "Path (relative to repoPath) the normalized plan is written to when repoPath is set and the plan is valid."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "campaign_validate_plan_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "valid": {
+          "type": "boolean",
+          "description": "True when the plan has no validation errors."
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Human-readable validation failures."
+        },
+        "normalizations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Notes on harmless naming/scope normalizations applied to the plan."
+        },
+        "tasks": {
+          "type": "array",
+          "description": "Normalized task nodes.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Canonical, Conductor-safe task identifier."
+              },
+              "description": {
+                "type": "string",
+                "description": "Task description."
+              },
+              "dependsOn": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Canonical IDs of tasks this task depends on."
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Normalized write-root file paths, or scope inherited from dependencies for verification-only tasks."
+              },
+              "acceptanceCriteria": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Acceptance criteria strings."
+              },
+              "checks": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Named checks associated with this task."
+              }
+            },
+            "required": [
+              "id",
+              "description",
+              "dependsOn",
+              "files",
+              "acceptanceCriteria",
+              "checks"
+            ]
+          }
+        },
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Topologically sorted task IDs."
+        },
+        "planLocation": {
+          "type": "string",
+          "description": "Relative path the plan was written to, or empty string if not written."
+        },
+        "allowedWriteRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Flattened, de-duplicated, sorted union of every task's files, for use as an agent write scope."
+        }
+      },
+      "required": [
+        "valid",
+        "errors",
+        "normalizations",
+        "tasks",
+        "order",
+        "planLocation",
+        "allowedWriteRoots"
+      ]
+    }
+  }
 }

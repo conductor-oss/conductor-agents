@@ -4,9 +4,272 @@
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 2,
-  "pollTimeoutSeconds": 120,
-  "responseTimeoutSeconds": 60,
-  "timeoutSeconds": 300,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "pollTimeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "campaign_schedule_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "plan": {
+          "description": "Validated planner DAG: an object with a 'tasks' array, or the tasks array itself. An invalid/missing plan short-circuits to a stalled, empty wave.",
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "tasks": {
+                  "type": "array"
+                }
+              }
+            },
+            {
+              "type": "array"
+            }
+          ]
+        },
+        "maxTasks": {
+          "type": "integer",
+          "default": 25,
+          "description": "Maximum number of tasks the plan may contain before validation fails."
+        },
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the repo checkout, forwarded to each dynamic campaign_subtask input."
+        },
+        "completedTaskIds": {
+          "description": "Task IDs already completed. Accepts a comma-separated string or an array of strings.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "blockedTaskIds": {
+          "description": "Task IDs to exclude from this wave even if otherwise ready. Accepts a comma-separated string or an array of strings.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "maxParallelism": {
+          "type": "integer",
+          "default": 6,
+          "description": "Maximum number of file-disjoint tasks to pick for this wave."
+        },
+        "wave": {
+          "type": "integer",
+          "default": 1,
+          "description": "Current wave number, used to build dynamic task reference names and forwarded to each subtask input."
+        },
+        "agent": {
+          "type": "string",
+          "default": "",
+          "description": "Coding agent identifier forwarded to each dynamic campaign_subtask input."
+        },
+        "model": {
+          "type": "string",
+          "default": "",
+          "description": "Model identifier forwarded to each dynamic campaign_subtask input."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "default": 500,
+          "description": "Max agent turns forwarded to each dynamic campaign_subtask input."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50.0,
+          "description": "USD budget ceiling forwarded to each dynamic campaign_subtask input."
+        },
+        "sessions": {
+          "type": "object",
+          "description": "Map of task ID to resumable session ID, used to populate resumeSessionId for each dynamic subtask."
+        },
+        "specContextPath": {
+          "type": "string",
+          "default": "",
+          "description": "Spec context path forwarded to each dynamic campaign_subtask input."
+        },
+        "contextPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Extra context paths forwarded to each dynamic campaign_subtask input."
+        },
+        "codePromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Code prompt template forwarded to each dynamic campaign_subtask input."
+        },
+        "codePromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Code prompt template source forwarded to each dynamic campaign_subtask input."
+        },
+        "feedback": {
+          "type": "string",
+          "default": "",
+          "description": "Checkpoint feedback forwarded to each dynamic campaign_subtask input."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Model profile name forwarded to each dynamic campaign_subtask input."
+        },
+        "modelPolicy": {
+          "type": "object",
+          "description": "Model policy object forwarded to each dynamic campaign_subtask input."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Model policy source forwarded to each dynamic campaign_subtask input."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Model policy checksum forwarded to each dynamic campaign_subtask input."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Models config path forwarded to each dynamic campaign_subtask input."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "description": "Per-task model overrides forwarded to each dynamic campaign_subtask input."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "campaign_schedule_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "valid": {
+          "type": "boolean",
+          "description": "True when the input plan validated; false short-circuits with an empty, stalled wave."
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Plan validation failures. Empty when valid."
+        },
+        "normalizations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Plan normalization notes. Only present when the plan was invalid."
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Normalized plan tasks. Only present when the plan was invalid."
+        },
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Topologically sorted task IDs. Only present when the plan was invalid."
+        },
+        "ready": {
+          "type": "array",
+          "description": "Full task objects selected for this wave (dependency-ready, not blocked, file-disjoint).",
+          "items": {
+            "type": "object"
+          }
+        },
+        "readyIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "IDs of tasks selected for this wave."
+        },
+        "remainingIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "IDs of all not-yet-completed tasks."
+        },
+        "blockedIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Sorted IDs explicitly excluded from this wave."
+        },
+        "unresolvedIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "IDs of remaining tasks not selected for this wave (blocked or dependencies unmet)."
+        },
+        "done": {
+          "type": "boolean",
+          "description": "True when no tasks remain. Only present when the plan was valid."
+        },
+        "stalled": {
+          "type": "boolean",
+          "description": "True when tasks remain but none could be selected (e.g. unmet dependencies, all blocked, or the plan was invalid)."
+        },
+        "dynamicTasks": {
+          "type": "array",
+          "description": "FORK_JOIN_DYNAMIC task descriptors, one SUB_WORKFLOW campaign_subtask per selected task.",
+          "items": {
+            "type": "object"
+          }
+        },
+        "dynamicTasksInput": {
+          "type": "object",
+          "description": "Map of dynamic task reference name to its campaign_subtask sub-workflow input."
+        },
+        "wave": {
+          "type": "integer",
+          "description": "The wave number processed."
+        }
+      },
+      "required": [
+        "valid",
+        "errors",
+        "ready",
+        "readyIds",
+        "remainingIds",
+        "blockedIds",
+        "unresolvedIds",
+        "stalled",
+        "dynamicTasks",
+        "dynamicTasksInput",
+        "wave"
+      ]
+    }
+  }
 }

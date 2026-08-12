@@ -1,0 +1,256 @@
+{
+  "name": "merge_remediation",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "Attempts a worktree merge up to three times. Each conflict attempt invokes the merge resolver agent once, then retries the merge. Always returns final merge evidence.",
+  "inputParameters": [
+    "repoPath",
+    "groupIds",
+    "modelBuilder",
+    "maxBudgetUsd",
+    "preflight",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "inputTemplate": {
+    "modelBuilder": "",
+    "maxBudgetUsd": 50,
+    "preflight": false,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "variables": {
+    "mergeState": "pending",
+    "merge": {}
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "merge_retry_loop",
+      "taskReferenceName": "merge_retry_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ return $.merge_retry_loop['iteration'] < 3 && $.mergeState !== 'merged'; })();",
+      "inputParameters": {
+        "merge_retry_loop": "${merge_retry_loop.output}",
+        "mergeState": "${workflow.variables.mergeState}"
+      },
+      "loopOver": [
+        {
+          "name": "merge_worktrees",
+          "taskReferenceName": "merge_attempt",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "repoPath": "${workflow.input.repoPath}",
+            "groupIds": "${workflow.input.groupIds}",
+            "modelBuilder": "${workflow.input.modelBuilder}",
+            "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+            "preflight": "${workflow.input.preflight}",
+            "maxResolutionAttempts": 1
+          }
+        },
+        {
+          "name": "record_merge_attempt",
+          "taskReferenceName": "record_merge_attempt",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "mergeState": "${merge_attempt.output.mergeState}",
+            "merge": "${merge_attempt.output}"
+          }
+        }
+      ]
+    }
+  ],
+  "outputParameters": {
+    "mergeState": "${workflow.variables.mergeState}",
+    "merge": "${workflow.variables.merge}",
+    "attempts": "${merge_retry_loop.output.iteration}"
+  },
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "inputSchema": {
+    "name": "merge_remediation_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the integration git checkout that group branches are merged into."
+        },
+        "groupIds": {
+          "description": "Group IDs to merge, in order (each resolves to a group branch). Accepts a comma-separated string or an array of strings; no groups are merged if omitted.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "modelBuilder": {
+          "type": "string",
+          "default": "",
+          "description": "Model identifier passed to the conflict-resolution agent; empty string defers to the agent's default."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "USD budget ceiling per conflict-resolution agent call."
+        },
+        "preflight": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, first prove the complete ordered merge set in a disposable worktree so a conflict is never discovered in the supplied integration checkout."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model-policy profile to select; empty string defers to the policy's default profile."
+        },
+        "modelPolicy": {
+          "type": "object",
+          "default": {},
+          "description": "Inline model policy document merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Label recorded for the inline modelPolicy's provenance."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy; resolution fails if it does not match."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path inside the worktree to a repository model policy file, overriding the default location."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "default": {},
+          "description": "Per-role overrides merged on top of the selected model profile's roles."
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "merge_remediation_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "mergeState": {
+          "type": "string",
+          "enum": [
+            "merged",
+            "conflicted"
+          ],
+          "description": "Final routable verdict from the last merge attempt: 'merged' only when every branch merged cleanly or was successfully conflict-resolved."
+        },
+        "merge": {
+          "type": "object",
+          "description": "Full result of the last merge attempt made by the retry loop.",
+          "properties": {
+            "merged": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Branches merged cleanly with no conflicts."
+            },
+            "conflicts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Branches that produced merge conflicts, regardless of whether they were later resolved."
+            },
+            "resolved": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Conflicted branches the agent successfully resolved and committed."
+            },
+            "unresolved": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Branches left unresolved after all resolution attempts, or that failed to merge outright."
+            },
+            "errors": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "Merge failures with no conflict markers: absent branch, dirty-index guard, hook failure, etc."
+            },
+            "mergeState": {
+              "type": "string",
+              "enum": [
+                "merged",
+                "conflicted"
+              ],
+              "description": "Routable verdict for this attempt."
+            },
+            "tokenUsed": {
+              "type": "integer",
+              "description": "Total LLM tokens consumed across this attempt's conflict-resolution calls."
+            },
+            "costUsd": {
+              "type": "number",
+              "description": "Total USD cost of this attempt's conflict-resolution calls."
+            },
+            "commit": {
+              "type": "string",
+              "description": "HEAD commit SHA of repoPath after this merge attempt."
+            }
+          }
+        },
+        "attempts": {
+          "type": "integer",
+          "description": "Number of merge attempts the retry loop executed (up to 3)."
+        }
+      },
+      "required": [
+        "mergeState",
+        "merge",
+        "attempts"
+      ]
+    }
+  },
+  "enforceSchema": false
+}

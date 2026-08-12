@@ -1,0 +1,210 @@
+{
+  "name": "delivery_audit",
+  "description": "Compare exact planned repository paths with live worktree changes and return fail-soft delivery evidence for bounded repair routing.",
+  "retryCount": 1,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "delivery_audit_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Git checkout whose live worktree changes are compared against the planned paths."
+        },
+        "plannedPaths": {
+          "description": "Repository-relative paths the subtask was planned to change. Accepts a comma-separated string or an array of strings; each path must be relative and may not contain '..'.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "agentReport": {
+          "type": "object",
+          "description": "Coding agent's own report, used only for evidence (denials, command failures, status) -- never to decide completeness.",
+          "properties": {
+            "denials": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Sandbox denial messages reported by the agent."
+            },
+            "commandFailures": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "Structured command failures reported directly by the agent."
+            },
+            "turns": {
+              "type": "array",
+              "description": "Agent turn records; each turn's commands are scanned for a non-zero exit code.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "commands": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "command": {
+                          "type": "string",
+                          "description": "Command text (or 'cmd')."
+                        },
+                        "exitCode": {
+                          "description": "Command exit code (or 'exit_code')."
+                        },
+                        "stderr": {
+                          "type": "string",
+                          "description": "Captured stderr."
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "status": {
+              "type": "string",
+              "description": "Agent-reported status string."
+            },
+            "agentCompleted": {
+              "type": "boolean",
+              "description": "Whether the agent reported it completed."
+            },
+            "structured": {
+              "type": "object",
+              "description": "Prior structured report, echoed back as previousReport."
+            }
+          }
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "delivery_audit_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "auditAvailable": {
+          "type": "boolean",
+          "description": "Whether the audit completed successfully (false only when an exception occurred)."
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "incomplete_delivery",
+            "audit_unavailable"
+          ],
+          "description": "Delivery verdict for downstream routing."
+        },
+        "complete": {
+          "type": "boolean",
+          "description": "True when nothing planned was missing and nothing changed was rejected."
+        },
+        "plannedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Normalized planned paths (empty on audit failure)."
+        },
+        "actualPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Paths actually changed in the worktree (empty on audit failure)."
+        },
+        "missingPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Planned paths not found among actual changes (empty on audit failure)."
+        },
+        "rejectedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Changed paths rejected as non-vetted (empty on audit failure)."
+        },
+        "commandFailures": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Deduplicated structured command failures collected from the agent report."
+        },
+        "sandboxDenials": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Sandbox denial messages reported by the agent."
+        },
+        "agentStatus": {
+          "type": "string",
+          "description": "Agent-reported status, or 'unknown'."
+        },
+        "agentCompleted": {
+          "type": "boolean",
+          "description": "Whether the agent reported completion."
+        },
+        "previousReport": {
+          "type": "object",
+          "description": "Prior structured report echoed back from the agent report."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Current branch name in the checkout (best-effort; empty string if it could not be determined)."
+        },
+        "head": {
+          "type": "string",
+          "description": "Current HEAD commit (best-effort; empty string if it could not be determined)."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Exception message; present only when auditAvailable is false."
+        }
+      },
+      "required": [
+        "auditAvailable",
+        "state",
+        "complete",
+        "plannedPaths",
+        "actualPaths",
+        "missingPaths",
+        "rejectedPaths",
+        "commandFailures",
+        "sandboxDenials",
+        "agentStatus",
+        "agentCompleted",
+        "previousReport",
+        "branch",
+        "head"
+      ]
+    }
+  }
+}

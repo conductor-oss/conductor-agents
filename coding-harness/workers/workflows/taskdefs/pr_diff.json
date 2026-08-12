@@ -4,9 +4,78 @@
   "retryCount": 2,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "pr_diff_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "GitHub repository (owner/name or URL) that owns the PR."
+        },
+        "repoUrl": {
+          "type": "string",
+          "description": "Alternate spelling for 'repo'; used when 'repo' is not supplied."
+        },
+        "number": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "PR number to diff."
+        },
+        "repoPath": {
+          "type": "string",
+          "description": "Local checkout used as a fallback source for the diff when `gh pr diff` 406s on very large PRs (>300 files)."
+        }
+      },
+      "required": [
+        "number"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "pr_diff_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "diff": {
+          "type": "string",
+          "description": "Unified diff text, capped at 200,000 chars."
+        },
+        "changedFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of changed file paths."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "True when the diff exceeded the cap and was truncated."
+        },
+        "diffSource": {
+          "type": "string",
+          "enum": [
+            "gh",
+            "local"
+          ],
+          "description": "'gh' when GitHub's API served the diff, 'local' when it fell back to a git diff against repoPath."
+        }
+      },
+      "required": [
+        "diff",
+        "changedFiles",
+        "truncated",
+        "diffSource"
+      ]
+    }
+  }
 }

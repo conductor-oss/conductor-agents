@@ -38,7 +38,6 @@ ensure_server() {
   # A failed authenticated operation does not mean the server is absent. Probe transport
   # reachability separately: any HTTP response (including 401/403/5xx) proves a server exists.
   http_code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-    --connect-timeout 3 --max-time 5 \
     "${CONDUCTOR_SERVER_URL%/}/metadata/workflow" 2>/dev/null) || http_code=""
   if [ -n "$http_code" ] && [ "$http_code" != "000" ]; then
     if [ "$http_code" = "401" ] || [ "$http_code" = "403" ] || \

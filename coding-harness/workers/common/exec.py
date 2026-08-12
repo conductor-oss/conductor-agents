@@ -1,10 +1,11 @@
-"""Subprocess helper: stdin closed, captured stdout/stderr, and non-zero exits
-raise with output attached. Runtime deadlines are owned by Conductor task defs."""
+"""Subprocess helper that runs until completion or explicit cancellation."""
 
 from __future__ import annotations
 
-import subprocess
+import os
 from dataclasses import dataclass
+
+from .check_execution import execute, inherited_environment
 
 
 @dataclass
@@ -22,14 +23,15 @@ class RunError(RuntimeError):
         self.stderr = stderr
 
 
-def run(cmd: list[str], cwd: str | None = None, check: bool = True) -> RunResult:
+def run(cmd: list[str], cwd: str | None = None, check: bool = True,
+        env: dict[str, str] | None = None, clean_env: bool = False) -> RunResult:
     """Run a command with stdin closed. Raises RunError on non-zero exit when
     ``check`` is True; otherwise returns the RunResult regardless of code."""
-    proc = subprocess.run(
-        cmd, cwd=cwd, stdin=subprocess.DEVNULL,
-        capture_output=True, text=True,
-    )
-    res = RunResult(stdout=proc.stdout or "", stderr=proc.stderr or "", code=proc.returncode)
-    if check and proc.returncode != 0:
-        raise RunError(" ".join(cmd), proc.returncode, res.stdout, res.stderr)
+    # Every harness command gets process-group ownership. ``clean_env`` is retained for callers such as
+    # exact-SHA verification that provide a complete reproducible environment.
+    execution_env = dict(env or {}) if clean_env else inherited_environment(env)
+    result = execute(cmd, cwd=cwd or os.getcwd(), env=execution_env)
+    res = RunResult(stdout=result.stdout, stderr=result.stderr, code=result.exit_code)
+    if check and res.code != 0:
+        raise RunError(" ".join(cmd), res.code, res.stdout, res.stderr)
     return res

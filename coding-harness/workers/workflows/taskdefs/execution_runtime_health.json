@@ -1,0 +1,244 @@
+{
+  "name": "execution_runtime_health",
+  "description": "Execute Java, Go, Python, Ruby, Node, npm, and npx probes and the canonical Summary-only PR-description policy on the broad execution worker.",
+  "retryCount": 0,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 0,
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "execution_runtime_health_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {},
+      "description": "This task ignores task.input_data entirely; it always self-probes the current process's runtime environment."
+    }
+  },
+  "outputSchema": {
+    "name": "execution_runtime_health_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "healthy": {
+          "type": "boolean",
+          "description": "Final health verdict: runtimeHealthy AND the PR-description policy is healthy."
+        },
+        "runtimeHealthy": {
+          "type": "boolean",
+          "description": "True when every required runtime family is available in both inherited and isolated environments, idle-sleep inhibition is active, and worker guards are healthy."
+        },
+        "optionalFamilies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Runtime family names reported but excluded from the healthy verdict (dotnet, php, elixir)."
+        },
+        "families": {
+          "type": "object",
+          "description": "Map of runtime family name (java, go, python, ruby, typescript, dotnet, php, elixir) to its availability report.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "requiredTools": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "CLI tools that must be available for this family."
+              },
+              "inheritedAvailable": {
+                "type": "boolean",
+                "description": "True if all required tools are available in the inherited (non-isolated) environment."
+              },
+              "isolatedAvailable": {
+                "type": "boolean",
+                "description": "True if all required tools are available in the isolated environment."
+              },
+              "available": {
+                "type": "boolean",
+                "description": "True when available in both environments."
+              },
+              "required": {
+                "type": "boolean",
+                "description": "False for optional families (dotnet, php, elixir), which do not affect the healthy verdict."
+              }
+            },
+            "required": [
+              "requiredTools",
+              "inheritedAvailable",
+              "isolatedAvailable",
+              "available",
+              "required"
+            ]
+          }
+        },
+        "executionDeadlinePolicy": {
+          "type": "string",
+          "description": "Fixed policy label describing how long execution tasks run for."
+        },
+        "leaseRenewalEnabled": {
+          "type": "boolean",
+          "description": "True when CONDUCTOR_WORKER_ALL_LEASE_EXTEND_ENABLED is set to a truthy value in the environment."
+        },
+        "idleSleepInhibitionActive": {
+          "type": "boolean",
+          "description": "True when this process holds an active idle-sleep-inhibition assertion."
+        },
+        "idleSleepInhibitionMechanism": {
+          "type": "string",
+          "description": "Mechanism used to inhibit idle sleep (`caffeinate -i` on macOS, otherwise `not-required`)."
+        },
+        "typescriptCompilerPolicy": {
+          "type": "string",
+          "description": "Fixed policy label describing how the TypeScript compiler is invoked."
+        },
+        "inheritedCapabilities": {
+          "type": "object",
+          "description": "Per-tool probe result in the inherited (non-isolated) environment, keyed by tool name.",
+          "additionalProperties": true
+        },
+        "isolatedCapabilities": {
+          "type": "object",
+          "description": "Per-tool probe result in the isolated environment, keyed by tool name.",
+          "additionalProperties": true
+        },
+        "workerGuards": {
+          "type": "object",
+          "description": "Inventory of lease-renewal/idle-sleep-inhibition guards installed on every worker registered in this process.",
+          "properties": {
+            "healthy": {
+              "type": "boolean",
+              "description": "True when at least one worker is registered and every registered worker is guarded."
+            },
+            "registeredWorkers": {
+              "type": "integer",
+              "description": "Number of workers registered in this process."
+            },
+            "guardedWorkers": {
+              "type": "integer",
+              "description": "Number of registered workers with both lease renewal and idle-sleep inhibition enabled."
+            },
+            "workers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "task": {
+                    "type": "string",
+                    "description": "Task definition name the worker handles."
+                  },
+                  "domain": {
+                    "type": "string",
+                    "description": "Conductor task domain, or empty string if unset."
+                  },
+                  "leaseRenewal": {
+                    "type": "boolean",
+                    "description": "True if lease-extend is enabled for this worker."
+                  },
+                  "idleSleepInhibition": {
+                    "type": "boolean",
+                    "description": "True if this worker's function is marked idle-sleep-inhibited."
+                  },
+                  "threadCount": {
+                    "type": "integer",
+                    "description": "Configured concurrent thread count for this worker."
+                  },
+                  "guarded": {
+                    "type": "boolean",
+                    "description": "True when both leaseRenewal and idleSleepInhibition are true."
+                  }
+                },
+                "required": [
+                  "task",
+                  "domain",
+                  "leaseRenewal",
+                  "idleSleepInhibition",
+                  "threadCount",
+                  "guarded"
+                ]
+              }
+            }
+          },
+          "required": [
+            "healthy",
+            "registeredWorkers",
+            "guardedWorkers",
+            "workers"
+          ]
+        },
+        "prDescriptionPolicy": {
+          "type": "object",
+          "description": "Result of exercising the canonical Summary-only PR-description policy against hostile prose and a template-backed issue body.",
+          "properties": {
+            "healthy": {
+              "type": "boolean",
+              "description": "True when both the provided-body and issue-template-fallback samples satisfy the policy."
+            },
+            "requiredHeading": {
+              "type": "string",
+              "description": "The fixed heading every PR body must start with."
+            },
+            "maxSummaryChars": {
+              "type": "integer",
+              "description": "Maximum allowed length of the summary text."
+            },
+            "providedSample": {
+              "type": "object",
+              "description": "Formatted result for a summary supplied directly.",
+              "additionalProperties": true
+            },
+            "templateSample": {
+              "type": "object",
+              "description": "Formatted result for a summary derived from the repo's issue template.",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "healthy",
+            "requiredHeading",
+            "maxSummaryChars",
+            "providedSample",
+            "templateSample"
+          ]
+        },
+        "workerRole": {
+          "type": "string",
+          "enum": [
+            "execution"
+          ],
+          "description": "Fixed label identifying this as the broad execution worker pool."
+        },
+        "modules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Worker modules this health check covers; always [\"openspecops\"] for this task."
+        }
+      },
+      "required": [
+        "healthy",
+        "runtimeHealthy",
+        "optionalFamilies",
+        "families",
+        "executionDeadlinePolicy",
+        "leaseRenewalEnabled",
+        "idleSleepInhibitionActive",
+        "idleSleepInhibitionMechanism",
+        "typescriptCompilerPolicy",
+        "inheritedCapabilities",
+        "isolatedCapabilities",
+        "workerGuards",
+        "prDescriptionPolicy",
+        "workerRole",
+        "modules"
+      ]
+    }
+  }
+}

@@ -4,9 +4,122 @@
   "retryCount": 0,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 2,
-  "pollTimeoutSeconds": 300,
-  "responseTimeoutSeconds": 300,
-  "timeoutSeconds": 1800,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "pollTimeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "campaign_integrate_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the integration git checkout that successful wave branches are merged into."
+        },
+        "results": {
+          "description": "Wave subtask results, keyed by dynamic task reference name (or as a list, which is treated as index-keyed). Each value is either the subtask output directly, or a wrapper object with an 'output' key containing it.",
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "array"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "campaign_integrate_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "integrated": {
+          "type": "boolean",
+          "description": "True only when there were no merge failures and no conflicts."
+        },
+        "merged": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Branches merged cleanly with no conflicts."
+        },
+        "completedTaskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Task IDs whose branch merged successfully."
+        },
+        "failedTaskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Task IDs that did not report success, or whose merge conflicted."
+        },
+        "conflicts": {
+          "type": "array",
+          "description": "Merge conflicts encountered, aborted before returning.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "taskId": {
+                "type": "string",
+                "description": "Task ID whose branch conflicted."
+              },
+              "branch": {
+                "type": "string",
+                "description": "Branch name that conflicted."
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Files with unresolved merge conflicts."
+              }
+            },
+            "required": [
+              "taskId",
+              "branch",
+              "files"
+            ]
+          }
+        },
+        "sessions": {
+          "type": "object",
+          "description": "Map of task ID to session ID, for resuming a matching subtask in a later wave."
+        },
+        "totalTokens": {
+          "type": "integer",
+          "description": "Total LLM tokens summed across all subtask results in this wave."
+        },
+        "totalCostUsd": {
+          "type": "number",
+          "description": "Total USD cost summed across all subtask results in this wave, rounded to 6 decimals."
+        },
+        "error": {
+          "type": "string",
+          "description": "Present only if an unexpected exception occurred; integration is fail-soft and still returns partial merge/conflict state."
+        }
+      },
+      "required": [
+        "integrated",
+        "merged",
+        "completedTaskIds",
+        "failedTaskIds",
+        "conflicts",
+        "sessions",
+        "totalTokens",
+        "totalCostUsd"
+      ]
+    }
+  }
 }

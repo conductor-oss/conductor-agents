@@ -39,6 +39,7 @@
         "contextFiles": [
           "${workflow.input.specContextPath}"
         ],
+        "contextPaths": "${workflow.input.contextPaths}",
         "failSoft": true,
         "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
         "maxTurns": "${workflow.input.maxTurns}",
@@ -117,6 +118,7 @@
     "modelProfile",
     "modelsConfig",
     "repoPath",
+    "contextPaths",
     "resumeSessionId",
     "specContextPath",
     "task",
@@ -152,6 +154,7 @@
     "model": "",
     "resumeSessionId": "",
     "specContextPath": "",
+    "contextPaths": [],
     "modelProfile": "",
     "modelPolicy": {},
     "modelPolicySource": "",
@@ -159,5 +162,264 @@
     "modelsConfig": "",
     "modelOverrides": {}
   },
-  "overwriteTags": false
+  "overwriteTags": false,
+  "inputSchema": {
+    "name": "campaign_subtask_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the repository the campaign worktree is created under."
+        },
+        "wave": {
+          "type": "integer",
+          "description": "Current campaign wave number; used to name the isolated worktree/branch for this task."
+        },
+        "task": {
+          "type": "object",
+          "description": "Normalized DAG task node (from campaign_validate_plan) this subtask executes.",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Canonical, Conductor-safe task identifier."
+            },
+            "description": {
+              "type": "string",
+              "description": "Task description."
+            },
+            "dependsOn": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Canonical IDs of tasks this task depends on."
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Write-root file paths this task is scoped to; used as the agent's allowedWriteRoots."
+            },
+            "acceptanceCriteria": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Acceptance criteria strings this task must satisfy."
+            },
+            "checks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Named checks planned for this task."
+            }
+          },
+          "required": [
+            "id",
+            "description",
+            "dependsOn",
+            "files",
+            "acceptanceCriteria",
+            "checks"
+          ]
+        },
+        "agent": {
+          "type": "string",
+          "default": "",
+          "description": "Coding agent identifier to run this subtask's session."
+        },
+        "codePromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline prompt template for the coding step."
+        },
+        "codePromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label for the code prompt template."
+        },
+        "feedback": {
+          "type": "string",
+          "default": "",
+          "description": "Checkpoint feedback from a prior campaign iteration to fold into this session's prompt."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "Maximum USD spend allowed for this subtask's coding session."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "default": 500,
+          "description": "Maximum agent turns allowed for this subtask's coding session."
+        },
+        "model": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override: explicit model id for the coding session."
+        },
+        "resumeSessionId": {
+          "type": "string",
+          "default": "",
+          "description": "Prior agent session id to resume instead of starting a cold session."
+        },
+        "specContextPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a spec context file added as read-only context for the coding session."
+        },
+        "contextPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Absolute filesystem paths granted to the coding session as read-only live context references."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model profile to select from the merged model policy."
+        },
+        "modelPolicy": {
+          "type": "object",
+          "default": {},
+          "description": "Inline model policy document merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Label recorded for the inline modelPolicy's provenance."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to the repository model policy file."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "default": {},
+          "description": "Per-role overrides merged on top of the selected profile's roles."
+        }
+      },
+      "required": [
+        "repoPath",
+        "wave",
+        "task"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "campaign_subtask_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string",
+          "description": "Group branch checked out in the campaign worktree."
+        },
+        "costUsd": {
+          "type": "number",
+          "description": "Total USD cost of the coding session."
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Human-readable error message; only set on a failure/failSoft path (status other than success)."
+        },
+        "filesChanged": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Repository-relative paths the agent changed and that survived scope enforcement."
+        },
+        "numTurns": {
+          "type": "integer",
+          "description": "Total number of agent turns taken by the coding session."
+        },
+        "promptTemplate": {
+          "type": "object",
+          "description": "Which prompt template source was requested vs. actually resolved for the coding session.",
+          "properties": {
+            "requestedSource": {
+              "type": "string",
+              "description": "Caller-supplied promptTemplateSource, or 'auto'."
+            },
+            "resolvedSource": {
+              "type": "string",
+              "description": "Actual source the prompt was resolved from."
+            },
+            "templateKey": {
+              "type": "string",
+              "description": "Template key that was used, if any."
+            },
+            "sha256": {
+              "type": "string",
+              "description": "SHA-256 of the rendered prompt template."
+            }
+          }
+        },
+        "retryable": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Only set on a failure/failSoft path: true if the failure can be retried via resumeSessionId."
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Backend session id for this run, usable as resumeSessionId; empty string if unavailable."
+        },
+        "status": {
+          "type": "string",
+          "description": "Terminal agent session status, e.g. success, error_max_turns, error_max_budget_usd, policy_denied, invalid_plan."
+        },
+        "taskId": {
+          "type": "string",
+          "description": "Echoed id of the DAG task this subtask executed."
+        },
+        "tokenUsed": {
+          "type": "integer",
+          "description": "Total tokens consumed by the coding session."
+        },
+        "worktreePath": {
+          "type": "string",
+          "description": "Absolute path to the created (or reused) campaign worktree."
+        },
+        "worktreeResumed": {
+          "type": "boolean",
+          "description": "True if an existing worktree at that path was reused instead of being recreated."
+        }
+      },
+      "required": [
+        "branch",
+        "costUsd",
+        "error",
+        "filesChanged",
+        "numTurns",
+        "promptTemplate",
+        "retryable",
+        "sessionId",
+        "status",
+        "taskId",
+        "tokenUsed",
+        "worktreePath",
+        "worktreeResumed"
+      ]
+    }
+  },
+  "enforceSchema": false
 }

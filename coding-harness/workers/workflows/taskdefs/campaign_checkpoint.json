@@ -4,9 +4,209 @@
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 2,
-  "pollTimeoutSeconds": 120,
-  "responseTimeoutSeconds": 60,
-  "timeoutSeconds": 300,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "pollTimeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "campaign_checkpoint_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "decision": {
+          "type": "object",
+          "description": "Human/agent WAIT checkpoint decision to validate.",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "continue",
+                "revise",
+                "adopt_edits",
+                "run_checks",
+                "set_profiles",
+                "stop"
+              ],
+              "default": "continue",
+              "description": "Requested checkpoint action. Falls back to 'revise' if unknown or if validation otherwise fails."
+            },
+            "feedback": {
+              "type": "string",
+              "description": "Feedback text; required when action is 'revise'."
+            },
+            "profile": {
+              "type": "string",
+              "description": "Checks profile name; required when action is 'run_checks'."
+            },
+            "checks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Specific check names requested; must be a subset of the selected profile's checks when action is 'run_checks'."
+            },
+            "attachedConfirmed": {
+              "type": "boolean",
+              "default": false,
+              "description": "Whether an attached artifact/change was confirmed."
+            },
+            "maxTurns": {
+              "type": "integer",
+              "description": "Override for max agent turns; must be positive if set."
+            },
+            "maxBudgetUsd": {
+              "type": "number",
+              "description": "Override for USD budget ceiling; must be positive if set."
+            },
+            "profiles": {
+              "type": "object",
+              "description": "Profile name overrides to merge in, used when action is 'set_profiles'."
+            }
+          }
+        },
+        "profile": {
+          "type": "string",
+          "description": "Fallback checks profile name used when decision.profile is not set."
+        },
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the repo checkout, used to load the checks config and resolve the selected profile's allowed checks."
+        },
+        "configPath": {
+          "type": "string",
+          "default": ".conductor-code/checks.json",
+          "description": "Path (relative to repoPath) to the checks configuration file."
+        },
+        "phase": {
+          "type": "string",
+          "default": "",
+          "description": "Campaign phase name, echoed back on the result."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "default": 500,
+          "description": "Fallback max agent turns used when the decision does not set one."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50.0,
+          "description": "Fallback USD budget ceiling used when the decision does not set one."
+        },
+        "profiles": {
+          "type": "object",
+          "description": "Current map of profile assignments, echoed back (and updated when action is 'set_profiles')."
+        },
+        "blockingPassed": {
+          "type": "boolean",
+          "description": "Explicit override for whether blocking checks passed; wins over the individual blocking* signals below."
+        },
+        "blockingStatus": {
+          "type": "string",
+          "description": "Status string of the blocking phase; must equal 'success' for blocking to be considered passed."
+        },
+        "blockingValid": {
+          "description": "Truthy/falsy validity flag from the blocking phase."
+        },
+        "blockingIntegrated": {
+          "description": "Truthy/falsy integration flag from the blocking phase."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "campaign_checkpoint_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "valid": {
+          "type": "boolean",
+          "description": "True when the checkpoint decision had no validation errors."
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Validation failures, e.g. missing feedback, unmet blocking checks, unknown checks."
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "continue",
+            "revise",
+            "adopt_edits",
+            "run_checks",
+            "set_profiles",
+            "stop"
+          ],
+          "description": "Resolved action; forced to 'revise' when validation errors occurred."
+        },
+        "requestedAction": {
+          "type": "string",
+          "description": "The action originally requested, before any forced fallback to 'revise'."
+        },
+        "phase": {
+          "type": "string",
+          "description": "Campaign phase name, echoed from input."
+        },
+        "feedback": {
+          "type": "string",
+          "description": "Feedback text; falls back to a semicolon-joined list of errors when action was forced to 'revise'."
+        },
+        "profile": {
+          "type": "string",
+          "description": "Checks profile name from the decision."
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Requested check names from the decision."
+        },
+        "attachedConfirmed": {
+          "type": "boolean",
+          "description": "Whether an attached artifact/change was confirmed."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "description": "Resolved max agent turns (decision override, else input fallback, else 500)."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "description": "Resolved USD budget ceiling (decision override, else input fallback, else 50.0)."
+        },
+        "profiles": {
+          "type": "object",
+          "description": "Resolved profile assignments; updated with the decision's profiles when action is 'set_profiles'."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "incomplete",
+            "running"
+          ],
+          "description": "'incomplete' when the resolved action is 'stop', otherwise 'running'."
+        }
+      },
+      "required": [
+        "valid",
+        "errors",
+        "action",
+        "requestedAction",
+        "phase",
+        "feedback",
+        "profile",
+        "checks",
+        "attachedConfirmed",
+        "maxTurns",
+        "maxBudgetUsd",
+        "profiles",
+        "outcome"
+      ]
+    }
+  }
 }

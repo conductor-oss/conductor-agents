@@ -23,7 +23,7 @@ def _walk(value):
 
 def test_openspec_workflow_contract_and_routes():
     wf = _load("openspec_development")
-    assert wf["version"] == 2 and wf["schemaVersion"] == 2
+    assert wf["version"] == 1 and wf["schemaVersion"] == 2
     required = set(wf["inputParameters"]) - set(wf["inputTemplate"])
     assert required == {"specSource", "changeId"}
     assert wf["inputTemplate"]["useSpecSourceWorkspace"] is False
@@ -34,11 +34,16 @@ def test_openspec_workflow_contract_and_routes():
     serialized = json.dumps(wf)
     assert "openspec_finalize" in serialized and '"draft": true' in serialized
     assert "openspec_source_resolve" in serialized
+    handoff = wf["outputParameters"]["sourceHandoff"]
+    assert handoff["branch"] == "${openspec_workspace.output.branch}"
+    assert handoff["repoPath"] == "${openspec_workspace.output.worktreePath}"
+    assert handoff["originalBranch"] == "${openspec_workspace.output.originalBranch}"
+    assert handoff["includedSourcePaths"] == "${openspec_workspace.output.baselineIncludedPaths}"
     assert serialized.index('"taskReferenceName": "openspec_workspace"') < \
         serialized.index('"taskReferenceName": "model_policy"')
 
 
-def test_openspec_simple_tasks_have_registered_definitions_and_new_ones_are_bounded():
+def test_openspec_simple_tasks_have_registered_definitions_without_deadlines():
     wf = _load("openspec_development")
     names = {node["name"] for node in _walk(wf) if node.get("type") == "SIMPLE"}
     defs = {json.loads(path.read_text())["name"]: json.loads(path.read_text())
@@ -46,9 +51,9 @@ def test_openspec_simple_tasks_have_registered_definitions_and_new_ones_are_boun
     assert not (names - set(defs))
     for name in names:
         if name.startswith("openspec_"):
-            assert defs[name]["pollTimeoutSeconds"] > 0
-            assert defs[name]["responseTimeoutSeconds"] > 0
-            assert defs[name]["timeoutSeconds"] > 0
+            assert defs[name]["pollTimeoutSeconds"] == 0
+            assert defs[name]["responseTimeoutSeconds"] == 0
+            assert defs[name]["timeoutSeconds"] == 0
 
 
 def test_child_workflow_extensions_are_optional_and_forward_context():

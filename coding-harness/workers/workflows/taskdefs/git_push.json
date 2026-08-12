@@ -1,12 +1,114 @@
 {
   "name": "git_push",
-  "description": "Push a branch to a remote (upstream tracking; --force-with-lease only when asked). Input: repoPath, branch?, remote?, setUpstream?, forceWithLease?.",
-  "retryCount": 2,
+  "description": "Push an exact candidate branch (upstream tracking; --force-with-lease only when asked). Non-retryable remote auth/policy rejection completes with pushed=false and a retained local branch.",
+  "retryCount": 3,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "git_push_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git checkout to push from."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Local branch to push. Defaults to the checkout's current branch when omitted."
+        },
+        "destinationBranch": {
+          "type": "string",
+          "description": "Remote branch name to push to, if different from the local branch name."
+        },
+        "remote": {
+          "type": "string",
+          "default": "origin",
+          "description": "Remote name to push to; ignored if remoteUrl is set."
+        },
+        "remoteUrl": {
+          "type": "string",
+          "description": "Remote URL/name to push to; takes precedence over remote."
+        },
+        "setUpstream": {
+          "type": "boolean",
+          "default": true,
+          "description": "Pass --set-upstream (only when the remote is a plain name, not a URL/SSH spec)."
+        },
+        "forceWithLease": {
+          "type": "boolean",
+          "default": false,
+          "description": "Push with --force-with-lease. A bare --force is never used."
+        },
+        "expectedHead": {
+          "type": "string",
+          "description": "Candidate-bound push: the local branch must still resolve to this commit SHA, which is used as the source side of the refspec, preventing a later local commit from being published under an earlier verification result."
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "git_push_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "pushed": {
+          "type": "boolean",
+          "description": "True if the push succeeded; false if a non-retryable remote auth/policy rejection was classified (task still completes, not FAILED)."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Local branch that was pushed."
+        },
+        "destinationBranch": {
+          "type": "string",
+          "description": "Remote branch name pushed to. Only present when pushed=true."
+        },
+        "remote": {
+          "type": "string",
+          "description": "Remote name or URL pushed to."
+        },
+        "head": {
+          "type": "string",
+          "description": "Commit SHA pushed (or retained local HEAD when pushed=false)."
+        },
+        "candidateBound": {
+          "type": "boolean",
+          "description": "True when expectedHead was supplied and the push was bound to that exact commit. Only present when pushed=true."
+        },
+        "publicationState": {
+          "type": "string",
+          "enum": [
+            "permission_blocked",
+            "policy_blocked"
+          ],
+          "description": "Classification of a non-retryable rejection. Only present when pushed=false."
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "Always false when present; signals the caller should not retry this push as-is. Only present when pushed=false."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Credential-free, stable explanation of the rejection. Only present when pushed=false."
+        }
+      },
+      "required": [
+        "pushed",
+        "branch",
+        "remote",
+        "head"
+      ]
+    }
+  }
 }

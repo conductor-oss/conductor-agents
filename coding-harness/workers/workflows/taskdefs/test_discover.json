@@ -1,0 +1,178 @@
+{
+  "name": "test_discover",
+  "description": "Discover changed-scope local test commands for legacy workflows; separate from parallel-plan verification.",
+  "retryCount": 2,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "test_discover_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git repository to discover verification commands in. Required \u2014 missing or unreadable repos surface as an infra_blocked result."
+        },
+        "candidateCommit": {
+          "type": "string",
+          "description": "Candidate commit to diff against for targeted discovery. Required when testMode is 'targeted' (the default); discovery is blocked without it."
+        },
+        "testMode": {
+          "type": "string",
+          "enum": [
+            "targeted",
+            "full"
+          ],
+          "default": "targeted",
+          "description": "'targeted' derives scope from the candidate's diff; 'full' runs the repository-wide suite and consults documented guides. Defaults to 'targeted'."
+        },
+        "allowHeavySuites": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opts into heavy/expensive suites. Only takes effect when testMode is 'full'; ignored in targeted mode."
+        },
+        "includeBrowserTests": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opts into browser/e2e test discovery when a suite is configured and provisioned. Only takes effect when testMode is 'full'; never triggers a browser binary install."
+        },
+        "allowedWriteRoots": {
+          "description": "Declared write-scope override for a later repair step. Accepts an array of repository-relative path strings; wins over the scope discovery resolves.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "test_discover_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "verificationState": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "discovered",
+            "blocked"
+          ],
+          "description": "'passed' when no tests are required, 'discovered' when a runnable plan was found, 'blocked' when discovery could not proceed."
+        },
+        "executionOutcome": {
+          "type": "string",
+          "enum": [
+            "discovered",
+            "no_tests_required",
+            "configuration_blocked",
+            "infra_blocked"
+          ],
+          "description": "Fine-grained discovery outcome; 'configuration_blocked' is a documented VerificationBlocked reason, 'infra_blocked' is an unexpected discovery error."
+        },
+        "candidates": {
+          "type": "array",
+          "description": "Discovered, validated verification commands. Empty when blocked or when no tests are required.",
+          "items": {
+            "type": "object",
+            "description": "One discovered command with its argv, source, scope, and coverage evidence."
+          }
+        },
+        "reason": {
+          "type": "string",
+          "description": "Present only when blocked: the VerificationBlocked message or the infrastructure error text."
+        },
+        "sourcePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Present on a successful discovery: guide/config files the candidates were derived from."
+        },
+        "runtimeRequirements": {
+          "type": "object",
+          "description": "Present on a successful discovery: detected runtime/tooling requirements (e.g. Java version) for the discovered commands."
+        },
+        "changedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Repository-relative paths changed by the candidate commit. Present on a successful discovery, and also on a configuration_blocked result (changed paths could not be mapped to a test) so allowAgentAuthoredTests can still validate an authored test's content against them; absent on an infra_blocked infrastructure error."
+        },
+        "candidateCommit": {
+          "type": "string",
+          "description": "Present on a successful discovery: the candidate commit discovery was run against."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "targeted",
+            "full"
+          ],
+          "description": "Present on a successful discovery: the resolved discovery mode."
+        },
+        "selection": {
+          "type": "string",
+          "description": "Present on a successful discovery: how commands were selected, e.g. changed-scope, documented-guide, build-system-inference, no-tests-required."
+        },
+        "coverage": {
+          "type": "string",
+          "description": "Present on a successful discovery: the coverage character of the discovered commands, e.g. focused, affected, repository, not-applicable."
+        },
+        "affectedUnits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Present on a successful discovery: the build/test units the discovered commands affect."
+        },
+        "repairRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Present on a successful discovery: write-scope roots derived from the discovered commands."
+        },
+        "repairScopeResolved": {
+          "type": "boolean",
+          "description": "Present on a successful discovery: whether repairRoots were resolved from real evidence."
+        },
+        "rejectedCandidates": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Present on a successful discovery: candidates considered but rejected, with their reason."
+        },
+        "heavyAllowed": {
+          "type": "boolean",
+          "description": "Present on a successful discovery: whether heavy suites were permitted for this discovery."
+        },
+        "repairScope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The write scope a later repair step may use: allowedWriteRoots if given, else repairRoots discovery resolved."
+        }
+      },
+      "required": [
+        "verificationState",
+        "executionOutcome",
+        "candidates",
+        "repairScope"
+      ]
+    }
+  }
+}

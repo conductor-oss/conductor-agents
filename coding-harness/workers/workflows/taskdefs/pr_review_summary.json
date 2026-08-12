@@ -1,0 +1,85 @@
+{
+  "name": "pr_review_summary",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "pr_review_summary_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "review": {
+          "type": "object",
+          "description": "Structured review to summarize, expected shape {comments: [{severity, path, line, body}, ...]}.",
+          "properties": {
+            "comments": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "severity": {
+                    "type": "string",
+                    "description": "Only 'blocking' comments with a path, numeric line, and non-blank body count toward the verdict."
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "number"
+                  },
+                  "body": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "pr_review_summary_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "enum": [
+            "LGTM",
+            "Changes requested."
+          ],
+          "description": "'LGTM' when there are no well-formed blocking comments, otherwise 'Changes requested.'."
+        },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "approve",
+            "request_changes"
+          ],
+          "description": "'approve' when there are no well-formed blocking comments, otherwise 'request_changes'."
+        },
+        "comments": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "The subset of input comments that are well-formed and severity=blocking."
+        }
+      },
+      "required": [
+        "summary",
+        "verdict",
+        "comments"
+      ]
+    }
+  }
+}

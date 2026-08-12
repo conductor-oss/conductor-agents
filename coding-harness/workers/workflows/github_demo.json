@@ -4,6 +4,8 @@
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
   "description": "End-to-end remote demo: clone a GitHub repo, branch, make a coding_agent change, commit, push the branch, and open a PR. Shows the full local-change-to-PR loop using the new remote githops tasks.",
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
   "inputParameters": [
     "agent",
     "base",
@@ -23,6 +25,203 @@
     "prTitle",
     "repoUrl"
   ],
+  "inputSchema": {
+    "name": "github_demo_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoUrl": {
+          "type": "string",
+          "description": "Remote repo to clone. A bare 'owner/name' slug is expanded to an https GitHub URL; an existing URL, scp-style 'git@...', or local path is passed through unchanged."
+        },
+        "instruction": {
+          "type": "string",
+          "description": "Natural-language coding instruction for the coding agent; also used verbatim as the commit message and PR summary."
+        },
+        "changeBranch": {
+          "type": "string",
+          "default": "conductor-harness-change",
+          "description": "Branch name to create in the cloned repo for the demo change."
+        },
+        "base": {
+          "type": "string",
+          "default": "",
+          "description": "Base branch to target when opening the PR."
+        },
+        "agent": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override selecting the coding agent backend (claude, codex, gemini) for the coding and repair sessions."
+        },
+        "model": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override: explicit model id for the coding and repair sessions."
+        },
+        "codePromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline template text (or '@relative/path') overriding the default coding prompt."
+        },
+        "codePromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Diagnostic label naming who supplied codePromptTemplate; recorded in logs/output only."
+        },
+        "prTitle": {
+          "type": "string",
+          "default": "",
+          "description": "Title for the opened PR."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "default": 300,
+          "description": "Cap on agent turns for the coding and repair coding-agent sessions."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "Cap on USD spend for the coding and repair coding-agent sessions."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model profile to resolve; empty string defers to the policy's default profile."
+        },
+        "modelPolicy": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Inline model policy document (or JSON string) merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label recorded for the inline modelPolicy."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to a repository model policy file, overriding the default location."
+        },
+        "modelOverrides": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Per-role model overrides (or a JSON string of the same) merged on top of the selected profile."
+        }
+      },
+      "required": [
+        "repoUrl",
+        "instruction"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "github_demo_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Local directory the repo was cloned into."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch created (or resumed) for the demo change."
+        },
+        "filesChanged": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Repository-relative paths the coding agent changed and that survived scope enforcement."
+        },
+        "tokenUsed": {
+          "type": "integer",
+          "description": "Total tokens consumed by the coding-agent session."
+        },
+        "costUsd": {
+          "type": "number",
+          "description": "Total USD cost of the coding-agent session."
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Final candidate commit SHA after the optional verify test_cycle sub-workflow; null if that sub-workflow never produced output."
+        },
+        "verificationState": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "pending",
+            "passed",
+            "failed",
+            "blocked",
+            null
+          ],
+          "description": "Coarse verification verdict from the verify test_cycle sub-workflow's last run; null if that optional sub-workflow never produced output."
+        },
+        "publicationState": {
+          "type": "string",
+          "enum": [
+            "published",
+            "permission_blocked",
+            "policy_blocked"
+          ],
+          "description": "Outcome of the push+PR publication attempt: 'published' on success, or a *_blocked classification when the remote rejected the push or PR update."
+        },
+        "pushed": {
+          "type": "boolean",
+          "description": "Whether the demo branch was successfully pushed to the remote."
+        },
+        "prNumber": {
+          "type": "integer",
+          "description": "Opened PR number; 0 when the push was blocked."
+        },
+        "prUrl": {
+          "type": "string",
+          "description": "Opened PR URL; empty string when the push was blocked."
+        }
+      },
+      "required": [
+        "repoPath",
+        "branch",
+        "filesChanged",
+        "tokenUsed",
+        "costUsd",
+        "commit",
+        "verificationState",
+        "publicationState",
+        "pushed",
+        "prNumber",
+        "prUrl"
+      ]
+    }
+  },
   "inputTemplate": {
     "changeBranch": "conductor-harness-change",
     "base": "",
@@ -32,13 +231,19 @@
     "codePromptTemplateSource": "",
     "prTitle": "",
     "maxTurns": 300,
-    "maxBudgetUsd": 50.0,
+    "maxBudgetUsd": 50,
     "modelProfile": "",
     "modelPolicy": {},
     "modelPolicySource": "",
     "modelPolicySha256": "",
     "modelsConfig": "",
     "modelOverrides": {}
+  },
+  "variables": {
+    "publicationState": "pending",
+    "pushed": false,
+    "prNumber": 0,
+    "prUrl": ""
   },
   "tasks": [
     {
@@ -69,7 +274,9 @@
       "type": "SIMPLE",
       "inputParameters": {
         "repoPath": "${clone.output.repoPath}",
-        "name": "${workflow.input.changeBranch}"
+        "name": "${workflow.input.changeBranch}",
+        "branchRunId": "${workflow.workflowId}",
+        "forceNew": true
       }
     },
     {
@@ -106,38 +313,117 @@
       }
     },
     {
+      "name": "test_cycle",
+      "taskReferenceName": "verify",
+      "type": "SUB_WORKFLOW",
+      "subWorkflowParam": {
+        "name": "test_cycle",
+        "version": 1
+      },
+      "inputParameters": {
+        "repoPath": "${clone.output.repoPath}",
+        "candidateCommit": "${cmt.output.commit}",
+        "agent": "${workflow.input.agent}",
+        "model": "${workflow.input.model}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "repairPromptTemplate": "${workflow.input.codePromptTemplate}",
+        "repairPromptTemplateSource": "${workflow.input.codePromptTemplateSource}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "maxFixAttempts": 4,
+        "testMode": "full",
+        "allowHeavySuites": true
+      },
+      "optional": true
+    },
+    {
+      "name": "github_demo_publication_plan",
+      "taskReferenceName": "publication_plan",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "verificationState": "${verify.output.verificationState}"
+      }
+    },
+    {
       "name": "git_push",
       "taskReferenceName": "push",
       "type": "SIMPLE",
       "inputParameters": {
         "repoPath": "${clone.output.repoPath}",
-        "branch": "${workflow.input.changeBranch}",
-        "setUpstream": true
+        "branch": "${branch.output.branch}",
+        "setUpstream": true,
+        "expectedHead": "${verify.output.candidateCommit}"
       }
     },
     {
-      "name": "pr_create",
-      "taskReferenceName": "pr",
-      "type": "SIMPLE",
+      "name": "push_result_gate",
+      "taskReferenceName": "push_result_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "pushed",
       "inputParameters": {
-        "repoPath": "${clone.output.repoPath}",
-        "title": "${workflow.input.prTitle}",
-        "body": "Automated change by the Conductor coding harness.\n\nInstruction:\n${workflow.input.instruction}",
-        "base": "${workflow.input.base}",
-        "head": "${workflow.input.changeBranch}",
-        "fill": false
-      }
+        "pushed": "${push.output.pushed}"
+      },
+      "decisionCases": {
+        "true": [
+          {
+            "name": "pr_create",
+            "taskReferenceName": "pr",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "repoPath": "${clone.output.repoPath}",
+              "title": "${workflow.input.prTitle}",
+              "summary": "${workflow.input.instruction}",
+              "base": "${workflow.input.base}",
+              "head": "${branch.output.branch}",
+              "draft": "${publication_plan.output.draft}",
+              "fill": false
+            }
+          },
+          {
+            "name": "capture_publication",
+            "taskReferenceName": "capture_publication",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "publicationState": "${pr.output.publicationState}",
+              "pushed": true,
+              "prNumber": "${pr.output.number}",
+              "prUrl": "${pr.output.url}"
+            }
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "capture_push_blocked",
+          "taskReferenceName": "capture_push_blocked",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "publicationState": "${push.output.publicationState}",
+            "pushed": false
+          }
+        }
+      ]
     }
   ],
   "outputParameters": {
     "repoPath": "${clone.output.repoPath}",
-    "branch": "${workflow.input.changeBranch}",
+    "branch": "${branch.output.branch}",
     "filesChanged": "${code.output.filesChanged}",
     "tokenUsed": "${code.output.tokenUsed}",
     "costUsd": "${code.output.costUsd}",
-    "commit": "${cmt.output.commit}",
-    "pushed": "${push.output.pushed}",
-    "prNumber": "${pr.output.number}",
-    "prUrl": "${pr.output.url}"
-  }
+    "commit": "${verify.output.candidateCommit}",
+    "verificationState": "${verify.output.verificationState}",
+    "publicationState": "${workflow.variables.publicationState}",
+    "pushed": "${workflow.variables.pushed}",
+    "prNumber": "${workflow.variables.prNumber}",
+    "prUrl": "${workflow.variables.prUrl}"
+  },
+  "enforceSchema": false
 }

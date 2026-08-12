@@ -4,9 +4,88 @@
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 5,
-  "pollTimeoutSeconds": 120,
-  "responseTimeoutSeconds": 60,
-  "timeoutSeconds": 300,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "pollTimeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "workspace_cleanup_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "keepWorktree": {
+          "type": "boolean",
+          "default": true,
+          "description": "If true, the worktree is always retained regardless of owned/outcome."
+        },
+        "owned": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether this run owns the worktree. Inherited (unowned) worktrees are never removed."
+        },
+        "outcome": {
+          "type": "string",
+          "default": "completed",
+          "description": "Workflow outcome; only 'completed', 'success', 'succeeded', 'verified', or 'passed' (case-insensitive) count as successful and allow removal."
+        },
+        "sourceRepoPath": {
+          "type": "string",
+          "description": "Path to the source repository the worktree hangs off of. Required only when the worktree is actually removed (keepWorktree=false, owned=true, and outcome is successful)."
+        },
+        "worktreePath": {
+          "type": "string",
+          "description": "Path to the worktree to remove. Required only when the worktree is actually removed; otherwise echoed back as-is (or empty)."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch name echoed back in the result; never itself deleted."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "workspace_cleanup_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "removed": {
+          "type": "boolean",
+          "description": "True if the worktree was actually removed."
+        },
+        "retained": {
+          "type": "boolean",
+          "description": "True if the worktree was left in place (the inverse of removed)."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why the worktree was retained ('requested', 'inherited', 'outcome=<value>') or removed ('cleanup requested')."
+        },
+        "worktreePath": {
+          "type": "string",
+          "description": "The worktree path from the input, echoed back (empty string if not supplied)."
+        },
+        "branch": {
+          "type": "string",
+          "description": "The branch name from the input, echoed back (empty string if not supplied)."
+        },
+        "removedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Present only when removed=true: nested and target worktree paths that were removed."
+        }
+      },
+      "required": [
+        "removed",
+        "retained",
+        "reason",
+        "worktreePath",
+        "branch"
+      ]
+    }
+  }
 }

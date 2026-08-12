@@ -4,9 +4,101 @@
   "retryCount": 2,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 2,
-  "timeoutSeconds": 300,
-  "responseTimeoutSeconds": 120,
-  "pollTimeoutSeconds": 60,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "revision_checkpoint_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "worktreePath": {
+          "type": "string",
+          "description": "Absolute path to a harness-owned worktree (must contain '/.cc-worktrees/run-' or '/.cc-worktrees/revision-'); source checkouts are rejected."
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "save",
+            "restore"
+          ],
+          "default": "save",
+          "description": "Whether to save the current worktree state as a new checkpoint or restore a prior one."
+        },
+        "workflowId": {
+          "description": "Workflow identifier used to namespace the checkpoint ref (refs/conductor/revision/<workflowId>/<loopId>/<candidateId>)."
+        },
+        "loopId": {
+          "description": "Revision-loop identifier used to namespace the checkpoint ref."
+        },
+        "candidateId": {
+          "type": "string",
+          "default": "best",
+          "description": "Candidate identifier used to namespace the checkpoint ref."
+        },
+        "expectedHead": {
+          "type": "string",
+          "description": "If set, the worktree's current HEAD must resolve to this commit or the checkpoint mutation is refused."
+        },
+        "commit": {
+          "type": "string",
+          "description": "Restore only: explicit commit to reset to; defaults to the commit currently pointed to by the checkpoint ref."
+        },
+        "createdPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Restore only: repository-relative paths that were newly created by the checkpointed commit; deleted after reset if not tracked by git."
+        }
+      },
+      "required": [
+        "worktreePath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "revision_checkpoint_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "save",
+            "restore"
+          ],
+          "description": "The action that was performed."
+        },
+        "commit": {
+          "type": "string",
+          "description": "Resulting commit SHA (the saved candidate commit, the restored commit, or the unchanged HEAD when there was nothing to restore)."
+        },
+        "ref": {
+          "type": "string",
+          "description": "Git ref used for this checkpoint."
+        },
+        "createdPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Save only: repository-relative paths newly staged and committed by this checkpoint."
+        },
+        "restored": {
+          "type": "boolean",
+          "description": "Restore only: false when no prior candidate ref existed and HEAD was left unchanged."
+        }
+      },
+      "required": [
+        "action",
+        "commit",
+        "ref"
+      ]
+    }
+  }
 }

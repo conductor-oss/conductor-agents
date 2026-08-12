@@ -69,8 +69,39 @@ async def test_start_injects_gate_default_unless_overridden():
     # A later user turn gets a fresh context; issue_to_pr gets approvePr by default.
     ctx, _ = _ctx(fc)
     await tools.dispatch("start_workflow",
-                         {"workflow": "issue_to_pr", "inputs": {"repo": "acme/app", "issueNumber": 3}}, ctx)
-    assert fc.started[-1] == ("issue_to_pr", {"repo": "acme/app", "issueNumber": 3, "approvePr": True})
+                         {"workflow": "issue_to_pr", "inputs": {
+                             "repo": "acme/app", "issueNumber": 3, "design": False}}, ctx)
+    assert fc.started[-1] == ("issue_to_pr", {
+        "repo": "acme/app", "issueNumber": 3, "design": False, "approvePr": True})
+
+
+@pytest.mark.asyncio
+async def test_chat_requires_explicit_issue_design_choice_and_gives_campaign_hint():
+    fc = FakeClient()
+    ctx, _ = _ctx(fc)
+    out = await tools.dispatch(
+        "start_workflow",
+        {"workflow": "issue_to_pr", "inputs": {"repo": "acme/app", "issueNumber": 3}},
+        ctx,
+    )
+    assert "design choice required" in out
+    assert "feature_campaign" in out
+    assert "depend" in out and "multiple waves" in out
+    assert not fc.started
+
+
+@pytest.mark.asyncio
+async def test_chat_preserves_explicit_issue_design_yes():
+    fc = FakeClient()
+    ctx, _ = _ctx(fc)
+    out = await tools.dispatch(
+        "start_workflow",
+        {"workflow": "issue_to_pr", "inputs": {
+            "repo": "acme/app", "issueNumber": 3, "design": True}},
+        ctx,
+    )
+    assert "started issue_to_pr" in out
+    assert fc.started[-1][1]["design"] is True
 
 
 @pytest.mark.asyncio
@@ -138,7 +169,7 @@ async def test_chat_schedule_consults_user_template_library():
 
 @pytest.mark.asyncio
 async def test_code_parallel_starts_without_a_design_choice():
-    # OpenSpec planning always runs now — no design:true/false gate to satisfy.
+    # Planning auto-selects OpenSpec only for checkouts that already contain it.
     fc = FakeClient()
     ctx, _ = _ctx(fc)
     out = await tools.dispatch("start_workflow", {"workflow": "code_parallel", "inputs": {"repoPath": "/tmp/repo", "instruction": "fix it"}}, ctx)
@@ -252,6 +283,65 @@ async def test_chat_revise_and_stop_fail_approval_closed(action, suppressed):
     assert output["suppressed"] is suppressed
 
 
+@pytest.mark.asyncio
+async def test_chat_gets_private_review_history_and_requests_investigation():
+    class ApprovalClient(FakeClient):
+        async def pending_approvals(self):
+            return [api.PendingApproval(
+                task_id="task-1", task_ref="review_gate__2", task_type="WAIT",
+                workflow_id="wf-child", workflow="pr_review",
+                input={
+                    "availableActions": ["approve", "investigate", "revise", "stop", "later"],
+                    "draft": {
+                        "summary": "LGTM", "verdict": "approve", "comments": [],
+                        "canInvestigate": True, "investigationCount": 1,
+                        "investigationHistory": [{
+                            "pass": 1, "question": "Check callers", "answer": "Two callers are safe",
+                            "status": "success",
+                        }],
+                    },
+                }, scheduled_ms=1)]
+
+    fc = ApprovalClient()
+    ctx, _ = _ctx(fc)
+    detail = await tools.dispatch("get_approval", {"task_id": "task-1"}, ctx)
+    assert "Two callers are safe" in detail
+    assert '"investigate"' in detail
+
+    out = await tools.dispatch("decide_approval", {
+        "task_id": "task-1", "action": "investigate",
+        "feedback": "Now inspect cancellation cleanup.",
+    }, ctx)
+    assert "investigate recorded" in out
+    assert fc.signals[-1] == (
+        "wf-child", "review_gate__2", "COMPLETED",
+        {"approved": False, "action": "investigate",
+         "feedback": "Now inspect cancellation cleanup.", "suppressed": False},
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_investigation_without_question_or_available_pass():
+    class ApprovalClient(FakeClient):
+        async def pending_approvals(self):
+            return [api.PendingApproval(
+                task_id="task-1", task_ref="review_gate", task_type="WAIT",
+                workflow_id="wf-child", workflow="pr_review",
+                input={"draft": {"canInvestigate": False}}, scheduled_ms=1)]
+
+    fc = ApprovalClient()
+    ctx, _ = _ctx(fc)
+    out = await tools.dispatch("decide_approval", {
+        "task_id": "task-1", "action": "investigate", "feedback": "",
+    }, ctx)
+    assert "requires actionable feedback" in out
+    out = await tools.dispatch("decide_approval", {
+        "task_id": "task-1", "action": "investigate", "feedback": "Check cleanup",
+    }, ctx)
+    assert "no private investigation pass" in out
+    assert not fc.signals
+
+
 def test_prompt_mentions_workflows():
     p = prompt.system_prompt("http://localhost:8080/api")
     for wf in ("pr_review", "issue_to_pr", "address_pr", "code_parallel"):
@@ -260,8 +350,14 @@ def test_prompt_mentions_workflows():
     assert "at most ONE workflow" in p
     assert "register_workflows" in p
     assert "ambiguous" in p
-    assert "always plan through" in p and "OpenSpec" in p and "skip planning" in p
+    assert "contains an `openspec/` folder" in p
+    assert "Markdown, text, or directories of docs" in p
     assert "isolated git worktree" in p
+    assert "Before starting issue_to_pr" in p
+    assert "design:true" in p and "design:false" in p
+    assert "feature_campaign is the better path" in p
+    assert "get_approval" in p
+    assert "never posts to GitHub" in p
 
 
 # --------------------------------------------------------------------------- llm loop (stubbed)
@@ -394,7 +490,14 @@ async def test_chat_start_workflow_confirms_and_starts():
         assert type(app.screen).__name__ == "ConfirmModal"
         await pilot.click("#ok")
         await pilot.pause(0.8)
-        assert fc.started == [("pr_review", {"repo": "acme/app", "prNumber": 7, "approve": True})]
+        workflow, payload = fc.started[0]
+        assert workflow == "pr_review"
+        assert payload["repo"] == "acme/app"
+        assert payload["prNumber"] == 7
+        assert payload["approve"] is True
+        assert payload["modelProfile"] == "anthropic-standard"
+        assert payload["modelPolicySource"].startswith("user:")
+        assert len(payload["modelPolicySha256"]) == 64
         assert app.session.runs == ["wf-new-123"]
 
 

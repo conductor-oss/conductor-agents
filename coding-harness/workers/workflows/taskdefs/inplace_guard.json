@@ -1,0 +1,78 @@
+{
+  "name": "inplace_guard",
+  "description": "Verify that the source integration checkout is on its expected branch and commit. Used before local merge and as the final source-handoff proof. Inputs: repoPath, branch, expectedHead, expectedStatusFingerprint?.",
+  "retryCount": 0,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "inplace_guard_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the integration git checkout to verify."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch name the checkout is expected to still be on."
+        },
+        "expectedHead": {
+          "type": "string",
+          "description": "Commit SHA (or ref resolvable to one) the checkout is expected to still be at."
+        },
+        "expectedStatusFingerprint": {
+          "type": "string",
+          "description": "Optional working-tree status fingerprint from an earlier checkpoint; when set, the checkout must also still match it (no uncommitted changes since)."
+        }
+      },
+      "required": [
+        "repoPath",
+        "branch",
+        "expectedHead"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "inplace_guard_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Resolved absolute path of the verified checkout."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Actual current branch, confirmed equal to the expected branch."
+        },
+        "head": {
+          "type": "string",
+          "description": "Actual current HEAD commit SHA, confirmed equal to the canonicalized expectedHead."
+        },
+        "statusFingerprint": {
+          "type": "string",
+          "description": "Actual working-tree status fingerprint at verification time."
+        },
+        "matched": {
+          "type": "boolean",
+          "description": "Always true on success; the task fails instead of returning false."
+        }
+      },
+      "required": [
+        "repoPath",
+        "branch",
+        "head",
+        "statusFingerprint",
+        "matched"
+      ]
+    }
+  }
+}

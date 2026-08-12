@@ -1,7 +1,8 @@
 # Models and profiles
 
 Every harness workflow accepts the same model-policy envelope. Leave it blank to use the resolved
-default (a scoped TUI policy when selected, otherwise bundled `standard`), select a named profile
+default (the TUI's `/models` policy by default; an explicit or scoped TUI selection wins; otherwise
+bundled `standard`), select a named profile
 with `modelProfile`, or attach a declarative policy snapshot with `modelPolicy`. The policy selects roles—not just one model—so planning, coding,
 review, judging, and summarizing can use different backends.
 
@@ -43,7 +44,7 @@ validated and a mismatch fails before agent or repository mutation. `maxTurns` a
 }
 ```
 
-The TUI copies the selected user policy and its canonical SHA-256 into launch and schedule
+The TUI copies the selected user policy and its canonical SHA-256 into every launch and schedule
 inputs. That makes re-runs durable even if the local policy file later changes. Run details show
 the effective role tiers, policy-source hashes, cost labels, and any diversity warning.
 

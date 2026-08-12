@@ -12,7 +12,7 @@ from revision.tasks import score_candidate
 
 
 def test_standard_profile_does_not_get_masked_by_legacy_defaults():
-    resolved = resolve_model_policy({"codeAgent": "", "codeModel": ""})
+    resolved = resolve_model_policy({"codeModel": ""})
     assert resolved["profile"] == "standard"
     assert resolved["roles"]["code"]["tiers"][0]["model"] == "claude-sonnet-5"
     assert resolved["roles"]["review"]["tiers"][0]["priceKey"] == "codex:default"
@@ -43,9 +43,9 @@ def test_worker_selects_role_tier_without_legacy_defaults_masking_profile():
     assert tier["model"] == ""
 
 
-def test_explicit_task_override_wins_for_its_role_and_caps_are_bounded():
+def test_explicit_model_override_infers_its_backend_and_caps_are_bounded():
     tier, _ = select_role_tier(
-        {"modelProfile": "standard", "agent": "claude", "model": "claude-sonnet-5",
+        {"modelProfile": "standard", "model": "claude-sonnet-5",
          "maxTurns": 10, "maxBudgetUsd": 2},
         role="code",
     )
@@ -65,7 +65,7 @@ def test_worker_reloads_checked_out_repository_policy_after_remote_preflight(tmp
     preflight = resolve_model_policy({"modelProfile": "standard"})
 
     tier, resolution = select_role_tier(
-        {"modelResolution": preflight, "modelProfile": "", "agent": "", "model": ""},
+        {"modelResolution": preflight, "modelProfile": "", "model": ""},
         role="code",
         worktree=str(tmp_path),
     )

@@ -1,0 +1,186 @@
+{
+  "name": "verification_health",
+  "description": "Execute Java, Go, Python, Ruby, Node, npm, and npx probes in inherited and isolated environments on the separately deployed verification worker.",
+  "retryCount": 0,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "verification_health_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {},
+      "description": "No fields are read from task input; the worker inspects only process environment (WORKER_MODULES) and host runtime state."
+    }
+  },
+  "outputSchema": {
+    "name": "verification_health_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "healthy": {
+          "type": "boolean",
+          "description": "True only when every required runtime family is available in both environments, idle-sleep inhibition is active, lease renewal is enabled, and all registered workers are guarded."
+        },
+        "optionalFamilies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Runtime families that are allowed to be unavailable without failing overall health."
+        },
+        "families": {
+          "type": "object",
+          "description": "Per-runtime-family availability report, keyed by family name (e.g. java, go, python, ruby, node).",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "requiredTools": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Tool binaries this family depends on."
+              },
+              "inheritedAvailable": {
+                "type": "boolean",
+                "description": "True when every required tool is available in the inherited (non-isolated) environment."
+              },
+              "isolatedAvailable": {
+                "type": "boolean",
+                "description": "True when every required tool is available in the isolated environment."
+              },
+              "available": {
+                "type": "boolean",
+                "description": "True when the family is available in both environments."
+              },
+              "required": {
+                "type": "boolean",
+                "description": "False when this family is in optionalFamilies and its absence does not fail overall health."
+              }
+            }
+          }
+        },
+        "executionDeadlinePolicy": {
+          "type": "string",
+          "description": "Fixed policy string describing how long verification runs are allowed to execute."
+        },
+        "leaseRenewalEnabled": {
+          "type": "boolean",
+          "description": "Whether CONDUCTOR_WORKER_ALL_LEASE_EXTEND_ENABLED is set truthy in the process environment."
+        },
+        "idleSleepInhibitionActive": {
+          "type": "boolean",
+          "description": "Whether the host's idle-sleep inhibition mechanism is currently active."
+        },
+        "idleSleepInhibitionMechanism": {
+          "type": "string",
+          "description": "The mechanism used to inhibit idle sleep, e.g. 'caffeinate -i' on macOS or 'not-required' elsewhere."
+        },
+        "typescriptCompilerPolicy": {
+          "type": "string",
+          "description": "Fixed policy string describing how the TypeScript compiler is invoked."
+        },
+        "inheritedCapabilities": {
+          "type": "object",
+          "description": "Per-tool availability/version evidence gathered in the inherited (non-isolated) environment."
+        },
+        "isolatedCapabilities": {
+          "type": "object",
+          "description": "Per-tool availability/version evidence gathered in the isolated environment."
+        },
+        "workerGuards": {
+          "type": "object",
+          "description": "Inventory of every worker registered in this process and whether it carries the lease-renewal and idle-sleep guards.",
+          "properties": {
+            "healthy": {
+              "type": "boolean",
+              "description": "True when at least one worker is registered and every registered worker is guarded."
+            },
+            "registeredWorkers": {
+              "type": "integer",
+              "description": "Count of registered (task, domain) worker entries."
+            },
+            "guardedWorkers": {
+              "type": "integer",
+              "description": "Count of registered workers that have both lease renewal and idle-sleep inhibition enabled."
+            },
+            "workers": {
+              "type": "array",
+              "description": "Per-worker guard detail.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "task": {
+                    "type": "string",
+                    "description": "Task definition name this worker polls."
+                  },
+                  "domain": {
+                    "type": "string",
+                    "description": "Task domain, or empty string when unset."
+                  },
+                  "leaseRenewal": {
+                    "type": "boolean",
+                    "description": "Whether this worker has lease-extend enabled."
+                  },
+                  "idleSleepInhibition": {
+                    "type": "boolean",
+                    "description": "Whether this worker's function is decorated with idle-sleep inhibition."
+                  },
+                  "threadCount": {
+                    "type": "integer",
+                    "description": "Configured concurrent poll thread count for this worker."
+                  },
+                  "guarded": {
+                    "type": "boolean",
+                    "description": "True when both leaseRenewal and idleSleepInhibition are true."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "workerRole": {
+          "type": "string",
+          "enum": [
+            "verification"
+          ],
+          "description": "Fixed role label identifying this worker process."
+        },
+        "isolatedWorker": {
+          "type": "boolean",
+          "description": "True when 'verification' appears in the WORKER_MODULES environment variable, i.e. this process is a dedicated verification worker."
+        },
+        "modules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Sorted set of worker modules declared via WORKER_MODULES."
+        }
+      },
+      "required": [
+        "healthy",
+        "optionalFamilies",
+        "families",
+        "executionDeadlinePolicy",
+        "leaseRenewalEnabled",
+        "idleSleepInhibitionActive",
+        "idleSleepInhibitionMechanism",
+        "typescriptCompilerPolicy",
+        "inheritedCapabilities",
+        "isolatedCapabilities",
+        "workerGuards",
+        "workerRole",
+        "isolatedWorker",
+        "modules"
+      ]
+    }
+  }
+}

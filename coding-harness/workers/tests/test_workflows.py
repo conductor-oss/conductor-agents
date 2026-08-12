@@ -193,7 +193,18 @@ def test_prompt_template_inputs_always_declare_provenance_source():
 # openspec_generate_artifact's "write" step is deliberately not template-overridable: its
 # prompt is fully determined by the artifact's typed `openspec instructions` output, not
 # freeform guidance (see SKILL.md / workers/README.md prompt-template sections).
-_NO_TEMPLATE_OVERRIDE = {("openspec_generate_artifact", "write")}
+#
+# test_agent_fallback's "propose_commands" (test_cycle's agent-assisted discovery
+# fallback, extracted to its own sub-workflow) is deliberately not template-overridable
+# either: it is the read-only, last-resort agent fallback (AGENTS.md's command-source
+# precedence puts an agent proposal below every deterministic source), and its prompt's
+# read-only/no-guessing/no-omission instructions are exactly what an override could
+# weaken. validate_agent_argv is the actual safety boundary, not this prompt, but there
+# is no reason to hand this one a lever that only invites relaxing it. Same reasoning
+# for "author_missing_test": its "author exactly one new test file, mirror the repo's
+# own convention" instruction is safety-critical, not a persona to customize.
+_NO_TEMPLATE_OVERRIDE = {("openspec_generate_artifact", "write"), ("test_agent_fallback", "propose_commands"),
+                        ("test_agent_fallback", "author_missing_test")}
 
 
 def test_every_coding_agent_exposes_template_override_and_source():

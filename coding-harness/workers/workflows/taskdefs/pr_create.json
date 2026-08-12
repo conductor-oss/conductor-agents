@@ -1,12 +1,152 @@
 {
   "name": "pr_create",
-  "description": "Open a GitHub PR from the change branch (gh pr create). Input: repoPath, title, body?, base?, head?, draft?, fill?.",
-  "retryCount": 1,
-  "retryLogic": "FIXED",
+  "description": "Open or reuse a GitHub PR whose body is exactly one concise ## Summary section, using an issue template's primary field for issue-backed runs when available.",
+  "retryCount": 3,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "pr_create_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Local git checkout of the change branch to open a PR from."
+        },
+        "title": {
+          "type": "string",
+          "description": "PR title. Falls back to the resolved summary, or 'Automated change', when omitted; truncated to 120 chars."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Preferred source text for the PR body's Summary section."
+        },
+        "summaryFallback": {
+          "type": "string",
+          "description": "Used for the body's Summary section when 'summary' is not supplied."
+        },
+        "body": {
+          "type": "string",
+          "description": "Used for the body's Summary section when neither 'summary' nor 'summaryFallback' is supplied."
+        },
+        "issueBody": {
+          "type": "string",
+          "description": "Source issue body; when an issue-template field can be extracted from it, that field is preferred over 'summary' for the PR body."
+        },
+        "base": {
+          "type": "string",
+          "description": "Base branch for the PR. Defaults to the repository's default branch when omitted."
+        },
+        "head": {
+          "type": "string",
+          "description": "Head branch for the PR. Defaults to the current branch when omitted."
+        },
+        "draft": {
+          "description": "Open as a draft PR. Accepts a boolean or a truthy/falsy string.",
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": false
+        },
+        "fill": {
+          "description": "Currently unused by the underlying gh call (body is always explicit), reserved for future use. Accepts a boolean or a truthy/falsy string.",
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": false
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "pr_create_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "created": {
+          "type": "boolean",
+          "description": "True when a new PR was opened; false when an existing PR was reused or publication was blocked."
+        },
+        "existing": {
+          "type": "boolean",
+          "description": "True when 'created' is false because a PR already existed for this branch. Absent on a fresh creation."
+        },
+        "number": {
+          "type": "integer",
+          "description": "PR number; 0 when publication was blocked."
+        },
+        "url": {
+          "type": "string",
+          "description": "PR URL; empty string when publication was blocked."
+        },
+        "draft": {
+          "type": "boolean",
+          "description": "Whether the PR is currently a draft."
+        },
+        "publicationState": {
+          "type": "string",
+          "enum": [
+            "published",
+            "permission_blocked",
+            "policy_blocked"
+          ],
+          "description": "'published' on success/reuse; 'permission_blocked'/'policy_blocked' when the remote rejected the update in a way that will not succeed on retry."
+        },
+        "body": {
+          "type": "string",
+          "description": "Canonical one-section PR body that was set. Absent when publication was blocked."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Resolved Summary section text. Absent when publication was blocked."
+        },
+        "summarySource": {
+          "type": "string",
+          "description": "Provenance of the summary text: 'provided_summary', 'issue_template:<label>', or 'fallback'. Absent when publication was blocked."
+        },
+        "issueTemplateFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Issue template filenames considered when resolving the summary. Absent when publication was blocked."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Present only when publicationState is not 'published': explains why publication was blocked."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Present only when publicationState is not 'published': the local branch that was retained instead of being published."
+        }
+      },
+      "required": [
+        "created",
+        "number",
+        "url",
+        "draft",
+        "publicationState"
+      ]
+    }
+  }
 }

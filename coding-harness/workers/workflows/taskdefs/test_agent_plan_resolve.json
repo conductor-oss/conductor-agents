@@ -1,0 +1,195 @@
+{
+  "name": "test_agent_plan_resolve",
+  "description": "Validate a coding agent's last-resort test-command proposal against the strictest layer of verification.py's precedence, gated behind allowAgentTestPlan.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "test_agent_plan_resolve_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git repository the agent's proposal is validated against."
+        },
+        "testMode": {
+          "type": "string",
+          "enum": [
+            "targeted",
+            "full"
+          ],
+          "default": "targeted",
+          "description": "'targeted' requires every changed test-like file to be covered by some proposal; 'full' relaxes that coverage requirement. Defaults to 'targeted'."
+        },
+        "changedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Repository-relative paths changed by the candidate, used to reject claimed coverage of paths outside the diff and (outside full mode) to require every changed test file be covered."
+        },
+        "proposal": {
+          "type": "array",
+          "description": "The agent's proposed test commands. Required and must be a non-empty array; each item is validated against detected build systems, real files, and claimed coverage.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "argv": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Proposed command argv; its entrypoint must belong to a build system this repository has evidence of, and every path-like token must name a real file."
+              },
+              "coveredPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Changed paths this command claims to cover; any path outside changedPaths is rejected."
+              },
+              "repairRoots": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Write-scope roots this command implies for a later repair step."
+              },
+              "affectedUnit": {
+                "type": "string",
+                "description": "The build/test unit this command targets; defaults to the argv entrypoint when omitted."
+              }
+            }
+          }
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "test_agent_plan_resolve_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "verificationState": {
+          "type": "string",
+          "enum": [
+            "discovered",
+            "blocked"
+          ],
+          "description": "'discovered' when the agent's proposal was accepted, 'blocked' when it failed validation."
+        },
+        "executionOutcome": {
+          "type": "string",
+          "enum": [
+            "discovered",
+            "configuration_blocked",
+            "infra_blocked"
+          ],
+          "description": "Fine-grained outcome; 'configuration_blocked' is a documented VerificationBlocked reason, 'infra_blocked' is an unexpected validation error."
+        },
+        "candidates": {
+          "type": "array",
+          "description": "Accepted, validated agent-proposed commands. Empty when blocked.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "argv": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The validated command argv."
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "agent-proposal"
+                ],
+                "description": "Always 'agent-proposal' for this task."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "agent"
+                ],
+                "description": "Always 'agent' for this task."
+              },
+              "scope": {
+                "type": "string",
+                "description": "'repository' in full mode, otherwise 'focused' or 'affected' depending on whether coverage was claimed."
+              },
+              "affectedUnit": {
+                "type": "string",
+                "description": "The build/test unit this command targets."
+              },
+              "coveredPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Changed paths this command claims to cover."
+              },
+              "repairRoots": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Write-scope roots this command implies."
+              }
+            }
+          }
+        },
+        "repairRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Union of repairRoots across all accepted candidates. Empty when blocked."
+        },
+        "selection": {
+          "type": "string",
+          "enum": [
+            "agent-proposal"
+          ],
+          "description": "Present only when accepted: always 'agent-proposal'."
+        },
+        "coverage": {
+          "type": "string",
+          "enum": [
+            "agent-asserted"
+          ],
+          "description": "Present only when accepted: always 'agent-asserted'."
+        },
+        "affectedUnits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Present only when accepted: affectedUnit of each accepted candidate."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Present only when blocked: the VerificationBlocked message or the infrastructure error text."
+        }
+      },
+      "required": [
+        "verificationState",
+        "executionOutcome",
+        "candidates",
+        "repairRoots"
+      ]
+    }
+  }
+}

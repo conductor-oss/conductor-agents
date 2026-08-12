@@ -1,0 +1,47 @@
+{
+  "name": "compose_salvage_body",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "compose_salvage_body_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "plan": {
+          "type": "object",
+          "description": "Salvage plan (e.g. build_salvage_plan's output).",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "description": "Failure reason to render in the salvage PR body summary; a generic explanation is used when absent."
+            }
+          }
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "compose_salvage_body_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "type": "string",
+          "description": "Composed one-section Markdown PR body summarizing the salvage reason, truncated to 480 characters."
+        }
+      },
+      "required": [
+        "body"
+      ]
+    }
+  }
+}

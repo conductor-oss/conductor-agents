@@ -1,0 +1,214 @@
+{
+  "name": "test_run",
+  "description": "Run an explicitly discovered changed-scope local test plan for legacy workflows.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 10,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "test_run_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git repository. Required whenever discoveryOutcome is 'discovered' (verification actually runs); missing repos surface as an infra_blocked result."
+        },
+        "candidateCommit": {
+          "type": "string",
+          "description": "Candidate commit to check out into a disposable worktree and verify. Blank is treated as missing and yields a blocked result."
+        },
+        "discoveryOutcome": {
+          "type": "string",
+          "default": "discovered",
+          "description": "Outcome carried in from test_discover: 'no_tests_required' short-circuits to a passed result, 'discovered' proceeds to run commands, anything else is treated as blocked using discoveryReason."
+        },
+        "discoveryReason": {
+          "type": "string",
+          "description": "Reason to report when discoveryOutcome is neither 'discovered' nor 'no_tests_required'."
+        },
+        "commands": {
+          "type": "array",
+          "description": "Non-empty list of discovered command objects to run (each with an argv array and coverage evidence). Required when discoveryOutcome is 'discovered'.",
+          "items": {
+            "type": "object"
+          }
+        },
+        "testMode": {
+          "type": "string",
+          "enum": [
+            "targeted",
+            "full"
+          ],
+          "default": "targeted",
+          "description": "'targeted' verifies changed scope only; 'full' verifies the whole repository. Defaults to 'targeted'."
+        },
+        "allowHeavySuites": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opts into heavy/expensive suites. Only takes effect when testMode is 'full'."
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "test_run_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "verificationState": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "blocked"
+          ],
+          "description": "'passed' when every command exited 0, 'failed' when a command exited non-zero, 'blocked' when execution could not proceed at all."
+        },
+        "executionOutcome": {
+          "type": "string",
+          "enum": [
+            "no_tests_required",
+            "passed",
+            "code_failed",
+            "infra_blocked",
+            "configuration_blocked",
+            "cancelled"
+          ],
+          "description": "Fine-grained execution outcome; 'configuration_blocked' comes from a documented VerificationBlocked reason, 'infra_blocked' from an unexpected execution error."
+        },
+        "candidateCommit": {
+          "type": "string",
+          "description": "The candidate commit that was verified (the actual resolved SHA on a real run)."
+        },
+        "commands": {
+          "type": "array",
+          "description": "Per-command execution results. Empty when blocked or when no tests are required.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "argv": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The exact argv that was executed."
+              },
+              "source": {
+                "type": "string",
+                "description": "Where this command came from (e.g. provided, agent-proposal, repository-config:*)."
+              },
+              "exitCode": {
+                "type": "integer",
+                "description": "Process exit code; 127 denotes a blocked/unspawnable command."
+              },
+              "javaVersion": {
+                "type": "string",
+                "description": "Resolved Java version, when the command's entrypoint requires one."
+              },
+              "scope": {
+                "type": "string",
+                "description": "Coverage scope of this command, e.g. focused or affected."
+              },
+              "affectedUnit": {
+                "type": "string",
+                "description": "The build/test unit this command targets."
+              },
+              "dependencyCache": {
+                "type": "string",
+                "description": "Path to the isolated dependency cache used for this run."
+              },
+              "runtime": {
+                "type": "object",
+                "description": "Runtime availability evidence collected before execution."
+              },
+              "blocked": {
+                "type": "boolean",
+                "description": "True when this command could not run due to a runtime or spawn problem."
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "passed",
+                  "code_failed",
+                  "infra_blocked",
+                  "cancelled"
+                ],
+                "description": "Per-command outcome."
+              },
+              "logPath": {
+                "type": "string",
+                "description": "Path to the full captured stdout/stderr log for this command."
+              },
+              "output": {
+                "type": "string",
+                "description": "Captured (possibly truncated) command output."
+              }
+            }
+          }
+        },
+        "coverage": {
+          "type": "string",
+          "description": "Overall coverage character of the commands that ran, e.g. focused, affected, not-applicable."
+        },
+        "affectedUnits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Build/test units the executed commands affect."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Present only when blocked or when no tests are required: a human-readable explanation."
+        },
+        "runtimeRequirements": {
+          "type": "object",
+          "description": "Present on a real run: detected runtime/tooling requirements used during execution."
+        },
+        "artifactDir": {
+          "type": "string",
+          "description": "Present on a real run: directory holding per-command logs for this candidate."
+        },
+        "projectRelativePath": {
+          "type": "string",
+          "description": "Present on a real run: path of the project within the git root, relative to the git root."
+        },
+        "worktreeIsDisposable": {
+          "type": "boolean",
+          "description": "Present on a real run: always true, confirming the run executed in a disposable checkout."
+        },
+        "gitMetadataIsIsolated": {
+          "type": "boolean",
+          "description": "Present on a real run: always true, confirming git metadata was isolated from the source repo."
+        },
+        "sourceRemoteDetached": {
+          "type": "boolean",
+          "description": "Present on a real run: always true, confirming the origin remote was removed before running candidate code."
+        },
+        "testMode": {
+          "type": "string",
+          "enum": [
+            "targeted",
+            "full"
+          ],
+          "description": "Present on a real run: the resolved test mode used."
+        }
+      },
+      "required": [
+        "verificationState",
+        "executionOutcome",
+        "commands"
+      ]
+    }
+  }
+}

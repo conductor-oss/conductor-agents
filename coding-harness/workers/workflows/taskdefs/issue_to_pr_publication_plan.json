@@ -1,0 +1,63 @@
+{
+  "name": "issue_to_pr_publication_plan",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "issue_to_pr_publication_plan_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "deliveryOutcome": {
+          "type": "string",
+          "description": "Delivery state from issue_to_pr_delivery/issue_to_pr_verified_delivery. Non-string or absent is treated as \"implementation_unavailable\"."
+        },
+        "agentAuthoredTest": {
+          "type": "boolean",
+          "description": "Whether the final test_cycle accepted a coding-agent-authored test (no pre-existing test covered the change). Forces draft=true even when deliveryOutcome is \"passed\", as defense in depth alongside the red/green check that already proved the test isn't vacuous."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "issue_to_pr_publication_plan_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "publish": {
+          "type": "string",
+          "enum": [
+            "true"
+          ],
+          "description": "Always the literal string \"true\", matching the workflow's SWITCH-value convention."
+        },
+        "draft": {
+          "type": "boolean",
+          "description": "True unless deliveryOutcome is exactly \"passed\" and agentAuthoredTest is not true; whether the PR should be opened as a draft."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Empty when passed and not agent-authored; \"agent-authored test\" when passed but agentAuthoredTest is true; otherwise \"delivery outcome: <deliveryOutcome>\"."
+        },
+        "agentAuthoredTest": {
+          "type": "boolean",
+          "description": "Echoes whether a coding-agent-authored test was used; true only when input agentAuthoredTest was exactly true."
+        }
+      },
+      "required": [
+        "publish",
+        "draft",
+        "reason",
+        "agentAuthoredTest"
+      ]
+    }
+  }
+}

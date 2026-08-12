@@ -1,0 +1,496 @@
+{
+  "name": "test_agent_fallback",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "test_cycle's agent-assisted last resort when deterministic test discovery is configuration_blocked. Tier 1 (gated on allowAgentTestPlan): a read-only agent searches for an existing test by content, not just filename convention. Tier 2 (gated on allowAgentAuthoredTests, only reached if tier 1 also finds nothing): an agent authors exactly one new test file, trusted only after a red/green check (must fail at the pre-candidate baseline, must pass at the real candidate). A no-op that returns its own inputs unchanged unless allowAgentTestPlan is true and discoveryOutcome is configuration_blocked. This workflow cannot reach FAILED: every task is optional.",
+  "inputParameters": [
+    "repoPath",
+    "candidateCommit",
+    "testMode",
+    "allowHeavySuites",
+    "includeBrowserTests",
+    "allowAgentTestPlan",
+    "allowAgentAuthoredTests",
+    "discoveryOutcome",
+    "discoveryReason",
+    "changedPaths",
+    "repairRoots",
+    "agent",
+    "model",
+    "maxTurns",
+    "maxBudgetUsd",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "inputSchema": {
+    "name": "test_agent_fallback_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git repository test_cycle is verifying."
+        },
+        "candidateCommit": {
+          "type": "string",
+          "description": "test_cycle's current candidate commit, before this fallback runs. Echoed back unchanged on output unless authoring succeeds."
+        },
+        "testMode": {
+          "type": "string",
+          "enum": [
+            "targeted",
+            "full"
+          ],
+          "default": "targeted",
+          "description": "Passed through to re-discovery after authoring a test."
+        },
+        "allowHeavySuites": {
+          "type": "boolean",
+          "default": false
+        },
+        "includeBrowserTests": {
+          "type": "boolean",
+          "default": false
+        },
+        "allowAgentTestPlan": {
+          "type": "boolean",
+          "default": false,
+          "description": "Tier 1: when true and discoveryOutcome is configuration_blocked, a read-only agent proposes test commands as a last resort."
+        },
+        "allowAgentAuthoredTests": {
+          "type": "boolean",
+          "default": false,
+          "description": "Tier 2: when true and tier 1 also finds nothing, an agent may author exactly one new test file. Only ever trusted after a red/green check; independent of allowAgentTestPlan so existing callers of that flag are unaffected."
+        },
+        "discoveryOutcome": {
+          "type": "string",
+          "description": "test_cycle's initial deterministic-discovery outcome. Only 'configuration_blocked' with allowAgentTestPlan true enters either tier; anything else is a no-op."
+        },
+        "discoveryReason": {
+          "type": "string",
+          "default": "",
+          "description": "Why deterministic discovery was blocked; included in the tier-1 agent's prompt."
+        },
+        "changedPaths": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "The candidate's own changed paths, used by both tiers' prompts and by the authored-test content check."
+        },
+        "repairRoots": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "test_cycle's baseline repair write-scope. Echoed back unchanged unless authoring succeeds and re-discovery resolves a new scope."
+        },
+        "agent": {
+          "type": "string",
+          "default": ""
+        },
+        "model": {
+          "type": "string",
+          "default": ""
+        },
+        "maxTurns": {
+          "type": "integer",
+          "default": 250
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": ""
+        },
+        "modelPolicy": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {}
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": ""
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": ""
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": ""
+        },
+        "modelOverrides": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {}
+        }
+      },
+      "required": [
+        "repoPath",
+        "candidateCommit",
+        "discoveryOutcome"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "test_agent_fallback_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "agentCommands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "Commands the tier-1 agent's search resolved after validation; [] if the fallback never ran, found nothing, or only tier 2 (authoring) fired."
+        },
+        "candidateCommit": {
+          "type": "string",
+          "description": "The input candidateCommit, or the new commit adding an accepted authored test."
+        },
+        "repairRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The input repairRoots, or the write-scope re-discovery resolved for an accepted authored test."
+        },
+        "agentAuthoredTest": {
+          "type": "boolean",
+          "description": "True only when tier 2 authored a new test file and it was accepted after a red/green check."
+        },
+        "agentAuthoredTestPath": {
+          "type": "string",
+          "description": "Repository-relative path of the agent-authored test file; empty unless agentAuthoredTest is true."
+        }
+      },
+      "required": [
+        "agentCommands",
+        "candidateCommit",
+        "repairRoots",
+        "agentAuthoredTest",
+        "agentAuthoredTestPath"
+      ]
+    }
+  },
+  "inputTemplate": {
+    "testMode": "targeted",
+    "allowHeavySuites": false,
+    "includeBrowserTests": false,
+    "allowAgentTestPlan": false,
+    "allowAgentAuthoredTests": false,
+    "discoveryReason": "",
+    "changedPaths": [],
+    "repairRoots": [],
+    "agent": "",
+    "model": "",
+    "maxTurns": 250,
+    "maxBudgetUsd": 50,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "variables": {
+    "agentCommands": [],
+    "candidateCommit": "",
+    "repairRoots": [],
+    "agentAuthoredTest": false,
+    "agentAuthoredTestPath": ""
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      },
+      "optional": true
+    },
+    {
+      "name": "fallback_init",
+      "taskReferenceName": "fallback_init",
+      "type": "SET_VARIABLE",
+      "optional": true,
+      "inputParameters": {
+        "candidateCommit": "${workflow.input.candidateCommit}",
+        "repairRoots": "${workflow.input.repairRoots}"
+      }
+    },
+    {
+      "name": "agent_fallback_gate",
+      "taskReferenceName": "agent_fallback_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "(function(){ return ($.allow === true && $.outcome === 'configuration_blocked') ? 'propose' : 'skip'; })();",
+      "inputParameters": {
+        "allow": "${workflow.input.allowAgentTestPlan}",
+        "outcome": "${workflow.input.discoveryOutcome}"
+      },
+      "decisionCases": {
+        "propose": [
+          {
+            "name": "coding_agent",
+            "taskReferenceName": "propose_commands",
+            "type": "SIMPLE",
+            "optional": true,
+            "inputParameters": {
+              "worktreePath": "${workflow.input.repoPath}",
+              "tools": [
+                "Read",
+                "Grep",
+                "Glob"
+              ],
+              "agent": "${workflow.input.agent}",
+              "model": "${workflow.input.model}",
+              "maxTurns": "${workflow.input.maxTurns}",
+              "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+              "modelRole": "code",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}",
+              "modelResolution": "${model_policy.output}",
+              "failSoft": true,
+              "prompt": "Deterministic test discovery could not map this candidate's changed files to a runnable test command (reason: ${workflow.input.discoveryReason}). Changed paths: ${workflow.input.changedPaths}. Propose the exact test command(s) that would verify these changes, using only a build/test tool this repository already shows evidence of (read its build files first: package.json, pyproject.toml, go.mod, pom.xml, build.gradle, Gemfile, and similar; do not propose a tool the repository shows no evidence of). Before concluding no existing test covers these changes, search by content, not just filename convention: Grep for the changed files' basenames, exported symbol names, and import statements across the repository's test directories, since a test can cover this change without its filename matching it. Only return an empty commands array if that content search also finds nothing. Each command is an argv array, never a shell string. For every command, list exactly which of the changed paths it covers in coveredPaths -- never claim a path the command does not actually exercise. If you cannot identify a real, runnable command, return an empty commands array rather than guess. You may only Read, Grep, and Glob; do not attempt to run anything.",
+              "schema": {
+                "type": "object",
+                "required": [
+                  "commands"
+                ],
+                "properties": {
+                  "commands": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "argv",
+                        "coveredPaths"
+                      ],
+                      "properties": {
+                        "argv": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "coveredPaths": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "affectedUnit": {
+                          "type": "string"
+                        },
+                        "repairRoots": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "name": "test_agent_plan_resolve",
+            "taskReferenceName": "agent_plan",
+            "type": "SIMPLE",
+            "optional": true,
+            "inputParameters": {
+              "repoPath": "${workflow.input.repoPath}",
+              "testMode": "${workflow.input.testMode}",
+              "proposal": "${propose_commands.output.structured.commands}",
+              "changedPaths": "${workflow.input.changedPaths}"
+            }
+          },
+          {
+            "name": "record_agent_plan",
+            "taskReferenceName": "record_agent_plan",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "agentCommands": "${agent_plan.output.candidates}"
+            },
+            "optional": true
+          },
+          {
+            "name": "author_test_gate",
+            "taskReferenceName": "author_test_gate",
+            "type": "SWITCH",
+            "optional": true,
+            "evaluatorType": "graaljs",
+            "expression": "(function(){ return ($.allowAuthor === true && (!$.candidates || $.candidates.length === 0)) ? 'author' : 'skip'; })();",
+            "inputParameters": {
+              "allowAuthor": "${workflow.input.allowAgentAuthoredTests}",
+              "candidates": "${agent_plan.output.candidates}"
+            },
+            "decisionCases": {
+              "author": [
+                {
+                  "name": "coding_agent",
+                  "taskReferenceName": "author_missing_test",
+                  "type": "SIMPLE",
+                  "optional": true,
+                  "inputParameters": {
+                    "worktreePath": "${workflow.input.repoPath}",
+                    "tools": [
+                      "Read",
+                      "Grep",
+                      "Glob",
+                      "Write",
+                      "Edit"
+                    ],
+                    "agent": "claude",
+                    "maxTurns": "${workflow.input.maxTurns}",
+                    "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+                    "modelRole": "code",
+                    "modelProfile": "${workflow.input.modelProfile}",
+                    "modelPolicy": "${workflow.input.modelPolicy}",
+                    "modelPolicySource": "${workflow.input.modelPolicySource}",
+                    "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                    "modelsConfig": "${workflow.input.modelsConfig}",
+                    "modelOverrides": "${workflow.input.modelOverrides}",
+                    "modelResolution": "${model_policy.output}",
+                    "failSoft": true,
+                    "prompt": "No existing test (by filename or content) covers this candidate's changes -- a read-only search already ran and found nothing. Changed paths: ${workflow.input.changedPaths}. Author exactly ONE new test file that exercises this change. First, Grep/Glob the repository to find where and how existing tests for this language/build system are organized (naming convention, directory, test framework, assertion style) and mirror that convention exactly -- do not invent a location or convention of your own. Do not modify, rename, move, or delete any other file; create only the one new test file. You cannot run anything -- a separate, independent step will discover and verify your test."
+                  }
+                },
+                {
+                  "name": "test_authored_test_validate",
+                  "taskReferenceName": "authored_shape",
+                  "type": "SIMPLE",
+                  "optional": true,
+                  "inputParameters": {
+                    "repoPath": "${workflow.input.repoPath}",
+                    "candidateCommit": "${workflow.variables.candidateCommit}",
+                    "changedPaths": "${workflow.input.changedPaths}"
+                  }
+                },
+                {
+                  "name": "authored_shape_gate",
+                  "taskReferenceName": "authored_shape_gate",
+                  "type": "SWITCH",
+                  "evaluatorType": "value-param",
+                  "expression": "accepted",
+                  "inputParameters": {
+                    "accepted": "${authored_shape.output.accepted}"
+                  },
+                  "decisionCases": {
+                    "true": [
+                      {
+                        "name": "test_authored_test_commit_verify",
+                        "taskReferenceName": "authored_commit_verify",
+                        "type": "SIMPLE",
+                        "optional": true,
+                        "inputParameters": {
+                          "repoPath": "${workflow.input.repoPath}",
+                          "preCandidateCommit": "${workflow.variables.candidateCommit}",
+                          "message": "test_cycle: agent-authored test for previously unmapped changes",
+                          "testMode": "${workflow.input.testMode}",
+                          "allowHeavySuites": "${workflow.input.allowHeavySuites}",
+                          "includeBrowserTests": "${workflow.input.includeBrowserTests}"
+                        }
+                      },
+                      {
+                        "name": "authored_accepted_gate",
+                        "taskReferenceName": "authored_accepted_gate",
+                        "type": "SWITCH",
+                        "evaluatorType": "value-param",
+                        "expression": "accepted",
+                        "inputParameters": {
+                          "accepted": "${authored_commit_verify.output.accepted}"
+                        },
+                        "decisionCases": {
+                          "true": [
+                            {
+                              "name": "record_authored_test",
+                              "taskReferenceName": "record_authored_test",
+                              "type": "SET_VARIABLE",
+                              "optional": true,
+                              "inputParameters": {
+                                "candidateCommit": "${authored_commit_verify.output.commit}",
+                                "agentCommands": "${authored_commit_verify.output.commands}",
+                                "repairRoots": "${authored_commit_verify.output.repairRoots}",
+                                "agentAuthoredTest": true,
+                                "agentAuthoredTestPath": "${authored_shape.output.authoredPath}"
+                              }
+                            }
+                          ]
+                        },
+                        "defaultCase": []
+                      }
+                    ]
+                  },
+                  "defaultCase": [
+                    {
+                      "name": "test_authored_test_discard",
+                      "taskReferenceName": "authored_discard",
+                      "type": "SIMPLE",
+                      "optional": true,
+                      "inputParameters": {
+                        "repoPath": "${workflow.input.repoPath}",
+                        "paths": "${authored_shape.output.touchedPaths}"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "defaultCase": []
+          }
+        ]
+      },
+      "defaultCase": []
+    }
+  ],
+  "outputParameters": {
+    "agentCommands": "${workflow.variables.agentCommands}",
+    "candidateCommit": "${workflow.variables.candidateCommit}",
+    "repairRoots": "${workflow.variables.repairRoots}",
+    "agentAuthoredTest": "${workflow.variables.agentAuthoredTest}",
+    "agentAuthoredTestPath": "${workflow.variables.agentAuthoredTestPath}"
+  },
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "enforceSchema": false
+}

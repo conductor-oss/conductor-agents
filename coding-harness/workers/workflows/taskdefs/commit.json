@@ -1,12 +1,74 @@
 {
   "name": "commit",
-  "description": "git add -A + commit.",
+  "description": "Stage only meaningful vetted changed paths, then commit; rejects generated/cache-only changes.",
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "commit_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Git checkout to stage vetted changes in and commit."
+        },
+        "message": {
+          "type": "string",
+          "default": "conductor-code change",
+          "description": "Commit message; defaults to 'conductor-code change' when omitted."
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "commit_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": "string",
+          "description": "Resulting commit SHA (HEAD after the commit, or the current HEAD when noOp)."
+        },
+        "stagedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Paths staged and committed; empty when noOp."
+        },
+        "rejectedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Vetted-change-eligible paths rejected during staging (e.g. protected deletions)."
+        },
+        "noOp": {
+          "type": "boolean",
+          "description": "True when there was nothing meaningful to stage/commit."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Explanation for a no-op commit; present only when noOp is true."
+        }
+      },
+      "required": [
+        "commit",
+        "stagedPaths",
+        "rejectedPaths",
+        "noOp"
+      ]
+    }
+  }
 }

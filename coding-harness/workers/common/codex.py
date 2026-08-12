@@ -37,6 +37,7 @@ import subprocess
 import tempfile
 from typing import Any
 
+from . import check_execution
 from .cost import price_usage
 
 log = logging.getLogger("coding_agent.codex")
@@ -46,13 +47,29 @@ CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
 CODEX_DRIVER = os.environ.get("CODEX_DRIVER", "sdk").strip().lower()
 
 
+# Constraint keywords the strict structured-output validator rejects outright
+# (400 invalid_json_schema). Dropping them only relaxes validation — the response
+# shape is unchanged — and the workers re-validate structured output themselves.
+# `pattern`, `minLength`, `minItems`/`maxItems` and the numeric bounds ARE accepted
+# and are deliberately left in place.
+_UNSUPPORTED_KEYWORDS = (
+    "uniqueItems", "contains", "minContains", "maxContains",
+    "patternProperties", "propertyNames", "dependentRequired", "dependentSchemas",
+    "unevaluatedItems", "unevaluatedProperties",
+)
+
+
 def _strictify_schema(node: Any) -> Any:
     """Normalize a JSON Schema for OpenAI strict structured-output: every object gets
     additionalProperties:false and lists ALL its properties in `required`; a property
-    that was NOT originally required becomes nullable so the model can still omit it."""
+    that was NOT originally required becomes nullable so the model can still omit it;
+    keywords the validator refuses (see _UNSUPPORTED_KEYWORDS) are dropped."""
     if not isinstance(node, dict):
         return node
     out = copy.deepcopy(node)
+    for keyword in _UNSUPPORTED_KEYWORDS:
+        if out.pop(keyword, None) is not None:
+            log.debug("codex: dropped unsupported schema keyword %r", keyword)
     if out.get("type") == "object" and isinstance(out.get("properties"), dict):
         props = out["properties"]
         original_required = set(out.get("required") or [])
@@ -121,6 +138,14 @@ async def _run_codex_sdk(
                 "denials": [], "turn_log": [], "stderr": ""}
 
     sandbox = Sandbox.workspace_write if write else Sandbox.read_only
+    # Codex's workspace-write sandbox denies network/socket syscalls by default
+    # (sandbox_workspace_write.network_access defaults to false), including
+    # loopback -- confirmed live: a test binding HTTPServer(("127.0.0.1", 0), ...)
+    # failed with PermissionError, a sandbox artifact rather than a project-code
+    # failure. This harness already isolates the agent to its own worktree
+    # (write_roots, _worktree_guard); there is no additional safety this
+    # specific restriction buys here, only false test failures.
+    session_config = {"sandbox_workspace_write": {"network_access": True}} if write else None
     turn_kwargs: dict[str, Any] = {}
     if output_schema:
         turn_kwargs["output_schema"] = _strictify_schema(output_schema)
@@ -160,12 +185,12 @@ async def _run_codex_sdk(
             if resume_session_id:
                 thread = await codex.thread_resume(
                     resume_session_id, cwd=worktree, sandbox=sandbox,
-                    approval_mode=ApprovalMode.deny_all,
+                    approval_mode=ApprovalMode.deny_all, config=session_config,
                     **({"model": model} if model else {}))
             else:
                 thread = await codex.thread_start(
                     cwd=worktree, sandbox=sandbox,
-                    approval_mode=ApprovalMode.deny_all,
+                    approval_mode=ApprovalMode.deny_all, config=session_config,
                     **({"model": model} if model else {}))
             session_id = thread.id or session_id
 
@@ -279,6 +304,11 @@ def _run_codex_cli(
     if resume_session_id:
         args += ["resume", resume_session_id]
     args += [prompt, "-C", worktree, "--skip-git-repo-check", "--json", "-s", sandbox]
+    # See the matching comment in _run_codex_sdk: workspace-write denies network/
+    # socket syscalls (including loopback) by default, which surfaces as a false
+    # test failure, not a project-code one.
+    if write:
+        args += ["-c", "sandbox_workspace_write.network_access=true"]
     if model:
         args += ["-m", model]
     if output_schema:
@@ -308,6 +338,7 @@ def _run_codex_cli(
         proc = subprocess.Popen(
             args, cwd=worktree, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=check_execution.inherited_environment(),
         )
         for line in proc.stdout:  # streams as Codex emits JSONL
             line = line.strip()

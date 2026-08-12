@@ -1,0 +1,177 @@
+{
+  "name": "openspec_select_ready",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "openspec_select_ready_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "object",
+          "description": "An openspec_status-shaped result; only its 'artifacts' array (each with id/status) is consulted. Non-dict values are treated as {}.",
+          "additionalProperties": true
+        },
+        "generated": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Artifact ids already generated in prior passes, excluded from this pass's selection. Non-list values are treated as []."
+        },
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute repo path forwarded to each dynamically-forked openspec_generate_artifact sub-workflow."
+        },
+        "changeName": {
+          "type": "string",
+          "description": "OpenSpec change id forwarded to each dynamically-forked sub-workflow."
+        },
+        "feedback": {
+          "description": "Prior review feedback text forwarded to each dynamically-forked sub-workflow."
+        },
+        "goal": {
+          "description": "Change goal/description forwarded to each dynamically-forked sub-workflow."
+        },
+        "model": {
+          "description": "Model identifier forwarded to each dynamically-forked sub-workflow."
+        },
+        "maxTurns": {
+          "description": "Max agent turns forwarded to each dynamically-forked sub-workflow."
+        },
+        "maxBudgetUsd": {
+          "description": "USD budget ceiling forwarded to each dynamically-forked sub-workflow."
+        },
+        "modelProfile": {
+          "description": "Model profile name forwarded to each dynamically-forked sub-workflow."
+        },
+        "modelPolicy": {
+          "description": "Model policy object forwarded to each dynamically-forked sub-workflow."
+        },
+        "modelPolicySource": {
+          "description": "Model policy source forwarded to each dynamically-forked sub-workflow."
+        },
+        "modelPolicySha256": {
+          "description": "Model policy checksum forwarded to each dynamically-forked sub-workflow."
+        },
+        "modelsConfig": {
+          "description": "Models configuration forwarded to each dynamically-forked sub-workflow."
+        },
+        "modelOverrides": {
+          "description": "Per-artifact model overrides forwarded to each dynamically-forked sub-workflow."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "openspec_select_ready_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "dynamicTasks": {
+          "type": "array",
+          "description": "One SUB_WORKFLOW task definition per not-yet-generated ready artifact, for FORK_JOIN_DYNAMIC.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "enum": [
+                  "openspec_generate_artifact"
+                ]
+              },
+              "taskReferenceName": {
+                "type": "string",
+                "description": "Unique reference name 'gen_<artifactId>' for this fork branch."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "SUB_WORKFLOW"
+                ]
+              },
+              "subWorkflowParam": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "enum": [
+                      "openspec_generate_artifact"
+                    ]
+                  },
+                  "version": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "name",
+                  "version"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "taskReferenceName",
+              "type",
+              "subWorkflowParam"
+            ]
+          }
+        },
+        "dynamicTasksInput": {
+          "type": "object",
+          "description": "Map of taskReferenceName -> input payload for the matching dynamicTasks entry.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "repoPath": {},
+              "changeName": {},
+              "artifact": {
+                "type": "string"
+              },
+              "goal": {},
+              "feedback": {},
+              "model": {},
+              "maxTurns": {},
+              "maxBudgetUsd": {},
+              "modelProfile": {},
+              "modelPolicy": {},
+              "modelPolicySource": {},
+              "modelPolicySha256": {},
+              "modelsConfig": {},
+              "modelOverrides": {}
+            },
+            "required": [
+              "artifact"
+            ]
+          }
+        },
+        "readyIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Artifact ids selected this pass (ready and not already generated)."
+        },
+        "readyCount": {
+          "type": "integer",
+          "description": "Number of artifacts selected this pass; equal to length of readyIds."
+        }
+      },
+      "required": [
+        "dynamicTasks",
+        "dynamicTasksInput",
+        "readyIds",
+        "readyCount"
+      ]
+    }
+  }
+}

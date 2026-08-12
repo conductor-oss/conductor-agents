@@ -4,9 +4,103 @@
   "retryCount": 0,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "pr_merge_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Local git checkout used to run `gh pr merge`."
+        },
+        "number": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "PR number to merge."
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "squash",
+            "rebase",
+            "merge"
+          ],
+          "default": "squash",
+          "description": "Merge strategy. Any other value falls back to 'squash'."
+        },
+        "deleteBranch": {
+          "description": "Delete the head branch after merging. Accepts a boolean or a truthy/falsy string. Defaults to true.",
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": true
+        },
+        "auto": {
+          "description": "Enable merge-when-ready (waits for required checks). Accepts a boolean or a truthy/falsy string.",
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": false
+        }
+      },
+      "required": [
+        "repoPath",
+        "number"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "pr_merge_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "merged": {
+          "type": "boolean",
+          "description": "Always true on success."
+        },
+        "number": {
+          "type": "integer",
+          "description": "PR number that was merged."
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "squash",
+            "rebase",
+            "merge"
+          ],
+          "description": "Merge strategy that was used."
+        },
+        "auto": {
+          "type": "boolean",
+          "description": "Whether merge-when-ready was requested."
+        }
+      },
+      "required": [
+        "merged",
+        "number",
+        "method",
+        "auto"
+      ]
+    }
+  }
 }

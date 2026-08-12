@@ -131,7 +131,7 @@ running checks, and using git, with no need to ship the repo to the server. v1 s
 **TypeScript** workers (`@io-orkes/conductor-javascript`, `TaskManager`); the `agent`
 worker shells out to `claude` / `codex`.
 
-Workers are **stateless & idempotent** (Conductor may redeliver on timeout): writes
+Workers are **stateless & idempotent** (Conductor may redeliver after worker loss): writes
 are branch-scoped and safe to re-run.
 
 ### 2.3 State lives in three layers
@@ -153,8 +153,7 @@ These wrap *every* phase; mechanics in §4.9.
   violation routes the workflow to an escalation gate.
 - **Budgets** — per-run caps (iterations, tokens, files, $cost) in
   `workflow.variables`, bumped after each step; loop conditions + post-phase
-  `SWITCH`es check them and escalate on breach. Runtime deadlines live only on
-  Conductor task definitions.
+  `SWITCH`es check them and escalate on breach. There are no wall-clock runtime deadlines.
 - **Reproducibility** — each `agent` invocation returns `{agent, model, version,
   tokens}`; `git_ops` records the commit sha — all in the Conductor audit. Re-run via
   `conductor workflow rerun`.
@@ -358,12 +357,12 @@ the dynamic fork:
                   "lens": "security", "repoPath": "..." } }
 ```
 
-### 4.5 Gates & human-in-the-loop (`HUMAN` task)
+### 4.5 Gates & human-in-the-loop (`WAIT` task)
 
 All human checkpoints — the two fixed gates, find-bug proposal selection, the optional
-pre-archive sign-off, and **dynamic escalations** — are Conductor **`HUMAN` tasks**.
-Unlike a bare `WAIT`, a `HUMAN` task is built to **notify/assign a person and collect
-structured input**:
+pre-archive sign-off, and **dynamic escalations** — are signal-based Conductor **`WAIT` tasks**.
+This keeps every active checkpoint compatible with the shared UI/API decision path and
+collects structured input:
 
 - **Notify** — assigned to the approver (and can fire a notification); the skill also
   surfaces it in the terminal, and it appears as a form in the Orkes UI.
@@ -371,7 +370,7 @@ structured input**:
   `{ decision: approve|changes|reject, feedback, edits?, answers?, profile? }`.
 
 ```json
-{ "name": "human_gate", "taskReferenceName": "approve_spec", "type": "HUMAN",
+{ "name": "human_gate", "taskReferenceName": "approve_spec", "type": "WAIT",
   "inputParameters": { "assignee": "${workflow.input.approver}",
                        "title": "Approve spec for <change>", "artifactRef": "spec" } }
 ```
@@ -385,7 +384,7 @@ conductor task update-execution --workflow-id {wfId} --task-ref-name approve_spe
 
 Downstream reads `${approve_spec.output.decision}` / `.feedback`. The revise-loop
 (§4.2) wraps `[approve_spec → revise]` in a `DO_WHILE` so `decision:"changes"` cycles
-back to an architect re-draft. Set generous `responseTimeoutSeconds`. The same `HUMAN`
+back to an architect re-draft. The same `HUMAN`
 task also powers **escalations** (§4.9) — used to *ask the human a question* (low
 confidence, guardrail trip, budget breach, non-converging review) and get a typed
 answer, not just an approval.
@@ -688,7 +687,7 @@ authenticated** on the worker host.
 |---|---|---|
 | R1 | **Driving CLI coding agents headless** — `claude -p` **and** `codex exec`: auth, cwd, structured-output capture, cost, concurrency | Confirm each agent's non-interactive + JSON-output contract early; cap concurrent `agent` runs per CLI; pass `cwd=repoPath`; budget per invocation. **Validate both agents in Phase 1.** |
 | R2 | Parallel edits conflict | Write-disjoint partitioning + per-group worktrees + an agent-resolved `integrate` per wave; profile-gated (parallel only for full/large). |
-| R3 | Gate timeouts for slow human review | Large `responseTimeoutSeconds`; gates releasable from Orkes UI; `status` shows pending gates. |
+| R3 | Slow human review | Gates have no deadline, remain releasable from the UI, and `status` shows pending gates. |
 | R4 | Worker idempotency (Conductor redelivers) | Branch-scoped writes; re-runnable check/git ops. |
 | R6 | **CI integration variability** (providers, auth) | `wait_ci` adapts per provider (GitHub Actions first); `integrate` is profile-optional and degrades to "commit only" when no CI. |
 | R7 | **Profile mis-selection** (too lean / too heavy) | Deterministic rules + override; default `standard` when unsure; human can bump at GATE 1. |

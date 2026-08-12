@@ -1,0 +1,111 @@
+{
+  "name": "pr_decision",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "pr_decision_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "gate": {
+          "type": "object",
+          "description": "The WAIT gate's payload. Read fields: action ('approve'|'revise'|'stop', or inferred 'approve' from approved=true), approved (bool), feedback (string), title/body or artifact.title/artifact.body.",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "approve",
+                "revise",
+                "stop"
+              ]
+            },
+            "approved": {
+              "type": "boolean"
+            },
+            "feedback": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "artifact": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "body": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "fallbackTitle": {
+          "type": "string",
+          "description": "Used as 'title' output when the gate provides neither gate.title nor gate.artifact.title."
+        },
+        "fallbackBody": {
+          "type": "string",
+          "description": "Used as 'body' output when the gate provides neither gate.body nor gate.artifact.body."
+        }
+      },
+      "required": []
+    }
+  },
+  "outputSchema": {
+    "name": "pr_decision_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "approve",
+            "investigate",
+            "revise",
+            "stop",
+            "unknown"
+          ],
+          "description": "Reduced gate decision: 'approve' only when gate.action is 'approve' (or approved=true), 'revise'/'stop' when requested with non-blank feedback where required, else 'unknown'."
+        },
+        "feedback": {
+          "type": "string",
+          "description": "Feedback text taken from gate.feedback, empty string if absent."
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "gate.title, or gate.artifact.title, or fallbackTitle, in that order; may be null if none supplied."
+        },
+        "body": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "gate.body, or gate.artifact.body, or fallbackBody, in that order; may be null if none supplied."
+        }
+      },
+      "required": [
+        "action",
+        "feedback",
+        "title",
+        "body"
+      ]
+    }
+  }
+}

@@ -4,9 +4,229 @@
   "retryCount": 2,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "pollTimeoutSeconds": 120,
-  "responseTimeoutSeconds": 60,
-  "timeoutSeconds": 1800,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "pollTimeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "openspec_intake_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git checkout that owns the run worktree."
+        },
+        "specSource": {
+          "type": "string",
+          "description": "OpenSpec source location: an absolute or file:// local path, a git URL, or a public HTTPS archive URL (.zip, .tar.gz, or .tgz)."
+        },
+        "changeId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+          "description": "OpenSpec change identifier; must be lowercase kebab-case."
+        },
+        "specSourceType": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "local",
+            "git",
+            "url"
+          ],
+          "default": "auto",
+          "description": "Force the source type instead of inferring it from specSource."
+        },
+        "specRef": {
+          "type": "string",
+          "description": "Git ref (branch, tag, or SHA) to pin when specSource is a git source."
+        },
+        "specPath": {
+          "type": "string",
+          "description": "Repository-relative path hint used to locate the OpenSpec project root when it is not at the source root."
+        },
+        "workspaceOwned": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when repoPath is an isolated worktree the workflow fully owns, allowing existing OpenSpec artifacts there to be overwritten during local-source materialization."
+        },
+        "sourceResolution": {
+          "type": "object",
+          "description": "Output of openspec_source_resolve; guides local-source materialization and writeback decisions.",
+          "properties": {
+            "materializeLocalSource": {
+              "type": "boolean",
+              "description": "Whether the local OpenSpec source should be copied into repoPath."
+            },
+            "sourceRepoPath": {
+              "type": "string",
+              "description": "Git repository root containing the local specSource."
+            },
+            "sourceOpenSpecRelativePath": {
+              "type": "string",
+              "description": "Path of the openspec/ directory relative to sourceRepoPath."
+            },
+            "sourceProjectRelativePath": {
+              "type": "string",
+              "description": "Path of the OpenSpec project root relative to sourceRepoPath."
+            },
+            "publishOnVerify": {
+              "type": "boolean",
+              "description": "Whether the change must be published back to a writeback repository after verification."
+            }
+          }
+        },
+        "specWritebackRepo": {
+          "type": "string",
+          "description": "Repository to publish the archived change to when the source is not already part of repoPath; required for URL sources without an inferable GitHub origin."
+        },
+        "specWritebackRef": {
+          "type": "string",
+          "description": "Ref to check out in the writeback repository clone."
+        },
+        "workflowId": {
+          "type": "string",
+          "description": "Run identifier used to namespace the snapshot directory; defaults to the workflow instance id or task id."
+        }
+      },
+      "required": [
+        "repoPath",
+        "specSource",
+        "changeId"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "openspec_intake_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "valid": {
+          "type": "boolean",
+          "description": "Always true on the success path; failures raise instead."
+        },
+        "changeId": {
+          "type": "string",
+          "description": "OpenSpec change identifier that was resolved."
+        },
+        "contextPath": {
+          "type": "string",
+          "description": "Path to the immutable, normalized context.md file written for coding_agent."
+        },
+        "sourceProjectPath": {
+          "type": "string",
+          "description": "Absolute path to the resolved OpenSpec project root."
+        },
+        "sourceChangePath": {
+          "type": "string",
+          "description": "Absolute path to the resolved OpenSpec change directory."
+        },
+        "sourceType": {
+          "type": "string",
+          "enum": [
+            "local",
+            "git",
+            "url"
+          ],
+          "description": "Inferred or forced source type."
+        },
+        "provenance": {
+          "type": "object",
+          "description": "Source provenance recorded alongside the normalized context.",
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "Source type: local, git, or url."
+            },
+            "source": {
+              "type": "string",
+              "description": "Original specSource value."
+            },
+            "ref": {
+              "type": "string",
+              "description": "Requested git ref, if any."
+            },
+            "pinnedRef": {
+              "type": "string",
+              "description": "Resolved git HEAD SHA when specSource is a git source; empty otherwise."
+            },
+            "changeId": {
+              "type": "string",
+              "description": "OpenSpec change identifier."
+            },
+            "sha256": {
+              "type": "string",
+              "description": "SHA-256 digest of the resolved change directory contents."
+            }
+          },
+          "required": [
+            "type",
+            "source",
+            "ref",
+            "pinnedRef",
+            "changeId",
+            "sha256"
+          ]
+        },
+        "validation": {
+          "type": "object",
+          "description": "Raw JSON output of `openspec validate --strict` for the change."
+        },
+        "status": {
+          "type": "object",
+          "description": "Raw JSON output of `openspec status` for the change."
+        },
+        "writebackRepoPath": {
+          "type": "string",
+          "description": "Absolute path to the repository the archived change will be committed to."
+        },
+        "writebackProjectPath": {
+          "type": "string",
+          "description": "Absolute path to the OpenSpec project root inside the writeback repository."
+        },
+        "sameRepo": {
+          "type": "boolean",
+          "description": "True when the resolved OpenSpec project and repoPath share the same git identity."
+        },
+        "materializedSourcePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Repository-relative OpenSpec paths copied into repoPath during local-source materialization."
+        },
+        "forceAddPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Writeback-repo-relative paths that must be force-added to the archive commit even if gitignored."
+        },
+        "publishOnVerify": {
+          "type": "boolean",
+          "description": "Whether the change and its writeback repository must be published back after verification."
+        }
+      },
+      "required": [
+        "valid",
+        "changeId",
+        "contextPath",
+        "sourceProjectPath",
+        "sourceChangePath",
+        "sourceType",
+        "provenance",
+        "validation",
+        "status",
+        "writebackRepoPath",
+        "writebackProjectPath",
+        "sameRepo",
+        "materializedSourcePaths",
+        "forceAddPaths",
+        "publishOnVerify"
+      ]
+    }
+  }
 }

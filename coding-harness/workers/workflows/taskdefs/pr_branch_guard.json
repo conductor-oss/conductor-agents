@@ -1,0 +1,77 @@
+{
+  "name": "pr_branch_guard",
+  "description": "Refuse a push if the PR branch tip has drifted since the feedback snapshot.",
+  "retryCount": 2,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "pr_branch_guard_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "expectedHeadSha": {
+          "type": "string",
+          "description": "SHA snapshot of the PR branch tip taken before edits; the guard fails validation (non-error) if this is blank."
+        },
+        "repo": {
+          "type": "string",
+          "description": "GitHub repository (owner/name or URL) that owns the branch, used to look up the current remote head."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Remote branch name to compare against expectedHeadSha."
+        }
+      },
+      "required": [
+        "repo",
+        "branch"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "pr_branch_guard_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "verificationState": {
+          "type": "string",
+          "enum": [
+            "matched",
+            "branch_drift",
+            "unknown"
+          ],
+          "description": "'matched' when the remote tip equals expectedHeadSha, 'branch_drift' when it changed, 'unknown' when the GitHub lookup itself failed."
+        },
+        "expectedHeadSha": {
+          "type": "string",
+          "description": "The expected head SHA supplied on input."
+        },
+        "actualHeadSha": {
+          "type": "string",
+          "description": "The remote branch tip SHA as observed now; empty string when the lookup failed."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch name that was checked."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Present only when verificationState is 'unknown': the GitHub lookup failure detail."
+        }
+      },
+      "required": [
+        "verificationState",
+        "expectedHeadSha",
+        "actualHeadSha",
+        "branch"
+      ]
+    }
+  }
+}

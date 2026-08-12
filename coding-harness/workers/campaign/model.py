@@ -8,6 +8,7 @@ entire state in task outputs instead of relying on worker-local memory.
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 from collections import deque
 from typing import Any
@@ -28,6 +29,27 @@ def _strings(value: Any, field: str) -> list[str]:
     return [x.strip() for x in value]
 
 
+def _task_slug(value: Any, position: int) -> str:
+    """Return a stable, Conductor-safe identifier for planner-authored task IDs."""
+    slug = re.sub(r"[^a-z0-9_-]+", "-", str(value or "").strip().lower())
+    slug = slug.strip("-_")
+    return slug or f"task-{position + 1}"
+
+
+def _unsafe_repo_path(value: str) -> bool:
+    """Reject POSIX/Windows absolute paths, NULs, and normalized traversal."""
+    path = value.replace("\\", "/")
+    if ("\x00" in path or path.startswith("/") or re.match(r"^[a-zA-Z]:", path)
+            or re.search(r"[*?[{]", path)):
+        return True
+    normalized = posixpath.normpath(path)
+    return normalized in (".", "..") or normalized.startswith("../")
+
+
+def _normalize_repo_path(value: str) -> str:
+    return posixpath.normpath(value.replace("\\", "/"))
+
+
 def validate_plan(value: Any, *, max_tasks: int = 25) -> dict[str, Any]:
     """Validate and normalize the planner's DAG contract.
 
@@ -38,53 +60,114 @@ def validate_plan(value: Any, *, max_tasks: int = 25) -> dict[str, Any]:
     errors: list[str] = []
     if not isinstance(raw, list):
         return {"valid": False, "errors": ["plan must contain a tasks array"],
-                "tasks": [], "order": []}
+                "normalizations": [], "tasks": [], "order": []}
     if not raw:
         errors.append("plan must contain at least one task")
     if len(raw) > max_tasks:
         errors.append(f"plan has {len(raw)} tasks; maxTasks is {max_tasks}")
 
     tasks: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen_raw: set[str] = set()
+    used_slugs: set[str] = set()
+    id_map: dict[str, str] = {}
+    canonical_ids: dict[int, str] = {}
+    normalizations: list[str] = []
+
+    # Planner output is external data. Canonicalize harmless naming variance at
+    # the boundary instead of rejecting an otherwise executable plan. Build the
+    # complete map first so forward dependency references are normalized too.
+    for pos, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        original = str(item.get("id") or "").strip()
+        if original and original in seen_raw:
+            errors.append(f"tasks[{pos}].id duplicates task id {original!r}")
+            continue
+        seen_raw.add(original)
+        base = _task_slug(original, pos)
+        canonical = base
+        suffix = 2
+        while canonical in used_slugs:
+            canonical = f"{base}-{suffix}"
+            suffix += 1
+        used_slugs.add(canonical)
+        canonical_ids[pos] = canonical
+        if original:
+            id_map[original] = canonical
+        if original != canonical:
+            normalizations.append(f"tasks[{pos}].id normalized from {original!r} to {canonical!r}")
+
     for pos, item in enumerate(raw):
         prefix = f"tasks[{pos}]"
         if not isinstance(item, dict):
             errors.append(f"{prefix} must be an object")
             continue
-        ident = str(item.get("id") or "").strip()
+        original_ident = str(item.get("id") or "").strip()
+        ident = canonical_ids.get(pos, _task_slug(original_ident, pos))
         desc = str(item.get("description") or "").strip()
         if not _ID.match(ident):
-            errors.append(f"{prefix}.id must be a unique lowercase slug")
-        elif ident in seen:
-            errors.append(f"duplicate task id: {ident}")
-        seen.add(ident)
+            errors.append(f"{prefix}.id could not be normalized to a safe task identifier")
         if not desc:
             errors.append(f"{prefix}.description is required")
         try:
-            deps = _strings(item.get("dependsOn"), f"{prefix}.dependsOn")
+            raw_deps = _strings(item.get("dependsOn"), f"{prefix}.dependsOn")
+            deps = list(dict.fromkeys(id_map.get(dep, _task_slug(dep, pos)) for dep in raw_deps))
             files = _strings(item.get("files"), f"{prefix}.files")
             acceptance = _strings(item.get("acceptanceCriteria"), f"{prefix}.acceptanceCriteria")
             checks = _strings(item.get("checks"), f"{prefix}.checks")
         except CampaignValidationError as exc:
             errors.append(str(exc))
             deps, files, acceptance, checks = [], [], [], []
-        if not files:
-            errors.append(f"{prefix}.files must identify at least one write root")
         if not acceptance:
             errors.append(f"{prefix}.acceptanceCriteria must not be empty")
-        unsafe = [p for p in files if os.path.isabs(p) or p == ".." or p.startswith("../")]
+        unsafe = [p for p in files if _unsafe_repo_path(p)]
         if unsafe:
-            errors.append(f"{prefix}.files escapes the repository: {', '.join(unsafe)}")
+            errors.append(
+                f"{prefix}.files contains invalid or unsafe write roots: {', '.join(unsafe)}"
+            )
+        files = list(dict.fromkeys(_normalize_repo_path(path) for path in files))
         tasks.append({"id": ident, "description": desc, "dependsOn": deps,
                       "files": files, "acceptanceCriteria": acceptance, "checks": checks})
 
     ids = {t["id"] for t in tasks if t["id"]}
+    tasks_by_id = {t["id"]: t for t in tasks if t["id"]}
     for task in tasks:
         missing = sorted(set(task["dependsOn"]) - ids)
         if missing:
             errors.append(f"{task['id']} has missing dependencies: {', '.join(missing)}")
         if task["id"] in task["dependsOn"]:
             errors.append(f"{task['id']} depends on itself")
+
+    # A planner may represent a blocking verification gate as a DAG node with
+    # commands but no writes. It still flows through ``campaign_subtask``, whose
+    # empty write-root input means whole-worktree access. Never dispatch that
+    # unsafe shape: inherit the verified dependencies' already-vetted scopes.
+    # Iterate to a fixed point so chains of verification gates are supported.
+    for _ in range(len(tasks)):
+        changed = False
+        for task in tasks:
+            if task["files"] or not task["checks"]:
+                continue
+            inherited = list(dict.fromkeys(
+                path
+                for dependency in task["dependsOn"]
+                for path in tasks_by_id.get(dependency, {}).get("files", [])
+            ))
+            if inherited:
+                task["files"] = inherited
+                normalizations.append(
+                    f"task {task['id']!r} inherited verification scope from dependencies: "
+                    + ", ".join(inherited)
+                )
+                changed = True
+        if not changed:
+            break
+    for pos, task in enumerate(tasks):
+        if not task["files"]:
+            errors.append(
+                f"tasks[{pos}].files must identify a write root; verification-only tasks "
+                "must depend on a file-scoped task"
+            )
 
     indegree = {i: 0 for i in ids}
     children = {i: [] for i in ids}
@@ -108,7 +191,8 @@ def validate_plan(value: Any, *, max_tasks: int = 25) -> dict[str, Any]:
         cycle = sorted(i for i, n in indegree.items() if n > 0)
         errors.append(f"dependency cycle detected: {', '.join(cycle)}")
 
-    return {"valid": not errors, "errors": errors, "tasks": tasks, "order": order}
+    return {"valid": not errors, "errors": errors, "normalizations": normalizations,
+            "tasks": tasks, "order": order}
 
 
 def paths_overlap(left: list[str], right: list[str]) -> bool:

@@ -13,6 +13,24 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 ENV_HELPER = ROOT / "scripts" / "conductor_env.sh"
 
+# workers/register.sh registers directly over REST (curl), not the `conductor`
+# CLI (which silently drops inputSchema/outputSchema) -- so a fake curl that
+# always fails or always returns a bare status code no longer stands in for
+# "registration succeeds" once run.sh's own reachability probe returns. This
+# stub answers run.sh's plain, unauthenticated probe GET to .../metadata/workflow
+# the way the real "unreachable" scenarios need (exit 7 = transport failure),
+# while letting register.sh's own POST/PUT/token/worker-gate calls succeed --
+# both live inside the same test run whenever registration is expected to reach
+# workers/register.sh.
+_CURL_STUB = (
+    'case "$*" in\n'
+    '  *"/token"*) printf \'{"token":"fake-token"}\' ;;\n'
+    '  *"-X POST"*|*"-X PUT"*) cat >/dev/null; printf \'\\n200\' ;;\n'
+    '  *"/metadata/taskdefs/"*) printf \'200\' ;;\n'
+    "  *) exit 7 ;;\n"
+    "esac\n"
+)
+
 
 def _executable(path: Path, body: str) -> None:
     path.write_text("#!/bin/bash\nset -eu\n" + body, encoding="utf-8")
@@ -152,7 +170,7 @@ def test_unreachable_open_local_server_still_bootstraps_oss(tmp_path):
         'if [ "$*" = "workflow list" ] && [ ! -f "$SERVER_STATE" ]; then exit 1; fi\n'
         'if [ "$*" = "server start" ]; then touch "$SERVER_STATE"; fi\n'
         "exit 0\n",
-        "exit 7\n",
+        _CURL_STUB,
     )
     env["CONDUCTOR_SERVER_URL"] = "http://localhost:8080/api"
     env["SERVER_STATE"] = str(state)
@@ -169,7 +187,7 @@ def test_cli_receives_server_and_key_secret_environment(tmp_path):
         'printf "%s|%s|%s|%s\\n" "$*" "$CONDUCTOR_SERVER_URL" '
         '"${CONDUCTOR_AUTH_KEY:+key-set}" "${CONDUCTOR_AUTH_SECRET:+secret-set}" '
         '>> "$CALL_LOG"\nexit 0\n',
-        "printf '200'\n",
+        _CURL_STUB,
     )
     env.update({
         "CONDUCTOR_SERVER_URL": "https://enterprise.example/api",

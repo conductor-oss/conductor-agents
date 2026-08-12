@@ -1,0 +1,143 @@
+{
+  "name": "test_plan_resolve",
+  "description": "Deterministic test_cycle decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "test_plan_resolve_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "discovered": {
+          "description": "Discovery output (or a bare command list) to fall back to when no operator override is supplied. Accepts either a raw array of command objects or an object with a 'commands' array.",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            {
+              "type": "object"
+            }
+          ]
+        },
+        "priorVerification": {
+          "description": "A prior verification's command list, merged as a carried obligation alongside 'discovered'. Same shape as 'discovered'.",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            {
+              "type": "object"
+            }
+          ]
+        },
+        "testCommands": {
+          "type": "array",
+          "description": "Operator-supplied override commands, taking precedence over everything else. Each item may be a bare argv array or a full command object.",
+          "items": {}
+        },
+        "discoveryOutcome": {
+          "type": "string",
+          "description": "Discovery outcome carried in from test_discover, e.g. discovered, no_tests_required, configuration_blocked."
+        },
+        "discoveryReason": {
+          "type": "string",
+          "description": "Discovery blocked reason carried in from test_discover, echoed back unchanged."
+        },
+        "selection": {
+          "type": "string",
+          "description": "Discovery selection strategy (e.g. documented-guide) used to attribute commandSource as repository_guide."
+        },
+        "testPlanTemplate": {
+          "type": "string",
+          "description": "Inline JSON string of an operator test-plan template, used only when testCommands is not supplied. A value starting with '@' or invalid JSON is treated as absent."
+        },
+        "agentCommands": {
+          "description": "An already-validated agent test-command proposal, used only as a last resort when discovery and prior obligations are both empty.",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            {
+              "type": "object"
+            }
+          ]
+        },
+        "testPlanTemplateSource": {
+          "type": "string",
+          "description": "Diagnostic label naming who supplied testPlanTemplate; only used for a log line, has no effect on the resolved plan."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "test_plan_resolve_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "The resolved command plan for this candidate, deduplicated by argv."
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Commands carried forward from priorVerification as still-required obligations."
+        },
+        "requiredCount": {
+          "type": "integer",
+          "description": "Count of commands in 'required'."
+        },
+        "commandSource": {
+          "type": "string",
+          "enum": [
+            "user_template",
+            "repository_guide",
+            "repository_config",
+            "build_system_inference",
+            "agent_proposal",
+            "none"
+          ],
+          "description": "Which authority supplied the resolved commands."
+        },
+        "discoveryOutcome": {
+          "type": "string",
+          "description": "Resolved discovery outcome: normalized to 'discovered' when commands exist and the input outcome was discovered/no_tests_required, or when an override/agent proposal itself supplies authority over a blocked/absent outcome."
+        },
+        "discoveryReason": {
+          "type": "string",
+          "description": "Discovery blocked reason, echoed through unchanged (empty string when none was given)."
+        }
+      },
+      "required": [
+        "commands",
+        "required",
+        "requiredCount",
+        "commandSource",
+        "discoveryOutcome",
+        "discoveryReason"
+      ]
+    }
+  }
+}

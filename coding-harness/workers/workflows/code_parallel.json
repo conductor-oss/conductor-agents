@@ -1,20 +1,695 @@
 {
+  "updateTime": 1786061775611,
   "name": "code_parallel",
-  "version": 3,
-  "schemaVersion": 2,
-  "ownerEmail": "viren@orkes.io",
-  "description": "Parallelize the coding agent: openspec_plan drives the openspec CLI to produce a proposal/specs/design/tasks change (reviewed via a human-or-AI-judge loop) and deterministically parses tasks.md into independent sub-tasks, a JQ task reshapes them into a dynamic fork, FORK_JOIN_DYNAMIC runs a code_subtask (worktree->coding_agent->commit) per sub-task in parallel, then merge_worktrees merges the branches back into a change branch.",
+  "description": "Plan work, autonomously repair invalid parallel plans, execute file-disjoint subtasks, and merge their commits.",
+  "version": 1,
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "inputParameters": {
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "repoPath": "${workflow.input.repoPath}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "workspace_prepare",
+      "taskReferenceName": "workspace",
+      "inputParameters": {
+        "branch": "${workflow.input.changeBranch}",
+        "branchRunId": "${workflow.input.branchRunId}",
+        "inPlace": "${workflow.input.inPlace}",
+        "preserveExisting": true,
+        "repoPath": "${workflow.input.repoPath}",
+        "workflowId": "${workflow.workflowId}",
+        "workspacePath": "${workflow.input.workspacePath}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "code_parallel_defaults",
+      "taskReferenceName": "code_defaults",
+      "inputParameters": {
+        "branch": "${workspace.output.branch}",
+        "evaluatorType": "graaljs",
+        "expression": "(function(){ var raw = $.branch || ('change-' + $.workflowId); var slug = raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); if (!/^[a-z]/.test(slug)) slug = 'change-' + slug; return {changeName: slug}; })();",
+        "workflowId": "${workflow.workflowId}"
+      },
+      "type": "INLINE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "design_gate",
+      "taskReferenceName": "design_gate",
+      "inputParameters": {
+        "design": "${workflow.input.design}"
+      },
+      "type": "SWITCH",
+      "decisionCases": {
+        "true": [
+          {
+            "name": "design_docs",
+            "taskReferenceName": "design",
+            "inputParameters": {
+              "contextPaths": "${workflow.input.contextPaths}",
+              "designDir": "${workflow.input.designDir}",
+              "designMaxBudgetUsd": "${workflow.input.designMaxBudgetUsd}",
+              "designMaxIterations": "${workflow.input.designMaxIterations}",
+              "designMaxTurns": "${workflow.input.designMaxTurns}",
+              "designModel": "${workflow.input.designModel}",
+              "designPromptTemplate": "${workflow.input.designPromptTemplate}",
+              "designPromptTemplateSource": "${workflow.input.designPromptTemplateSource}",
+              "humanApproval": "${workflow.input.designHumanApproval}",
+              "instruction": "${workflow.input.instruction}",
+              "modelOverrides": "${workflow.input.modelOverrides}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "repoPath": "${workspace.output.worktreePath}"
+            },
+            "type": "SUB_WORKFLOW",
+            "decisionCases": {},
+            "defaultCase": [],
+            "subWorkflowParam": {
+              "name": "design_docs",
+              "version": 1
+            }
+          }
+        ]
+      },
+      "defaultCase": [],
+      "evaluatorType": "value-param",
+      "expression": "design"
+    },
+    {
+      "name": "plan_source_detect",
+      "taskReferenceName": "plan_source",
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "plan_route",
+      "taskReferenceName": "plan_route",
+      "inputParameters": {
+        "mode": "${plan_source.output.mode}",
+        "usePrecomputed": "${workflow.input.usePrecomputedPlan}"
+      },
+      "type": "SWITCH",
+      "decisionCases": {
+        "precomputed": [
+          {
+            "name": "set_precomputed_plan",
+            "taskReferenceName": "set_precomputed_plan",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "planContext": "Caller-supplied parallel plan",
+              "planCost": 0,
+              "planMode": "precomputed",
+              "planSubtasks": "${workflow.input.precomputedPlan.subtasks}",
+              "planSummary": "Caller-supplied parallel plan",
+              "planTokens": 0
+            }
+          }
+        ],
+        "openspec": [
+          {
+            "name": "openspec_plan",
+            "taskReferenceName": "openspec_plan",
+            "inputParameters": {
+              "changeBranch": "${code_defaults.output.result.changeName}",
+              "instruction": "${workflow.input.instruction}",
+              "modelOverrides": "${workflow.input.modelOverrides}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "openspecHumanApproval": "${workflow.input.openspecHumanApproval}",
+              "openspecMaxBudgetUsd": "${workflow.input.openspecMaxBudgetUsd}",
+              "openspecMaxIterations": "${workflow.input.openspecMaxIterations}",
+              "openspecMaxTurns": "${workflow.input.openspecMaxTurns}",
+              "openspecPlanModel": "${workflow.input.openspecPlanModel}",
+              "repoPath": "${workspace.output.worktreePath}"
+            },
+            "type": "SUB_WORKFLOW",
+            "decisionCases": {},
+            "defaultCase": [],
+            "subWorkflowParam": {
+              "name": "openspec_plan",
+              "version": 1
+            }
+          },
+          {
+            "name": "set_openspec_plan",
+            "taskReferenceName": "set_openspec_plan",
+            "inputParameters": {
+              "planContext": "OpenSpec artifacts under ${openspec_plan.output.changeDir}/ (proposal.md, design.md, specs/**/*.md, tasks.md)",
+              "planCost": "${openspec_plan.output.costUsd}",
+              "planMode": "openspec",
+              "planSubtasks": "${openspec_plan.output.subtasks}",
+              "planSummary": "${openspec_plan.output.proposalText}",
+              "planTokens": "${openspec_plan.output.tokenUsed}"
+            },
+            "type": "SET_VARIABLE",
+            "decisionCases": {},
+            "defaultCase": []
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "document_plan",
+          "taskReferenceName": "document_plan",
+          "inputParameters": {
+            "contextPaths": "${workflow.input.contextPaths}",
+            "instruction": "${workflow.input.instruction}",
+            "maxBudgetUsd": "${workflow.input.openspecMaxBudgetUsd}",
+            "maxTurns": "${workflow.input.openspecMaxTurns}",
+            "model": "${workflow.input.openspecPlanModel}",
+            "modelOverrides": "${workflow.input.modelOverrides}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "repoPath": "${workspace.output.worktreePath}"
+          },
+          "type": "SUB_WORKFLOW",
+          "decisionCases": {},
+          "defaultCase": [],
+          "subWorkflowParam": {
+            "name": "document_plan",
+            "version": 1
+          }
+        },
+        {
+          "name": "set_document_plan",
+          "taskReferenceName": "set_document_plan",
+          "inputParameters": {
+            "planContext": "Supplied design documents from contextPaths",
+            "planCost": "${document_plan.output.costUsd}",
+            "planMode": "documents",
+            "planSubtasks": "${document_plan.output.subtasks}",
+            "planSummary": "${document_plan.output.summary}",
+            "planTokens": "${document_plan.output.tokenUsed}"
+          },
+          "type": "SET_VARIABLE",
+          "decisionCases": {},
+          "defaultCase": []
+        }
+      ],
+      "evaluatorType": "graaljs",
+      "expression": "$.usePrecomputed === true ? 'precomputed' : $.mode"
+    },
+    {
+      "name": "plan_state_init",
+      "taskReferenceName": "plan_state_init",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "planIssues": [],
+        "planningState": "unvalidated",
+        "planSubtasks": "${workflow.variables.planSubtasks}",
+        "planValid": false
+      }
+    },
+    {
+      "name": "plan_repair_loop",
+      "taskReferenceName": "plan_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ return $.plan_loop['iteration'] < $.max_plan_iterations && $.plan_valid !== true; })();",
+      "inputParameters": {
+        "max_plan_iterations": "${workflow.input.openspecMaxIterations}",
+        "plan_loop": "${plan_loop.output}",
+        "plan_valid": "${workflow.variables.planValid}"
+      },
+      "loopOver": [
+        {
+          "name": "verification_discover",
+          "taskReferenceName": "plan_check",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "repoPath": "${workspace.output.worktreePath}",
+            "subtasks": "${workflow.variables.planSubtasks}",
+            "currentSubtasks": "${workflow.variables.planSubtasks}",
+            "exhausted": false
+          }
+        },
+        {
+          "name": "plan_round_state",
+          "taskReferenceName": "plan_round_state",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "planIssues": "${plan_check.output.issues}",
+            "planningState": "${plan_check.output.planningState}",
+            "planSubtasks": "${plan_check.output.subtasks}",
+            "planValid": "${plan_check.output.valid}"
+          }
+        },
+        {
+          "name": "plan_action",
+          "taskReferenceName": "plan_action",
+          "type": "SWITCH",
+          "evaluatorType": "value-param",
+          "expression": "planningState",
+          "inputParameters": {
+            "planningState": "${plan_check.output.planningState}"
+          },
+          "decisionCases": {
+            "needs_replan": [
+              {
+                "name": "json_text",
+                "taskReferenceName": "plan_repair_context",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "issues": "${plan_check.output.issues}",
+                  "plan": "${plan_check.output.subtasks}"
+                },
+                "optional": true
+              },
+              {
+                "name": "coding_agent",
+                "taskReferenceName": "plan_repair",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "allowedTools": [
+                    "Read",
+                    "Grep",
+                    "Glob"
+                  ],
+                  "maxBudgetUsd": "${workflow.input.openspecMaxBudgetUsd}",
+                  "maxTurns": "${workflow.input.openspecMaxTurns}",
+                  "model": "${workflow.input.openspecPlanModel}",
+                  "modelOverrides": "${workflow.input.modelOverrides}",
+                  "modelPolicy": "${workflow.input.modelPolicy}",
+                  "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                  "modelPolicySource": "${workflow.input.modelPolicySource}",
+                  "modelProfile": "${workflow.input.modelProfile}",
+                  "modelResolution": "${model_policy.output}",
+                  "modelRole": "plan",
+                  "modelsConfig": "${workflow.input.modelsConfig}",
+                  "prompt": "Repair this parallel implementation plan. Preserve the requested behavior, but return a complete replacement plan that fixes every validator issue. Each subtask must have a unique lowercase kebab-case id, a non-empty description, and a non-empty list of exact repository-relative files. A file may belong to only one subtask. Do not add test commands; testing is outside plan validation. User instruction: ${workflow.input.instruction}\n\nCurrent plan JSON: ${plan_repair_context.output.planJson}\n\nValidator issues JSON: ${plan_repair_context.output.issuesJson}",
+                  "promptTemplate": "",
+                  "promptTemplateSource": "builtin:code-parallel-plan-repair",
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "subtasks": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "files": {
+                              "type": "array",
+                              "minItems": 1,
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "description",
+                            "files"
+                          ]
+                        }
+                      }
+                    },
+                    "required": [
+                      "subtasks"
+                    ]
+                  },
+                  "templateKey": "code-parallel-plan-repair",
+                  "worktreePath": "${workspace.output.worktreePath}"
+                }
+              },
+              {
+                "name": "capture_repaired_plan",
+                "taskReferenceName": "capture_repaired_plan",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "planSubtasks": "${plan_repair.output.structured.subtasks}",
+                  "planValid": false,
+                  "planningState": "rechecking"
+                }
+              },
+              {
+                "name": "usage_accumulate",
+                "taskReferenceName": "plan_repair_usage",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "newCost": "${plan_repair.output.costUsd}",
+                  "newTokens": "${plan_repair.output.tokenUsed}",
+                  "prevCost": "${workflow.variables.planCost}",
+                  "prevTokens": "${workflow.variables.planTokens}"
+                }
+              },
+              {
+                "name": "capture_plan_repair_usage",
+                "taskReferenceName": "capture_plan_repair_usage",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "planCost": "${plan_repair_usage.output.cost}",
+                  "planTokens": "${plan_repair_usage.output.tokens}"
+                }
+              }
+            ]
+          },
+          "defaultCase": []
+        }
+      ]
+    },
+    {
+      "name": "verification_discover",
+      "taskReferenceName": "final_plan_check",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "subtasks": "${workflow.variables.planSubtasks}",
+        "currentSubtasks": "${workflow.variables.planSubtasks}",
+        "exhausted": true
+      },
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "final_plan_state",
+      "taskReferenceName": "final_plan_state",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "planIssues": "${final_plan_check.output.issues}",
+        "planningState": "${final_plan_check.output.planningState}",
+        "planSubtasks": "${final_plan_check.output.subtasks}",
+        "planValid": "${final_plan_check.output.valid}"
+      },
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "plan_gate",
+      "taskReferenceName": "plan_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "(function(){ return $.planValid === true ? 'plan_ready' : 'plan_rejected'; })();",
+      "inputParameters": {
+        "planValid": "${workflow.variables.planValid}"
+      },
+      "decisionCases": {
+        "plan_rejected": [
+          {
+            "name": "terminate_invalid_plan",
+            "taskReferenceName": "terminate_invalid_plan",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "COMPLETED",
+              "workflowOutput": {
+                "agentCompleted": false,
+                "branch": "${workspace.output.branch}",
+                "changeBranch": "${workspace.output.branch}",
+                "conflicts": [],
+                "groupIds": "",
+                "merged": [],
+                "planMode": "${workflow.variables.planMode}",
+                "proposalText": "${workflow.variables.planSummary}",
+                "sourceHandoff": {
+                  "baselineCommit": "${workspace.output.baselineCommit}",
+                  "branch": "${workspace.output.branch}",
+                  "commit": "${workspace.output.originalHead}",
+                  "executionOutcome": "plan_rejected",
+                  "includedSourcePaths": "${workspace.output.baselineIncludedPaths}",
+                  "originalBranch": "${workspace.output.originalBranch}",
+                  "originalHead": "${workspace.output.originalHead}",
+                  "presented": false,
+                  "repoPath": "${workspace.output.worktreePath}",
+                  "sourceRepoPath": "${workflow.input.repoPath}",
+                  "verificationAttempts": "${plan_loop.output.iteration}",
+                  "verificationState": "plan_rejected"
+                },
+                "subtasks": "${workflow.variables.planSubtasks}",
+                "summary": {
+                  "reason": "parallel plan remained invalid after autonomous replanning",
+                  "issues": "${workflow.variables.planIssues}"
+                },
+                "totalCostUsd": "${workflow.variables.planCost}",
+                "totalTokens": "${workflow.variables.planTokens}",
+                "verification": {
+                  "valid": false,
+                  "state": "plan_rejected",
+                  "issues": "${workflow.variables.planIssues}",
+                  "subtasks": "${workflow.variables.planSubtasks}"
+                },
+                "verificationAttempts": "${plan_loop.output.iteration}",
+                "verificationChecks": {
+                  "valid": false,
+                  "state": "plan_rejected",
+                  "issues": "${workflow.variables.planIssues}",
+                  "subtasks": "${workflow.variables.planSubtasks}"
+                },
+                "verificationCommit": "${workspace.output.originalHead}",
+                "verificationExecutionOutcome": "plan_rejected",
+                "verificationFindings": "${workflow.variables.planIssues}",
+                "verificationReport": "Plan rejected after autonomous replanning.",
+                "verificationState": "plan_rejected",
+                "verified": false
+              }
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "code_parallel_build_forks",
+      "taskReferenceName": "build_forks",
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "subtasks": "${workflow.variables.planSubtasks}",
+        "changeDir": "${workflow.variables.planContext}",
+        "codeModel": "${workflow.input.codeModel}",
+        "codePromptTemplate": "${workflow.input.codePromptTemplate}",
+        "codePromptTemplateSource": "${workflow.input.codePromptTemplateSource}",
+        "specContextPath": "${workflow.input.specContextPath}",
+        "contextPaths": "${workflow.input.contextPaths}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      },
+      "type": "SIMPLE"
+    },
+    {
+      "name": "fan_out",
+      "taskReferenceName": "fan_out",
+      "inputParameters": {
+        "dynamicTasks": "${build_forks.output.dynamicTasks}",
+        "dynamicTasksInput": "${build_forks.output.dynamicTasksInput}"
+      },
+      "type": "FORK_JOIN_DYNAMIC",
+      "optional": true,
+      "decisionCases": {},
+      "dynamicForkTasksParam": "dynamicTasks",
+      "dynamicForkTasksInputParamName": "dynamicTasksInput",
+      "defaultCase": []
+    },
+    {
+      "name": "fan_join",
+      "taskReferenceName": "fan_join",
+      "type": "JOIN",
+      "optional": true,
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "code_parallel_delivery_summary",
+      "taskReferenceName": "delivery_summary",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "joined": "${fan_join.output}"
+      }
+    },
+    {
+      "name": "merge_worktrees",
+      "taskReferenceName": "merge",
+      "inputParameters": {
+        "groupIds": "${build_forks.output.groupIds}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "modelBuilder": "${workflow.input.codeModel}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "preflight": false,
+        "repoPath": "${workspace.output.worktreePath}"
+      },
+      "type": "SUB_WORKFLOW",
+      "optional": true,
+      "decisionCases": {},
+      "defaultCase": [],
+      "subWorkflowParam": {
+        "name": "merge_remediation",
+        "version": 1
+      }
+    },
+    {
+      "name": "code_parallel_merge_candidate",
+      "taskReferenceName": "select_merge_candidate",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "merge": "${merge.output}",
+        "fallbackCommit": "${workspace.output.originalHead}"
+      }
+    },
+    {
+      "name": "merge_candidate_init",
+      "taskReferenceName": "verification_candidate_init",
+      "inputParameters": {
+        "candidateCommit": "${select_merge_candidate.output.commit}"
+      },
+      "type": "SET_VARIABLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "test_cycle",
+      "taskReferenceName": "post_merge_tests",
+      "type": "SUB_WORKFLOW",
+      "optional": true,
+      "subWorkflowParam": {
+        "name": "test_cycle",
+        "version": 1
+      },
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "candidateCommit": "${workflow.variables.candidateCommit}",
+        "testMode": "targeted",
+        "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+        "allowedWriteRoots": "${build_forks.output.allowedWriteRoots}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "model": "${workflow.input.codeModel}",
+        "repairPromptTemplate": "${workflow.input.codePromptTemplate}",
+        "repairPromptTemplateSource": "${workflow.input.codePromptTemplateSource}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "code_parallel_verification_outcome",
+      "taskReferenceName": "verification_outcome",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "candidateCommit": "${workflow.variables.candidateCommit}",
+        "delivery": "${delivery_summary.output}",
+        "issues": "${workflow.variables.planIssues}",
+        "mergeState": "${select_merge_candidate.output.mergeState}",
+        "planValid": "${workflow.variables.planValid}",
+        "tested": "${post_merge_tests.output.candidateCommit}",
+        "testState": "${post_merge_tests.output.testCycleState}",
+        "testsPassed": "${post_merge_tests.output.testsPassed}"
+      }
+    },
+    {
+      "name": "merge_candidate_final",
+      "taskReferenceName": "verification_candidate_final",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "candidateCommit": "${verification_outcome.output.candidateCommit}"
+      }
+    },
+    {
+      "name": "inplace_guard",
+      "taskReferenceName": "source_handoff",
+      "inputParameters": {
+        "branch": "${workspace.output.branch}",
+        "expectedHead": "${workflow.variables.candidateCommit}",
+        "repoPath": "${workspace.output.worktreePath}"
+      },
+      "type": "SIMPLE",
+      "optional": true,
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "code_parallel_handoff_summary",
+      "taskReferenceName": "handoff_summary",
+      "inputParameters": {
+        "matched": "${source_handoff.output.matched}",
+        "verification": "${verification_outcome.output}"
+      },
+      "type": "SIMPLE"
+    },
+    {
+      "name": "code_parallel_aggregate_usage",
+      "taskReferenceName": "aggregate",
+      "inputParameters": {
+        "joined": "${fan_join.output}",
+        "mergeCost": "${merge.output.merge.costUsd}",
+        "mergeTokens": "${merge.output.merge.tokenUsed}",
+        "planCost": "${workflow.variables.planCost}",
+        "planTokens": "${workflow.variables.planTokens}",
+        "verifyCost": 0,
+        "verifyTokens": 0
+      },
+      "type": "SIMPLE",
+      "optional": true
+    },
+    {
+      "name": "code_parallel_verification_report",
+      "taskReferenceName": "verification_report",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "branch": "${workspace.output.branch}",
+        "commit": "${workflow.variables.candidateCommit}",
+        "issues": "${workflow.variables.planIssues}",
+        "merged": "${merge.output.merge.merged}",
+        "outcome": "${verification_outcome.output}"
+      }
+    }
+  ],
   "inputParameters": [
     "repoPath",
     "instruction",
     "changeBranch",
-    "openspecPlanAgent",
+    "branchRunId",
     "openspecPlanModel",
     "openspecMaxTurns",
     "openspecMaxBudgetUsd",
     "openspecHumanApproval",
     "openspecMaxIterations",
-    "codeAgent",
     "codeModel",
     "codePromptTemplate",
     "codePromptTemplateSource",
@@ -29,336 +704,779 @@
     "precomputedPlan",
     "specContextPath",
     "usePrecomputedPlan",
-    "verifyMaxIterations"
+    "design",
+    "designDir",
+    "designHumanApproval",
+    "designMaxIterations",
+    "designMaxTurns",
+    "designMaxBudgetUsd",
+    "designModel",
+    "designPromptTemplate",
+    "designPromptTemplateSource",
+    "inPlace",
+    "workspacePath",
+    "contextPaths",
+    "maxFixAttempts"
   ],
+  "outputParameters": {
+    "agentCompleted": true,
+    "branch": "${workspace.output.branch}",
+    "changeBranch": "${workspace.output.branch}",
+    "conflicts": "${merge.output.merge.conflicts}",
+    "groupIds": "${build_forks.output.groupIds}",
+    "mergeCostUsd": "${merge.output.merge.costUsd}",
+    "merged": "${merge.output.merge.merged}",
+    "planMode": "${workflow.variables.planMode}",
+    "proposalText": "${workflow.variables.planSummary}",
+    "sourceHandoff": {
+      "baselineCommit": "${workspace.output.baselineCommit}",
+      "branch": "${source_handoff.output.branch}",
+      "commit": "${source_handoff.output.head}",
+      "executionOutcome": "${verification_outcome.output.executionOutcome}",
+      "includedSourcePaths": "${workspace.output.baselineIncludedPaths}",
+      "originalBranch": "${workspace.output.originalBranch}",
+      "originalHead": "${workspace.output.originalHead}",
+      "presented": "${handoff_summary.output.presented}",
+      "repoPath": "${source_handoff.output.repoPath}",
+      "sourceRepoPath": "${workflow.input.repoPath}",
+      "verificationAttempts": "${plan_loop.output.iteration}",
+      "verificationState": "${verification_outcome.output.state}"
+    },
+    "subtasks": "${workflow.variables.planSubtasks}",
+    "summary": "${aggregate.output.result}",
+    "totalCostUsd": "${aggregate.output.totalCostUsd}",
+    "totalTokens": "${aggregate.output.totalTokens}",
+    "verification": {
+      "valid": true,
+      "state": "plan_ready",
+      "issues": "${workflow.variables.planIssues}",
+      "subtasks": "${workflow.variables.planSubtasks}"
+    },
+    "deliveryOutcome": "${verification_outcome.output.state}",
+    "deliveryReports": "${delivery_summary.output.reports}",
+    "missingPaths": "${delivery_summary.output.missingPaths}",
+    "rejectedPaths": "${delivery_summary.output.rejectedPaths}",
+    "commandFailures": "${delivery_summary.output.commandFailures}",
+    "sandboxDenials": "${delivery_summary.output.sandboxDenials}",
+    "deliveryRepairAttempts": "${delivery_summary.output.repairAttempts}",
+    "verificationAttempts": "${delivery_summary.output.repairAttempts}",
+    "verificationChecks": {
+      "valid": true,
+      "state": "plan_ready",
+      "issues": "${workflow.variables.planIssues}",
+      "subtasks": "${workflow.variables.planSubtasks}"
+    },
+    "verificationCommit": "${workflow.variables.candidateCommit}",
+    "verificationExecutionOutcome": "${verification_outcome.output.executionOutcome}",
+    "verificationFindings": "${workflow.variables.planIssues}",
+    "verificationReport": "${verification_report.output.report}",
+    "verificationState": "${verification_outcome.output.state}",
+    "verified": "${verification_outcome.output.passed}",
+    "testCycleState": "${post_merge_tests.output.testCycleState}",
+    "testsPassed": "${post_merge_tests.output.testsPassed}",
+    "testRunCount": "${post_merge_tests.output.testRunCount}",
+    "testReport": "${post_merge_tests.output.testReport}"
+  },
+  "schemaVersion": 2,
+  "restartable": true,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "variables": {
+    "candidateCommit": "",
+    "planContext": "",
+    "planCost": 0,
+    "planIssues": [],
+    "planningState": "unvalidated",
+    "planMode": "",
+    "planSubtasks": [],
+    "planSummary": "",
+    "planTokens": 0,
+    "planValid": false
+  },
   "inputTemplate": {
-    "changeBranch": "code-parallel",
-    "openspecPlanAgent": "claude",
-    "openspecPlanModel": "",
-    "openspecMaxTurns": 500,
-    "openspecMaxBudgetUsd": 50.0,
-    "openspecHumanApproval": true,
-    "openspecMaxIterations": 5,
-    "codeAgent": "claude",
+    "branchRunId": "",
+    "changeBranch": "",
     "codeModel": "",
     "codePromptTemplate": "",
     "codePromptTemplateSource": "",
+    "contextPaths": [],
+    "design": false,
+    "designDir": "docs/design",
+    "designHumanApproval": true,
+    "designMaxBudgetUsd": 50,
+    "designMaxIterations": 5,
+    "designMaxTurns": 500,
+    "designModel": "",
+    "designPromptTemplate": "",
+    "designPromptTemplateSource": "",
+    "inPlace": false,
+    "maxBudgetUsd": 50,
     "maxTurns": 500,
-    "maxBudgetUsd": 50.0,
-    "modelProfile": "",
-    "modelPolicy": {},
-    "modelPolicySource": "",
-    "modelPolicySha256": "",
-    "modelsConfig": "",
     "modelOverrides": {},
+    "modelPolicy": {},
+    "modelPolicySha256": "",
+    "modelPolicySource": "",
+    "modelProfile": "",
+    "modelsConfig": "",
+    "openspecHumanApproval": true,
+    "openspecMaxBudgetUsd": 50,
+    "openspecMaxIterations": 5,
+    "openspecMaxTurns": 500,
+    "openspecPlanModel": "",
     "precomputedPlan": {},
     "specContextPath": "",
     "usePrecomputedPlan": false,
-    "verifyMaxIterations": 3
+    "workspacePath": "",
+    "maxFixAttempts": 4
   },
-  "variables": {
-    "verifyPassed": false, "verifyFindings": [], "verifyChecks": {},
-    "verifyFixupTokens": 0, "verifyFixupCost": 0
-  },
-  "tasks": [
-    {
-      "name": "model_profile_resolve",
-      "taskReferenceName": "model_policy",
-      "type": "SIMPLE",
-      "inputParameters": {
-        "modelProfile": "${workflow.input.modelProfile}",
-        "modelPolicy": "${workflow.input.modelPolicy}",
-        "modelPolicySource": "${workflow.input.modelPolicySource}",
-        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
-        "modelsConfig": "${workflow.input.modelsConfig}",
-        "modelOverrides": "${workflow.input.modelOverrides}",
-        "repoPath": "${workflow.input.repoPath}"
-      }
-    },
-    {
-      "name": "prepare_repo",
-      "taskReferenceName": "prep",
-      "type": "SIMPLE",
-      "inputParameters": {
-        "repoPath": "${workflow.input.repoPath}"
-      }
-    },
-    {
-      "name": "create_branch",
-      "taskReferenceName": "branch",
-      "type": "SIMPLE",
-      "inputParameters": {
-        "repoPath": "${workflow.input.repoPath}",
-        "name": "${workflow.input.changeBranch}"
-      }
-    },
-    {
-      "name": "openspec_plan",
-      "taskReferenceName": "openspec_plan",
-      "type": "SUB_WORKFLOW",
-      "subWorkflowParam": {
-        "name": "openspec_plan",
-        "version": 1
-      },
-      "inputParameters": {
-        "repoPath": "${workflow.input.repoPath}",
-        "instruction": "${workflow.input.instruction}",
-        "changeBranch": "${workflow.input.changeBranch}",
-        "openspecPlanAgent": "${workflow.input.openspecPlanAgent}",
-        "openspecPlanModel": "${workflow.input.openspecPlanModel}",
-        "openspecMaxTurns": "${workflow.input.openspecMaxTurns}",
-        "openspecMaxBudgetUsd": "${workflow.input.openspecMaxBudgetUsd}",
-        "openspecHumanApproval": "${workflow.input.openspecHumanApproval}",
-        "openspecMaxIterations": "${workflow.input.openspecMaxIterations}",
-        "modelProfile": "${workflow.input.modelProfile}",
-        "modelPolicy": "${workflow.input.modelPolicy}",
-        "modelPolicySource": "${workflow.input.modelPolicySource}",
-        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
-        "modelsConfig": "${workflow.input.modelsConfig}",
-        "modelOverrides": "${workflow.input.modelOverrides}"
-      }
-    },
-    {
-      "name": "openspec_read_proposal",
-      "taskReferenceName": "read_proposal",
-      "type": "SIMPLE",
-      "inputParameters": {
-        "changeDir": "${openspec_plan.output.changeDir}"
-      }
-    },
-    {
-      "name": "build_forks",
-      "taskReferenceName": "build_forks",
-      "type": "JSON_JQ_TRANSFORM",
-      "inputParameters": {
-        "result": "${openspec_plan.output}",
-        "changeDir": "${openspec_plan.output.changeDir}",
-        "precomputedPlan": "${workflow.input.precomputedPlan}",
-        "usePrecomputedPlan": "${workflow.input.usePrecomputedPlan}",
-        "specContextPath": "${workflow.input.specContextPath}",
-        "repoPath": "${workflow.input.repoPath}",
-        "codeModel": "${workflow.input.codeModel}",
-        "codeAgent": "${workflow.input.codeAgent}",
-        "codePromptTemplate": "${workflow.input.codePromptTemplate}",
-        "codePromptTemplateSource": "${workflow.input.codePromptTemplateSource}",
-        "maxTurns": "${workflow.input.maxTurns}",
-        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-        "modelProfile": "${workflow.input.modelProfile}",
-        "modelPolicy": "${workflow.input.modelPolicy}",
-        "modelPolicySource": "${workflow.input.modelPolicySource}",
-        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
-        "modelsConfig": "${workflow.input.modelsConfig}",
-        "modelOverrides": "${workflow.input.modelOverrides}",
-        "queryExpression": ".repoPath as $r | .codeModel as $m | .codeAgent as $ag | .codePromptTemplate as $ct | .codePromptTemplateSource as $cts | .maxTurns as $mt | .maxBudgetUsd as $mb | .changeDir as $cd | .specContextPath as $sc | .modelProfile as $mp | .modelPolicy as $mpp | .modelPolicySource as $mps | .modelPolicySha256 as $mpsh | .modelsConfig as $mc | .modelOverrides as $mo | [\"Read\",\"Write\",\"Edit\",\"Glob\",\"Grep\",\"Bash(python *)\",\"Bash(python3 *)\",\"Bash(node *)\",\"Bash(npm *)\",\"Bash(npx *)\",\"Bash(cat *)\",\"Bash(ls *)\",\"Bash(pytest *)\",\"Bash(go *)\",\"Bash(cargo *)\",\"Bash(git status*)\",\"Bash(git diff*)\",\"Bash(git log*)\",\"Bash(git mv *)\",\"Bash(git rm *)\",\"Bash(mv *)\",\"Bash(rm *)\",\"Bash(mkdir *)\",\"Bash(cp *)\",\"Bash(touch *)\"] as $dat | def patternfor(cmd): (cmd // \"\" | if (length) == 0 then null else (split(\" \")[0] | \"Bash(\" + . + \" *)\") end); def allowfor(cmd): (patternfor(cmd)) as $p | (if $p == null or ($dat | index($p) != null) then $dat else ($dat + [$p]) end); (if .usePrecomputedPlan then .precomputedPlan else .result end).subtasks as $subs | { dynamicTasks: [$subs[] | {name:\"code_subtask\", taskReferenceName:.id, type:\"SUB_WORKFLOW\", subWorkflowParam:{name:\"code_subtask\", version:2}}], dynamicTasksInput: (reduce $subs[] as $s ({}; . + ((($s.files // []) | join(\", \")) as $files | ($s.description + \"\\nTarget files: \" + $files + (if $s.testCmd then \"\\nYour check: \" + $s.testCmd else \"\" end)) as $desc | {($s.id): {repoPath:$r, name:$s.id, model:$m, agent:$ag, maxTurns:$mt, maxBudgetUsd:$mb, prompt:($desc + \"\\n\\nThe OpenSpec planning artifacts for this change are under \" + $cd + \" in your working directory — read proposal.md and design.md first, then specs/**/*.md, then your slice of tasks.md, before implementing.\"), promptTemplate:$ct, promptTemplateSource:$cts, templateKey:\"code\", promptContext:{subtask:$desc}, specContextPath:$sc, allowedTools: allowfor($s.testCmd), modelProfile:$mp, modelPolicy:$mpp, modelPolicySource:$mps, modelPolicySha256:$mpsh, modelsConfig:$mc, modelOverrides:$mo}}))), groupIds: ([$subs[].id] | join(\",\")) }"
-      }
-    },
-    {
-      "name": "fan_out",
-      "taskReferenceName": "fan_out",
-      "type": "FORK_JOIN_DYNAMIC",
-      "dynamicForkTasksParam": "dynamicTasks",
-      "dynamicForkTasksInputParamName": "dynamicTasksInput",
-      "inputParameters": {
-        "dynamicTasks": "${build_forks.output.result.dynamicTasks}",
-        "dynamicTasksInput": "${build_forks.output.result.dynamicTasksInput}"
-      }
-    },
-    {
-      "name": "fan_join",
-      "taskReferenceName": "fan_join",
-      "type": "JOIN"
-    },
-    {
-      "name": "merge_worktrees",
-      "taskReferenceName": "merge",
-      "type": "SIMPLE",
-      "inputParameters": {
-        "repoPath": "${workflow.input.repoPath}",
-        "groupIds": "${build_forks.output.result.groupIds}",
-        "modelBuilder": "${workflow.input.codeModel}",
-        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}"
-      }
-    },
-    {
-      "name": "verify_loop", "taskReferenceName": "verify_loop", "type": "DO_WHILE", "evaluatorType": "graaljs",
-      "loopCondition": "(function(){ return $.verify_loop['iteration'] < $.max_verify_iterations && $.verify_passed !== true; })();",
-      "inputParameters": {
-        "verify_loop": "${verify_loop.output}", "max_verify_iterations": "${workflow.input.verifyMaxIterations}",
-        "verify_passed": "${workflow.variables.verifyPassed}"
-      },
-      "loopOver": [
-        {
-          "name": "openspec_tasks_to_subtasks", "taskReferenceName": "reparse_tasks", "type": "SIMPLE",
-          "inputParameters": {
-            "tasksPath": "${openspec_plan.output.changeDir}/tasks.md"
-          }
+  "overwriteTags": false,
+  "inputSchema": {
+    "name": "code_parallel_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to an existing local git checkout used as the source repository for this run; fed into model policy resolution and workspace preparation."
         },
-        {
-          "name": "build_checks", "taskReferenceName": "build_checks", "type": "JSON_JQ_TRANSFORM",
-          "inputParameters": {
-            "repoPath": "${workflow.input.repoPath}",
-            "checksList": "${reparse_tasks.output.subtasks}",
-            "queryExpression": ".repoPath as $r | .checksList as $subs | [\"Read\",\"Write\",\"Edit\",\"Glob\",\"Grep\",\"Bash(python *)\",\"Bash(python3 *)\",\"Bash(node *)\",\"Bash(npm *)\",\"Bash(npx *)\",\"Bash(cat *)\",\"Bash(ls *)\",\"Bash(pytest *)\",\"Bash(go *)\",\"Bash(cargo *)\",\"Bash(git status*)\",\"Bash(git diff*)\",\"Bash(git log*)\",\"Bash(git mv *)\",\"Bash(git rm *)\",\"Bash(mv *)\",\"Bash(rm *)\",\"Bash(mkdir *)\",\"Bash(cp *)\",\"Bash(touch *)\"] as $dat | def patternfor(cmd): (cmd // \"\" | if (length) == 0 then null else (split(\" \")[0] | \"Bash(\" + . + \" *)\") end); { dynamicTasks: [$subs[] | {name:\"openspec_run_subtask_check\", taskReferenceName:(\"check_\"+.id), type:\"SIMPLE\"}], dynamicTasksInput: (reduce $subs[] as $c ({}; . + {(\"check_\"+$c.id): {repoPath:$r, id:$c.id, testCmd:($c.testCmd // \"\")}})), fixupAllowedTools: (reduce ($subs[] | patternfor(.testCmd)) as $p ($dat; if $p == null or (index($p) != null) then . else . + [$p] end)) }"
-          }
+        "instruction": {
+          "type": "string",
+          "description": "Natural-language description of the requested change, used to drive design authoring, OpenSpec/document planning, and (via replan prompts) plan repair."
         },
-        {
-          "name": "checks_fan_out", "taskReferenceName": "checks_fan_out", "type": "FORK_JOIN_DYNAMIC",
-          "dynamicForkTasksParam": "dynamicTasks", "dynamicForkTasksInputParamName": "dynamicTasksInput",
-          "inputParameters": {
-            "dynamicTasks": "${build_checks.output.result.dynamicTasks}",
-            "dynamicTasksInput": "${build_checks.output.result.dynamicTasksInput}"
-          }
+        "changeBranch": {
+          "type": "string",
+          "default": "",
+          "description": "Requested branch/outcome-branch name for the run-owned workspace; a run-suffix is appended for isolated runs. Empty defers to a name derived from the workflow ID."
         },
-        {
-          "name": "checks_join", "taskReferenceName": "checks_join", "type": "JOIN"
+        "branchRunId": {
+          "type": "string",
+          "default": "",
+          "description": "Stable execution ID used to derive the run-owned branch/worktree name; falls back to the workflow ID when empty."
         },
-        {
-          "name": "checks_summary", "taskReferenceName": "checks_summary", "type": "JSON_JQ_TRANSFORM",
-          "inputParameters": {
-            "joined": "${checks_join.output}",
-            "queryExpression": "(.joined // {}) as $j | [$j | to_entries[] | (.value.output // .value // {})] as $results | {allPassed: ([$results[] | (.passed // false)] | all), results: $results}"
-          }
+        "openspecPlanModel": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override: explicit model id forwarded to OpenSpec/document planning and the plan-repair coding-agent session."
         },
-        {
-          "name": "openspec_validate_change", "taskReferenceName": "validate_spec", "type": "SIMPLE",
-          "inputParameters": {
-            "repoPath": "${workflow.input.repoPath}",
-            "changeId": "${openspec_plan.output.changeName}"
-          }
+        "openspecMaxTurns": {
+          "type": "integer",
+          "default": 500,
+          "description": "Max agent turns forwarded to the OpenSpec/document planning sub-workflow and the plan-repair coding-agent session."
         },
-        {
-          "name": "coding_agent", "taskReferenceName": "verify_judge", "type": "SIMPLE",
-          "inputParameters": {
-            "worktreePath": "${workflow.input.repoPath}",
-            "agent": "${workflow.input.codeAgent}", "model": "${workflow.input.codeModel}",
-            "maxTurns": "${workflow.input.maxTurns}", "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-            "templateKey": "code-parallel-verify-judge",
-            "promptTemplate": "", "promptTemplateSource": "builtin:code-parallel-verify-judge",
-            "tools": ["Read", "Grep", "Glob"],
-            "schema": {
-              "type": "object", "required": ["passed", "findings"],
-              "properties": {"passed": {"type": "boolean"}, "findings": {"type": "array", "items": {"type": "string"}}}
-            },
-            "prompt": "Act as a read-only correctness judge. Compare the current diff on this branch against the OpenSpec planning artifacts under ${openspec_plan.output.changeDir}/ (proposal.md, design.md, specs/**/*.md, tasks.md): is the implementation complete and consistent with every requirement and task? This round's real test-command results: ${checks_summary.output.result}. Note: each Test: command is executed as a single program invocation with no shell (no pipes, &&, or command substitution) — a failure whose output mentions a missing binary or a denied/unrecognized command reflects a malformed tasks.md Test: line, not necessarily a defect in the implementation; call that out explicitly in your findings rather than treating it as a missing feature. Return the required structured output with passed (boolean) and concise findings (array of strings). Do not edit any files.",
-            "modelRole": "review",
-            "modelProfile": "${workflow.input.modelProfile}", "modelPolicy": "${workflow.input.modelPolicy}",
-            "modelPolicySource": "${workflow.input.modelPolicySource}", "modelPolicySha256": "${workflow.input.modelPolicySha256}",
-            "modelsConfig": "${workflow.input.modelsConfig}", "modelOverrides": "${workflow.input.modelOverrides}",
-            "modelResolution": "${model_policy.output}"
-          }
+        "openspecMaxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "USD budget ceiling forwarded to the OpenSpec/document planning sub-workflow and the plan-repair coding-agent session."
         },
-        {
-          "name": "verify_round", "taskReferenceName": "verify_round", "type": "JSON_JQ_TRANSFORM",
-          "inputParameters": {
-            "checks": "${checks_summary.output.result}", "judge": "${verify_judge.output.structured}",
-            "specValid": "${validate_spec.output.valid}", "specIssues": "${validate_spec.output.issues}",
-            "queryExpression": "{ passed: ((.checks.allPassed // false) and (.judge.passed // false) and (.specValid // false)), notPassed: (((.checks.allPassed // false) and (.judge.passed // false) and (.specValid // false)) | not), checks: .checks, findings: ((.judge.findings // []) + (if (.specValid // false) then [] else [(\"OpenSpec validate failed: \" + ((.specIssues // []) | map(.message // (. | tostring)) | join(\"; \")))] end)) }"
-          }
+        "openspecHumanApproval": {
+          "type": "boolean",
+          "default": true,
+          "description": "If true, each OpenSpec planning pass is approved via a human WAIT checkpoint; if false, an automated coding-agent judge approves instead."
         },
-        {
-          "name": "verify_round_state", "taskReferenceName": "verify_round_state", "type": "SET_VARIABLE",
-          "inputParameters": {
-            "verifyPassed": "${verify_round.output.result.passed}",
-            "verifyFindings": "${verify_round.output.result.findings}",
-            "verifyChecks": "${verify_round.output.result.checks}"
-          }
+        "openspecMaxIterations": {
+          "type": "integer",
+          "default": 5,
+          "description": "Maximum number of autonomous plan-repair rounds (and OpenSpec drain-then-review passes) before the plan is rejected/terminated."
         },
-        {
-          "name": "verify_action", "taskReferenceName": "verify_action", "type": "SWITCH", "evaluatorType": "value-param", "expression": "notPassed",
-          "inputParameters": {"notPassed": "${verify_round.output.result.notPassed}"},
-          "decisionCases": {
-            "true": [
-              {
-                "name": "coding_agent", "taskReferenceName": "verify_fixup", "type": "SIMPLE",
-                "inputParameters": {
-                  "worktreePath": "${workflow.input.repoPath}",
-                  "agent": "${workflow.input.codeAgent}", "model": "${workflow.input.codeModel}",
-                  "maxTurns": "${workflow.input.maxTurns}", "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-                  "allowedTools": "${build_checks.output.result.fixupAllowedTools}",
-                  "templateKey": "code-parallel-verify-fixup",
-                  "promptTemplate": "", "promptTemplateSource": "builtin:code-parallel-verify-fixup",
-                  "prompt": "The parallel implementation in this worktree failed verification. Fix every issue below, then stop — do not re-architect beyond what's needed to pass. Failing test-command results: ${verify_round.output.result.checks}. Findings (semantic judge and any OpenSpec spec-validity failure): ${verify_round.output.result.findings}. The OpenSpec planning artifacts are under ${openspec_plan.output.changeDir}/ (proposal.md, design.md, specs/**/*.md, tasks.md) if you need to re-check requirements. Note: each Test: command in tasks.md is executed as a single program invocation with no shell — if a failure is because the declared Test: command uses a pipe, &&, command substitution, a missing/misnamed binary (e.g. `python` where only `python3` exists), or anything you're denied permission to run, the fix is to simplify that Test: line in tasks.md to one plain invocation of the tool actually available (prefer pytest/npm/npx/go/cargo/node/python3), not to work around it or install something. Note: if a finding starts with `OpenSpec validate failed:`, the defect is in the OpenSpec artifacts themselves (malformed spec deltas, a missing Scenario, an inconsistent proposal/tasks.md) — fix the artifact under ${openspec_plan.output.changeDir}/ that `openspec validate` flagged, not the application code, unless the code and the spec genuinely disagree.",
-                  "modelRole": "code",
-                  "modelProfile": "${workflow.input.modelProfile}", "modelPolicy": "${workflow.input.modelPolicy}",
-                  "modelPolicySource": "${workflow.input.modelPolicySource}", "modelPolicySha256": "${workflow.input.modelPolicySha256}",
-                  "modelsConfig": "${workflow.input.modelsConfig}", "modelOverrides": "${workflow.input.modelOverrides}",
-                  "modelResolution": "${model_policy.output}"
+        "codeModel": {
+          "type": "string",
+          "default": "",
+          "description": "Model identifier passed through unchanged to each parallel subtask fork's coding session, the merge-conflict resolution agent, and the post-merge test-repair session."
+        },
+        "codePromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Prompt template passed through unchanged to each parallel subtask fork and the post-merge test-repair session."
+        },
+        "codePromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label for codePromptTemplate, passed through unchanged to subtask forks and the post-merge test-repair session."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "default": 500,
+          "description": "Cap on agent turns for each parallel subtask fork and the post-merge test-repair session."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "USD budget ceiling for each parallel subtask fork, the merge-conflict resolution agent, and the post-merge test-repair session."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model-policy profile to select; empty string defers to the merged policy's default profile."
+        },
+        "modelPolicy": {
+          "type": "object",
+          "default": {},
+          "description": "Inline model policy document merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Label recorded for the inline modelPolicy's provenance."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy; resolution fails if it does not match."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to a repository model policy file, overriding the default .conductor-code/models.json location."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "default": {},
+          "description": "Per-role model overrides merged on top of the selected model profile's roles."
+        },
+        "precomputedPlan": {
+          "type": "object",
+          "default": {},
+          "description": "Caller-supplied parallel plan used verbatim when usePrecomputedPlan is true; must contain a 'subtasks' array of {id, description, files} entries, each file owned by exactly one subtask.",
+          "properties": {
+            "subtasks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Lowercase kebab-case subtask identifier."
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "What the subtask must accomplish."
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Repository-relative files owned exclusively by this subtask."
+                  }
                 }
-              },
-              {
-                "name": "commit", "taskReferenceName": "verify_fixup_commit", "type": "SIMPLE",
-                "inputParameters": {"repoPath": "${workflow.input.repoPath}", "message": "code_parallel: verification fixup"}
-              },
-              {
-                "name": "verify_fixup_usage", "taskReferenceName": "verify_fixup_usage", "type": "JSON_JQ_TRANSFORM",
-                "inputParameters": {
-                  "prevTokens": "${workflow.variables.verifyFixupTokens}", "prevCost": "${workflow.variables.verifyFixupCost}",
-                  "newTokens": "${verify_fixup.output.tokenUsed}", "newCost": "${verify_fixup.output.costUsd}",
-                  "queryExpression": "def num: if type == \"number\" then . else 0 end; {tokens: ((.prevTokens|num) + (.newTokens|num)), cost: ((.prevCost|num) + (.newCost|num))}"
-                }
-              },
-              {
-                "name": "verify_fixup_usage_state", "taskReferenceName": "verify_fixup_usage_state", "type": "SET_VARIABLE",
-                "inputParameters": {
-                  "verifyFixupTokens": "${verify_fixup_usage.output.result.tokens}",
-                  "verifyFixupCost": "${verify_fixup_usage.output.result.cost}"
-                }
-              }
-            ]
-          },
-          "defaultCase": []
-        }
-      ]
-    },
-    {
-      "name": "verify_gate", "taskReferenceName": "verify_gate", "type": "SWITCH", "evaluatorType": "value-param", "expression": "passed",
-      "inputParameters": {"passed": "${workflow.variables.verifyPassed}"},
-      "decisionCases": {
-        "false": [
-          {
-            "name": "verify_failed", "taskReferenceName": "verify_failed", "type": "TERMINATE",
-            "inputParameters": {
-              "terminationStatus": "FAILED",
-              "terminationReason": "code_parallel verification did not pass within ${workflow.input.verifyMaxIterations} iterations.",
-              "workflowOutput": {
-                "verified": false, "findings": "${workflow.variables.verifyFindings}", "checks": "${workflow.variables.verifyChecks}"
               }
             }
           }
-        ]
+        },
+        "specContextPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a spec/design context file passed through unchanged to each parallel subtask fork."
+        },
+        "usePrecomputedPlan": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, skip plan detection/generation entirely and use precomputedPlan as the parallel plan."
+        },
+        "design": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, run the design_docs sub-workflow (author/approve design documents) before plan detection."
+        },
+        "designDir": {
+          "type": "string",
+          "default": "docs/design",
+          "description": "Repository-relative directory the design agent may write markdown docs into, when design is true."
+        },
+        "designHumanApproval": {
+          "type": "boolean",
+          "default": true,
+          "description": "When design is true: if true, each design iteration is reviewed by a human WAIT task; if false, an agent design-judge session reviews it."
+        },
+        "designMaxIterations": {
+          "type": "integer",
+          "default": 5,
+          "description": "Maximum number of author/review iterations before the design loop fails closed, when design is true."
+        },
+        "designMaxTurns": {
+          "type": "integer",
+          "default": 500,
+          "description": "Maximum agent turns per design-authoring or design-judge session, when design is true."
+        },
+        "designMaxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "Maximum USD spend per design-authoring or design-judge session, when design is true."
+        },
+        "designModel": {
+          "type": "string",
+          "default": "",
+          "description": "Legacy single-model override for the design-authoring and design-judge sessions, when design is true."
+        },
+        "designPromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline prompt template for the design-authoring session, when design is true."
+        },
+        "designPromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label for the design prompt template, when design is true."
+        },
+        "inPlace": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, prepare the run-owned workspace inside repoPath itself instead of a separate worktree."
+        },
+        "workspacePath": {
+          "type": "string",
+          "default": "",
+          "description": "Existing worktree path to inherit unchanged (nested-workflow case); when set, no new branch or worktree is created."
+        },
+        "contextPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Absolute filesystem paths granted as read-only live context to the design session, the document-plan session, and each parallel subtask fork."
+        },
+        "maxFixAttempts": {
+          "type": "integer",
+          "default": 4,
+          "description": "Upper bound on structured fix/commit/re-test passes performed by the post-merge test_cycle sub-workflow."
+        }
       },
-      "defaultCase": []
-    },
-    {
-      "name": "aggregate",
-      "taskReferenceName": "aggregate",
-      "type": "JSON_JQ_TRANSFORM",
-      "optional": true,
-      "inputParameters": {
-        "joined": "${fan_join.output}",
-        "planTokens": "${openspec_plan.output.tokenUsed}",
-        "planCost": "${openspec_plan.output.costUsd}",
-        "mergeTokens": "${merge.output.tokenUsed}",
-        "mergeCost": "${merge.output.costUsd}",
-        "verifyTokens": "${workflow.variables.verifyFixupTokens}",
-        "verifyCost": "${workflow.variables.verifyFixupCost}",
-        "queryExpression": "def num: if type == \"number\" then . else 0 end; (.joined // {}) as $j | [$j | to_entries[] | (.value.output // .value // {}) | {status:(.status // \"unknown\"), filesChanged:(.filesChanged // []), costUsd:(.costUsd | num), tokenUsed:(.tokenUsed | num)}] as $g | (.planTokens | num) as $pt | (.planCost | num) as $pc | (.mergeTokens | num) as $mt | (.mergeCost | num) as $mc | (.verifyTokens | num) as $vt | (.verifyCost | num) as $vc | ([$g[].tokenUsed] | add | num) as $st | ([$g[].costUsd] | add | num) as $sc | {perSubtask:$g, subtaskCount:($g | length), tokens:{plan:$pt, subtasks:$st, merge:$mt, verify:$vt}, cost:{plan:$pc, subtasks:$sc, merge:$mc, verify:$vc}, totalTokens:($pt + $st + $mt + $vt), totalCostUsd:($pc + $sc + $mc + $vc)}"
-      }
+      "required": [
+        "repoPath",
+        "instruction"
+      ]
     }
-  ],
-  "outputParameters": {
-    "changeBranch": "${workflow.input.changeBranch}",
-    "groupIds": "${build_forks.output.result.groupIds}",
-    "subtasks": "${openspec_plan.output.subtasks}",
-    "proposalText": "${read_proposal.output.proposalText}",
-    "merged": "${merge.output.merged}",
-    "conflicts": "${merge.output.conflicts}",
-    "mergeCostUsd": "${merge.output.costUsd}",
-    "verified": "${workflow.variables.verifyPassed}",
-    "verificationFindings": "${workflow.variables.verifyFindings}",
-    "verificationChecks": "${workflow.variables.verifyChecks}",
-    "totalTokens": "${aggregate.output.result.totalTokens}",
-    "totalCostUsd": "${aggregate.output.result.totalCostUsd}",
-    "summary": "${aggregate.output.result}"
-  }
+  },
+  "outputSchema": {
+    "name": "code_parallel_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "agentCompleted": {
+          "type": "boolean",
+          "description": "Always true; a literal completion marker for this workflow output (distinct from any single agent session's own status)."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch checked out in the prepared workspace, from workspace_prepare."
+        },
+        "changeBranch": {
+          "type": "string",
+          "description": "Same value as 'branch'; the workspace's checked-out branch."
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Branches that produced merge conflicts during merge_remediation, regardless of whether they were later resolved."
+        },
+        "groupIds": {
+          "type": "string",
+          "description": "Comma-separated list of subtask ids that were turned into parallel forks, in order."
+        },
+        "mergeCostUsd": {
+          "type": "number",
+          "description": "USD cost of the merge_remediation sub-workflow's conflict-resolution agent calls."
+        },
+        "merged": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Branches merged cleanly by merge_remediation with no conflicts."
+        },
+        "planMode": {
+          "type": "string",
+          "enum": [
+            "precomputed",
+            "openspec",
+            "documents"
+          ],
+          "description": "Which planning path produced the parallel plan for this run."
+        },
+        "proposalText": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Human-readable plan summary: the fixed precomputed-plan label, the document_plan summary, or (on the openspec path) always null because this field is wired to a 'proposalText' output that openspec_plan does not actually produce."
+        },
+        "sourceHandoff": {
+          "type": "object",
+          "description": "Bookkeeping proving the final candidate commit matches what was verified and handed off.",
+          "properties": {
+            "baselineCommit": {
+              "type": "string",
+              "description": "Commit capturing the source's Git-visible changes at workspace-prepare time."
+            },
+            "branch": {
+              "type": "string",
+              "description": "Branch confirmed by the final in-place guard check to still be checked out."
+            },
+            "commit": {
+              "type": "string",
+              "description": "HEAD commit confirmed by the final in-place guard check."
+            },
+            "executionOutcome": {
+              "type": "string",
+              "enum": [
+                "passed",
+                "merge_blocked",
+                "incomplete_delivery",
+                "audit_unavailable",
+                "implementation_unavailable"
+              ],
+              "description": "Fine-grained verdict folding plan validity, merge state, and delivery outcome."
+            },
+            "includedSourcePaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Paths included in the workspace baseline snapshot/commit."
+            },
+            "originalBranch": {
+              "type": "string",
+              "description": "The branch the source checkout was on before workspace preparation."
+            },
+            "originalHead": {
+              "type": "string",
+              "description": "The source checkout's HEAD commit before workspace preparation."
+            },
+            "presented": {
+              "type": "boolean",
+              "description": "True only when the verified candidate exactly matches what the in-place guard confirmed and the verification outcome passed."
+            },
+            "repoPath": {
+              "type": "string",
+              "description": "Resolved absolute path of the checkout confirmed by the final in-place guard check."
+            },
+            "sourceRepoPath": {
+              "type": "string",
+              "description": "Echoes the workflow's repoPath input."
+            },
+            "verificationAttempts": {
+              "type": "integer",
+              "description": "Number of plan-repair loop iterations executed."
+            },
+            "verificationState": {
+              "type": "string",
+              "enum": [
+                "passed",
+                "merge_blocked",
+                "incomplete_delivery",
+                "audit_unavailable",
+                "implementation_unavailable"
+              ],
+              "description": "Coarse verification verdict, same value set as executionOutcome."
+            }
+          },
+          "required": [
+            "baselineCommit",
+            "branch",
+            "commit",
+            "executionOutcome",
+            "includedSourcePaths",
+            "originalBranch",
+            "originalHead",
+            "presented",
+            "repoPath",
+            "sourceRepoPath",
+            "verificationAttempts",
+            "verificationState"
+          ]
+        },
+        "subtasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Lowercase kebab-case subtask identifier."
+              },
+              "description": {
+                "type": "string",
+                "description": "What the subtask must accomplish."
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Repository-relative files owned exclusively by this subtask."
+              }
+            }
+          },
+          "description": "The final validated, file-disjoint parallel plan that was executed."
+        },
+        "summary": {
+          "type": "null",
+          "description": "Always null: wired to 'aggregate.output.result', a field code_parallel_aggregate_usage does not produce (its output has no 'result' property)."
+        },
+        "totalCostUsd": {
+          "type": "number",
+          "description": "Sum of planning, subtask, merge, and verification USD costs, from code_parallel_aggregate_usage."
+        },
+        "totalTokens": {
+          "type": "number",
+          "description": "Sum of planning, subtask, merge, and verification token usage, from code_parallel_aggregate_usage."
+        },
+        "verification": {
+          "type": "object",
+          "description": "Fixed snapshot recorded only on the successful (plan-accepted) path; the plan_rejected path terminates the workflow early with its own differently-shaped output instead.",
+          "properties": {
+            "valid": {
+              "type": "boolean",
+              "description": "Always true on this path."
+            },
+            "state": {
+              "type": "string",
+              "description": "Always 'plan_ready' on this path."
+            },
+            "issues": {
+              "type": "array",
+              "items": {},
+              "description": "Plan validation issues recorded by the final plan check (empty when the plan validated cleanly)."
+            },
+            "subtasks": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "The final validated parallel plan."
+            }
+          },
+          "required": [
+            "valid",
+            "state",
+            "issues",
+            "subtasks"
+          ]
+        },
+        "deliveryOutcome": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "merge_blocked",
+            "incomplete_delivery",
+            "audit_unavailable",
+            "implementation_unavailable"
+          ],
+          "description": "Same verdict as verificationState: plan validity, merge state, and delivery outcome folded together."
+        },
+        "deliveryReports": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string"
+              },
+              "missingPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "rejectedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "commandFailures": {
+                "type": "array",
+                "items": {}
+              },
+              "sandboxDenials": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "repairAttempts": {
+                "type": "number"
+              },
+              "commit": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "Normalized per-subtask delivery report, one per parallel fork, from code_parallel_delivery_summary."
+        },
+        "missingPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "De-duplicated union of missingPaths across all subtask delivery reports."
+        },
+        "rejectedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "De-duplicated union of rejectedPaths across all subtask delivery reports."
+        },
+        "commandFailures": {
+          "type": "array",
+          "items": {},
+          "description": "Concatenation of every subtask's commandFailures entries (not de-duplicated)."
+        },
+        "sandboxDenials": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "De-duplicated union of sandboxDenials across all subtask delivery reports."
+        },
+        "deliveryRepairAttempts": {
+          "type": "number",
+          "description": "Sum of repair attempts across all subtask delivery reports."
+        },
+        "verificationAttempts": {
+          "type": "number",
+          "description": "Same value as deliveryRepairAttempts: sum of repair attempts across all subtask delivery reports."
+        },
+        "verificationChecks": {
+          "type": "object",
+          "description": "Fixed snapshot identical in shape to 'verification', recorded only on the successful (plan-accepted) path.",
+          "properties": {
+            "valid": {
+              "type": "boolean",
+              "description": "Always true on this path."
+            },
+            "state": {
+              "type": "string",
+              "description": "Always 'plan_ready' on this path."
+            },
+            "issues": {
+              "type": "array",
+              "items": {}
+            },
+            "subtasks": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          },
+          "required": [
+            "valid",
+            "state",
+            "issues",
+            "subtasks"
+          ]
+        },
+        "verificationCommit": {
+          "type": "string",
+          "description": "Final candidate commit SHA, after merge selection and any post-merge test-cycle repair advanced it."
+        },
+        "verificationExecutionOutcome": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "merge_blocked",
+            "incomplete_delivery",
+            "audit_unavailable",
+            "implementation_unavailable"
+          ],
+          "description": "Same fine-grained verdict as sourceHandoff.executionOutcome."
+        },
+        "verificationFindings": {
+          "type": "array",
+          "items": {},
+          "description": "Plan validation issues from the final plan check (same as verification.issues)."
+        },
+        "verificationReport": {
+          "type": "string",
+          "description": "Human-readable verification summary: branch/commit, plan validity, merge count, execution outcome, and plan issues."
+        },
+        "verificationState": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "merge_blocked",
+            "incomplete_delivery",
+            "audit_unavailable",
+            "implementation_unavailable"
+          ],
+          "description": "Coarse verdict folding plan validity, merge state, and delivery outcome."
+        },
+        "verified": {
+          "type": "boolean",
+          "description": "True only when the plan was valid, the merge state was 'merged', and delivery state was 'passed'."
+        },
+        "testCycleState": {
+          "type": "string",
+          "enum": [
+            "tests_passed",
+            "no_tests_required",
+            "tests_failed_fix_unavailable",
+            "tests_failed_after_fix_budget",
+            "command_discovery_blocked",
+            "candidate_commit_missing",
+            "runtime_unavailable",
+            "verifier_worker_unavailable"
+          ],
+          "description": "Terminal state of the post-merge test_cycle sub-workflow (optional task; may be absent if it did not run)."
+        },
+        "testsPassed": {
+          "type": "boolean",
+          "description": "True when the post-merge test_cycle reported tests_passed or no_tests_required."
+        },
+        "testRunCount": {
+          "type": "integer",
+          "description": "Total number of test verification runs performed by the post-merge test_cycle, including repair re-tests."
+        },
+        "testReport": {
+          "type": "string",
+          "description": "Human-readable one-line summary from the post-merge test_cycle sub-workflow."
+        }
+      },
+      "required": [
+        "agentCompleted",
+        "branch",
+        "changeBranch",
+        "conflicts",
+        "groupIds",
+        "mergeCostUsd",
+        "merged",
+        "planMode",
+        "proposalText",
+        "sourceHandoff",
+        "subtasks",
+        "summary",
+        "totalCostUsd",
+        "totalTokens",
+        "verification",
+        "deliveryOutcome",
+        "deliveryReports",
+        "missingPaths",
+        "rejectedPaths",
+        "commandFailures",
+        "sandboxDenials",
+        "deliveryRepairAttempts",
+        "verificationAttempts",
+        "verificationChecks",
+        "verificationCommit",
+        "verificationExecutionOutcome",
+        "verificationFindings",
+        "verificationReport",
+        "verificationState",
+        "verified",
+        "testCycleState",
+        "testsPassed",
+        "testRunCount",
+        "testReport"
+      ]
+    }
+  },
+  "enforceSchema": false
 }

@@ -30,12 +30,12 @@ def _head(repo: str) -> str:
 
 
 def _commit_candidate(repo: str, message: str) -> tuple[str, list[str]]:
-    before = git.status_changes(repo)
-    created = sorted(p for p, state in before.items() if state == "A")
-    with git._repo_lock(repo):
-        git.git(repo, "add", "-A")
-        git.git(repo, "commit", "-m", message, check=False)
-        return _head(repo), created
+    # Revision checkpoints are automated commits too.  Reuse the canonical
+    # vetted staging gate instead of bypassing it with `git add -A`; otherwise
+    # a cache generated while evaluating a candidate could become part of the
+    # retained revision.
+    outcome = git.commit(repo, message)
+    return outcome["commit"], list(outcome.get("stagedPaths", []))
 
 
 def score_candidate(data: dict) -> dict:
@@ -81,7 +81,8 @@ def revision_checkpoint(task):
         workflow_id, loop_id = data.get("workflowId"), data.get("loopId")
         ref = _ref(workflow_id, loop_id, data.get("candidateId") or "best")
         expected_head = str(data.get("expectedHead") or "")
-        if expected_head and _head(repo) != expected_head:
+        if expected_head and _head(repo) != git.canonical_commit(
+                repo, expected_head, field="expected revision HEAD"):
             raise ValueError("worktree HEAD changed unexpectedly; refusing checkpoint mutation")
         if action == "save":
             commit, created = _commit_candidate(repo, f"conductor revision { _name(loop_id) }")

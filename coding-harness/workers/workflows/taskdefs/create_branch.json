@@ -1,12 +1,76 @@
 {
   "name": "create_branch",
-  "description": "Create/reset the feature branch.",
+  "description": "Create a run-specific feature branch without resetting or overwriting any existing ref; every requested base name receives the stable execution suffix and local collisions receive a numeric suffix.",
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "create_branch_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Git checkout in which to create the branch."
+        },
+        "name": {
+          "type": "string",
+          "description": "Requested base branch name; receives a run-specific suffix and, on local collision, a numeric suffix."
+        },
+        "branchRunId": {
+          "type": "string",
+          "description": "Run identifier used to make the branch name unique; falls back to workflowId, then the task's workflow instance ID, then its task ID."
+        },
+        "workflowId": {
+          "type": "string",
+          "description": "Fallback run identifier used when branchRunId is not supplied."
+        },
+        "forceNew": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, always allocate a new branch even if the current branch already matches the requested name."
+        },
+        "inPlace": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, marks the outcome as an in-place branch operation in the response."
+        }
+      },
+      "required": [
+        "repoPath",
+        "name"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "create_branch_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string",
+          "description": "Actual branch name created or resumed."
+        },
+        "resumed": {
+          "type": "boolean",
+          "description": "True when the current branch already matched the requested name and was reused instead of creating a new one."
+        },
+        "inPlace": {
+          "type": "boolean",
+          "description": "Present and true only when the inPlace input flag was set."
+        }
+      },
+      "required": [
+        "branch",
+        "resumed"
+      ]
+    }
+  }
 }

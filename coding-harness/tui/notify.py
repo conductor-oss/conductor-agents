@@ -57,18 +57,18 @@ def notify(enabled: bool, title: str, message: str, url: str | None = None, *,
                 args += ["-activate", bundle_id]
             elif url:
                 args += ["-open", url]        # clicking opens the run in the browser
-            subprocess.run(args, check=False, capture_output=True, timeout=5)
+            subprocess.run(args, check=False, capture_output=True)
         elif sys.platform == "darwin" and shutil.which("osascript"):
             body = message.replace('"', "'")
             ttl = title.replace('"', "'")
             subprocess.run(
                 ["osascript", "-e", f'display notification "{body}" with title "{ttl}"'],
-                check=False, capture_output=True, timeout=5,
+                check=False, capture_output=True,
             )
         elif shutil.which("notify-send"):
             # notify-send has no portable click-to-open; show the URL in the body instead.
             body = f"{message}\n{url}" if url else message
             subprocess.run(["notify-send", title, body], check=False,
-                           capture_output=True, timeout=5)
+                           capture_output=True)
     except Exception:  # noqa: BLE001 — notification must never break the app
         pass

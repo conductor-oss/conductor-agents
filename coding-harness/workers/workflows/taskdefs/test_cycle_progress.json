@@ -1,0 +1,98 @@
+{
+  "name": "test_cycle_progress",
+  "description": "Deterministic test_cycle decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "test_cycle_progress_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "reports": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "The fix-history array accumulated so far; this attempt's entry is appended to it. Defaults to empty when absent or not a list."
+        },
+        "report": {
+          "type": "object",
+          "description": "test_repair_record's report for this attempt, folded into the appended history entry.",
+          "properties": {
+            "persisted": {
+              "type": "boolean",
+              "description": "Whether this attempt advanced the candidate; echoed as candidateAdvanced."
+            },
+            "candidateAfter": {
+              "type": "string",
+              "description": "Used as verifiedCandidate when the verification result carries no candidateCommit."
+            }
+          }
+        },
+        "verification": {
+          "type": "object",
+          "description": "This attempt's verification result, merged into the appended history entry.",
+          "properties": {
+            "verificationState": {
+              "type": "string",
+              "description": "Defaults to 'blocked' when absent."
+            },
+            "executionOutcome": {
+              "type": "string",
+              "description": "Defaults to 'infra_blocked' when absent."
+            },
+            "candidateCommit": {
+              "type": "string",
+              "description": "Recorded as verifiedCandidate when present."
+            }
+          }
+        },
+        "runs": {
+          "type": "integer",
+          "description": "Prior run count; incremented by one for the new runCount. Defaults to 1 (i.e. yields runCount 2) when absent or not numeric."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "test_cycle_progress_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "reports": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "The fix history with this attempt's entry appended."
+        },
+        "attempts": {
+          "type": "integer",
+          "description": "Length of 'reports' after appending."
+        },
+        "candidateAdvanced": {
+          "type": "boolean",
+          "description": "True only when report.persisted is exactly true."
+        },
+        "runCount": {
+          "type": "integer",
+          "description": "Incoming 'runs' (default 1) plus one."
+        }
+      },
+      "required": [
+        "reports",
+        "attempts",
+        "candidateAdvanced",
+        "runCount"
+      ]
+    }
+  }
+}

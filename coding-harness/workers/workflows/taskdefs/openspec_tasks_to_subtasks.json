@@ -1,9 +1,84 @@
 {
   "name": "openspec_tasks_to_subtasks",
-  "description": "Deterministically parse a generated tasks.md into the independent, file-disjoint subtasks[] array ({id, description, files, testCmd}) that feeds code_parallel's FORK_JOIN_DYNAMIC fan-out. Fails closed on any file claimed by more than one task group.",
+  "description": "Parse OpenSpec tasks.md into plan-only subtasks ({id, description, files}). Cross-task safety is enforced by the shared plan validator; testing is separate.",
   "retryCount": 0,
   "timeoutSeconds": 0,
-  "responseTimeoutSeconds": 60,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
-  "ownerEmail": "viren@orkes.io"
+  "ownerEmail": "viren@orkes.io",
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "openspec_tasks_to_subtasks_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "useOpenSpec": {
+          "type": "boolean",
+          "description": "When present and falsy, skip parsing tasks.md entirely and pass fallbackSubtasks through the shared plan validator instead (generic document plan)."
+        },
+        "fallbackSubtasks": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Pre-built subtasks[] plan to validate and return as-is when useOpenSpec is falsy. Defaults to an empty array."
+        },
+        "tasksPath": {
+          "type": "string",
+          "description": "Absolute path to the OpenSpec change's tasks.md file to parse. Required unless useOpenSpec is falsy."
+        },
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the repo, used to validate each subtask's files as safe, existing, non-directory, repository-relative paths."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "openspec_tasks_to_subtasks_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "subtasks": {
+          "type": "array",
+          "description": "Normalized, validated plan groups: each has an id, description, and a file-disjoint, non-empty files[] list.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Lowercase kebab-case group id."
+              },
+              "description": {
+                "type": "string",
+                "description": "Group's task description."
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Exact repository-relative files exclusively owned by this group."
+              }
+            },
+            "required": [
+              "id",
+              "description",
+              "files"
+            ]
+          }
+        },
+        "reparsed": {
+          "type": "boolean",
+          "description": "True when subtasks were freshly parsed from tasks.md; false when fallbackSubtasks were used unchanged (useOpenSpec falsy)."
+        }
+      },
+      "required": [
+        "subtasks",
+        "reparsed"
+      ]
+    }
+  }
 }

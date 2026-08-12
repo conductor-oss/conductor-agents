@@ -1,12 +1,131 @@
 {
   "name": "prepare_repo",
-  "description": "Make a repo git-ready (init, local identity, initial commit) so worktree_add/commit won't fail. Idempotent. Input: repoPath.",
+  "description": "Legacy repository preparation. With inPlace:true, create/switch to a run-specific branch before committing every Git-visible existing change as its baseline. Input: repoPath, inPlace?, branch?, branchRunId?, workflowId?.",
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 3600,
-  "responseTimeoutSeconds": 3600,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "prepare_repo_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Path to the git repository to prepare."
+        },
+        "inPlace": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, require repoPath to already be an existing checkout on a named branch, switch to a new run-owned branch, and commit every Git-visible change as its baseline (via git.prepare_inplace). If false, idempotently git-init/set identity/create an initial commit as needed (via git.ensure_ready)."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Requested outcome branch name for the inPlace path; a run-suffix is appended and collisions are disambiguated."
+        },
+        "branchRunId": {
+          "type": "string",
+          "description": "Stable execution ID used to derive the run-specific branch/baseline marker for the inPlace path. Falls back to workflowId, then the task's workflow instance ID."
+        },
+        "workflowId": {
+          "type": "string",
+          "description": "Fallback run ID used when branchRunId is not supplied (inPlace path only)."
+        },
+        "identityName": {
+          "type": "string",
+          "default": "conductor-code",
+          "description": "Local git user.name to set if the repo has none configured (non-inPlace path only)."
+        },
+        "identityEmail": {
+          "type": "string",
+          "default": "harness@conductor.local",
+          "description": "Local git user.email to set if the repo has none configured (non-inPlace path only)."
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "prepare_repo_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Resolved absolute path (git toplevel) of the prepared repository."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Current branch after preparation: the new outcome branch (inPlace) or the repo's existing branch (non-inPlace)."
+        },
+        "initialized": {
+          "type": "boolean",
+          "description": "Non-inPlace only: true if `git init` was run because the directory was not yet a repo."
+        },
+        "initialCommitCreated": {
+          "type": "boolean",
+          "description": "Non-inPlace only: true if an initial commit was created because the repo had no HEAD."
+        },
+        "head": {
+          "type": "string",
+          "description": "Non-inPlace only: HEAD commit SHA after preparation."
+        },
+        "originalBranch": {
+          "type": "string",
+          "description": "InPlace only: the branch the checkout was on before switching to the new outcome branch."
+        },
+        "originalHead": {
+          "type": "string",
+          "description": "InPlace only: HEAD commit SHA before the baseline commit was created."
+        },
+        "checkpointCommit": {
+          "type": "string",
+          "description": "InPlace only: the baseline commit SHA (same as baselineCommit)."
+        },
+        "baselineCommit": {
+          "type": "string",
+          "description": "InPlace only: the baseline commit SHA capturing every Git-visible change."
+        },
+        "baselineCreated": {
+          "type": "boolean",
+          "description": "InPlace only: false when a prior baseline for this run was found and reused instead of creating a new one."
+        },
+        "marker": {
+          "type": "string",
+          "description": "InPlace only: the local commit-message marker identifying this run's baseline."
+        },
+        "statusFingerprintBefore": {
+          "type": "string",
+          "description": "InPlace only: hash of the checkout's working-tree status before the baseline commit."
+        },
+        "statusFingerprintAfter": {
+          "type": "string",
+          "description": "InPlace only: hash of the checkout's working-tree status after the baseline commit."
+        },
+        "includedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "InPlace only: paths staged into the baseline commit."
+        },
+        "resumed": {
+          "type": "boolean",
+          "description": "InPlace only: true if an existing baseline for this run was reused rather than created."
+        }
+      },
+      "required": [
+        "repoPath",
+        "branch"
+      ]
+    }
+  }
 }

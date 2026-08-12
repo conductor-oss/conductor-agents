@@ -21,13 +21,18 @@ def _load(name: str) -> dict:
 
 
 def _task(workflow: dict, ref: str) -> dict:
-    for task in workflow["tasks"]:
-        if task.get("taskReferenceName") == ref:
-            return task
-        for branch in (task.get("decisionCases") or {}).values():
-            for child in branch:
-                if child.get("taskReferenceName") == ref:
-                    return child
+    def walk(value):
+        if isinstance(value, dict):
+            if value.get("taskReferenceName") == ref:
+                yield value
+            for child in value.values():
+                yield from walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from walk(child)
+
+    for task in walk(workflow["tasks"]):
+        return task
     raise AssertionError(f"task {ref!r} not found")
 
 
@@ -43,57 +48,48 @@ def _eval_jq(query: str, data: dict, tmp_path: Path) -> str:
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq binary not installed")
 
 
-def test_issue_to_pr_compose_pr_body_includes_all_four_data_sources(tmp_path):
-    workflow = _load("issue_to_pr")
-    query = _task(workflow, "compose_pr_body")["inputParameters"]["queryExpression"]
-    body = _eval_jq(query, {
-        "issueNumber": 42,
-        "proposalText": "## Why\nUsers need a greeting.\n",
-        "subtasks": [{"id": "setup", "description": "add greeting"}],
-        "findings": ["all requirements satisfied"],
-        "verified": True,
-        "totalTokens": 1234,
-        "totalCostUsd": 0.42,
-    }, tmp_path)
-    assert "Users need a greeting." in body
-    assert "- **setup**: add greeting" in body
-    assert "all requirements satisfied" in body
-    assert "Verified: true" in body
-    assert "Tokens: 1234" in body and "Cost: $0.42" in body
+def test_issue_to_pr_body_is_composed_by_the_worker_not_by_jq(tmp_path):
+    from common import pr_description
+
+    # issue_to_pr used to pre-normalize the body in jq and hand the result to
+    # pr_create, which ran format_summary over it again. The jq layer is gone;
+    # this is the single place the one-section invariant is now enforced.
+    rendered = json.dumps(_load("issue_to_pr"))
+    assert "compose_pr_body" not in rendered
+    assert "compose_revised_pr_body" not in rendered
+
+    described = pr_description.format_summary(tmp_path, "## Why\nUsers need a greeting.\n")
+    # Better than the jq it replaces: a "## Why" heading is a template label, so
+    # the worker drops it rather than inlining the word into the summary.
+    assert described["body"] == "## Summary\n\nUsers need a greeting."
 
 
-def test_issue_to_pr_compose_pr_body_handles_missing_data(tmp_path):
-    workflow = _load("issue_to_pr")
-    query = _task(workflow, "compose_pr_body")["inputParameters"]["queryExpression"]
-    body = _eval_jq(query, {"issueNumber": 1}, tmp_path)
-    assert "Closes #1" in body
-    assert "(no proposal text available)" in body
-    assert "_none_" in body
+def test_issue_to_pr_body_falls_back_when_there_is_no_summary(tmp_path):
+    from common import pr_description
+
+    assert pr_description.format_summary(tmp_path, "")["body"] == \
+        "## Summary\n\nAutomated change."
 
 
-def test_address_pr_compose_reply_code_parallel_path_includes_all_four_data_sources(tmp_path):
+def test_address_pr_compose_reply_code_parallel_path_includes_review_content():
+    from common import pr_reply
+
     workflow = _load("address_pr")
-    query = _task(workflow, "compose_reply")["inputParameters"]["queryExpression"]
-    body = _eval_jq(query, {
-        "engine": "code_parallel", "prNumber": 9, "head": "fix-branch",
-        "proposalText": "## Why\nBug fix.\n",
-        "subtasks": [{"id": "x", "description": "fix x"}],
-        "findings": ["clean"], "verified": True,
-        "totalTokens": 10, "totalCostUsd": 0.01,
-    }, tmp_path)
+    task = _task(workflow, "compose_parallel_reply")
+    assert task["name"] == "address_pr_reply"
+
+    body = pr_reply.compose_parallel_reply(
+        pr_number=9, head="fix-branch", proposal_text="## Why\nBug fix.\n",
+        subtasks=[{"id": "x", "description": "fix x"}], findings=["clean"], verified=True)
     assert "Bug fix." in body
     assert "- **x**: fix x" in body
     assert "clean" in body
     assert "Verified: true" in body
-    assert "Tokens: 10" in body and "Cost: $0.01" in body
+    assert "Tokens: 10" not in body and "Cost: $0.01" not in body
 
 
 def test_address_pr_compose_reply_coding_agent_path_uses_agent_result(tmp_path):
     workflow = _load("address_pr")
-    query = _task(workflow, "compose_reply")["inputParameters"]["queryExpression"]
-    body = _eval_jq(query, {
-        "engine": "coding_agent", "prNumber": 9, "head": "fix-branch",
-        "agentResult": "Fixed the typo and updated tests.",
-    }, tmp_path)
-    assert "Fixed the typo and updated tests." in body
+    body = _task(workflow, "direct_candidate")["inputParameters"]["currentReplyBody"]
+    assert "${code.output.result}" in body
     assert "coding_agent" in body

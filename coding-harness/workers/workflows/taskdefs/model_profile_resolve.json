@@ -4,9 +4,178 @@
   "retryCount": 2,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 2,
-  "timeoutSeconds": 60,
-  "responseTimeoutSeconds": 30,
-  "pollTimeoutSeconds": 60,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "model_profile_resolve_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "worktreePath": {
+          "type": "string",
+          "description": "Absolute path to a checked-out repository; if present (or via repoPath), an optional .conductor-code/models.json repository policy layer is merged in."
+        },
+        "repoPath": {
+          "type": "string",
+          "description": "Fallback for worktreePath when the latter is not set."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "description": "Relative path (inside the worktree) to the repository model policy file, overriding the default .conductor-code/models.json location."
+        },
+        "modelPolicy": {
+          "description": "Inline model policy document (or JSON string) to merge on top of the bundled and repository policies.",
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy; resolution fails if it does not match."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "inline",
+          "description": "Label recorded for the inline modelPolicy's provenance in the output 'sources' list."
+        },
+        "modelProfile": {
+          "type": "string",
+          "description": "Named profile to select from the merged policy's 'profiles' map; defaults to the policy's defaultProfile, then 'standard'."
+        },
+        "modelOverrides": {
+          "description": "Per-role overrides merged on top of the selected profile's roles (or a JSON string of the same).",
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "maxTurns": {
+          "type": "integer",
+          "description": "Global cap applied (as a minimum) to every role tier's maxTurns."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "description": "Global cap applied (as a minimum) to every role tier's maxBudgetUsd."
+        },
+        "designModel": {
+          "type": "string",
+          "description": "Legacy single-model override for the 'design' role."
+        },
+        "planModel": {
+          "type": "string",
+          "description": "Legacy single-model override for the 'plan' role."
+        },
+        "codeModel": {
+          "type": "string",
+          "description": "Legacy single-model override for the 'code' role."
+        },
+        "reviewModel": {
+          "type": "string",
+          "description": "Legacy single-model override for the 'review' role."
+        },
+        "judgeModel": {
+          "type": "string",
+          "description": "Legacy single-model override for the 'judge' role."
+        },
+        "scribeModel": {
+          "type": "string",
+          "description": "Legacy single-model override for the 'scribe' role."
+        },
+        "model": {
+          "type": "string",
+          "description": "Legacy generic model override applied to the 'plan' and 'code' roles only."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "model_profile_resolve_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "description": "Model policy schema version; always 1."
+        },
+        "profile": {
+          "type": "string",
+          "description": "Name of the resolved model profile."
+        },
+        "roles": {
+          "type": "object",
+          "description": "Resolved tiers per role (design, plan, code, review, judge, scribe), each an object with a 'tiers' array of {agent, model, maxTurns, maxBudgetUsd, priceKey, availability, fallback}.",
+          "properties": {
+            "design": {
+              "type": "object"
+            },
+            "plan": {
+              "type": "object"
+            },
+            "code": {
+              "type": "object"
+            },
+            "review": {
+              "type": "object"
+            },
+            "judge": {
+              "type": "object"
+            },
+            "scribe": {
+              "type": "object"
+            }
+          }
+        },
+        "reviewLoop": {
+          "type": "object",
+          "description": "Resolved review-loop configuration for the selected profile."
+        },
+        "prices": {
+          "type": "object",
+          "description": "Resolved per-model price table."
+        },
+        "sources": {
+          "type": "array",
+          "description": "Provenance of every policy layer that was merged (bundled defaults, repository policy, inline override), each with source/path/sha256.",
+          "items": {
+            "type": "object"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Non-fatal warnings, e.g. a Codex reviewer falling back to Claude Opus due to unavailability."
+        },
+        "canonicalSha256": {
+          "type": "string",
+          "description": "Deterministic SHA-256 of the resolved profile/roles/reviewLoop, used to detect drift between preflight and later re-resolution."
+        }
+      },
+      "required": [
+        "version",
+        "profile",
+        "roles",
+        "reviewLoop",
+        "prices",
+        "sources",
+        "warnings",
+        "canonicalSha256"
+      ]
+    }
+  }
 }

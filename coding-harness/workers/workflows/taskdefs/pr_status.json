@@ -4,9 +4,111 @@
   "retryCount": 2,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "pr_status_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Git checkout or repo slug/URL used to resolve gh's target repository."
+        },
+        "number": {
+          "type": "integer",
+          "description": "PR number to look up. When omitted, gh infers it from the current branch of repoPath."
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "pr_status_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer",
+          "description": "The PR number (echoed input, or the number gh inferred)."
+        },
+        "state": {
+          "type": "string",
+          "description": "PR state as reported by gh pr view (e.g. OPEN, CLOSED, MERGED)."
+        },
+        "mergeable": {
+          "type": "string",
+          "description": "Mergeable status as reported by gh pr view."
+        },
+        "reviewDecision": {
+          "type": "string",
+          "description": "GitHub review decision (e.g. APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED)."
+        },
+        "title": {
+          "type": "string",
+          "description": "PR title."
+        },
+        "url": {
+          "type": "string",
+          "description": "PR URL."
+        },
+        "headRefName": {
+          "type": "string",
+          "description": "Head branch name."
+        },
+        "baseRefName": {
+          "type": "string",
+          "description": "Base branch name."
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "bucket": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "Per-check name and status bucket, as reported by gh pr checks."
+        },
+        "passing": {
+          "type": "integer",
+          "description": "Count of checks in the 'pass' bucket."
+        },
+        "failing": {
+          "type": "integer",
+          "description": "Count of checks in the 'fail' bucket."
+        },
+        "pending": {
+          "type": "integer",
+          "description": "Count of checks in the 'pending' bucket."
+        }
+      },
+      "required": [
+        "number",
+        "state",
+        "mergeable",
+        "reviewDecision",
+        "title",
+        "url",
+        "headRefName",
+        "baseRefName",
+        "checks",
+        "passing",
+        "failing",
+        "pending"
+      ]
+    }
+  }
 }

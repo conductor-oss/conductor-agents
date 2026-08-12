@@ -4,9 +4,66 @@
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "worktree_add_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Path to the git repository the worktree is added under."
+        },
+        "name": {
+          "type": "string",
+          "description": "Group name; the worktree is created at .cc-worktrees/<name> on branch group/<name>."
+        },
+        "preserveExisting": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true and a valid git worktree already exists at that path, reuse it instead of recreating it."
+        }
+      },
+      "required": [
+        "repoPath",
+        "name"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "worktree_add_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "worktreePath": {
+          "type": "string",
+          "description": "Absolute path to the created (or reused) worktree."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Group branch checked out in the worktree."
+        },
+        "initialCommit": {
+          "type": "string",
+          "description": "HEAD commit SHA of the worktree."
+        },
+        "resumed": {
+          "type": "boolean",
+          "description": "True if an existing worktree at that path was reused instead of being recreated."
+        }
+      },
+      "required": [
+        "worktreePath",
+        "branch",
+        "initialCommit",
+        "resumed"
+      ]
+    }
+  }
 }

@@ -1,21 +1,7 @@
-"""Executes code_parallel.json's verify_loop jq queryExpressions against
-representative sample input, so a bad edit to a query string is caught. Locks
-in:
+"""Composition tests for code_parallel's plan-only validation/replan loop.
 
-- build_checks must take checksList from a per-iteration re-parse of tasks.md
-  (reparse_tasks), not build_forks's plan-time snapshot, so a fixup agent's
-  edit to a Test: line is actually picked up on the next round.
-- verify_round must fold `openspec validate`'s result (validate_spec) into the
-  same passed/notPassed gate as the real test commands and the semantic judge,
-  so a broken proposal/design/specs/tasks.md is fixed by the loop's fixup pass
-  instead of shipping an inconsistent change.
-- verify_loop never attempts to archive the OpenSpec change: the loop body
-  runs unconditionally every iteration (no archive-already-done gate), and
-  `passed` depends only on checks/judge/specValid — never on an archive
-  outcome. Archiving is out of scope for this workflow; see design.md.
-
-Skips if the system has no ``jq`` binary — mirrors test_openspec.py's
-pinned-CLI skip.
+The loop validates the parallel execution contract before fan-out.  It never
+selects or runs tests and never validates OpenSpec artifacts.
 """
 
 from __future__ import annotations
@@ -37,8 +23,6 @@ def _load(name: str) -> dict:
 
 
 def _search(nodes, ref):
-    """Return the task dict for ``ref`` anywhere in ``nodes`` (recursing into
-    DO_WHILE loopOver and SWITCH decisionCases/defaultCase), or None."""
     for node in nodes:
         if node.get("taskReferenceName") == ref:
             return node
@@ -47,126 +31,250 @@ def _search(nodes, ref):
             if found is not None:
                 return found
         if node.get("type") == "SWITCH":
-            for branch in list((node.get("decisionCases") or {}).values()) + [node.get("defaultCase") or []]:
+            branches = list((node.get("decisionCases") or {}).values())
+            branches.append(node.get("defaultCase") or [])
+            for branch in branches:
                 found = _search(branch, ref)
                 if found is not None:
                     return found
     return None
 
 
-def _find(nodes, ref):
-    found = _search(nodes, ref)
+def _find(workflow: dict, ref: str) -> dict:
+    found = _search(workflow["tasks"], ref)
     if found is None:
         raise AssertionError(f"task {ref!r} not found")
     return found
 
 
 def _eval_jq(query: str, data: dict, tmp_path: Path) -> dict:
-    prog = tmp_path / "prog.jq"
-    prog.write_text(query, encoding="utf-8")
-    proc = subprocess.run(["jq", "-f", str(prog)], input=json.dumps(data),
+    program = tmp_path / "program.jq"
+    program.write_text(query, encoding="utf-8")
+    proc = subprocess.run(["jq", "-f", str(program)], input=json.dumps(data),
                           capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
 
 
-def test_build_checks_reads_from_reparse_tasks_not_build_forks():
-    """The exact bug: checksList must come from the live per-iteration reparse
-    (reparse_tasks), not from build_forks's plan-time snapshot — otherwise a
-    fixup agent's edit to a Test: line is never actually re-checked."""
+def test_code_parallel_has_one_plan_loop_before_fanout_and_never_inlines_tests():
+    """code_parallel no longer avoids testing -- it avoids *inlining* tests.
+
+    The original invariant was that this workflow contained no test discovery or
+    execution at all, which meant a parallel change could merge cleanly and
+    still be handed forward red.  It now tests after the merge, but only by
+    delegating to one versioned ``test_cycle`` sub-workflow.  Inlining
+    ``test_discover``/``test_run`` here would recreate the per-workflow
+    test-command sprawl the original invariant existed to prevent, so that half
+    of it is still enforced below.
+    """
     workflow = _load("code_parallel")
-    build_checks = _find(workflow["tasks"], "build_checks")
-    assert build_checks["inputParameters"]["checksList"] == "${reparse_tasks.output.subtasks}"
-    reparse = _find(workflow["tasks"], "reparse_tasks")
-    assert reparse["name"] == "openspec_tasks_to_subtasks"
-    assert reparse["inputParameters"]["tasksPath"] == "${openspec_plan.output.changeDir}/tasks.md"
+    refs = [task["taskReferenceName"] for task in workflow["tasks"]]
 
+    assert refs.index("plan_loop") < refs.index("fan_out")
+    assert [task["taskReferenceName"] for task in workflow["tasks"]
+            if task["type"] == "DO_WHILE"] == ["plan_loop"]
 
-def test_build_checks_query_builds_fork_input_and_allowlist(tmp_path):
-    workflow = _load("code_parallel")
-    query = _find(workflow["tasks"], "build_checks")["inputParameters"]["queryExpression"]
-    result = _eval_jq(query, {
-        "repoPath": "/tmp/repo",
-        "checksList": [
-            {"id": "setup", "testCmd": "python3 hello.py"},
-            {"id": "build", "testCmd": "make check"},
-        ],
-    }, tmp_path)
-    assert {t["taskReferenceName"] for t in result["dynamicTasks"]} == {"check_setup", "check_build"}
-    assert result["dynamicTasksInput"]["check_setup"]["testCmd"] == "python3 hello.py"
-    assert "Bash(make *)" in result["fixupAllowedTools"]
-    assert "Bash(python3 *)" in result["fixupAllowedTools"]  # already in DEFAULT_ALLOWED_TOOLS
-
-
-def test_build_checks_reflects_a_fixed_up_test_command(tmp_path):
-    """Simulates round 2 after a fixup agent rewrote `Test: python hello.py` to
-    `Test: python3 hello.py` in tasks.md: the re-parsed checksList must produce
-    a different check command, not the original `python` one."""
-    workflow = _load("code_parallel")
-    query = _find(workflow["tasks"], "build_checks")["inputParameters"]["queryExpression"]
-    before = _eval_jq(query, {
-        "repoPath": "/tmp/repo",
-        "checksList": [{"id": "setup", "testCmd": "python hello.py"}],
-    }, tmp_path)
-    after = _eval_jq(query, {
-        "repoPath": "/tmp/repo",
-        "checksList": [{"id": "setup", "testCmd": "python3 hello.py"}],
-    }, tmp_path)
-    assert before["dynamicTasksInput"]["check_setup"]["testCmd"] == "python hello.py"
-    assert after["dynamicTasksInput"]["check_setup"]["testCmd"] == "python3 hello.py"
-
-
-def test_verify_round_folds_checks_judge_and_openspec_validate(tmp_path):
-    """verify_round is the loop's single pass/fail gate: it must require the
-    real test commands, the semantic judge, AND `openspec validate` to all
-    pass — a broken proposal/design/specs/tasks.md must keep `passed` false
-    and surface as a fixable finding, with no separate archive-dependent
-    stage."""
-    workflow = _load("code_parallel")
-    query = _find(workflow["tasks"], "verify_round")["inputParameters"]["queryExpression"]
-
-    all_good = _eval_jq(query, {
-        "checks": {"allPassed": True}, "judge": {"passed": True, "findings": []},
-        "specValid": True, "specIssues": [],
-    }, tmp_path)
-    assert all_good["passed"] is True and all_good["notPassed"] is False
-
-    bad_spec = _eval_jq(query, {
-        "checks": {"allPassed": True}, "judge": {"passed": True, "findings": []},
-        "specValid": False, "specIssues": [{"message": "missing Scenario for Requirement X"}],
-    }, tmp_path)
-    assert bad_spec["passed"] is False and bad_spec["notPassed"] is True
-    assert any("OpenSpec validate failed" in f and "missing Scenario for Requirement X" in f
-              for f in bad_spec["findings"])
-
-    failing_checks = _eval_jq(query, {
-        "checks": {"allPassed": False}, "judge": {"passed": True, "findings": ["some judge finding"]},
-        "specValid": True, "specIssues": [],
-    }, tmp_path)
-    assert failing_checks["passed"] is False
-    assert failing_checks["findings"] == ["some judge finding"]
-
-
-def test_validate_spec_task_is_wired_into_the_verify_loop_before_the_gate():
-    workflow = _load("code_parallel")
-    validate_spec = _find(workflow["tasks"], "validate_spec")
-    assert validate_spec["name"] == "openspec_validate_change"
-    assert validate_spec["inputParameters"]["changeId"] == "${openspec_plan.output.changeName}"
-    verify_round = _find(workflow["tasks"], "verify_round")
-    assert verify_round["inputParameters"]["specValid"] == "${validate_spec.output.valid}"
-
-
-def test_verify_loop_never_archives():
-    """code_parallel does not archive the OpenSpec change: no archive-related
-    task, gate, or workflow variable exists anywhere in verify_loop or in
-    outputParameters. Archiving is a manual, out-of-band step a human performs
-    after the PR merges — see design.md's Decision 6."""
-    workflow = _load("code_parallel")
-    verify_loop = next(t for t in workflow["tasks"] if t["taskReferenceName"] == "verify_loop")
-    top_level_refs = [t["taskReferenceName"] for t in verify_loop["loopOver"]]
-    assert top_level_refs == [
-        "reparse_tasks", "build_checks", "checks_fan_out", "checks_join", "checks_summary",
-        "validate_spec", "verify_judge", "verify_round", "verify_round_state", "verify_action",
-    ], "the loop body must run unconditionally — no archive-already-done gate wrapping it"
     dumped = json.dumps(workflow)
-    assert "archive" not in dumped.lower(), "no archive step, variable, or output should remain in code_parallel.json"
+    for forbidden in (
+        "testCmd",
+        "testCommands",
+        "openspec_run_subtask_check",
+        "openspec_validate_change",
+        "test_discover",
+        "test_run",
+        "heavyweight verification",
+    ):
+        assert forbidden not in dumped
+
+    delegated = [task for task in workflow["tasks"]
+                 if task.get("subWorkflowParam", {}).get("name") == "test_cycle"]
+    assert len(delegated) == 1
+    assert delegated[0]["optional"] is True
+    assert delegated[0]["inputParameters"]["testMode"] == "targeted"
+    # After the merge produces a candidate, and before the handoff reports it.
+    assert refs.index("merge") < refs.index("post_merge_tests") < refs.index("source_handoff")
+
+
+def test_a_post_merge_fix_commit_reaches_the_handoff_head_guard():
+    """The fix loop can advance the candidate past the merge commit.
+
+    source_handoff asserts the checkout head equals workflow.variables.candidateCommit,
+    so a tested-and-repaired SHA that never reaches that variable presents as
+    drift and silently blocks publication.
+    """
+    workflow = _load("code_parallel")
+    refs = [task["taskReferenceName"] for task in workflow["tasks"]]
+    assert refs.index("post_merge_tests") < refs.index("verification_outcome") \
+        < refs.index("verification_candidate_final") < refs.index("source_handoff")
+
+    final = _find(workflow, "verification_candidate_final")
+    assert final["type"] == "SET_VARIABLE"
+    # Sourced from the jq fold, not straight from the optional child: a degraded
+    # child returns null and would otherwise clobber a good SHA.
+    assert final["inputParameters"]["candidateCommit"] == \
+        "${verification_outcome.output.candidateCommit}"
+    assert _find(workflow, "source_handoff")["inputParameters"]["expectedHead"] == \
+        "${workflow.variables.candidateCommit}"
+
+
+def test_post_merge_candidate_fold_survives_a_degraded_test_child():
+    from common import code_parallel
+
+    base = dict(candidate_commit="merged-sha", delivery={"state": "passed"}, issues=[],
+               merge_state="merged", plan_valid=True, tests_passed=True)
+
+    repaired = code_parallel.resolve_verification_outcome(
+        **base, tested="repaired-sha", test_state="tests_passed")
+    assert repaired["candidateCommit"] == "repaired-sha"
+    assert repaired["testCycleState"] == "tests_passed"
+
+    degraded = code_parallel.resolve_verification_outcome(
+        **base, tested=None, test_state=None)
+    assert degraded["candidateCommit"] == "merged-sha"
+    assert degraded["testCycleState"] == "not_run"
+    # tests_passed=True is still the caller's input, but the outcome only ever
+    # trusts a testsPassed of True taken at face value alongside a fresh state.
+    assert degraded["testsPassed"] is True
+
+
+def test_plan_loop_validates_then_repairs_and_rechecks():
+    workflow = _load("code_parallel")
+    loop = _find(workflow, "plan_loop")
+    refs = [task["taskReferenceName"] for task in loop["loopOver"]]
+
+    # normalize_plan_check is gone: plan_check (verification_discover) now
+    # folds the fallback-to-current-plan logic in directly.
+    assert refs == ["plan_check", "plan_round_state", "plan_action"]
+    assert _find(workflow, "plan_check")["name"] == "verification_discover"
+    assert _find(workflow, "plan_check")["inputParameters"]["currentSubtasks"] == \
+        "${workflow.variables.planSubtasks}"
+    assert _find(workflow, "plan_check")["inputParameters"]["exhausted"] is False
+    assert _find(workflow, "plan_check")["inputParameters"]["subtasks"] ==         "${workflow.variables.planSubtasks}"
+
+    repair = _find(workflow, "plan_repair")
+    assert repair["inputParameters"]["modelRole"] == "plan"
+    assert repair["inputParameters"]["allowedTools"] == ["Read", "Grep", "Glob"]
+    assert "Do not add test commands" in repair["inputParameters"]["prompt"]
+
+    capture = _find(workflow, "capture_repaired_plan")
+    assert capture["inputParameters"]["planSubtasks"] ==         "${plan_repair.output.structured.subtasks}"
+    assert capture["inputParameters"]["planValid"] is False
+    assert "plan_valid !== true" in loop["loopCondition"]
+
+
+def test_final_repair_round_is_validated_after_the_loop_exhausts():
+    """The loop's last iteration repairs without rechecking.
+
+    ``loopCondition`` is evaluated after the body runs, so on the exhaustion
+    path ``plan_repair`` produces a plan that no ``plan_check`` ever inspects
+    and ``capture_repaired_plan`` leaves ``planValid`` false.  Without a
+    post-loop check that plan is discarded and reported ``plan_rejected`` even
+    when the repair fixed every issue.
+    """
+    workflow = _load("code_parallel")
+    refs = [task["taskReferenceName"] for task in workflow["tasks"]]
+
+    assert refs.index("plan_loop") < refs.index("final_plan_check")
+    assert refs.index("final_plan_check") < refs.index("plan_gate")
+
+    check = _find(workflow, "final_plan_check")
+    assert check["name"] == "verification_discover"
+    assert check["inputParameters"]["subtasks"] == "${workflow.variables.planSubtasks}"
+    assert check["inputParameters"]["exhausted"] is True
+
+    # plan_gate now routes on the variable directly, so the final verdict must
+    # still be written back for it to read.
+    state = _find(workflow, "final_plan_state")
+    assert state["type"] == "SET_VARIABLE"
+    assert state["inputParameters"]["planValid"] == "${final_plan_check.output.valid}"
+    assert state["inputParameters"]["planSubtasks"] == "${final_plan_check.output.subtasks}"
+    assert state["inputParameters"]["planIssues"] == "${final_plan_check.output.issues}"
+
+
+def test_final_plan_check_promotes_a_repair_the_loop_never_rechecked():
+    from common import plan_validation
+
+    current = [{"id": "a", "description": "A", "files": ["a.py"]}]
+    repaired = [{"id": "a", "description": "A", "files": ["src/a.py"]}]
+
+    promoted = plan_validation.inspect_subtasks(repaired, "", current=current, exhausted=True)
+    assert promoted["valid"] is True
+    assert promoted["planningState"] == "valid"
+    assert promoted["subtasks"] == repaired
+
+    # Exhaustion is named for what happened; replanning is over, not pending.
+    # The overlapping-file plan below is invalid, so the fallback is exercised.
+    exhausted = plan_validation.inspect_subtasks(
+        [{"id": "a", "description": "A", "files": ["a.py"]},
+         {"id": "b", "description": "B", "files": ["a.py"]}],
+        "", current=current, exhausted=True)
+    assert exhausted["valid"] is False
+    assert exhausted["planningState"] == "plan_exhausted"
+    assert exhausted["subtasks"] == current
+
+
+def test_precomputed_plan_bypasses_openspec_and_document_planners():
+    workflow = _load("code_parallel")
+    route = _find(workflow, "plan_route")
+
+    assert route["evaluatorType"] == "graaljs"
+    assert "precomputed" in route["expression"]
+    branch = route["decisionCases"]["precomputed"]
+    assert [task["taskReferenceName"] for task in branch] == ["set_precomputed_plan"]
+    assert branch[0]["inputParameters"]["planSubtasks"] == "${workflow.input.precomputedPlan.subtasks}"
+
+
+def test_normalize_plan_check_keeps_invalid_candidate_for_repair_feedback():
+    from common import plan_validation
+
+    current = [{"id": "a", "description": "A", "files": ["a.py"]}]
+
+    invalid = plan_validation.inspect_subtasks(
+        [{"id": "a", "description": "A", "files": ["a.py"]},
+         {"id": "b", "description": "B", "files": ["a.py"]}],
+        "", current=current, exhausted=False)
+    assert invalid["valid"] is False
+    assert invalid["planningState"] == "needs_replan"
+    assert invalid["subtasks"] == current
+
+    normalized = [{"id": "a", "description": "A", "files": ["src/a.py"]}]
+    valid = plan_validation.inspect_subtasks(normalized, "", current=current, exhausted=False)
+    assert valid["valid"] is True
+    assert valid["planningState"] == "valid"
+    assert valid["subtasks"] == normalized
+
+
+def test_build_forks_consumes_only_plan_fields():
+    from common import code_parallel
+
+    result = code_parallel.build_forks(
+        repo_path="/tmp/repo", code_model="model", code_prompt_template="",
+        code_prompt_template_source="", max_turns=4, max_budget_usd=1,
+        change_dir="design context", spec_context_path="", context_paths=[],
+        model_profile="default", model_policy={}, model_policy_source="",
+        model_policy_sha256="", models_config={}, model_overrides={},
+        subtasks=[{
+            "id": "api", "description": "Implement API", "files": ["src/api.py"],
+            # testCmd is stripped by plan_validation before this ever runs, but
+            # the function must not leak it into the prompt if it arrives anyway.
+            "testCmd": "make integration-test",
+        }])
+
+    assert result["dynamicTasks"][0]["taskReferenceName"] == "api"
+    branch_input = result["dynamicTasksInput"]["api"]
+    assert branch_input["allowedWriteRoots"] == ["src/api.py"]
+    assert "make integration-test" not in branch_input["prompt"]
+    assert "testCmd" not in branch_input
+    assert result["allowedWriteRoots"] == ["src/api.py"]
+
+
+def test_rejected_plan_completes_child_with_explicit_non_publishable_state():
+    workflow = _load("code_parallel")
+    gate = _find(workflow, "plan_gate")
+    terminate = gate["decisionCases"]["plan_rejected"][0]
+
+    assert terminate["type"] == "TERMINATE"
+    output = terminate["inputParameters"]["workflowOutput"]
+    assert output["agentCompleted"] is False
+    assert output["verificationState"] == "plan_rejected"
+    assert output["verified"] is False

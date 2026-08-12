@@ -106,7 +106,7 @@ watch: ## Follow a running execution: make watch ID=<workflowId>
 
 # ── Quality bar ───────────────────────────────────────────────────────────────
 
-$(DEPS):
+$(DEPS): tui/requirements.txt workers/requirements.txt
 	@test -x $(PY) || $(UV) venv --python $(PY_VERSION) $(VENV)
 	@$(UV) pip install -q --prerelease=explicit --python $(PY) -r tui/requirements.txt -r workers/requirements.txt pytest pytest-asyncio
 	@touch $(DEPS)

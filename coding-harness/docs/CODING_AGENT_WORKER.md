@@ -68,7 +68,7 @@ Every option maps to a doc §17 recommendation:
 | `PreToolUse` worktree-escape hook | the only check that runs on **every** tool call; denies writes outside the worktree (§5, §7.1) |
 | `system_prompt` = `claude_code` preset + `append` + `exclude_dynamic_sections` | CLI-equivalent coding behavior; fleet-wide prompt-cache sharing (§12) |
 | `setting_sources=["project"]` + `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` | reproducible: only repo config loads, no host machine leakage (§10) |
-| `max_turns` / `max_budget_usd` | agent turn and spend circuit breakers; runtime timeouts are owned by the Conductor task definition (§13, §16) |
+| `max_turns` / `max_budget_usd` | agent turn and spend circuit breakers; neither is a wall-clock deadline (§13, §16) |
 | optional `output_format` | force a validated JSON result instead of prose (§11) |
 
 ---
@@ -453,8 +453,10 @@ To change them:
 
 Known gaps to be aware of:
 
-- The allowlist covers Python/Node/Go/Rust; other toolchains need their `Bash(...)` verb
-  added before the agent can run them.
+- The allowlist includes scoped build/test entrypoints for the supported JVM, Python,
+  JavaScript/TypeScript, Go, Rust, Ruby, .NET, C/C++, Swift, PHP, Elixir/Erlang,
+  Haskell, Dart/Flutter, Clojure, Lua, Perl, R, and Zig ecosystems. New toolchains still
+  need an explicit `Bash(...)` rule; generic shells stay denied.
 - The OS sandbox is macOS/Linux only. On other platforms (or with `sandbox_enabled=False`)
   the worktree guard hook covers only `Write`/`Edit`/`NotebookEdit`, not writes performed
   inside a `Bash` interpreter — so on those platforms keep the outer container boundary.
@@ -515,14 +517,14 @@ everything else reuses existing tasks:
 
 | Input | Default (`inputTemplate`) | Meaning |
 |---|---|---|
-| `repoPath` | — (required) | Target directory. **Need not be a git repo** — `prepare_repo` inits it. |
+| `repoPath` | — (required) | Target directory. **Need not be a git repo** — `workspace_prepare` initializes it without consuming local files into the original branch. |
 | `instruction` | — (required) | The overall coding goal to decompose. |
-| `changeBranch` | `code-parallel` | Branch the sub-task branches merge into. |
+| `changeBranch` | `""` (derived) | Newly created branch the sub-task branches merge into; blank derives `conductor/run-<workflow-id>`. |
 | `planModel` | `""` (backend default) | Model the agentic planner uses; empty = the chosen backend's own default. |
 | `planMaxTurns` | `500` | Turn cap for the planner's repo exploration. |
 | `codeModel` | `""` (backend default) | Model each `coding_agent` fork uses; empty = the chosen backend's own default. |
 | `maxSubtasks` | `6` | Upper bound on the fan-out (guardrail). |
-| `maxTurns` / `maxBudgetUsd` | `500` / `50.0` | Per-fork turn and spend limits. Runtime timeouts come from the Conductor task definition. |
+| `maxTurns` / `maxBudgetUsd` | `500` / `50.0` | Per-fork turn and spend limits; no wall-clock deadline. |
 
 Output: `changeBranch`, `groupIds`, `subtasks`, `merged`, `conflicts`, `mergeCostUsd`,
 **`totalTokens`**, **`totalCostUsd`**, and `summary` (per-sub-task status/files/tokens/cost
@@ -649,8 +651,7 @@ plus an `agent` field recording which ran.
   worker's event loop, native `output_schema` structured output, `effort`
   pass-through, `thread_resume` sessions, `ApprovalMode.deny_all` (nothing ever blocks
   on an approval — the sandbox governs), and typed per-item notifications for the live
-  trace. Timeout = a watchdog that `interrupt()`s the turn server-side (never cancel
-  the stream — the SDK's blocking queue reader would leak an executor thread).
+  trace. The harness does not install a watchdog or deadline around the turn.
   **CLI fallback**: set `CODEX_DRIVER=cli` (or uninstall the SDK) to shell
   `codex exec --json` like before — escape hatch while the SDK is beta.
 - **Gemini** (`common/gemini.py`) — drives the open-source **Gemini CLI** headless
@@ -723,14 +724,14 @@ unaffected.
 
 | Task | What it does | Key inputs |
 |---|---|---|
-| `workspace_prepare` | Create/resume an isolated run worktree from a local checkout or temporary clone; inherited workspaces pass through for nested workflows. Dirty source changes are reported and excluded. | `repoPath?`, `repoUrl?`, `workspacePath?`, `workflowId`, `branch?`, `fetchSource?`, `fetchRefspec?`, `startPoint?` |
+| `workspace_prepare` | Create/resume a run-owned branch. Isolated mode snapshots every Git-visible source change without touching the source checkout; in-place mode switches to the new branch before committing that baseline; inherited workspaces pass the parent's branch through. | `repoPath?`, `repoUrl?`, `workspacePath?`, `workflowId`, `branch?`, `inPlace?`, `fetchSource?`, `fetchRefspec?` |
 | `workspace_cleanup` | Retain or safely remove an owned run worktree (nested task worktrees first) while preserving branches. Incomplete/failed outcomes are retained. | `sourceRepoPath`, `worktreePath`, `owned`, `keepWorktree`, `outcome` |
 | `git_clone` | Clone a remote repo (optionally shallow / a specific branch). | `repoUrl`, `dest?`, `branch?`, `depth?` |
 | `git_fetch` | Fetch refs/PRs from a remote. | `repoPath`, `remote?`, `refspec?`, `prune?` |
 | `git_pull` | Fetch + integrate (rebase by default). **Fail-soft**: on conflict it aborts and returns `conflicts[]`, leaving the tree clean. | `repoPath`, `remote?`, `branch?`, `rebase?` |
 | `git_push` | Push a branch to a named remote or authenticated URL, optionally under another destination branch. `--force-with-lease` only when requested. | `repoPath`, `branch?`, `destinationBranch?`, `remote?`, `remoteUrl?`, `setUpstream?`, `forceWithLease?` |
 | `git_remote` | Add/set a remote URL (idempotent). | `repoPath`, `url`, `name?` |
-| `pr_create` | Open a PR from the change branch. No `title` → `gh --fill` from commits. Returns `{number, url}`. | `repoPath`, `title?`, `body?`, `base?`, `head?`, `draft?`, `fill?` |
+| `pr_create` | Open or reuse a PR with exactly one concise `## Summary` paragraph. Issue-backed runs use the repository issue template's primary field when available. Returns `{number, url, body, summarySource}`. | `repoPath`, `title?`, `summary?`, `issueBody?`, `base?`, `head?`, `draft?` |
 | `pr_checkout` | Check out an existing PR by number so the harness can iterate on it. | `repoPath`, `number`, `repo?` (upstream PR owner/name), `branch?`, `force?` |
 | `pr_status` | Review/merge state + CI checks, with pass/fail/pending counts. | `repoPath`, `number?` |
 | `pr_comment` | Post a comment on a PR. Always appends an invisible `<!-- conductor-harness -->` marker so `pr_comments` can skip harness-authored comments. | `repoPath`, `number`, `body` |
@@ -738,7 +739,7 @@ unaffected.
 | `issue_fetch` | Fetch an issue's title/body/labels (seeds a coding instruction). | `repo`, `number` |
 | `pr_comments` | Consolidate a PR's feedback (conversation + reviews + inline), skipping harness-authored comments; returns metadata + a single `feedback` blob + `hasFeedback`. | `repo`, `number` |
 | `pr_diff` | A PR's unified diff (capped) + changed files, via `gh pr diff` (feeds the read-only reviewer). | `repo`, `number` |
-| `pr_submit_review` | Post a formal review — inline file/line comments + summary + verdict — via the reviews REST API. Clamped to COMMENT/REQUEST_CHANGES (**never APPROVE**); falls back to a summary-only review if an inline line doesn't anchor to the diff. | `repo`, `number`, `structured` |
+| `pr_submit_review` | Post exactly one formal review via the reviews REST API. Supports APPROVE and REQUEST_CHANGES; falls back to a summary-only review if an inline line does not anchor to the diff. | `repo`, `number`, `structured`, `event?` |
 
 Transport tasks retry (2×, exponential backoff) for transient network blips; `pr_merge`
 never retries. Code: `common/git.py` (transport) + `common/github.py` (gh/PR ops) + the
@@ -760,8 +761,8 @@ Output includes `prNumber` / `prUrl`. `code_parallel` is unchanged — remote st
 composed around it (e.g. clone first, push + open a PR after merge) rather than baked in.
 
 **Workflow `issue_to_pr`** — issue → PR: `issue_fetch → git_clone (temp folder) →
-code_parallel (sub-workflow) → [approve_gate] → final_pr → git_push → pr_create` (PR body
-`Closes #N`). Inputs: `repo`, `issueNumber`, `base`, `approvePr` (default **false**), plus the
+code_parallel (sub-workflow) → [approve_gate] → final_pr → git_push → pr_create` (PR body:
+one concise `## Summary` paragraph). Inputs: `repo`, `issueNumber`, `base`, `approvePr` (default **false**), plus the
 usual `planAgent`/`codeAgent`/limits. The **`approvePr` review gate** (see below) sits *before
 `git_push` and `pr_create`*, so when it's on nothing reaches the remote until a human approves.
 
@@ -793,14 +794,18 @@ write-back needs the fork flow (future). File move/delete feedback ("move X to a
 move/delete verbs (see §6).
 
 **Workflow `pr_review`** — review a PR and post a formal review:
-`pr_comments → workspace_prepare → pr_diff → coding_agent (read-only + review schema) → checks
-→ [approval/revision route] → final_review → pr_submit_review`. The review *analysis reuses `coding_agent`* — a **read-only** run
+`pr_comments → git_clone → pr_checkout → pr_diff → coding_agent (read-only + review schema)
+→ normalize_review → [optional human decision] → pr_submit_review`. The review *analysis reuses `coding_agent`* — a **read-only** run
 (`tools:["Read","Grep","Glob"]`, no write/Bash) with an `output_schema`
 (`{summary, verdict, comments:[{path,line,body}]}`), exactly the planner's read-only+structured
 pattern. The diff is **pre-computed** (`pr_diff`) and injected so the reviewer stays read-only
-(it cannot modify the PR, only comment). `pr_submit_review` posts the findings as inline
-file/line comments + a summary; verdict is COMMENT, or REQUEST_CHANGES when the agent flags a
-blocking issue — **never APPROVE** (enforced by the schema enum and clamped in the task).
+(it cannot modify the PR). Normalization removes approval prose: no findings becomes exactly
+`LGTM`; findings become `Changes requested.` plus anchored comments. Without a human gate these
+map to APPROVE and REQUEST_CHANGES respectively. With the TUI gate, Approve submits APPROVE with
+the selected comments, Request changes posts the human feedback as REQUEST_CHANGES without
+approval, Investigate further privately resumes the same read-only reviewer and replaces the
+draft with a complete refreshed review, and Later leaves the WAIT unresolved and posts nothing.
+Each private answer is retained in `investigationHistory`; no investigation action reaches GitHub.
 
 ```bash
 conductor workflow start -w pr_review -i '{
@@ -833,50 +838,48 @@ files or current branch.
 
 ### Approval and revision gate
 
-The v3 GitHub workflows accept `approvalMode: human|llm|none`. When the field is omitted,
-`pr_review.approve` and `issue_to_pr.approvePr` retain their legacy behavior, and legacy
-`address_pr` remains ungated. Blocking configured checks run before publication in every mode.
+All registered GitHub workflows remain version 1. Direct `pr_review` runs use `approve:true` for
+the human WAIT; automation dispatch may choose its configured human/LLM mode. Blocking configured
+checks run before code or PR publication paths.
 
 | Workflow | Artifact inspected before publication | LLM rejection behavior |
 |---|---|---|
-| `pr_review` | structured summary, verdict, and inline comments | bounded same-worktree producer revision, then human WAIT |
+| `pr_review` | structured review plus private investigation history | human Investigate, Approve, Request changes, Stop, or Later; no producer rewrite loop |
 | `address_pr` | diff and checks before push | bounded same-worktree producer revision, then human WAIT |
 | `issue_to_pr` | diff, checks, branch, and PR draft | currently escalates directly to human WAIT |
 
-`maxApprovalRevisions` defaults to `2` for `pr_review` and `address_pr`. It counts follow-up
-producer executions, so the default permits the initial artifact plus at most two automatic
-revisions. On rejection, `START_WORKFLOW` launches v3 again with the same `workspacePath`, the
-judge's result in `approvalFeedback`, and the remaining count decremented. The rejected execution
-completes before any post or push. For scheduled work, `github_automation_state` transfers the
-active marker to the new child workflow ID, preserving the claim across every execution and an
-eventual open WAIT gate.
+`maxApprovalRevisions` continues to bound code-candidate revisions in `address_pr` and
+`issue_to_pr`. It does not apply to `pr_review`: a human Request changes decision is itself the
+final REQUEST_CHANGES review content, not a request for an agent to rewrite comments.
 
 If the LLM approves, publication proceeds. If it rejects at zero, the workflow enters the same
 signal-based WAIT shown in the global Approval Inbox. Human actions are:
 
-- **Approve** — use the editable artifact and publish.
-- **Revise** — start a new execution in the same worktree, with the feedback and human approval
-  enabled for its next artifact.
+- **Approve** — for `pr_review`, post the selected comments and approve the PR.
+- **Investigate further** — for `pr_review`, ask a private question, resume the read-only reviewer,
+  and return to the gate with a complete refreshed review. Five passes are available by default.
+- **Request changes** — for `pr_review`, post the human feedback without approval; code-candidate
+  workflows instead enter their bounded revision and verification path.
 - **Stop** — record a suppressed automation outcome and terminate before posting or pushing.
 - **Later** — leave the WAIT unresolved.
 
-For `pr_review` and `address_pr`, Approve, Revise, and Stop are all sent as `COMPLETED` WAIT
-signals with a decision payload; the workflow routes the action. A client must signal the
+For `pr_review` and `address_pr`, publication decisions are sent as `COMPLETED` WAIT signals with
+a decision payload; `pr_review` uses the same mechanism for private Investigate actions. The
+workflow routes each action. A client must signal the
 execution that owns the WAIT, which may be a nested or follow-up execution rather than the parent
 shown in a result card. Legacy HUMAN tasks are not compatible with this WAIT signaling path.
 
 ```bash
-# Start an independently judged review. Two rejected artifacts may be revised automatically.
+# Start a review with an explicit human publication decision.
 conductor workflow start -w pr_review -i '{
   "repo":"you/repo",
   "prNumber":4,
-  "approvalMode":"llm",
-  "maxApprovalRevisions":2
+  "approve":true
 }'
 
-# Human Revise after escalation; use the workflow ID that owns review_gate.
+# Human Request changes; use the workflow ID that owns review_gate.
 conductor task signal-sync --workflow-id "$WID" --task-ref review_gate \
-  --status COMPLETED --output '{"decision":"revise","approved":false,"feedback":"Tighten the inline finding."}'
+  --status COMPLETED --output '{"action":"revise","approved":false,"feedback":"Add a regression test for the retry path."}'
 ```
 
 ## 14. Prompt templates (user-supplied instructions)
@@ -933,7 +936,8 @@ Placeholders with no matching context key are left literal.
 | Workflow | Input | templateKey (repo file) | context placeholders |
 |---|---|---|---|
 | `local_review` | `localReviewPromptTemplate` | `.conductor/local_review.md` | `{{baseRef}}`, `{{baseCommit}}`, `{{headCommit}}`, `{{diff}}` |
-| `pr_review` | `reviewPromptTemplate` | `.conductor/pr_review.md` | `{{diff}}`, `{{feedback}}` |
+| `pr_review` | `reviewPromptTemplate` | `.conductor/pr_review.md` | `{{diff}}`, `{{feedback}}`, `{{guidance}}` |
+| `pr_review` follow-up | `reviewInvestigationPromptTemplate` | `.conductor/pr_review_investigation.md` | `{{question}}`, `{{guidance}}`, `{{currentReview}}`, `{{history}}`, `{{diff}}`, `{{feedback}}` |
 | `design_docs` | `designPromptTemplate` | `.conductor/design.md` | `{{instruction}}`, `{{designDir}}` |
 | `code_parallel` (planner) | `planPromptTemplate` | `.conductor/plan.md` | `{{instruction}}`, `{{maxSubtasks}}` |
 | `code_parallel` (subtasks) | `codePromptTemplate` | `.conductor/code.md` | `{{subtask}}` |

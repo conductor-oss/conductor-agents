@@ -1,12 +1,87 @@
 {
   "name": "issue_fetch",
   "description": "Fetch a GitHub issue's title/body/labels via gh. Input: repo (owner/name or URL), number.",
-  "retryCount": 2,
+  "retryCount": 3,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "issue_fetch_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "Repository as owner/name or a GitHub URL. Falls back to repoUrl, then to an empty string, when omitted."
+        },
+        "repoUrl": {
+          "type": "string",
+          "description": "Repository URL, used when repo is not supplied."
+        },
+        "number": {
+          "description": "Issue number to fetch. Coerced to an integer.",
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "number"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "issue_fetch_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer",
+          "description": "Issue number, echoed from the fetched issue (or the input number if missing)."
+        },
+        "title": {
+          "type": "string",
+          "description": "Issue title."
+        },
+        "body": {
+          "type": "string",
+          "description": "Issue body text."
+        },
+        "state": {
+          "type": "string",
+          "description": "Issue state, e.g. OPEN or CLOSED."
+        },
+        "url": {
+          "type": "string",
+          "description": "Canonical GitHub URL of the issue."
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Names of labels attached to the issue."
+        }
+      },
+      "required": [
+        "number",
+        "title",
+        "body",
+        "state",
+        "url",
+        "labels"
+      ]
+    }
+  }
 }

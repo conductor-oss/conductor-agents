@@ -1,12 +1,66 @@
 {
   "name": "git_clone",
   "description": "Clone a remote git repo (gh-authed HTTPS). Input: repoUrl, dest?, branch?, depth?.",
-  "retryCount": 2,
+  "retryCount": 3,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "git_clone_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoUrl": {
+          "type": "string",
+          "description": "Remote repo to clone. A bare 'owner/name' slug is expanded to an https GitHub URL; an existing URL, scp-style 'git@...', or local path is passed through unchanged."
+        },
+        "dest": {
+          "type": "string",
+          "description": "Destination directory; defaults to the repo name derived from the URL."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Specific branch to clone."
+        },
+        "depth": {
+          "type": "integer",
+          "description": "Shallow-clone depth; a full clone is performed when omitted."
+        }
+      },
+      "required": [
+        "repoUrl"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "git_clone_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Local directory the repo was cloned into."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch checked out after cloning."
+        },
+        "head": {
+          "type": "string",
+          "description": "HEAD commit SHA after cloning."
+        }
+      },
+      "required": [
+        "repoPath",
+        "branch",
+        "head"
+      ]
+    }
+  }
 }

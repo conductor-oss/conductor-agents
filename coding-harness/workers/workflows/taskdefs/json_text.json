@@ -1,0 +1,30 @@
+{
+  "name": "json_text",
+  "description": "Serialize named inputs to compact JSON text for prompt interpolation.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "json_text_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "description": "Arbitrary named inputs of any type/shape. Every key is serialized independently; there is no fixed key set.",
+      "properties": {}
+    }
+  },
+  "outputSchema": {
+    "name": "json_text_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "description": "One string property per input key, named \"<inputKey>Json\", holding that value's JSON serialization (compact-safe, sorted keys). A value that cannot be JSON-serialized falls back to the JSON serialization of its str() form instead of failing the task.",
+      "properties": {}
+    }
+  }
+}

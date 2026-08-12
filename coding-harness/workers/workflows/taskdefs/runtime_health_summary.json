@@ -1,0 +1,57 @@
+{
+  "name": "runtime_health_summary",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "runtime_health_summary_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "execution": {
+          "type": "object",
+          "description": "Execution worker pool health report (e.g. execution_runtime_health output). Non-dict values are treated as {}.",
+          "additionalProperties": true
+        },
+        "verification": {
+          "type": "object",
+          "description": "Isolated verification worker pool health report. Non-dict values are treated as {}.",
+          "additionalProperties": true
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "runtime_health_summary_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "healthy": {
+          "type": "boolean",
+          "description": "True only when both executionHealthy and verificationHealthy are true."
+        },
+        "executionHealthy": {
+          "type": "boolean",
+          "description": "True when execution.healthy is exactly true."
+        },
+        "verificationHealthy": {
+          "type": "boolean",
+          "description": "True when verification.healthy is exactly true."
+        }
+      },
+      "required": [
+        "healthy",
+        "executionHealthy",
+        "verificationHealthy"
+      ]
+    }
+  }
+}

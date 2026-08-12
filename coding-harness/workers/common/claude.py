@@ -62,7 +62,7 @@ async def _drive(prompt: str, options: sdk.ClaudeAgentOptions,
 
 
 def _anthropic_client():
-    """Anthropic client with no client-side deadline; Conductor owns timeouts."""
+    """Anthropic client with its client-side deadline explicitly disabled."""
     import anthropic
     import httpx
     return anthropic.Anthropic(timeout=httpx.Timeout(None), max_retries=4)

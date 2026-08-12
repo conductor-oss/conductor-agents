@@ -1,0 +1,48 @@
+{
+  "name": "campaign_implementation_done",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "campaign_implementation_done_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "description": "Current campaign outcome. Any non-empty string other than 'running' counts as a terminal (done) outcome."
+        },
+        "remaining": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "IDs of tasks not yet completed. An empty array counts as done regardless of outcome."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "campaign_implementation_done_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "done": {
+          "type": "boolean",
+          "description": "True when remaining is an empty array, or outcome is a non-empty string other than 'running'."
+        }
+      },
+      "required": [
+        "done"
+      ]
+    }
+  }
+}

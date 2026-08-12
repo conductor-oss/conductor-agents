@@ -1,0 +1,778 @@
+{
+  "name": "test_cycle",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "Runs a repository's tests for one exact candidate commit, targeted at the candidate's diff or repository-wide, and performs at most four structured fix, commit, rediscovery, and re-test passes. Every fix is re-tested, so the fifth run is always a verdict. This workflow cannot reach FAILED: every task that can fail is optional, there is no TERMINATE, and the terminal normalizer maps every outcome onto a testCycleState the caller branches on. It commits to whatever branch repoPath is checked out on.",
+  "inputParameters": [
+    "repoPath",
+    "candidateCommit",
+    "testMode",
+    "maxFixAttempts",
+    "testCommands",
+    "testPlanTemplate",
+    "testPlanTemplateSource",
+    "allowHeavySuites",
+    "includeBrowserTests",
+    "allowAgentTestPlan",
+    "allowAgentAuthoredTests",
+    "priorVerification",
+    "allowedWriteRoots",
+    "agent",
+    "model",
+    "maxTurns",
+    "maxBudgetUsd",
+    "repairPromptTemplate",
+    "repairPromptTemplateSource",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "inputSchema": {
+    "name": "test_cycle_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git repository whose currently checked-out branch this test cycle discovers, runs, repairs, and re-verifies tests against."
+        },
+        "candidateCommit": {
+          "type": "string",
+          "description": "Candidate commit SHA to verify. Blank is treated as missing and yields a blocked result (candidate_commit_missing)."
+        },
+        "testMode": {
+          "type": "string",
+          "enum": [
+            "targeted",
+            "full"
+          ],
+          "default": "targeted",
+          "description": "'targeted' derives scope from the candidate's diff; 'full' runs the repository-wide suite."
+        },
+        "maxFixAttempts": {
+          "type": "integer",
+          "default": 4,
+          "description": "Upper bound (also capped at 4 by the loop condition) on structured fix/commit/re-test passes after an initial test failure."
+        },
+        "testCommands": {
+          "type": "array",
+          "default": [],
+          "items": {},
+          "description": "Operator-supplied override test commands, taking precedence over discovery; each item may be a bare argv array or a full command object."
+        },
+        "testPlanTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline JSON string of an operator test-plan template, used only when testCommands is not supplied."
+        },
+        "testPlanTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Diagnostic label naming who supplied testPlanTemplate; has no effect on the resolved plan."
+        },
+        "allowHeavySuites": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opts into heavy/expensive suites; only takes effect when testMode is 'full'."
+        },
+        "includeBrowserTests": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opts into browser/e2e test discovery when a suite is configured and provisioned; only takes effect when testMode is 'full'."
+        },
+        "allowAgentTestPlan": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true and deterministic discovery is configuration_blocked, lets a coding agent propose test commands as a last resort."
+        },
+        "allowAgentAuthoredTests": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true and allowAgentTestPlan's search also finds no existing test, lets a coding agent author exactly one new test file. The new test is only ever trusted after a red/green check (must fail against the pre-candidate baseline, must pass against the real candidate change); separate from allowAgentTestPlan so existing callers of that flag are unaffected."
+        },
+        "priorVerification": {
+          "type": "object",
+          "default": {},
+          "description": "A prior verification's command list, merged as a carried obligation alongside freshly discovered commands."
+        },
+        "allowedWriteRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Declared write-scope override (repository-relative path prefixes) for the repair step; wins over the scope discovery resolves."
+        },
+        "agent": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override selecting the coding agent backend (claude, codex, gemini) for the repair/discovery-fallback sessions."
+        },
+        "model": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override: explicit model id for the repair/discovery-fallback coding agent sessions."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "default": 250,
+          "description": "Cap on agent turns for each repair/discovery-fallback coding agent session."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "Cap on USD spend for each repair/discovery-fallback coding agent session."
+        },
+        "repairPromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline template text (or '@relative/path') overriding the default repair prompt for the coding agent."
+        },
+        "repairPromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Diagnostic label naming who supplied repairPromptTemplate; recorded in logs/output only."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model profile to resolve; empty string defers to the policy's default profile."
+        },
+        "modelPolicy": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Inline model policy document (or JSON string) merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label recorded for the inline modelPolicy."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to a repository model policy file, overriding the default location."
+        },
+        "modelOverrides": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Per-role model overrides (or a JSON string of the same) merged on top of the selected profile."
+        }
+      },
+      "required": [
+        "repoPath",
+        "candidateCommit"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "test_cycle_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "testCycleState": {
+          "type": "string",
+          "enum": [
+            "tests_passed",
+            "no_tests_required",
+            "tests_failed_fix_unavailable",
+            "tests_failed_after_fix_budget",
+            "command_discovery_blocked",
+            "candidate_commit_missing",
+            "runtime_unavailable",
+            "verifier_worker_unavailable"
+          ],
+          "description": "The single terminal state this test cycle mapped to; this workflow never reaches FAILED, so callers must branch on this field instead."
+        },
+        "testsRan": {
+          "type": "boolean",
+          "description": "True when testCycleState is one of the three states where tests actually executed."
+        },
+        "testsPassed": {
+          "type": "boolean",
+          "description": "True when testCycleState is tests_passed or no_tests_required."
+        },
+        "testRunCount": {
+          "type": "integer",
+          "description": "Total number of verification runs performed (initial plus each repair re-test), 0 when tests never ran."
+        },
+        "fixAttempts": {
+          "type": "integer",
+          "description": "Total number of structured fix/commit/re-test passes performed."
+        },
+        "fixReports": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "Auditable per-attempt repair history (agent status, staged/rejected paths, command failures, whether the candidate advanced, and the resulting verification state), one entry per fix attempt."
+        },
+        "testMode": {
+          "type": "string",
+          "enum": [
+            "targeted",
+            "full"
+          ],
+          "description": "The resolved test mode used for discovery and execution."
+        },
+        "commandSource": {
+          "type": "string",
+          "enum": [
+            "user_template",
+            "repository_guide",
+            "repository_config",
+            "build_system_inference",
+            "agent_proposal",
+            "none"
+          ],
+          "description": "Which authority supplied the final resolved test commands."
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "Per-command execution results from the last verification run that occurred."
+        },
+        "testReport": {
+          "type": "string",
+          "description": "Human-readable one-line summary combining testCycleState, testMode, command count, source, run count, and fix attempts."
+        },
+        "verificationState": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "passed",
+            "failed",
+            "blocked"
+          ],
+          "description": "Coarse verification verdict from the last verification run; remains 'pending' if no verification ever ran."
+        },
+        "candidateCommit": {
+          "type": "string",
+          "description": "The final candidate commit SHA after any repair attempts advanced it; equal to the input candidateCommit if no repair advanced it."
+        },
+        "verification": {
+          "type": "object",
+          "description": "Full result object of the last verification run performed (test_run output shape); {} if no verification ever ran.",
+          "properties": {
+            "verificationState": {
+              "type": "string",
+              "enum": [
+                "passed",
+                "failed",
+                "blocked"
+              ]
+            },
+            "executionOutcome": {
+              "type": "string",
+              "enum": [
+                "no_tests_required",
+                "passed",
+                "code_failed",
+                "infra_blocked",
+                "configuration_blocked",
+                "cancelled"
+              ]
+            },
+            "candidateCommit": {
+              "type": "string"
+            },
+            "commands": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        "executionOutcome": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "no_tests_required",
+            "passed",
+            "code_failed",
+            "infra_blocked",
+            "configuration_blocked",
+            "cancelled"
+          ],
+          "description": "Fine-grained execution outcome from the last verification run; remains 'pending' if no verification ever ran."
+        },
+        "requiredVerificationCommands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "Commands carried forward from priorVerification as still-required obligations, resolved during the initial planning pass."
+        },
+        "repairRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Write-scope roots the last discovery pass resolved for a repair step."
+        },
+        "repairReports": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "Same auditable per-attempt repair history as fixReports."
+        },
+        "attempts": {
+          "type": "integer",
+          "description": "Total number of structured fix/commit/re-test passes performed (same value as fixAttempts)."
+        },
+        "agentAuthoredTest": {
+          "type": "boolean",
+          "description": "True only when a coding agent authored a new test file (no existing test covered the change) and that test was accepted after a red/green check. False whenever allowAgentAuthoredTests was off, an existing test was found, or an authoring attempt was rejected."
+        },
+        "agentAuthoredTestPath": {
+          "type": "string",
+          "description": "Repository-relative path of the agent-authored test file; empty unless agentAuthoredTest is true."
+        }
+      },
+      "required": [
+        "testCycleState",
+        "testsRan",
+        "testsPassed",
+        "testRunCount",
+        "fixAttempts",
+        "fixReports",
+        "testMode",
+        "commandSource",
+        "commands",
+        "testReport",
+        "verificationState",
+        "candidateCommit",
+        "verification",
+        "executionOutcome",
+        "requiredVerificationCommands",
+        "repairRoots",
+        "repairReports",
+        "attempts",
+        "agentAuthoredTest",
+        "agentAuthoredTestPath"
+      ]
+    }
+  },
+  "inputTemplate": {
+    "testMode": "targeted",
+    "maxFixAttempts": 4,
+    "testCommands": [],
+    "testPlanTemplate": "",
+    "testPlanTemplateSource": "",
+    "allowHeavySuites": false,
+    "includeBrowserTests": false,
+    "allowAgentTestPlan": false,
+    "allowAgentAuthoredTests": false,
+    "priorVerification": {},
+    "allowedWriteRoots": [],
+    "agent": "",
+    "model": "",
+    "maxTurns": 250,
+    "maxBudgetUsd": 50,
+    "repairPromptTemplate": "",
+    "repairPromptTemplateSource": "",
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "variables": {
+    "candidateCommit": "",
+    "verificationState": "pending",
+    "executionOutcome": "pending",
+    "verification": {},
+    "repairRoots": [],
+    "repairReports": [],
+    "repairAttempts": 0,
+    "testRunCount": 0,
+    "candidateAdvanced": true,
+    "commandSource": "none",
+    "agentCommands": [],
+    "agentAuthoredTest": false,
+    "agentAuthoredTestPath": ""
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      },
+      "optional": true
+    },
+    {
+      "name": "initialize_test_cycle",
+      "taskReferenceName": "cycle_init",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "candidateCommit": "${workflow.input.candidateCommit}",
+        "verificationState": "pending",
+        "executionOutcome": "pending",
+        "verification": {},
+        "repairRoots": [],
+        "repairReports": [],
+        "repairAttempts": 0,
+        "testRunCount": 0,
+        "candidateAdvanced": true,
+        "commandSource": "none",
+        "agentCommands": [],
+        "agentAuthoredTest": false,
+        "agentAuthoredTestPath": ""
+      },
+      "optional": true
+    },
+    {
+      "name": "test_discover",
+      "taskReferenceName": "initial_discover",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "candidateCommit": "${workflow.variables.candidateCommit}",
+        "testMode": "${workflow.input.testMode}",
+        "allowHeavySuites": "${workflow.input.allowHeavySuites}",
+        "includeBrowserTests": "${workflow.input.includeBrowserTests}"
+      }
+    },
+    {
+      "name": "test_agent_fallback",
+      "taskReferenceName": "agent_fallback",
+      "type": "SUB_WORKFLOW",
+      "optional": true,
+      "subWorkflowParam": {
+        "name": "test_agent_fallback",
+        "version": 1
+      },
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "candidateCommit": "${workflow.variables.candidateCommit}",
+        "testMode": "${workflow.input.testMode}",
+        "allowHeavySuites": "${workflow.input.allowHeavySuites}",
+        "includeBrowserTests": "${workflow.input.includeBrowserTests}",
+        "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
+        "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
+        "discoveryOutcome": "${initial_discover.output.executionOutcome}",
+        "discoveryReason": "${initial_discover.output.reason}",
+        "changedPaths": "${initial_discover.output.changedPaths}",
+        "repairRoots": "${initial_discover.output.repairRoots}",
+        "agent": "${workflow.input.agent}",
+        "model": "${workflow.input.model}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "record_agent_fallback",
+      "taskReferenceName": "record_agent_fallback",
+      "type": "SET_VARIABLE",
+      "optional": true,
+      "inputParameters": {
+        "agentCommands": "${agent_fallback.output.agentCommands}",
+        "candidateCommit": "${agent_fallback.output.candidateCommit}",
+        "repairRoots": "${agent_fallback.output.repairRoots}",
+        "agentAuthoredTest": "${agent_fallback.output.agentAuthoredTest}",
+        "agentAuthoredTestPath": "${agent_fallback.output.agentAuthoredTestPath}"
+      }
+    },
+    {
+      "name": "test_plan_resolve",
+      "taskReferenceName": "initial_plan",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "discovered": "${initial_discover.output.candidates}",
+        "priorVerification": "${workflow.input.priorVerification}",
+        "testCommands": "${workflow.input.testCommands}",
+        "testPlanTemplate": "${workflow.input.testPlanTemplate}",
+        "agentCommands": "${workflow.variables.agentCommands}",
+        "discoveryOutcome": "${initial_discover.output.executionOutcome}",
+        "discoveryReason": "${initial_discover.output.reason}",
+        "selection": "${initial_discover.output.selection}"
+      }
+    },
+    {
+      "name": "test_run",
+      "taskReferenceName": "initial_verify",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "candidateCommit": "${workflow.variables.candidateCommit}",
+        "commands": "${initial_plan.output.commands}",
+        "discoveryOutcome": "${initial_plan.output.discoveryOutcome}",
+        "discoveryReason": "${initial_plan.output.discoveryReason}",
+        "testMode": "${workflow.input.testMode}",
+        "allowHeavySuites": "${workflow.input.allowHeavySuites}"
+      }
+    },
+    {
+      "name": "record_initial_run",
+      "taskReferenceName": "record_initial_run",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "verificationState": "${initial_verify.output.verificationState}",
+        "verification": "${initial_verify.output}",
+        "executionOutcome": "${initial_verify.output.executionOutcome}",
+        "repairRoots": "${workflow.variables.repairRoots}",
+        "commandSource": "${initial_plan.output.commandSource}",
+        "testRunCount": 1
+      },
+      "optional": true
+    },
+    {
+      "name": "fix_needed_gate",
+      "taskReferenceName": "fix_needed_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "outcome",
+      "inputParameters": {
+        "outcome": "${workflow.variables.executionOutcome}"
+      },
+      "decisionCases": {
+        "code_failed": [
+          {
+            "name": "test_fix_loop",
+            "taskReferenceName": "test_fix_loop",
+            "type": "DO_WHILE",
+            "evaluatorType": "graaljs",
+            "loopCondition": "(function(){ return $.test_fix_loop['iteration'] < 4 && $.test_fix_loop['iteration'] < $.maxFixAttempts && $.executionOutcome === 'code_failed' && $.candidateAdvanced === true; })();",
+            "inputParameters": {
+              "test_fix_loop": "${test_fix_loop.output}",
+              "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+              "executionOutcome": "${workflow.variables.executionOutcome}",
+              "candidateAdvanced": "${workflow.variables.candidateAdvanced}"
+            },
+            "loopOver": [
+              {
+                "name": "json_text",
+                "taskReferenceName": "repair_context",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "initial": "${workflow.input.priorVerification}",
+                  "current": "${workflow.variables.verification}",
+                  "reports": "${workflow.variables.repairReports}",
+                  "scope": "${initial_discover.output.repairScope}"
+                },
+                "optional": true
+              },
+              {
+                "name": "coding_agent",
+                "taskReferenceName": "repair",
+                "type": "SIMPLE",
+                "optional": true,
+                "inputParameters": {
+                  "worktreePath": "${workflow.input.repoPath}",
+                  "allowedWriteRoots": "${initial_discover.output.repairScope}",
+                  "prompt": "Repair the failing tests for this candidate. Read every applicable repository instruction file first. Make the smallest source, test, or configuration change that makes the failing command pass. Do not edit caches or generated files, and do not weaken or delete a test to make it pass. The independent verifier re-runs the authoritative command after the commit, so a report of success that the command does not confirm is worthless. Authorized repair roots: ${repair_context.output.scopeJson}\nInitial verifier evidence: ${repair_context.output.initialJson}\nCurrent verifier result: ${repair_context.output.currentJson}\nPrevious structured repair reports: ${repair_context.output.reportsJson}",
+                  "promptTemplate": "${workflow.input.repairPromptTemplate}",
+                  "promptTemplateSource": "${workflow.input.repairPromptTemplateSource}",
+                  "templateKey": "test_repair",
+                  "agent": "${workflow.input.agent}",
+                  "model": "${workflow.input.model}",
+                  "maxTurns": "${workflow.input.maxTurns}",
+                  "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+                  "modelRole": "code",
+                  "modelProfile": "${workflow.input.modelProfile}",
+                  "modelPolicy": "${workflow.input.modelPolicy}",
+                  "modelPolicySource": "${workflow.input.modelPolicySource}",
+                  "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                  "modelsConfig": "${workflow.input.modelsConfig}",
+                  "modelOverrides": "${workflow.input.modelOverrides}",
+                  "modelResolution": "${model_policy.output}",
+                  "failSoft": true
+                }
+              },
+              {
+                "name": "commit",
+                "taskReferenceName": "repair_commit",
+                "type": "SIMPLE",
+                "optional": true,
+                "inputParameters": {
+                  "repoPath": "${workflow.input.repoPath}",
+                  "message": "test_cycle repair"
+                }
+              },
+              {
+                "name": "test_repair_record",
+                "taskReferenceName": "repair_result",
+                "type": "SIMPLE",
+                "optional": true,
+                "inputParameters": {
+                  "currentCandidate": "${workflow.variables.candidateCommit}",
+                  "agent": "${repair.output}",
+                  "commit": "${repair_commit.output}"
+                }
+              },
+              {
+                "name": "test_discover",
+                "taskReferenceName": "discover",
+                "type": "SIMPLE",
+                "optional": true,
+                "inputParameters": {
+                  "repoPath": "${workflow.input.repoPath}",
+                  "candidateCommit": "${repair_result.output.candidate}",
+                  "testMode": "${workflow.input.testMode}",
+                  "allowHeavySuites": "${workflow.input.allowHeavySuites}",
+                  "includeBrowserTests": "${workflow.input.includeBrowserTests}"
+                }
+              },
+              {
+                "name": "test_plan_resolve",
+                "taskReferenceName": "verification_plan",
+                "type": "SIMPLE",
+                "optional": true,
+                "inputParameters": {
+                  "discovered": "${discover.output.candidates}",
+                  "priorVerification": "${workflow.input.priorVerification}",
+                  "testCommands": "${workflow.input.testCommands}",
+                  "testPlanTemplate": "${workflow.input.testPlanTemplate}",
+                  "agentCommands": "${workflow.variables.agentCommands}",
+                  "discoveryOutcome": "${discover.output.executionOutcome}",
+                  "discoveryReason": "${discover.output.reason}",
+                  "selection": "${discover.output.selection}"
+                }
+              },
+              {
+                "name": "test_run",
+                "taskReferenceName": "verify",
+                "type": "SIMPLE",
+                "optional": true,
+                "inputParameters": {
+                  "repoPath": "${workflow.input.repoPath}",
+                  "candidateCommit": "${repair_result.output.candidate}",
+                  "commands": "${verification_plan.output.commands}",
+                  "discoveryOutcome": "${verification_plan.output.discoveryOutcome}",
+                  "discoveryReason": "${verification_plan.output.discoveryReason}",
+                  "testMode": "${workflow.input.testMode}",
+                  "allowHeavySuites": "${workflow.input.allowHeavySuites}"
+                }
+              },
+              {
+                "name": "test_cycle_progress",
+                "taskReferenceName": "repair_history",
+                "type": "SIMPLE",
+                "optional": true,
+                "inputParameters": {
+                  "reports": "${workflow.variables.repairReports}",
+                  "report": "${repair_result.output.report}",
+                  "verification": "${verify.output}",
+                  "runs": "${workflow.variables.testRunCount}"
+                }
+              },
+              {
+                "name": "record_repair_iteration",
+                "taskReferenceName": "record_iteration",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "candidateCommit": "${repair_result.output.candidate}",
+                  "verificationState": "${verify.output.verificationState}",
+                  "verification": "${verify.output}",
+                  "executionOutcome": "${verify.output.executionOutcome}",
+                  "repairRoots": "${discover.output.repairRoots}",
+                  "repairReports": "${repair_history.output.reports}",
+                  "repairAttempts": "${repair_history.output.attempts}",
+                  "candidateAdvanced": "${repair_history.output.candidateAdvanced}",
+                  "testRunCount": "${repair_history.output.runCount}"
+                },
+                "optional": true
+              }
+            ],
+            "optional": true
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "test_cycle_outcome",
+      "taskReferenceName": "cycle_outcome",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "outcome": "${workflow.variables.executionOutcome}",
+        "candidate": "${workflow.variables.candidateCommit}",
+        "advanced": "${workflow.variables.candidateAdvanced}",
+        "attempts": "${workflow.variables.repairAttempts}",
+        "runs": "${workflow.variables.testRunCount}",
+        "commandSource": "${workflow.variables.commandSource}",
+        "verification": "${workflow.variables.verification}",
+        "testMode": "${workflow.input.testMode}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "testCycleState": "${cycle_outcome.output.testCycleState}",
+    "testsRan": "${cycle_outcome.output.testsRan}",
+    "testsPassed": "${cycle_outcome.output.testsPassed}",
+    "testRunCount": "${cycle_outcome.output.testRunCount}",
+    "fixAttempts": "${cycle_outcome.output.fixAttempts}",
+    "fixReports": "${workflow.variables.repairReports}",
+    "testMode": "${cycle_outcome.output.testMode}",
+    "commandSource": "${cycle_outcome.output.commandSource}",
+    "commands": "${cycle_outcome.output.commands}",
+    "testReport": "${cycle_outcome.output.testReport}",
+    "verificationState": "${workflow.variables.verificationState}",
+    "candidateCommit": "${workflow.variables.candidateCommit}",
+    "verification": "${workflow.variables.verification}",
+    "executionOutcome": "${workflow.variables.executionOutcome}",
+    "requiredVerificationCommands": "${initial_plan.output.required}",
+    "repairRoots": "${workflow.variables.repairRoots}",
+    "repairReports": "${workflow.variables.repairReports}",
+    "attempts": "${workflow.variables.repairAttempts}",
+    "agentAuthoredTest": "${workflow.variables.agentAuthoredTest}",
+    "agentAuthoredTestPath": "${workflow.variables.agentAuthoredTestPath}"
+  },
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "enforceSchema": false
+}

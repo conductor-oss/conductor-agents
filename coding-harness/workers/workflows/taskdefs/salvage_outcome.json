@@ -1,0 +1,45 @@
+{
+  "name": "salvage_outcome",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "salvage_outcome_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "number",
+          "description": "PR number produced by the salvage, if any. A positive number means a PR was opened; absent/non-positive/non-numeric means only a branch was pushed."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "salvage_outcome_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "salvaged",
+            "pushed_no_pr"
+          ],
+          "description": "'salvaged' when a positive PR number was produced, otherwise 'pushed_no_pr'."
+        }
+      },
+      "required": [
+        "state"
+      ]
+    }
+  }
+}

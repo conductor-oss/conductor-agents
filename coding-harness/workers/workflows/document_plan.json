@@ -1,0 +1,266 @@
+{
+  "name": "document_plan",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "Read supplied ordinary design documents and produce a bounded, file-disjoint implementation plan without creating or requiring OpenSpec artifacts.",
+  "inputParameters": [
+    "repoPath",
+    "instruction",
+    "contextPaths",
+    "model",
+    "maxTurns",
+    "maxBudgetUsd",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "inputTemplate": {
+    "contextPaths": [],
+    "model": "",
+    "maxTurns": 500,
+    "maxBudgetUsd": 50,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "plan",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "worktreePath": "${workflow.input.repoPath}",
+        "contextPaths": "${workflow.input.contextPaths}",
+        "model": "${workflow.input.model}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "templateKey": "document-plan",
+        "promptTemplate": "",
+        "promptTemplateSource": "builtin:document-plan",
+        "tools": [
+          "Read",
+          "Grep",
+          "Glob"
+        ],
+        "schema": {
+          "type": "object",
+          "required": [
+            "subtasks",
+            "summary"
+          ],
+          "properties": {
+            "summary": {
+              "type": "string"
+            },
+            "subtasks": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "description",
+                  "files"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "files": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "prompt": "Act as a read-only implementation planner. Read the supplied contextPaths (which may be Markdown, plain text, or a directory of design documents) and the repository. Do not create, initialize, invoke, or assume OpenSpec. Treat the supplied documents as the design authority and produce a concise implementation plan. Return the required JSON object. Each subtask must be independently implementable, use a unique lowercase-kebab-case id, name its exact repository-relative target files, and have no file overlap with another subtask. Do not propose test commands; this plan defines parallel file ownership only. If the documents are incomplete, infer only the minimum repository-consistent details needed to fulfill the requested change.\n\nRequested change:\n${workflow.input.instruction}",
+        "modelRole": "plan",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelResolution": "${model_policy.output}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "subtasks": "${plan.output.structured.subtasks}",
+    "summary": "${plan.output.structured.summary}",
+    "tokenUsed": "${plan.output.tokenUsed}",
+    "costUsd": "${plan.output.costUsd}"
+  },
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "inputSchema": {
+    "name": "document_plan_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the checked-out repository the plan is generated against."
+        },
+        "instruction": {
+          "type": "string",
+          "description": "Natural-language description of the requested change to produce an implementation plan for."
+        },
+        "contextPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Absolute filesystem paths (files or directories) to supplied design documents granted to the planning agent as read-only context."
+        },
+        "model": {
+          "type": "string",
+          "default": "",
+          "description": "Legacy compatibility override for the model used in the 'plan' role; empty string defers to the resolved model policy."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "default": 500,
+          "description": "Cap on agent turns for the planning session."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "Cap on USD spend for the planning session."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model-policy profile to select; empty string defers to the policy's default profile."
+        },
+        "modelPolicy": {
+          "type": "object",
+          "default": {},
+          "description": "Inline model policy document merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Label recorded for the inline modelPolicy's provenance."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy; resolution fails if it does not match."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path inside the worktree to a repository model policy file, overriding the default location."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "default": {},
+          "description": "Per-role overrides merged on top of the selected model profile's roles."
+        }
+      },
+      "required": [
+        "repoPath",
+        "instruction"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "document_plan_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "subtasks": {
+          "type": "array",
+          "minItems": 1,
+          "description": "File-disjoint, independently implementable subtasks derived from the supplied design documents.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "description",
+              "files"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+                "description": "Unique lowercase-kebab-case subtask identifier."
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1,
+                "description": "What the subtask must accomplish."
+              },
+              "files": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Repository-relative target files owned exclusively by this subtask."
+              }
+            }
+          }
+        },
+        "summary": {
+          "type": "string",
+          "description": "Concise summary of the overall implementation plan."
+        },
+        "tokenUsed": {
+          "type": "integer",
+          "description": "Total tokens consumed by the planning agent session."
+        },
+        "costUsd": {
+          "type": "number",
+          "description": "Total USD cost of the planning agent session."
+        }
+      },
+      "required": [
+        "subtasks",
+        "summary",
+        "tokenUsed",
+        "costUsd"
+      ]
+    }
+  },
+  "enforceSchema": false
+}

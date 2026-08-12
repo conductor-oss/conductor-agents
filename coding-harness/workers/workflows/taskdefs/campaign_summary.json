@@ -4,9 +4,139 @@
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 2,
-  "pollTimeoutSeconds": 120,
-  "responseTimeoutSeconds": 60,
-  "timeoutSeconds": 300,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "pollTimeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "campaign_summary_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "usage": {
+          "description": "Arbitrarily nested object/array of usage records to aggregate. Any dict containing tokenUsed/totalTokens/costUsd/totalCostUsd is treated as a record; nested containers are searched recursively.",
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "array"
+            }
+          ]
+        },
+        "repoPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the repo checkout used to compute changed/uncommitted files."
+        },
+        "baseCommit": {
+          "type": "string",
+          "default": "HEAD~1",
+          "description": "Base git ref diffed against HEAD to compute committed changed files."
+        },
+        "sessions": {
+          "type": "object",
+          "description": "Map of task ID to session ID; when supplied, overrides the sessions list derived from usage records."
+        },
+        "outcome": {
+          "type": "string",
+          "default": "incomplete",
+          "description": "Final campaign outcome, echoed back."
+        },
+        "branch": {
+          "type": "string",
+          "default": "",
+          "description": "Campaign branch name, echoed back and reused as verifiedBranch when outcome is 'verified'."
+        },
+        "sourceRepoPath": {
+          "type": "string",
+          "description": "Original source repo path, echoed back; defaults to repoPath when omitted."
+        },
+        "inPlace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether the campaign ran in place on the source repo."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "campaign_summary_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "description": "Final campaign outcome, echoed from input (defaults to 'incomplete')."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Campaign branch name, echoed from input."
+        },
+        "verifiedBranch": {
+          "type": "string",
+          "description": "Same as branch when outcome is 'verified', otherwise empty string."
+        },
+        "candidateCommit": {
+          "type": "string",
+          "description": "HEAD commit SHA of repoPath."
+        },
+        "repoPath": {
+          "type": "string",
+          "description": "Repo path used, echoed from input."
+        },
+        "sourceRepoPath": {
+          "type": "string",
+          "description": "Original source repo path, echoed from input or defaulted to repoPath."
+        },
+        "inPlace": {
+          "type": "boolean",
+          "description": "Whether the campaign ran in place on the source repo."
+        },
+        "changedFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Sorted union of files committed between baseCommit and HEAD, and files with uncommitted changes."
+        },
+        "uncommittedFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Sorted list of paths with uncommitted changes."
+        },
+        "totalTokens": {
+          "type": "integer",
+          "description": "Total LLM tokens summed across all discovered usage records."
+        },
+        "totalCostUsd": {
+          "type": "number",
+          "description": "Total USD cost summed across all discovered usage records, rounded to 6 decimals."
+        },
+        "sessions": {
+          "type": "object",
+          "description": "Map of task ID to session ID; taken from input.sessions when provided as an object, otherwise the list of session IDs found in usage records."
+        }
+      },
+      "required": [
+        "outcome",
+        "branch",
+        "verifiedBranch",
+        "candidateCommit",
+        "repoPath",
+        "sourceRepoPath",
+        "inPlace",
+        "changedFiles",
+        "uncommittedFiles",
+        "totalTokens",
+        "totalCostUsd",
+        "sessions"
+      ]
+    }
+  }
 }

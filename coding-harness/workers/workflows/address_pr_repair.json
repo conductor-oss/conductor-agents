@@ -1,0 +1,299 @@
+{
+  "name": "address_pr_repair",
+  "description": "Run bounded remediation for an address-PR candidate and return verification evidence. This workflow never pushes, comments, or otherwise publishes.",
+  "version": 1,
+  "schemaVersion": 2,
+  "restartable": true,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "inputParameters": [
+    "repoPath",
+    "candidateCommit",
+    "verification",
+    "allowAgentTestPlan",
+    "allowAgentAuthoredTests",
+    "agent",
+    "model",
+    "maxTurns",
+    "maxBudgetUsd",
+    "fixPromptTemplate",
+    "fixPromptTemplateSource",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "inputSchema": {
+    "name": "address_pr_repair_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git repository containing the address-PR candidate to repair and re-verify."
+        },
+        "candidateCommit": {
+          "type": "string",
+          "description": "Candidate commit SHA to run bounded remediation and verification against."
+        },
+        "verification": {
+          "type": "object",
+          "description": "Prior verification result (test_run output shape) whose failing/required commands are carried forward as obligations for this repair pass.",
+          "additionalProperties": true
+        },
+        "allowAgentTestPlan": {
+          "type": "boolean",
+          "default": true,
+          "description": "Defaults true for this workflow: when deterministic discovery is configuration_blocked (e.g. a changed helper file no per-language planner maps to an exact test), lets a read-only coding agent search for an existing test by content as a last resort, instead of leaving the repair pass blocked. Set false to restore the strict deterministic-only behavior. See test_cycle/test_agent_fallback."
+        },
+        "allowAgentAuthoredTests": {
+          "type": "boolean",
+          "default": true,
+          "description": "Defaults true for this workflow: when allowAgentTestPlan's search also finds nothing, lets a coding agent author exactly one new test file, trusted only after a red/green check (must fail at the pre-candidate baseline, must pass at the real candidate). Set false to restore the strict deterministic-only behavior. Independent of allowAgentTestPlan so existing callers of that flag are unaffected."
+        },
+        "agent": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override selecting the coding agent backend (claude, codex, gemini) for the repair session."
+        },
+        "model": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override: explicit model id for the repair coding agent session."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "default": 250,
+          "description": "Cap on agent turns for the repair coding agent session."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "Cap on USD spend for the repair coding agent session."
+        },
+        "fixPromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline template text (or '@relative/path') overriding the default repair prompt for the coding agent."
+        },
+        "fixPromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Diagnostic label naming who supplied fixPromptTemplate; recorded in logs/output only."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model profile to resolve; empty string defers to the policy's default profile."
+        },
+        "modelPolicy": {
+          "type": "object",
+          "default": {},
+          "description": "Inline model policy document merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label recorded for the inline modelPolicy."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to a repository model policy file, overriding the default location."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "default": {},
+          "description": "Per-role model overrides merged on top of the selected profile."
+        }
+      },
+      "required": [
+        "repoPath",
+        "candidateCommit",
+        "verification"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "address_pr_repair_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "candidateCommit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The final candidate commit SHA after any repair attempts advanced it; null if the optional repair sub-workflow did not produce output."
+        },
+        "verificationState": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "pending",
+            "passed",
+            "failed",
+            "blocked",
+            null
+          ],
+          "description": "Coarse verification verdict from the repair sub-workflow's last verification run; null if the optional repair sub-workflow did not produce output."
+        },
+        "verification": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Full result object of the repair sub-workflow's last verification run (test_run output shape); null if the optional repair sub-workflow did not produce output.",
+          "additionalProperties": true
+        },
+        "repairAttempts": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Total number of structured fix/commit/re-test passes performed by the repair sub-workflow; null if it did not produce output."
+        },
+        "repairReports": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "Auditable per-attempt repair history from the repair sub-workflow; null if it did not produce output."
+        },
+        "repairRoots": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Write-scope roots the repair sub-workflow's last discovery pass resolved; null if it did not produce output."
+        },
+        "agentAuthoredTest": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "True only when the repair sub-workflow's agent-authored-test fallback accepted a new test file after a red/green check; null if it did not produce output."
+        },
+        "agentAuthoredTestPath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Repository-relative path of the agent-authored test file; empty/null unless agentAuthoredTest is true."
+        },
+        "publicationState": {
+          "type": "string",
+          "enum": [
+            "not_attempted"
+          ],
+          "description": "Static literal recorded by this workflow: it never pushes, comments, or otherwise publishes."
+        }
+      },
+      "required": [
+        "candidateCommit",
+        "verificationState",
+        "verification",
+        "repairAttempts",
+        "repairReports",
+        "repairRoots",
+        "agentAuthoredTest",
+        "agentAuthoredTestPath",
+        "publicationState"
+      ]
+    }
+  },
+  "inputTemplate": {
+    "allowAgentTestPlan": true,
+    "allowAgentAuthoredTests": true,
+    "agent": "",
+    "model": "",
+    "maxTurns": 250,
+    "maxBudgetUsd": 50,
+    "fixPromptTemplate": "",
+    "fixPromptTemplateSource": "",
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelsConfig": "${workflow.input.modelsConfig}"
+      }
+    },
+    {
+      "name": "test_cycle",
+      "taskReferenceName": "repair",
+      "type": "SUB_WORKFLOW",
+      "subWorkflowParam": {
+        "name": "test_cycle",
+        "version": 1
+      },
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "candidateCommit": "${workflow.input.candidateCommit}",
+        "agent": "${workflow.input.agent}",
+        "model": "${workflow.input.model}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "priorVerification": "${workflow.input.verification}",
+        "repairPromptTemplate": "${workflow.input.fixPromptTemplate}",
+        "repairPromptTemplateSource": "${workflow.input.fixPromptTemplateSource}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "maxFixAttempts": 4,
+        "testMode": "targeted",
+        "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
+        "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}"
+      },
+      "optional": true
+    }
+  ],
+  "outputParameters": {
+    "candidateCommit": "${repair.output.candidateCommit}",
+    "verificationState": "${repair.output.verificationState}",
+    "verification": "${repair.output.verification}",
+    "repairAttempts": "${repair.output.attempts}",
+    "repairReports": "${repair.output.repairReports}",
+    "repairRoots": "${repair.output.repairRoots}",
+    "agentAuthoredTest": "${repair.output.agentAuthoredTest}",
+    "agentAuthoredTestPath": "${repair.output.agentAuthoredTestPath}",
+    "publicationState": "not_attempted"
+  },
+  "overwriteTags": false,
+  "enforceSchema": false
+}

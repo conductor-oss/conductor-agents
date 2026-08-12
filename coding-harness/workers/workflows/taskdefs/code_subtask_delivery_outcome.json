@@ -1,0 +1,230 @@
+{
+  "name": "code_subtask_delivery_outcome",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "code_subtask_delivery_outcome_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "plannedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Repository-relative paths the subtask was planned to change."
+        },
+        "commit": {
+          "type": "object",
+          "description": "Output of the commit task.",
+          "properties": {
+            "commit": {
+              "type": "string",
+              "description": "Commit SHA."
+            },
+            "stagedPaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Paths actually staged/committed."
+            },
+            "rejectedPaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Paths rejected as non-vetted."
+            },
+            "noOp": {
+              "type": "boolean",
+              "description": "Whether the commit was a no-op."
+            }
+          }
+        },
+        "audit": {
+          "type": "object",
+          "description": "Output of the delivery_audit task.",
+          "properties": {
+            "auditAvailable": {
+              "type": "boolean",
+              "description": "Whether the audit ran successfully."
+            },
+            "actualPaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Paths that actually changed."
+            },
+            "commandFailures": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "Structured command failures observed."
+            },
+            "sandboxDenials": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Sandbox denial messages observed."
+            },
+            "head": {
+              "type": "string",
+              "description": "HEAD commit at audit time, used as a commit fallback."
+            }
+          }
+        },
+        "agent": {
+          "type": "object",
+          "description": "Coding agent's own report.",
+          "properties": {
+            "status": {
+              "type": "string",
+              "description": "Agent-reported status string."
+            },
+            "agentCompleted": {
+              "type": "boolean",
+              "description": "Whether the agent reported it completed."
+            }
+          }
+        },
+        "tested": {
+          "type": "string",
+          "description": "Commit SHA that was actually tested; takes precedence over commit.commit/audit.head when non-blank."
+        },
+        "testState": {
+          "type": "string",
+          "description": "Test cycle state; passed through verbatim when a string, otherwise reported as 'not_run'."
+        },
+        "testsPassed": {
+          "type": "boolean",
+          "description": "Whether the test cycle passed."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "code_subtask_delivery_outcome_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "audit_unavailable",
+            "implementation_unavailable",
+            "incomplete_delivery"
+          ],
+          "description": "Overall delivery verdict."
+        },
+        "passed": {
+          "type": "boolean",
+          "description": "True only when every planned path was staged and nothing was rejected."
+        },
+        "plannedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Deduplicated, sorted planned paths."
+        },
+        "stagedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Deduplicated, sorted staged paths from the commit output."
+        },
+        "missingPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Planned paths that were never staged."
+        },
+        "rejectedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Rejected paths carried over from the commit output."
+        },
+        "actualPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Actual changed paths carried over from the audit output."
+        },
+        "commandFailures": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Structured command failures carried over from the audit output."
+        },
+        "sandboxDenials": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Sandbox denial messages carried over from the audit output."
+        },
+        "agentStatus": {
+          "type": "string",
+          "description": "Agent-reported status, or 'unknown'."
+        },
+        "agentCompleted": {
+          "type": "boolean",
+          "description": "Whether the agent reported completion."
+        },
+        "commit": {
+          "type": "string",
+          "description": "Resolved commit SHA: tested override, else commit.commit, else audit.head, else empty string."
+        },
+        "testCycleState": {
+          "type": "string",
+          "description": "Test cycle state, or 'not_run' when unset."
+        },
+        "testsPassed": {
+          "type": "boolean",
+          "description": "Whether the test cycle passed."
+        },
+        "noOp": {
+          "type": "boolean",
+          "description": "Whether the underlying commit was a no-op."
+        }
+      },
+      "required": [
+        "state",
+        "passed",
+        "plannedPaths",
+        "stagedPaths",
+        "missingPaths",
+        "rejectedPaths",
+        "actualPaths",
+        "commandFailures",
+        "sandboxDenials",
+        "agentStatus",
+        "agentCompleted",
+        "commit",
+        "testCycleState",
+        "testsPassed",
+        "noOp"
+      ]
+    }
+  }
+}

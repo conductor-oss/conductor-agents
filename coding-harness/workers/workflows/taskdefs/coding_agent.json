@@ -4,12 +4,449 @@
   "retryCount": 3,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 10,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "inputTemplate": {
-    "maxBudgetUsd": 50.0
+    "maxBudgetUsd": 50
   },
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "coding_agent_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "worktreePath": {
+          "type": "string",
+          "description": "Absolute path to the git worktree the agent session runs in; required."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Inline prompt text. Used verbatim if promptTemplate/templateKey resolve nothing; otherwise a safety fallback."
+        },
+        "promptTemplate": {
+          "type": "string",
+          "description": "Highest-precedence prompt source: inline template text, or '@relative/path' to read a template file from the worktree. Rendered against promptContext."
+        },
+        "templateKey": {
+          "type": "string",
+          "description": "Template name used to look up a repo '.conductor/<key>.md' override or the bundled 'workers/defaults/prompts/<key>.md' default."
+        },
+        "promptContext": {
+          "type": "object",
+          "description": "Variables used to render the chosen template (promptTemplate, repo template, or bundled default)."
+        },
+        "promptTemplateSource": {
+          "type": "string",
+          "description": "Caller-supplied label for which template source was requested; recorded in logs/output only."
+        },
+        "contextFiles": {
+          "description": "Comma-separated string or array of file paths (must live under OPENSPEC_SNAPSHOT_DIR) whose contents are appended to the prompt as read-only external context, capped at 512 KiB total.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "contextPaths": {
+          "description": "Comma-separated string or array of absolute filesystem paths (files or directories, no symlinks) granted to the agent as read-only live context references.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "schema": {
+          "description": "JSON Schema (object or JSON string) constraining the agent's structured output. When it matches the campaign task-DAG shape, an explicit plan contract is appended to the prompt and the result is validated/normalized as a campaign plan.",
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "modelRole": {
+          "type": "string",
+          "default": "code",
+          "description": "Model-policy role used to select the model tier (design, plan, code, review, judge, scribe)."
+        },
+        "model": {
+          "type": "string",
+          "description": "Compatibility override: explicit model id for this role, backend inferred from the id."
+        },
+        "fallbackModel": {
+          "type": "string",
+          "description": "Model to fall back to if the primary model errors."
+        },
+        "effort": {
+          "type": "string",
+          "description": "Backend-specific reasoning/effort level passed through to the agent session."
+        },
+        "modelResolution": {
+          "type": "object",
+          "description": "Precomputed model-policy resolution (e.g. from model_profile_resolve); reused unless the worktree carries its own repository policy."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "description": "Relative path inside the worktree to a repository model policy file, used when (re)resolving modelResolution."
+        },
+        "modelProfile": {
+          "type": "string",
+          "description": "Named model-policy profile to select when (re)resolving modelResolution."
+        },
+        "modelPolicy": {
+          "description": "Inline model policy document to merge when (re)resolving modelResolution.",
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "description": "Expected SHA-256 of the inline modelPolicy."
+        },
+        "modelOverrides": {
+          "description": "Per-role overrides applied when (re)resolving modelResolution.",
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "maxTurns": {
+          "type": "integer",
+          "description": "Cap on agent turns for this session; combined with the resolved model tier's own limit (the lower wins)."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "Cap on USD spend for this session; combined with the resolved model tier's own limit (the lower wins)."
+        },
+        "resumeSessionId": {
+          "type": "string",
+          "description": "Prior agent session id to resume instead of starting a cold session."
+        },
+        "allowedDomains": {
+          "description": "Comma-separated string or array of network domains the agent session may reach.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "allowedWriteRoots": {
+          "description": "Comma-separated string or array of repository-relative path prefixes the agent may write to; changes outside these roots are reverted after the session.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "settingSources": {
+          "description": "Which Claude settings sources to load: a string/array of sources, or '', 'none', '[]' to load none (untrusted-repo lockdown). Defaults to the CODING_AGENT_SETTING_SOURCES env var or ['project'].",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "tools": {
+          "description": "Comma-separated string or array restricting the available built-in tool surface (can only narrow, never widen, the default tool set).",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "allowedTools": {
+          "description": "Comma-separated string or array of explicitly allowed tools.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "disallowedTools": {
+          "description": "Comma-separated string or array of explicitly disallowed tools.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "includeFileTree": {
+          "type": "string",
+          "default": "true",
+          "description": "Set to 'false'/'0'/'no' to skip priming the prompt with a directory listing."
+        },
+        "includeRepoGuide": {
+          "type": "string",
+          "default": "true",
+          "description": "Set to 'false'/'0'/'no' to skip priming the prompt with the repo's AGENTS.md/CLAUDE.md guide."
+        },
+        "failSoft": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, agent/policy failures are returned as a COMPLETED task with status/error fields set instead of failing the task."
+        }
+      },
+      "required": [
+        "worktreePath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "coding_agent_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "description": "Terminal agent session status, e.g. success, error_max_turns, error_max_budget_usd, policy_denied, invalid_plan."
+        },
+        "agentCompleted": {
+          "type": "boolean",
+          "description": "True only if the agent session itself reported ok; independent of downstream build/test verification."
+        },
+        "verificationState": {
+          "type": "string",
+          "enum": [
+            "pending"
+          ],
+          "description": "Always 'pending'; independent verification has not yet run when this task completes."
+        },
+        "agent": {
+          "type": "string",
+          "description": "Backend that ran the session: claude, codex, or gemini."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model id actually used for the session."
+        },
+        "modelResolution": {
+          "type": "object",
+          "description": "Effective model-policy resolution used for this session.",
+          "properties": {
+            "profile": {
+              "type": "string",
+              "description": "Resolved model-policy profile name."
+            },
+            "role": {
+              "type": "string",
+              "description": "Model-policy role this session ran as."
+            },
+            "tier": {
+              "type": "object",
+              "description": "Selected model tier: {agent, model, maxTurns, maxBudgetUsd, priceKey, availability, ...}."
+            },
+            "canonicalSha256": {
+              "type": "string",
+              "description": "SHA-256 of the resolved policy used for drift detection."
+            },
+            "sources": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "Provenance of the merged policy layers."
+            },
+            "warnings": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Non-fatal model-policy warnings."
+            }
+          }
+        },
+        "filesChanged": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Repository-relative paths the agent changed and that survived scope enforcement."
+        },
+        "fileChanges": {
+          "type": "array",
+          "description": "Per-file status for the changed set.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Repository-relative path."
+              },
+              "status": {
+                "type": "string",
+                "description": "Git status code: A (added), M (modified), D (deleted), or R (renamed)."
+              }
+            }
+          }
+        },
+        "result": {
+          "type": "string",
+          "description": "The agent's final text response, truncated to 2000 characters."
+        },
+        "structured": {
+          "description": "The agent's structured output matching the requested schema, if any; may be null."
+        },
+        "planValidation": {
+          "type": "object",
+          "description": "Campaign-plan validation result ({valid, errors, tasks, order}) when schema matched the campaign plan contract; empty object otherwise."
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Backend session id for this run, usable as resumeSessionId; empty string if unavailable."
+        },
+        "turns": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Per-turn log entries (turn number, commands run, tokens)."
+        },
+        "numTurns": {
+          "type": "integer",
+          "description": "Total number of agent turns taken."
+        },
+        "tokenUsed": {
+          "type": "integer",
+          "description": "Total tokens consumed by the session."
+        },
+        "costUsd": {
+          "type": "number",
+          "description": "Total USD cost of the session."
+        },
+        "denials": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Human-readable log of every tool call or change the harness denied or reverted."
+        },
+        "contextPaths": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Validated live context path entries granted to this session."
+        },
+        "promptTemplate": {
+          "type": "object",
+          "description": "Which prompt template source was requested vs. actually resolved.",
+          "properties": {
+            "requestedSource": {
+              "type": "string",
+              "description": "Caller-supplied promptTemplateSource, or 'auto'."
+            },
+            "resolvedSource": {
+              "type": "string",
+              "description": "Actual source the prompt was resolved from (input:inline, repo:@path, repo:.conductor/<key>.md, bundled:<key>, or workflow:inline-prompt)."
+            },
+            "templateKey": {
+              "type": "string",
+              "description": "Template key that was used, if any."
+            },
+            "sha256": {
+              "type": "string",
+              "description": "SHA-256 of the rendered prompt template."
+            }
+          }
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "Set only on a failure/failSoft path: true if the failure (error_max_turns/error_max_budget_usd) can be retried via resumeSessionId."
+        },
+        "error": {
+          "type": "string",
+          "description": "Set only on a failure/failSoft path: human-readable error message."
+        },
+        "stderr": {
+          "type": "string",
+          "description": "Set only on a failure/failSoft path: captured stderr tail, truncated to 2000 characters."
+        }
+      },
+      "required": [
+        "status",
+        "agentCompleted",
+        "verificationState",
+        "agent",
+        "model",
+        "modelResolution",
+        "filesChanged",
+        "fileChanges",
+        "result",
+        "structured",
+        "planValidation",
+        "sessionId",
+        "turns",
+        "numTurns",
+        "tokenUsed",
+        "costUsd",
+        "denials",
+        "contextPaths",
+        "promptTemplate"
+      ]
+    }
+  }
 }

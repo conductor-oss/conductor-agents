@@ -74,11 +74,13 @@ FIELD_KEY = {
     "approvalJudgePromptTemplate": "approval_judge",
     "reviewPromptTemplate": "pr_review",
     "revisionPromptTemplate": "campaign_revision",
+    "reviewInvestigationPromptTemplate": "pr_review_investigation",
     "assessPromptTemplate": "openspec_assess",
     "verificationPromptTemplate": "openspec_verify",
 }
 
 WORKFLOW_FIELD_KEY = {
+    ("pr_review", "reviewInvestigationPromptTemplate"): "pr_review_investigation",
     ("pr_review", "approvalJudgePromptTemplate"): "pr_review_judge",
     ("pr_review_sweep", "approvalJudgePromptTemplate"): "pr_review_judge",
     ("address_pr", "approvalJudgePromptTemplate"): "address_pr_judge",

@@ -1,0 +1,131 @@
+{
+  "name": "test_cycle_outcome",
+  "description": "Deterministic test_cycle decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "test_cycle_outcome_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "description": "The verification executionOutcome to map onto a terminal state, e.g. passed, no_tests_required, code_failed, configuration_blocked, infra_blocked, cancelled. Defaults to 'worker_unavailable' when blank."
+        },
+        "candidate": {
+          "type": "string",
+          "description": "The current candidate commit; used to distinguish command_discovery_blocked (a candidate exists) from candidate_commit_missing (it does not)."
+        },
+        "advanced": {
+          "type": "boolean",
+          "description": "Whether the last repair attempt advanced the candidate; when outcome is code_failed and this is exactly false, the state is tests_failed_fix_unavailable rather than tests_failed_after_fix_budget."
+        },
+        "attempts": {
+          "type": "integer",
+          "description": "Total fix attempts made so far; echoed as fixAttempts. Defaults to 0 when not numeric."
+        },
+        "runs": {
+          "type": "integer",
+          "description": "Total verification runs made so far; echoed as testRunCount only for states where tests actually ran. Defaults to 0 when not numeric."
+        },
+        "commandSource": {
+          "type": "string",
+          "description": "Which authority supplied the commands (e.g. user_template, repository_guide); echoed as commandSource, defaulting to 'none' when blank."
+        },
+        "verification": {
+          "type": "object",
+          "description": "The last verification result; only its 'commands' array is read.",
+          "properties": {
+            "commands": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "Per-command results, echoed through as the output 'commands'."
+            }
+          }
+        },
+        "testMode": {
+          "type": "string",
+          "description": "The resolved test mode (targeted or full); echoed as testMode, defaulting to 'targeted' when blank."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "test_cycle_outcome_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "testCycleState": {
+          "type": "string",
+          "enum": [
+            "tests_passed",
+            "no_tests_required",
+            "tests_failed_fix_unavailable",
+            "tests_failed_after_fix_budget",
+            "command_discovery_blocked",
+            "candidate_commit_missing",
+            "runtime_unavailable",
+            "verifier_worker_unavailable"
+          ],
+          "description": "The single terminal state this test cycle mapped to, for the caller to branch on."
+        },
+        "testsRan": {
+          "type": "boolean",
+          "description": "True when testCycleState is one of the three states where tests actually executed."
+        },
+        "testsPassed": {
+          "type": "boolean",
+          "description": "True when testCycleState is tests_passed or no_tests_required."
+        },
+        "testRunCount": {
+          "type": "integer",
+          "description": "The 'runs' count, but only when testsRan is true; otherwise 0."
+        },
+        "fixAttempts": {
+          "type": "integer",
+          "description": "The 'attempts' count."
+        },
+        "commandSource": {
+          "type": "string",
+          "description": "The resolved command source, defaulting to 'none'."
+        },
+        "testMode": {
+          "type": "string",
+          "description": "The resolved test mode, defaulting to 'targeted'."
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Per-command results carried through from the input verification."
+        },
+        "testReport": {
+          "type": "string",
+          "description": "Human-readable one-line summary combining testCycleState, testMode, command count, source, run count, and fix attempts."
+        }
+      },
+      "required": [
+        "testCycleState",
+        "testsRan",
+        "testsPassed",
+        "testRunCount",
+        "fixAttempts",
+        "commandSource",
+        "testMode",
+        "commands",
+        "testReport"
+      ]
+    }
+  }
+}

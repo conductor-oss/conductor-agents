@@ -1,0 +1,67 @@
+{
+  "name": "code_parallel_verification_report",
+  "description": "Deterministic code_parallel decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "code_parallel_verification_report_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string",
+          "description": "Branch name shown in the report header; rendered as '(none)' when falsy."
+        },
+        "commit": {
+          "type": "string",
+          "description": "Commit SHA shown in the report header; rendered as '(no commit)' when falsy."
+        },
+        "issues": {
+          "type": "array",
+          "items": {},
+          "description": "Plan validation issues, rendered one per bullet line; each object's string 'message' field is used if present, else its JSON, else its stringified form."
+        },
+        "merged": {
+          "type": "array",
+          "items": {},
+          "description": "Branches merged; only the count is rendered."
+        },
+        "outcome": {
+          "type": "object",
+          "description": "Verification outcome (e.g. code_parallel_verification_outcome output); only its 'planValid' and 'executionOutcome' fields are rendered.",
+          "properties": {
+            "planValid": {
+              "type": "boolean"
+            },
+            "executionOutcome": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "code_parallel_verification_report_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "report": {
+          "type": "string",
+          "description": "Human-readable verification summary: branch/commit, plan validity, merge count, execution outcome, and a bulleted list of plan issues."
+        }
+      },
+      "required": [
+        "report"
+      ]
+    }
+  }
+}

@@ -32,8 +32,9 @@ conductor workflow start --workflow openspec_development -i '{
 }'
 ```
 
-The workflow creates a harness-owned worktree from committed `HEAD`, materializes only the
-declared OpenSpec tree there, and never switches or cleans the original checkout. On success it
+The workflow creates a harness-owned worktree on a new branch whose baseline includes every
+Git-visible source change, materializes the declared OpenSpec tree there, and never switches or
+cleans the original checkout. On success it
 force-stages only the declared ignored OpenSpec path, commits the implementation/archive, pushes
 the branch, and creates a draft PR. A failed validation or verification creates no source-checkout
 cleanup and no PR.
@@ -43,8 +44,7 @@ cleanup and no PR.
 Public archives are size-limited, reject symlinks/links, and must resolve to public HTTPS.
 Credential-bearing URLs and inline secrets are rejected; use authenticated `gh` and worker
 environment credentials instead. `keepWorktree` defaults to true for diagnosis. Set
-`executionMode` only to override the conservative automatic router, and use
-`checksConfig`/`finalProfile` for the final verification profile.
+`executionMode` only to override the conservative automatic router.
 
 See [workflow inputs](workflow-inputs.md#openspec_development) for the full contract and
 [models and profiles](model-profiles.md) or [templates](templates.md) for optional policy and

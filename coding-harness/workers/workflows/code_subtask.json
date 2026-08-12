@@ -1,12 +1,14 @@
 {
   "name": "code_subtask",
-  "version": 2,
+  "version": 1,
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
   "description": "One parallel sub-task of code_parallel: create a git worktree/branch, run the coding_agent in it, and commit the changes on that branch so merge_worktrees can merge it back.",
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
   "inputParameters": [
-    "agent",
     "allowedTools",
+    "allowedWriteRoots",
     "maxBudgetUsd",
     "maxTurns",
     "model",
@@ -22,24 +24,382 @@
     "promptTemplate",
     "promptTemplateSource",
     "repoPath",
+    "contextPaths",
     "specContextPath",
     "templateKey"
   ],
+  "inputSchema": {
+    "name": "code_subtask_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git repository this subtask creates a worktree/branch under."
+        },
+        "name": {
+          "type": "string",
+          "description": "Group name identifying this subtask; the worktree is created at .cc-worktrees/<name> on branch group/<name>."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Inline coding-agent prompt text for this subtask; used verbatim only if promptTemplate/templateKey resolve nothing."
+        },
+        "model": {
+          "type": "string",
+          "description": "Compatibility override: explicit model id for the coding agent's 'code' role sessions in this subtask."
+        },
+        "promptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Highest-precedence prompt source: inline template text, or '@relative/path' to read a template file from the worktree."
+        },
+        "promptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Caller-supplied label for which template source was requested; recorded in logs/output only."
+        },
+        "templateKey": {
+          "type": "string",
+          "default": "code",
+          "description": "Template name used to look up a repo '.conductor/<key>.md' override or the bundled default prompt template."
+        },
+        "promptContext": {
+          "type": "object",
+          "default": {},
+          "description": "Variables used to render the chosen prompt template."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "default": 250,
+          "description": "Cap on agent turns for the coding agent sessions in this subtask."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "Cap on USD spend for the coding agent sessions in this subtask."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model profile to resolve; empty string defers to the policy's default profile."
+        },
+        "modelPolicy": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Inline model policy document (or JSON string) merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label recorded for the inline modelPolicy."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to a repository model policy file, overriding the default location."
+        },
+        "modelOverrides": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Per-role model overrides (or a JSON string of the same) merged on top of the selected profile."
+        },
+        "specContextPath": {
+          "type": "string",
+          "default": "",
+          "description": "Single spec/context file path passed to the coding agent as read-only external context."
+        },
+        "allowedTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Allow-list of tools the coding agent sessions may use in this subtask."
+        },
+        "allowedWriteRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Repository-relative path prefixes this subtask is authorized to write to; also used as the planned-paths set for delivery auditing."
+        },
+        "contextPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Absolute filesystem paths (files or directories) granted to the coding agent as read-only live context references."
+        }
+      },
+      "required": [
+        "repoPath",
+        "name"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "code_subtask_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "passed",
+            "audit_unavailable",
+            "implementation_unavailable",
+            "incomplete_delivery",
+            null
+          ],
+          "description": "Overall delivery verdict for this subtask; null if the optional delivery_outcome step never ran."
+        },
+        "deliveryOutcome": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "passed",
+            "audit_unavailable",
+            "implementation_unavailable",
+            "incomplete_delivery",
+            null
+          ],
+          "description": "Same overall delivery verdict as status; null if the optional delivery_outcome step never ran."
+        },
+        "agentCompleted": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether the coding agent reported completion; null if the optional delivery_outcome step never ran."
+        },
+        "agent": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Coding agent backend (claude, codex, or gemini) used for the last agent session; null if no agent session recorded output."
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Model id actually used for the last agent session; null if no agent session recorded output."
+        },
+        "filesChanged": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Actual changed paths in the worktree, from the delivery audit; null if the optional delivery_outcome step never ran."
+        },
+        "stagedPaths": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Paths staged and committed; null if the optional delivery_outcome step never ran."
+        },
+        "missingPaths": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Planned paths that were never staged; null if the optional delivery_outcome step never ran."
+        },
+        "rejectedPaths": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Changed paths rejected as non-vetted; null if the optional delivery_outcome step never ran."
+        },
+        "commandFailures": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "Structured command failures observed during delivery; null if the optional delivery_outcome step never ran."
+        },
+        "sandboxDenials": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Sandbox denial messages observed during delivery; null if the optional delivery_outcome step never ran."
+        },
+        "repairAttempts": {
+          "type": "integer",
+          "description": "Number of delivery-repair loop iterations performed for this subtask (0 if the initial delivery audit already passed)."
+        },
+        "repairHistory": {
+          "type": "object",
+          "description": "Delivery-repair DO_WHILE loop output ({} if no repair loop ran).",
+          "additionalProperties": true
+        },
+        "costUsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Total USD cost of the last recorded agent session; null if no agent session recorded output."
+        },
+        "tokenUsed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Total tokens consumed by the last recorded agent session; null if no agent session recorded output."
+        },
+        "numTurns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Total number of agent turns taken in the last recorded agent session; null if no agent session recorded output."
+        },
+        "turns": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "Per-turn log entries from the last recorded agent session; null if no agent session recorded output."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Group branch checked out in the subtask's worktree."
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Resolved commit SHA for the subtask's changes; null if the optional delivery_outcome step never ran."
+        },
+        "testCycleState": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Terminal test_cycle state for this subtask's changes, or 'not_run'; null if the optional delivery_outcome step never ran."
+        },
+        "testsPassed": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether the subtask's test cycle passed; null if the optional delivery_outcome step never ran."
+        },
+        "testReport": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Human-readable summary from the subtask's test_cycle sub-workflow; null if that sub-workflow never produced output."
+        }
+      },
+      "required": [
+        "status",
+        "deliveryOutcome",
+        "agentCompleted",
+        "agent",
+        "model",
+        "filesChanged",
+        "stagedPaths",
+        "missingPaths",
+        "rejectedPaths",
+        "commandFailures",
+        "sandboxDenials",
+        "repairAttempts",
+        "repairHistory",
+        "costUsd",
+        "tokenUsed",
+        "numTurns",
+        "turns",
+        "branch",
+        "commit",
+        "testCycleState",
+        "testsPassed",
+        "testReport"
+      ]
+    }
+  },
   "inputTemplate": {
     "promptTemplate": "",
     "promptTemplateSource": "",
     "templateKey": "code",
     "promptContext": {},
     "maxTurns": 250,
-    "maxBudgetUsd": 50.0,
+    "maxBudgetUsd": 50,
     "modelProfile": "",
     "modelPolicy": {},
     "modelPolicySource": "",
     "modelPolicySha256": "",
     "modelsConfig": "",
-    "modelOverrides": {}
-    ,"specContextPath": ""
-    ,"allowedTools": []
+    "modelOverrides": {},
+    "specContextPath": "",
+    "allowedTools": [],
+    "allowedWriteRoots": [],
+    "contextPaths": []
+  },
+  "variables": {
+    "deliveryState": "pending",
+    "lastAudit": {},
+    "lastAgentReport": {},
+    "repairAttempts": 0,
+    "repairHistory": {}
   },
   "tasks": [
     {
@@ -69,21 +429,23 @@
       "name": "coding_agent",
       "taskReferenceName": "code",
       "type": "SIMPLE",
+      "optional": true,
       "inputParameters": {
         "worktreePath": "${wt.output.worktreePath}",
         "contextFiles": [
           "${workflow.input.specContextPath}"
         ],
+        "contextPaths": "${workflow.input.contextPaths}",
         "prompt": "${workflow.input.prompt}",
         "promptTemplate": "${workflow.input.promptTemplate}",
         "promptTemplateSource": "${workflow.input.promptTemplateSource}",
         "templateKey": "${workflow.input.templateKey}",
         "promptContext": "${workflow.input.promptContext}",
         "model": "${workflow.input.model}",
-        "agent": "${workflow.input.agent}",
         "maxTurns": "${workflow.input.maxTurns}",
         "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
         "allowedTools": "${workflow.input.allowedTools}",
+        "allowedWriteRoots": "${workflow.input.allowedWriteRoots}",
         "modelRole": "code",
         "modelProfile": "${workflow.input.modelProfile}",
         "modelPolicy": "${workflow.input.modelPolicy}",
@@ -91,29 +453,219 @@
         "modelPolicySha256": "${workflow.input.modelPolicySha256}",
         "modelsConfig": "${workflow.input.modelsConfig}",
         "modelOverrides": "${workflow.input.modelOverrides}",
-        "modelResolution": "${model_policy.output}"
+        "modelResolution": "${model_policy.output}",
+        "failSoft": true
       }
+    },
+    {
+      "name": "delivery_audit",
+      "taskReferenceName": "initial_delivery_audit",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${wt.output.worktreePath}",
+        "plannedPaths": "${workflow.input.allowedWriteRoots}",
+        "agentReport": "${code.output}"
+      }
+    },
+    {
+      "name": "record_initial_delivery",
+      "taskReferenceName": "record_initial_delivery",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "deliveryState": "${initial_delivery_audit.output.state}",
+        "lastAudit": "${initial_delivery_audit.output}",
+        "lastAgentReport": "${code.output}"
+      }
+    },
+    {
+      "name": "delivery_repair_gate",
+      "taskReferenceName": "delivery_repair_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "state",
+      "inputParameters": {
+        "state": "${workflow.variables.deliveryState}"
+      },
+      "decisionCases": {
+        "passed": [
+          {
+            "name": "skip_delivery_repairs",
+            "taskReferenceName": "skip_delivery_repairs",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "repairAttempts": 0,
+              "repairHistory": {}
+            }
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "delivery_repair_loop",
+          "taskReferenceName": "delivery_repair_loop",
+          "type": "DO_WHILE",
+          "evaluatorType": "graaljs",
+          "loopCondition": "(function(){ return $.delivery_repair_loop['iteration'] < 3 && $.deliveryState !== 'passed'; })();",
+          "inputParameters": {
+            "delivery_repair_loop": "${delivery_repair_loop.output}",
+            "deliveryState": "${workflow.variables.deliveryState}"
+          },
+          "loopOver": [
+            {
+              "name": "json_text",
+              "taskReferenceName": "delivery_repair_context",
+              "type": "SIMPLE",
+              "inputParameters": {
+                "missingPaths": "${workflow.variables.lastAudit.missingPaths}",
+                "rejectedPaths": "${workflow.variables.lastAudit.rejectedPaths}",
+                "commandFailures": "${workflow.variables.lastAudit.commandFailures}",
+                "sandboxDenials": "${workflow.variables.lastAudit.sandboxDenials}",
+                "previousStructuredReport": "${workflow.variables.lastAgentReport.structured}"
+              },
+              "optional": true
+            },
+            {
+              "name": "coding_agent",
+              "taskReferenceName": "delivery_repair",
+              "type": "SIMPLE",
+              "optional": true,
+              "inputParameters": {
+                "worktreePath": "${wt.output.worktreePath}",
+                "contextFiles": [
+                  "${workflow.input.specContextPath}"
+                ],
+                "contextPaths": "${workflow.input.contextPaths}",
+                "prompt": "Repair only the incomplete delivery for this subtask. Create or update every exact missing planned path, correct rejected artifacts without fabricating replacements, and address structured command failures or sandbox denials when possible within the authorized tools. Do not infer success from the prior prose report.\n\nSubtask: ${workflow.input.prompt}\n\nExact missing paths: ${delivery_repair_context.output.missingPathsJson}\nRejected paths: ${delivery_repair_context.output.rejectedPathsJson}\nCommand failures: ${delivery_repair_context.output.commandFailuresJson}\nSandbox denials: ${delivery_repair_context.output.sandboxDenialsJson}\nPrevious structured agent report: ${delivery_repair_context.output.previousStructuredReportJson}\nPrevious status: ${workflow.variables.lastAgentReport.status}\nPrevious error: ${workflow.variables.lastAgentReport.error}",
+                "promptTemplate": "${workflow.input.promptTemplate}",
+                "promptTemplateSource": "${workflow.input.promptTemplateSource}",
+                "templateKey": "${workflow.input.templateKey}",
+                "promptContext": "${workflow.input.promptContext}",
+                "model": "${workflow.input.model}",
+                "maxTurns": "${workflow.input.maxTurns}",
+                "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+                "allowedTools": "${workflow.input.allowedTools}",
+                "allowedWriteRoots": "${workflow.input.allowedWriteRoots}",
+                "modelRole": "code",
+                "modelProfile": "${workflow.input.modelProfile}",
+                "modelPolicy": "${workflow.input.modelPolicy}",
+                "modelPolicySource": "${workflow.input.modelPolicySource}",
+                "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                "modelsConfig": "${workflow.input.modelsConfig}",
+                "modelOverrides": "${workflow.input.modelOverrides}",
+                "modelResolution": "${model_policy.output}",
+                "failSoft": true
+              }
+            },
+            {
+              "name": "delivery_audit",
+              "taskReferenceName": "repair_delivery_audit",
+              "type": "SIMPLE",
+              "inputParameters": {
+                "repoPath": "${wt.output.worktreePath}",
+                "plannedPaths": "${workflow.input.allowedWriteRoots}",
+                "agentReport": "${delivery_repair.output}"
+              }
+            },
+            {
+              "name": "record_delivery_repair",
+              "taskReferenceName": "record_delivery_repair",
+              "type": "SET_VARIABLE",
+              "inputParameters": {
+                "deliveryState": "${repair_delivery_audit.output.state}",
+                "lastAudit": "${repair_delivery_audit.output}",
+                "lastAgentReport": "${delivery_repair.output}"
+              }
+            }
+          ]
+        },
+        {
+          "name": "capture_delivery_repair_history",
+          "taskReferenceName": "capture_delivery_repair_history",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "repairAttempts": "${delivery_repair_loop.output.iteration}",
+            "repairHistory": "${delivery_repair_loop.output}"
+          }
+        }
+      ]
     },
     {
       "name": "commit",
       "taskReferenceName": "cmt",
       "type": "SIMPLE",
+      "optional": true,
       "inputParameters": {
         "repoPath": "${wt.output.worktreePath}",
         "message": "code_subtask ${workflow.input.name}"
       }
+    },
+    {
+      "name": "test_cycle",
+      "taskReferenceName": "subtask_tests",
+      "type": "SUB_WORKFLOW",
+      "optional": true,
+      "subWorkflowParam": {
+        "name": "test_cycle",
+        "version": 1
+      },
+      "inputParameters": {
+        "repoPath": "${wt.output.worktreePath}",
+        "candidateCommit": "${cmt.output.commit}",
+        "testMode": "targeted",
+        "maxFixAttempts": 1,
+        "allowedWriteRoots": "${workflow.input.allowedWriteRoots}",
+        "model": "${workflow.input.model}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "repairPromptTemplate": "${workflow.input.promptTemplate}",
+        "repairPromptTemplateSource": "${workflow.input.promptTemplateSource}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "code_subtask_delivery_outcome",
+      "taskReferenceName": "delivery_outcome",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "plannedPaths": "${workflow.input.allowedWriteRoots}",
+        "commit": "${cmt.output}",
+        "audit": "${workflow.variables.lastAudit}",
+        "agent": "${workflow.variables.lastAgentReport}",
+        "tested": "${subtask_tests.output.candidateCommit}",
+        "testState": "${subtask_tests.output.testCycleState}",
+        "testsPassed": "${subtask_tests.output.testsPassed}"
+      }
     }
   ],
   "outputParameters": {
-    "status": "${code.output.status}",
-    "agent": "${code.output.agent}",
-    "model": "${code.output.model}",
-    "filesChanged": "${code.output.filesChanged}",
-    "costUsd": "${code.output.costUsd}",
-    "tokenUsed": "${code.output.tokenUsed}",
-    "numTurns": "${code.output.numTurns}",
-    "turns": "${code.output.turns}",
+    "status": "${delivery_outcome.output.state}",
+    "deliveryOutcome": "${delivery_outcome.output.state}",
+    "agentCompleted": "${delivery_outcome.output.agentCompleted}",
+    "agent": "${workflow.variables.lastAgentReport.agent}",
+    "model": "${workflow.variables.lastAgentReport.model}",
+    "filesChanged": "${delivery_outcome.output.actualPaths}",
+    "stagedPaths": "${delivery_outcome.output.stagedPaths}",
+    "missingPaths": "${delivery_outcome.output.missingPaths}",
+    "rejectedPaths": "${delivery_outcome.output.rejectedPaths}",
+    "commandFailures": "${delivery_outcome.output.commandFailures}",
+    "sandboxDenials": "${delivery_outcome.output.sandboxDenials}",
+    "repairAttempts": "${workflow.variables.repairAttempts}",
+    "repairHistory": "${workflow.variables.repairHistory}",
+    "costUsd": "${workflow.variables.lastAgentReport.costUsd}",
+    "tokenUsed": "${workflow.variables.lastAgentReport.tokenUsed}",
+    "numTurns": "${workflow.variables.lastAgentReport.numTurns}",
+    "turns": "${workflow.variables.lastAgentReport.turns}",
     "branch": "${wt.output.branch}",
-    "commit": "${cmt.output.commit}"
-  }
+    "commit": "${delivery_outcome.output.commit}",
+    "testCycleState": "${delivery_outcome.output.testCycleState}",
+    "testsPassed": "${delivery_outcome.output.testsPassed}",
+    "testReport": "${subtask_tests.output.testReport}"
+  },
+  "enforceSchema": false
 }

@@ -1,0 +1,129 @@
+{
+  "name": "pr_commit_checks",
+  "description": "Query all GitHub check-runs and status contexts for one exact commit SHA.",
+  "retryCount": 2,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "pr_commit_checks_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "pushed": {
+          "description": "When present and falsy, skips the GitHub lookup entirely and reports the candidate as not verifiable (publication was blocked). Accepts a boolean or a truthy/falsy string.",
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "publicationState": {
+          "type": "string",
+          "description": "Used as the reported verificationState when 'pushed' is falsy. Defaults to 'publication_blocked'."
+        },
+        "publicationReason": {
+          "type": "string",
+          "description": "Used as the reported reason when 'pushed' is falsy. Defaults to 'candidate branch was not published'."
+        },
+        "repo": {
+          "type": "string",
+          "description": "GitHub repository (owner/name or URL) that owns the commit; required unless 'pushed' is falsy."
+        },
+        "sha": {
+          "type": "string",
+          "description": "Exact commit SHA to query checks for; required unless 'pushed' is falsy."
+        }
+      },
+      "required": []
+    }
+  },
+  "outputSchema": {
+    "name": "pr_commit_checks_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "sha": {
+          "type": "string",
+          "description": "Commit SHA that was queried (empty string when skipped)."
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "check-run",
+                  "status"
+                ]
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "passing",
+                  "failed",
+                  "pending",
+                  "unknown"
+                ]
+              },
+              "rawStatus": {
+                "type": "string"
+              },
+              "conclusion": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "Individual check-run and status evidence for the commit; empty when skipped or lookup failed."
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "URLs of the reported checks."
+        },
+        "checkCount": {
+          "type": "integer",
+          "description": "Number of checks reported."
+        },
+        "verificationState": {
+          "type": "string",
+          "description": "Aggregate verdict: 'passed', 'failed', 'pending', 'unknown', 'empty' (no checks reported), or the publicationState when skipped."
+        },
+        "ciState": {
+          "type": "string",
+          "description": "Normalized poll-friendly verdict: verificationState, with blank/'empty' mapped to 'pending'. Absent when the lookup was skipped or failed."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Present when skipped (publication blocked) or when the GitHub lookup failed, explaining why."
+        }
+      },
+      "required": [
+        "sha",
+        "checks",
+        "links",
+        "checkCount",
+        "verificationState"
+      ]
+    }
+  }
+}

@@ -122,6 +122,64 @@ async def test_workflow_registered_rejects_stale_signal_contract():
 
 
 @pytest.mark.asyncio
+async def test_workflow_registered_resolves_a_checkpoint_moved_into_a_sub_workflow():
+    # Confirmed live: extracting address_pr's address_gate into a new
+    # address_pr_approval sub-workflow made workflow_registered("address_pr")
+    # report the workflow as stale/missing, because _workflow_contract_current
+    # only ever saw address_pr's OWN definition. address_gate now lives one
+    # hop away, reachable only by resolving the subWorkflowParam reference.
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/api/metadata/workflow/address_pr":
+            return httpx.Response(200, json={
+                "name": "address_pr",
+                "tasks": [{
+                    "taskReferenceName": "approval",
+                    "type": "SUB_WORKFLOW",
+                    "subWorkflowParam": {"name": "address_pr_approval", "version": 1},
+                }],
+            })
+        assert request.url.path == "/api/metadata/workflow/address_pr_approval"
+        return httpx.Response(200, json={
+            "name": "address_pr_approval",
+            "tasks": [{"taskReferenceName": "address_gate", "type": "WAIT"}],
+        })
+
+    client = api.ConductorClient("http://x/api")
+    client._client = httpx.AsyncClient(base_url="http://x/api",
+                                       transport=httpx.MockTransport(handler))
+    assert await client.workflow_registered("address_pr")
+    assert "/api/metadata/workflow/address_pr_approval" in calls
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_workflow_registered_still_rejects_a_genuinely_stale_nested_checkpoint():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/metadata/workflow/address_pr":
+            return httpx.Response(200, json={
+                "name": "address_pr",
+                "tasks": [{
+                    "taskReferenceName": "approval",
+                    "type": "SUB_WORKFLOW",
+                    "subWorkflowParam": {"name": "address_pr_approval", "version": 1},
+                }],
+            })
+        return httpx.Response(200, json={
+            "name": "address_pr_approval",
+            "tasks": [{"taskReferenceName": "address_gate", "type": "HUMAN"}],
+        })
+
+    client = api.ConductorClient("http://x/api")
+    client._client = httpx.AsyncClient(base_url="http://x/api",
+                                       transport=httpx.MockTransport(handler))
+    assert not await client.workflow_registered("address_pr")
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_client_start_returns_plain_text_id():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
@@ -213,6 +271,25 @@ async def test_client_signal_explains_legacy_human_checkpoint():
         await client.signal_task(
             "w1", "review_gate", "COMPLETED", {"approved": True}, task_type="HUMAN"
         )
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_signal_rejects_a_none_status_before_it_reaches_the_wire():
+    # Confirmed live: an f-string silently stringifies status=None to the
+    # literal text "None", which Conductor's {status} path variable then
+    # rejects with a confusing HTTP 500
+    # ("...review_gate__2/None/sync" -> MethodArgumentTypeMismatchException)
+    # instead of a clear error. A caller forwarding a deferred decision
+    # (status=None) must be told plainly, and no request should ever be sent.
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a None status must never reach the wire")
+
+    client = api.ConductorClient("http://x/api")
+    client._client = httpx.AsyncClient(base_url="http://x/api",
+                                       transport=httpx.MockTransport(handler))
+    with pytest.raises(api.ConductorError, match="no status to signal"):
+        await client.signal_task("w1", "review_gate", None, {"approved": True})
     await client.aclose()
 
 

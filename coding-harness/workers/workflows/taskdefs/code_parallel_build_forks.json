@@ -1,0 +1,169 @@
+{
+  "name": "code_parallel_build_forks",
+  "description": "Deterministic code_parallel decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "code_parallel_build_forks_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the repo checkout, passed through unchanged as each generated fork's repoPath input."
+        },
+        "subtasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Subtask identifier; used as the fork's group id and taskReferenceName. Entries with a blank/missing id are skipped."
+              },
+              "description": {
+                "type": "string",
+                "description": "Subtask description folded into the generated fork's prompt text."
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Target files the fork is scoped to; also becomes that fork's allowedWriteRoots."
+              }
+            }
+          },
+          "description": "Validated plan entries. One dynamic-fork SUB_WORKFLOW task is built per entry that has a non-empty id."
+        },
+        "changeDir": {
+          "type": "string",
+          "description": "Planning context directory referenced in the generated subtask prompt text."
+        },
+        "codeModel": {
+          "type": "string",
+          "description": "Model identifier passed through unchanged as each fork's 'model' input."
+        },
+        "codePromptTemplate": {
+          "type": "string",
+          "description": "Prompt template passed through unchanged as each fork's promptTemplate input."
+        },
+        "codePromptTemplateSource": {
+          "type": "string",
+          "description": "Source label for the prompt template, passed through unchanged."
+        },
+        "specContextPath": {
+          "type": "string",
+          "description": "Path to the spec/design context file, passed through unchanged to each fork."
+        },
+        "contextPaths": {
+          "description": "Extra live context paths passed through unchanged to each fork. Accepts a comma-separated string or an array of strings.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "maxTurns": {
+          "type": "integer",
+          "description": "Max agent turns, passed through unchanged as each fork's maxTurns input."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "description": "USD budget ceiling, passed through unchanged as each fork's maxBudgetUsd input."
+        },
+        "modelProfile": {
+          "type": "string",
+          "description": "Model profile name, passed through unchanged to each fork."
+        },
+        "modelPolicy": {
+          "type": "object",
+          "description": "Inline model policy document, passed through unchanged to each fork."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "description": "Source label for the model policy, passed through unchanged."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "description": "Expected sha256 of the inline model policy, passed through unchanged."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "description": "Relative path to a repository models config, passed through unchanged."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "description": "Per-agent model overrides, passed through unchanged to each fork."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "code_parallel_build_forks_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "dynamicTasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "taskReferenceName": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              },
+              "optional": {
+                "type": "boolean"
+              },
+              "subWorkflowParam": {
+                "type": "object"
+              }
+            }
+          },
+          "description": "One SUB_WORKFLOW dynamic-fork task descriptor per subtask with a non-empty id, for use as FORK_JOIN_DYNAMIC's dynamicForkTasksParam."
+        },
+        "dynamicTasksInput": {
+          "type": "object",
+          "description": "Map of subtask id to that fork's full code_subtask input payload, for use as FORK_JOIN_DYNAMIC's dynamicForkTasksInputParamName."
+        },
+        "groupIds": {
+          "type": "string",
+          "description": "Comma-separated list of subtask ids that were turned into forks, in order."
+        },
+        "allowedWriteRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Sorted, de-duplicated union of every fork's target files."
+        }
+      },
+      "required": [
+        "dynamicTasks",
+        "dynamicTasksInput",
+        "groupIds",
+        "allowedWriteRoots"
+      ]
+    }
+  }
+}

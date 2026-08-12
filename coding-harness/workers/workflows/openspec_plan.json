@@ -3,17 +3,241 @@
   "version": 1,
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
-  "description": "Deterministic, OpenSpec-CLI-driven replacement for design_docs + code_parallel's old freeform plan step. Scaffolds an OpenSpec change, drains its artifact dependency graph each pass via the openspec_artifact_drain sub-workflow (typed CLI tasks select what's ready; a coding_agent per artifact writes content) — a sub-workflow because Conductor does not support a DO_WHILE nested directly inside another DO_WHILE — then reuses design_docs.json's human-or-AI-judge DO_WHILE review loop verbatim. Approval parses the generated tasks.md into the subtasks[] fan-out code_parallel's FORK_JOIN_DYNAMIC expects; the bounded loop fails closed if nothing is ever approved.",
-  "inputParameters": ["repoPath", "instruction", "changeBranch", "openspecPlanAgent", "openspecPlanModel", "openspecMaxTurns", "openspecMaxBudgetUsd", "openspecHumanApproval", "openspecMaxIterations", "modelProfile", "modelPolicy", "modelPolicySource", "modelPolicySha256", "modelsConfig", "modelOverrides"],
+  "description": "Deterministic, OpenSpec-CLI-driven replacement for design_docs + code_parallel's old freeform plan step. Scaffolds an OpenSpec change, drains its artifact dependency graph each pass via the openspec_artifact_drain sub-workflow (typed CLI tasks select what's ready; a coding_agent per artifact writes content) \u2014 a sub-workflow because Conductor does not support a DO_WHILE nested directly inside another DO_WHILE \u2014 then reuses design_docs.json's human-or-AI-judge DO_WHILE review loop verbatim. Approval parses the generated tasks.md into the subtasks[] fan-out code_parallel's FORK_JOIN_DYNAMIC expects; the bounded loop fails closed if nothing is ever approved.",
+  "inputParameters": [
+    "repoPath",
+    "instruction",
+    "changeBranch",
+    "openspecPlanModel",
+    "openspecMaxTurns",
+    "openspecMaxBudgetUsd",
+    "openspecHumanApproval",
+    "openspecMaxIterations",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "inputSchema": {
+    "name": "openspec_plan_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the target git repo to scaffold the OpenSpec change into."
+        },
+        "instruction": {
+          "type": "string",
+          "description": "Natural-language description of the requested change, used as the OpenSpec change description and as the goal driving artifact generation and judging."
+        },
+        "changeBranch": {
+          "type": "string",
+          "description": "Identifier (e.g. a git branch name) slugified into the OpenSpec change id."
+        },
+        "openspecPlanModel": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override: explicit model id forwarded to each artifact-generation sub-workflow and to the plan-judge session."
+        },
+        "openspecMaxTurns": {
+          "type": "integer",
+          "default": 500,
+          "description": "Max agent turns forwarded to each artifact-generation sub-workflow and to the plan-judge session."
+        },
+        "openspecMaxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "USD budget ceiling forwarded to each artifact-generation sub-workflow and to the plan-judge session."
+        },
+        "openspecHumanApproval": {
+          "type": "boolean",
+          "default": true,
+          "description": "If true, each pass is approved via a human WAIT checkpoint; if false, an automated coding-agent judge approves instead."
+        },
+        "openspecMaxIterations": {
+          "type": "integer",
+          "default": 5,
+          "description": "Maximum number of drain-then-review passes before the plan is considered unapproved and the workflow terminates as FAILED."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model profile to resolve; empty string defers to the policy's default profile."
+        },
+        "modelPolicy": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Inline model policy document (or JSON string) merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label recorded for the inline modelPolicy."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to a repository model policy file, overriding the default location."
+        },
+        "modelOverrides": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Per-role model overrides (or a JSON string of the same) merged on top of the selected model profile's roles."
+        }
+      },
+      "required": [
+        "repoPath",
+        "instruction",
+        "changeBranch"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "openspec_plan_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "approved": {
+          "type": "boolean",
+          "description": "Whether the OpenSpec plan was approved (always true on normal completion; the unapproved case terminates the workflow as FAILED instead)."
+        },
+        "reviewMode": {
+          "type": "string",
+          "enum": [
+            "human",
+            "agent"
+          ],
+          "description": "Which review path produced the approval: 'human' via the WAIT checkpoint, or 'agent' via the automated plan-judge session."
+        },
+        "feedback": {
+          "type": "string",
+          "description": "Feedback text from the approving review pass (often empty on approval)."
+        },
+        "iterations": {
+          "type": "integer",
+          "description": "Number of drain-then-review passes performed."
+        },
+        "changeName": {
+          "type": "string",
+          "description": "The scaffolded OpenSpec change's id."
+        },
+        "changeDir": {
+          "type": "string",
+          "description": "Absolute path to the OpenSpec change's directory."
+        },
+        "filesChanged": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Deduplicated union of files changed during the last drain pass."
+        },
+        "costUsd": {
+          "type": "number",
+          "description": "Cumulative USD cost across the last drain pass's artifact-generation sub-workflows."
+        },
+        "tokenUsed": {
+          "type": "number",
+          "description": "Cumulative token usage across the last drain pass's artifact-generation sub-workflows."
+        },
+        "planCommit": {
+          "type": "string",
+          "description": "Commit SHA capturing the approved OpenSpec plan artifacts."
+        },
+        "subtasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Lowercase kebab-case group id."
+              },
+              "description": {
+                "type": "string",
+                "description": "Group's task description."
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Exact repository-relative files exclusively owned by this group."
+              }
+            },
+            "required": [
+              "id",
+              "description",
+              "files"
+            ]
+          },
+          "description": "Normalized, file-disjoint task groups parsed from the approved plan's tasks.md, ready to fan out to code_parallel."
+        }
+      },
+      "required": [
+        "approved",
+        "reviewMode",
+        "feedback",
+        "iterations",
+        "changeName",
+        "changeDir",
+        "filesChanged",
+        "costUsd",
+        "tokenUsed",
+        "planCommit",
+        "subtasks"
+      ]
+    }
+  },
   "inputTemplate": {
-    "openspecPlanAgent": "claude", "openspecPlanModel": "", "openspecMaxTurns": 500, "openspecMaxBudgetUsd": 50.0,
-    "openspecHumanApproval": true, "openspecMaxIterations": 5,
-    "modelProfile": "", "modelPolicy": {}, "modelPolicySource": "", "modelPolicySha256": "", "modelsConfig": "", "modelOverrides": {}
+    "openspecPlanModel": "",
+    "openspecMaxTurns": 500,
+    "openspecMaxBudgetUsd": 50,
+    "openspecHumanApproval": true,
+    "openspecMaxIterations": 5,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
   },
   "variables": {
-    "planApproved": false, "planFeedback": "", "planReview": "",
-    "lastRoundFilesChanged": [], "lastRoundCostUsd": 0, "lastRoundTokenUsed": 0,
-    "lastChangeName": "", "lastChangeDir": "", "lastTasksPath": ""
+    "planApproved": false,
+    "planFeedback": "",
+    "planReview": "",
+    "lastRoundFilesChanged": [],
+    "lastRoundCostUsd": 0,
+    "lastRoundTokenUsed": 0,
+    "lastChangeName": "",
+    "lastChangeDir": "",
+    "lastTasksPath": "",
+    "planCommit": "",
+    "subtasks": []
   },
   "tasks": [
     {
@@ -41,28 +265,45 @@
       }
     },
     {
-      "name": "openspec_loop", "taskReferenceName": "openspec_loop", "type": "DO_WHILE", "evaluatorType": "graaljs",
+      "name": "openspec_loop",
+      "taskReferenceName": "openspec_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
       "loopCondition": "(function(){ return $.openspec_loop['iteration'] < $.max_iterations && $.approved !== true && $.approved !== 'true'; })();",
       "inputParameters": {
-        "openspec_loop": "${openspec_loop.output}", "max_iterations": "${workflow.input.openspecMaxIterations}",
+        "openspec_loop": "${openspec_loop.output}",
+        "max_iterations": "${workflow.input.openspecMaxIterations}",
         "approved": "${workflow.variables.planApproved}"
       },
       "loopOver": [
         {
-          "name": "openspec_artifact_drain", "taskReferenceName": "artifact_drain", "type": "SUB_WORKFLOW",
-          "subWorkflowParam": {"name": "openspec_artifact_drain", "version": 1},
+          "name": "openspec_artifact_drain",
+          "taskReferenceName": "artifact_drain",
+          "type": "SUB_WORKFLOW",
+          "subWorkflowParam": {
+            "name": "openspec_artifact_drain",
+            "version": 1
+          },
           "inputParameters": {
-            "repoPath": "${workflow.input.repoPath}", "changeName": "${new_change.output.changeName}",
-            "goal": "${workflow.input.instruction}", "feedback": "${workflow.variables.planFeedback}",
-            "agent": "${workflow.input.openspecPlanAgent}", "model": "${workflow.input.openspecPlanModel}",
-            "maxTurns": "${workflow.input.openspecMaxTurns}", "maxBudgetUsd": "${workflow.input.openspecMaxBudgetUsd}",
-            "modelProfile": "${workflow.input.modelProfile}", "modelPolicy": "${workflow.input.modelPolicy}",
-            "modelPolicySource": "${workflow.input.modelPolicySource}", "modelPolicySha256": "${workflow.input.modelPolicySha256}",
-            "modelsConfig": "${workflow.input.modelsConfig}", "modelOverrides": "${workflow.input.modelOverrides}"
+            "repoPath": "${workflow.input.repoPath}",
+            "changeName": "${new_change.output.changeName}",
+            "goal": "${workflow.input.instruction}",
+            "feedback": "${workflow.variables.planFeedback}",
+            "model": "${workflow.input.openspecPlanModel}",
+            "maxTurns": "${workflow.input.openspecMaxTurns}",
+            "maxBudgetUsd": "${workflow.input.openspecMaxBudgetUsd}",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}"
           }
         },
         {
-          "name": "capture_pass_result", "taskReferenceName": "capture_pass_result", "type": "SET_VARIABLE",
+          "name": "capture_pass_result",
+          "taskReferenceName": "capture_pass_result",
+          "type": "SET_VARIABLE",
           "inputParameters": {
             "lastChangeName": "${artifact_drain.output.changeName}",
             "lastChangeDir": "${artifact_drain.output.changeDir}",
@@ -73,20 +314,35 @@
           }
         },
         {
-          "name": "review_mode", "taskReferenceName": "review_mode", "type": "SWITCH", "evaluatorType": "value-param", "expression": "humanApproval",
-          "inputParameters": {"humanApproval": "${workflow.input.openspecHumanApproval}"},
+          "name": "review_mode",
+          "taskReferenceName": "review_mode",
+          "type": "SWITCH",
+          "evaluatorType": "value-param",
+          "expression": "humanApproval",
+          "inputParameters": {
+            "humanApproval": "${workflow.input.openspecHumanApproval}"
+          },
           "decisionCases": {
             "true": [
               {
-                "name": "openspec_read_proposal", "taskReferenceName": "read_proposal", "type": "SIMPLE",
-                "inputParameters": {"changeDir": "${workflow.variables.lastChangeDir}"}
+                "name": "openspec_read_proposal",
+                "taskReferenceName": "read_proposal",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "changeDir": "${workflow.variables.lastChangeDir}"
+                }
               },
               {
-                "name": "plan_review", "taskReferenceName": "plan_review", "type": "WAIT",
+                "name": "plan_review",
+                "taskReferenceName": "plan_review",
+                "type": "WAIT",
                 "inputParameters": {
-                  "workflow": "openspec_plan", "repoPath": "${workflow.input.repoPath}", "changeDir": "${workflow.variables.lastChangeDir}",
+                  "workflow": "openspec_plan",
+                  "repoPath": "${workflow.input.repoPath}",
+                  "changeDir": "${workflow.variables.lastChangeDir}",
                   "draft": {
-                    "kind": "openspec_plan", "changeDir": "${workflow.variables.lastChangeDir}",
+                    "kind": "openspec_plan",
+                    "changeDir": "${workflow.variables.lastChangeDir}",
                     "filesChanged": "${workflow.variables.lastRoundFilesChanged}",
                     "proposalText": "${read_proposal.output.proposalText}",
                     "summary": "OpenSpec artifacts generated under ${workflow.variables.lastChangeDir}. proposal.md is included below; also review specs/**, design.md, and tasks.md (independent, file-disjoint task groups feed the parallel coding fan-out)."
@@ -94,33 +350,51 @@
                 }
               },
               {
-                "name": "set_human_review", "taskReferenceName": "set_human_review", "type": "SET_VARIABLE",
-                "inputParameters": {"planApproved": "${plan_review.output.approved}", "planFeedback": "${plan_review.output.feedback}", "planReview": "human"}
+                "name": "set_human_review",
+                "taskReferenceName": "set_human_review",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "planApproved": "${plan_review.output.approved}",
+                  "planFeedback": "${plan_review.output.feedback}",
+                  "planReview": "human"
+                }
               }
             ]
           },
           "defaultCase": [
             {
-              "name": "coding_agent", "taskReferenceName": "plan_judge", "type": "SIMPLE",
+              "name": "coding_agent",
+              "taskReferenceName": "plan_judge",
+              "type": "SIMPLE",
               "inputParameters": {
                 "worktreePath": "${workflow.input.repoPath}",
-                "agent": "${workflow.input.openspecPlanAgent}",
                 "model": "${workflow.input.openspecPlanModel}",
                 "maxTurns": "${workflow.input.openspecMaxTurns}",
                 "maxBudgetUsd": "${workflow.input.openspecMaxBudgetUsd}",
                 "templateKey": "openspec-plan-judge",
                 "promptTemplate": "",
                 "promptTemplateSource": "builtin:openspec-plan-judge",
-                "tools": ["Read", "Grep", "Glob"],
+                "tools": [
+                  "Read",
+                  "Grep",
+                  "Glob"
+                ],
                 "schema": {
                   "type": "object",
-                  "required": ["approved", "feedback"],
+                  "required": [
+                    "approved",
+                    "feedback"
+                  ],
                   "properties": {
-                    "approved": {"type": "boolean"},
-                    "feedback": {"type": "string"}
+                    "approved": {
+                      "type": "boolean"
+                    },
+                    "feedback": {
+                      "type": "string"
+                    }
                   }
                 },
-                "prompt": "Act as a read-only OpenSpec planning judge. Read every artifact under ${workflow.variables.lastChangeDir}/ (proposal.md, specs/**/*.md, design.md, tasks.md) and compare them with the requested change below. Judge whether the artifacts are complete, internally consistent, and implementable, and — critically — whether tasks.md's numbered task groups are genuinely independent and file-disjoint (each group must declare a `Files:` line and a `Test:` line, and no file may repeat across groups). Approve only when all of that holds. Return the required structured output with approved (boolean) and concise actionable feedback (string). Do not edit any files.\n\nRequested change:\n${workflow.input.instruction}",
+                "prompt": "Act as a read-only OpenSpec planning judge. Read every artifact under ${workflow.variables.lastChangeDir}/ (proposal.md, specs/**/*.md, design.md, tasks.md) and compare them with the requested change below. Judge whether the artifacts are complete, internally consistent, and implementable, and \u2014 critically \u2014 whether tasks.md's numbered task groups are genuinely independent and file-disjoint (each group must declare exact repository-relative files on a `Files:` line, and no file may repeat across groups). Test commands do not belong in this planning artifact. Approve only when all of that holds. Return the required structured output with approved (boolean) and concise actionable feedback (string). Do not edit any files.\n\nRequested change:\n${workflow.input.instruction}",
                 "modelRole": "judge",
                 "modelProfile": "${workflow.input.modelProfile}",
                 "modelPolicy": "${workflow.input.modelPolicy}",
@@ -132,29 +406,90 @@
               }
             },
             {
-              "name": "set_judge_review", "taskReferenceName": "set_judge_review", "type": "SET_VARIABLE",
-              "inputParameters": {"planApproved": "${plan_judge.output.structured.approved}", "planFeedback": "${plan_judge.output.structured.feedback}", "planReview": "agent"}
+              "name": "set_judge_review",
+              "taskReferenceName": "set_judge_review",
+              "type": "SET_VARIABLE",
+              "inputParameters": {
+                "planApproved": "${plan_judge.output.structured.approved}",
+                "planFeedback": "${plan_judge.output.structured.feedback}",
+                "planReview": "agent"
+              }
             }
           ]
         }
       ]
     },
     {
-      "name": "approval_result", "taskReferenceName": "approval_result", "type": "SWITCH", "evaluatorType": "value-param", "expression": "approved",
-      "inputParameters": {"approved": "${workflow.variables.planApproved}"},
+      "name": "approval_result",
+      "taskReferenceName": "approval_result",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "approved",
+      "inputParameters": {
+        "approved": "${workflow.variables.planApproved}"
+      },
       "decisionCases": {
         "true": [
-          {"name": "commit", "taskReferenceName": "commit_plan", "type": "SIMPLE", "inputParameters": {"repoPath": "${workflow.input.repoPath}", "message": "openspec plan approved (${workflow.variables.lastChangeDir})"}},
-          {"name": "openspec_tasks_to_subtasks", "taskReferenceName": "parse_tasks", "type": "SIMPLE", "inputParameters": {"tasksPath": "${workflow.variables.lastTasksPath}"}}
+          {
+            "name": "commit",
+            "taskReferenceName": "commit_plan",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "repoPath": "${workflow.input.repoPath}",
+              "message": "openspec plan approved (${workflow.variables.lastChangeDir})"
+            }
+          },
+          {
+            "name": "openspec_tasks_to_subtasks",
+            "taskReferenceName": "parse_tasks",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "tasksPath": "${workflow.variables.lastTasksPath}",
+              "repoPath": "${workflow.input.repoPath}"
+            }
+          },
+          {
+            "name": "capture_plan_outputs",
+            "taskReferenceName": "capture_plan_outputs",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "planCommit": "${commit_plan.output.commit}",
+              "subtasks": "${parse_tasks.output.subtasks}"
+            }
+          }
         ]
       },
-      "defaultCase": [{"name": "plan_not_approved", "taskReferenceName": "plan_not_approved", "type": "TERMINATE", "inputParameters": {"terminationStatus": "FAILED", "terminationReason": "OpenSpec plan was not approved within ${workflow.input.openspecMaxIterations} iterations.", "workflowOutput": {"approved": false, "feedback": "${workflow.variables.planFeedback}"}}}]
+      "defaultCase": [
+        {
+          "name": "plan_not_approved",
+          "taskReferenceName": "plan_not_approved",
+          "type": "TERMINATE",
+          "inputParameters": {
+            "terminationStatus": "FAILED",
+            "terminationReason": "OpenSpec plan was not approved within ${workflow.input.openspecMaxIterations} iterations.",
+            "workflowOutput": {
+              "approved": false,
+              "feedback": "${workflow.variables.planFeedback}"
+            }
+          }
+        }
+      ]
     }
   ],
   "outputParameters": {
-    "approved": "${workflow.variables.planApproved}", "reviewMode": "${workflow.variables.planReview}", "feedback": "${workflow.variables.planFeedback}",
-    "iterations": "${openspec_loop.output.iteration}", "changeName": "${workflow.variables.lastChangeName}", "changeDir": "${workflow.variables.lastChangeDir}",
-    "filesChanged": "${workflow.variables.lastRoundFilesChanged}", "costUsd": "${workflow.variables.lastRoundCostUsd}", "tokenUsed": "${workflow.variables.lastRoundTokenUsed}",
-    "planCommit": "${commit_plan.output.commit}", "subtasks": "${parse_tasks.output.subtasks}"
-  }
+    "approved": "${workflow.variables.planApproved}",
+    "reviewMode": "${workflow.variables.planReview}",
+    "feedback": "${workflow.variables.planFeedback}",
+    "iterations": "${openspec_loop.output.iteration}",
+    "changeName": "${workflow.variables.lastChangeName}",
+    "changeDir": "${workflow.variables.lastChangeDir}",
+    "filesChanged": "${workflow.variables.lastRoundFilesChanged}",
+    "costUsd": "${workflow.variables.lastRoundCostUsd}",
+    "tokenUsed": "${workflow.variables.lastRoundTokenUsed}",
+    "planCommit": "${workflow.variables.planCommit}",
+    "subtasks": "${workflow.variables.subtasks}"
+  },
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "enforceSchema": false
 }

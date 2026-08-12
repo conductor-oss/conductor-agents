@@ -103,7 +103,10 @@ class ApprovalInbox(Screen):
             except ConductorError as exc:
                 self.notify(str(exc), severity="error")
 
-        def on_decision(status: str, output: dict) -> None:
+        def on_decision(status: str | None, output: dict | None) -> None:
+            if status is None:               # deferred (e.g. Escape) — leave the task pending
+                self.notify("deferred — the checkpoint stays open")
+                return
             self.run_worker(decide(status, output), exclusive=True, group="approval-decision")
 
         self.app.push_screen(ApprovalModal(

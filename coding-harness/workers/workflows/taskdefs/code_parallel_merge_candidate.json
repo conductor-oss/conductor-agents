@@ -1,0 +1,63 @@
+{
+  "name": "code_parallel_merge_candidate",
+  "description": "Deterministic code_parallel decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "code_parallel_merge_candidate_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "merge": {
+          "type": "object",
+          "description": "Merge task output. Only merge.merge.commit and merge.mergeState are inspected; a missing/non-mapping value is treated as empty.",
+          "properties": {
+            "merge": {
+              "type": "object",
+              "properties": {
+                "commit": {
+                  "type": "string"
+                }
+              }
+            },
+            "mergeState": {
+              "type": "string"
+            }
+          }
+        },
+        "fallbackCommit": {
+          "type": "string",
+          "description": "Commit to report when merge.merge.commit is missing or blank, typically the pre-merge HEAD."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "code_parallel_merge_candidate_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": "string",
+          "description": "Resolved commit: merge.merge.commit when it is a non-blank string, else fallbackCommit."
+        },
+        "mergeState": {
+          "type": "string",
+          "description": "Passed through from merge.mergeState; defaults to 'merge_blocked' when missing or not a string."
+        }
+      },
+      "required": [
+        "commit",
+        "mergeState"
+      ]
+    }
+  }
+}

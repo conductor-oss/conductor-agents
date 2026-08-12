@@ -27,6 +27,12 @@ AUTOMATION_TEMPLATE_FIELDS = {
 }
 
 
+def apply_schedule_model_snapshot(workflow: str, repo: str, inputs: dict) -> dict:
+    """Use the shared durable /models snapshot for automation schedules."""
+    from ..model_profiles import apply_profile_snapshot
+    return apply_profile_snapshot(workflow, inputs, repo=repo)
+
+
 def validate_cron(value: str) -> bool:
     return value.startswith("@") or len(value.split()) in (6, 7)
 
@@ -137,6 +143,14 @@ class ScheduleModal(ModalScreen):
             prompt_template=prompt_template,
             prompt_template_source=preserved_source,
         )
+        from ..model_profiles import ProfileError
+        try:
+            schedule_inputs = payload["startWorkflowRequest"]["input"]
+            payload["startWorkflowRequest"]["input"] = apply_schedule_model_snapshot(
+                workflow, repo, schedule_inputs)
+        except ProfileError as exc:
+            self.notify(str(exc), severity="error")
+            return
         from .. import templates
         try:
             schedule_input, _applied = templates.apply_user_templates(
@@ -189,6 +203,9 @@ class AutomationsScreen(Screen):
         payload = await self.app.push_screen_wait(ScheduleModal(existing))
         if payload:
             await self.app.client.save_schedule(payload)
+            from ..model_profiles import snapshot_summary
+            self.notify(f"Saved {payload['name']}; "
+                        f"{snapshot_summary(payload['startWorkflowRequest']['input'])}.")
             self.refresh_data()
 
     def action_new(self) -> None:

@@ -1,0 +1,81 @@
+{
+  "name": "review_gate_policy",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "review_gate_policy_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "requested": {
+          "type": "number",
+          "description": "Requested investigation-pass budget; clamped to [0, 5]. Non-numeric or omitted values default the limit to 5."
+        },
+        "count": {
+          "type": "number",
+          "description": "Investigation passes already used; non-numeric or omitted values are treated as 0."
+        },
+        "approve": {
+          "description": "Truthy value (accepts '1'/'true'/'yes'/'on' as strings) indicating a human already approved; opens the gate."
+        },
+        "approvalMode": {
+          "type": "string",
+          "description": "When exactly 'human', the gate is always open regardless of approve."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "review_gate_policy_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "description": "Effective investigation-pass budget, clamped to [0, 5]."
+        },
+        "canInvestigate": {
+          "type": "boolean",
+          "description": "True when passes used (count) is still below limit."
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "investigate",
+              "revise",
+              "stop",
+              "later"
+            ]
+          },
+          "description": "Actions available to the reviewer: includes 'investigate' only when canInvestigate is true."
+        },
+        "gate": {
+          "type": "string",
+          "enum": [
+            "true",
+            "false"
+          ],
+          "description": "Whether the checkpoint is open, as a string for use by a value-param SWITCH: 'true' when approve is truthy or approvalMode='human'."
+        }
+      },
+      "required": [
+        "limit",
+        "canInvestigate",
+        "actions",
+        "gate"
+      ]
+    }
+  }
+}

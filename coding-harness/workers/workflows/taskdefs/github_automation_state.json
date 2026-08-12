@@ -4,10 +4,120 @@
   "retryCount": 3,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "responseTimeoutSeconds": 60,
-  "pollTimeoutSeconds": 120,
-  "timeoutSeconds": 180,
-  "timeoutPolicy": "TIME_OUT_WF",
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
   "concurrentExecLimit": 1,
-  "ownerEmail": "harness@conductor.local"
+  "ownerEmail": "harness@conductor.local",
+  "inputSchema": {
+    "name": "github_automation_state_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "'owner/name' GitHub repository slug."
+        },
+        "number": {
+          "type": "integer",
+          "description": "PR or issue number to post the state marker on."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "review",
+            "address",
+            "issue"
+          ],
+          "description": "Automation kind this state marker records."
+        },
+        "revision": {
+          "type": "string",
+          "description": "Revision fingerprint (head SHA or feedback fingerprint) this marker records state for."
+        },
+        "status": {
+          "type": "string",
+          "default": "completed",
+          "description": "Terminal or in-progress status to record (e.g. completed, failed, started); lowercased before storing."
+        },
+        "attempt": {
+          "type": "integer",
+          "default": 1,
+          "description": "Attempt number for this revision."
+        },
+        "workflowId": {
+          "type": "string",
+          "description": "Workflow instance id this marker is associated with."
+        },
+        "outcome": {
+          "type": "object",
+          "description": "Arbitrary outcome payload attached to the marker."
+        }
+      },
+      "required": [
+        "repo",
+        "number",
+        "kind",
+        "revision"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "github_automation_state_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "recorded": {
+          "type": "boolean",
+          "description": "Always true once the marker comment is posted."
+        },
+        "commentId": {
+          "type": "integer",
+          "description": "ID of the GitHub comment holding the marker."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Echoed automation kind."
+        },
+        "revision": {
+          "type": "string",
+          "description": "Echoed revision fingerprint."
+        },
+        "status": {
+          "type": "string",
+          "description": "Lowercased status that was recorded."
+        },
+        "attempt": {
+          "type": "integer",
+          "description": "Echoed attempt number."
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "UTC timestamp the marker was recorded at."
+        },
+        "workflowId": {
+          "type": "string",
+          "description": "Echoed workflow instance id, or empty string if none was supplied."
+        },
+        "outcome": {
+          "type": "object",
+          "description": "Echoed outcome payload, or an empty object if none was supplied."
+        }
+      },
+      "required": [
+        "recorded",
+        "commentId",
+        "kind",
+        "revision",
+        "status",
+        "attempt",
+        "timestamp",
+        "workflowId",
+        "outcome"
+      ]
+    }
+  }
 }

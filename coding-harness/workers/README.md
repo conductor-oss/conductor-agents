@@ -27,6 +27,16 @@ issue  ──issue_to_pr──▶  PR  ──pr_review──▶  review comments
 
 - **`code_parallel`** is the coding core: decompose one instruction → code the parts in
   parallel → merge. The GitHub workflows wrap it with clone / push / PR plumbing.
+- **`verification`** is a separately deployed, read-only worker. For every candidate SHA it maps
+  changed files to exact tests or affected build units and verifies only that scope in a disposable clone; it is
+  intentionally not loaded by ordinary coding workers. Start it with
+  `WORKER_MODULES=verification workers/.venv/bin/python workers/main.py`.
+  It returns a typed execution outcome: `passed`, `code_failed`, `infra_blocked`,
+  `configuration_blocked`, `timed_out`, or `cancelled`. Only `code_failed` may enter
+  automated remediation.
+  Built-in adapters cover Gradle, Maven, npm/pnpm/Yarn workspaces (JavaScript and TypeScript),
+  pytest, Go, Cargo, CMake/CTest, and SwiftPM. Unknown build graphs must provide
+  `.conductor-code/verification.json`; the worker blocks instead of falling back to a root test suite.
 - **`feature_campaign`** is the interactive path for complex work: design and DAG review,
   resumable dependency waves, profile-driven checks, and final verification on a local branch.
 - **`openspec_development`** validates an apply-ready OpenSpec change, selects the appropriate
@@ -113,8 +123,8 @@ must be set; the rest have the defaults shown.
 
 Use this when an apply-ready OpenSpec change is the source of truth. The source can be local,
 a Git remote, or a public HTTPS archive. The workflow validates and snapshots the change,
-assesses a repository-aware DAG, selects `code_parallel` or `feature_campaign`, runs final
-checks plus requirement-level verification, then completes `tasks.md` and archives the change.
+assesses a repository-aware DAG, selects `code_parallel` or `feature_campaign`, runs
+requirement-level verification, then completes `tasks.md` and archives the change.
 
 | Input | Default | Meaning |
 |---|---|---|
@@ -126,7 +136,6 @@ checks plus requirement-level verification, then completes `tasks.md` and archiv
 | `specWritebackRepo` | `""` | Required for URL sources; receives the archived change as a draft PR. |
 | `executionMode` | `auto` | Deterministic complexity routing, or explicit `parallel` / `campaign`. |
 | `maxTasks` / `maxParallelism` / `maxWaves` | `25` / `6` / `20` | DAG and execution bounds. |
-| `checksConfig` / `finalProfile` | `.conductor-code/checks.json` / `""` | Final verification profile. |
 
 ```bash
 conductor workflow start --workflow openspec_development -i '{
@@ -136,9 +145,10 @@ conductor workflow start --workflow openspec_development -i '{
 }'
 ```
 
-With `useSpecSourceWorkspace:true`, only the selected OpenSpec tree is materialized in an owned
-worktree; the original checkout is untouched, and ignored OpenSpec artifacts are force-staged only
-for the lifecycle commit. Same-repo specs otherwise archive on the verified local implementation
+With `useSpecSourceWorkspace:true`, the selected OpenSpec tree is materialized in an owned
+worktree. Every Git-visible source change is included in that worktree's run-owned branch while
+the source checkout's branch, index, and files remain untouched; ignored OpenSpec artifacts are
+force-staged only for the lifecycle commit. Same-repo specs otherwise archive on the verified local implementation
 branch. External GitHub specs use an archive branch and draft PR. Credentials come from the worker environment and authenticated
 `gh`; never place tokens in `specSource` or any workflow input. This v1 workflow accepts only
 apply-ready changes—it does not author proposals.
@@ -153,17 +163,43 @@ Agents resume the same session/worktree after feedback or budget exhaustion.
 | Input | Default | Meaning |
 |---|---|---|
 | `repoPath` / `instruction` | **required** | Local repository and feature goal. |
+| `inPlace` | `false` | Create and switch to a new unique branch in the supplied checkout before committing every Git-visible existing change as the baseline; the original branch ref is not moved and no push or PR is permitted. |
+| `contextPaths` | `[]` | Live, read-only absolute file/directory references given to agents by path only; their contents are never prompt-attached. Requires the Claude backend until equivalent read-root sandboxing exists for other backends. |
 | `changeBranch` | derived | `feature-campaign/<workflow-id>` when blank. |
 | `designDir` | `docs/design` | Design artifact directory. |
 | `*Agent` / `*Model` | `claude` / `""` | Design, plan, code, and review backends/models. |
 | `maxTurns` / `maxBudgetUsd` | `500` / `50.0` | Per invocation; no aggregate spend cap. |
 | `maxTasks` / `maxParallelism` / `maxWaves` | `25` / `6` / `20` | Validated DAG and wave bounds. |
 | `designMaxRevisions` / `planMaxRevisions` | `5` / `5` | Review-loop bounds. |
-| `checksConfig` | `.conductor-code/checks.json` | Version-2 named check profiles. |
+Checkpoint actions are Continue, Revise, Adopt edits, Stop, and Later.
+Integration conflicts fail soft and return to the checkpoint. Stop retains
+the branch with an incomplete outcome. Campaigns retain the verified branch locally by default;
+set `createPr:true` explicitly to push it and open a PR.
 
-Checkpoint actions are Continue, Revise, Adopt edits, Run checks, Set profiles, Stop, and Later.
-Blocking checks and integration conflicts fail soft and return to the checkpoint. Stop retains
-the branch with an incomplete outcome. Campaigns never push or open a PR.
+Campaign checks and exact-SHA verification use the same command runner. Each gets an isolated
+per-run home, an external reusable dependency cache, an unbounded process lifetime, external artifact logs,
+and runtime evidence. Attached profiles pass only names declared in `requiredEnv`; set
+`CONDUCTOR_ARTIFACT_ROOT` to choose where retained check logs live. Check/profile `timeoutSeconds`
+is rejected so repository configuration cannot reintroduce a hidden deadline.
+
+For build graphs that cannot be inferred, add a language-neutral changed-scope map. Commands are
+argv arrays (never shell strings); each rule proves which changed paths it covers:
+
+```json
+{
+  "version": 1,
+  "changedScopeRules": [{
+    "paths": ["native/core/**"],
+    "affectedUnit": "native-core",
+    "scope": "focused",
+    "scopeToken": "native-core-test",
+    "commands": [["ninja", "native-core-test"]]
+  }]
+}
+```
+
+Generic interpreters and shell syntax are rejected. A missing executable, runtime startup failure,
+spawn failure, or explicit cancellation returns a blocked infrastructure outcome and never spends a repair attempt.
 
 ```bash
 conductor workflow start --workflow feature_campaign -i '{
@@ -174,23 +210,29 @@ conductor workflow start --workflow feature_campaign -i '{
 
 ### `code_parallel` — code a change, in parallel
 
-Plan through OpenSpec (`openspec_plan`: proposal → specs/design → tasks, reviewed via a
-human-or-AI-judge loop), deterministically decompose the generated `tasks.md` into independent
-sub-tasks, code each on its own git worktree/branch in parallel, then merge back into a change
-branch. Works on a **local path** (`repoPath`); it doesn't clone or push (the GitHub workflows
-do that). The source checkout is never switched or edited: the run uses
-`.cc-worktrees/run-<workflow-id>` from committed `HEAD`.
+Decompose one instruction into independent sub-tasks, optionally create up-front design docs,
+code each on its own git worktree/branch in parallel, then merge into one newly created outcome
+branch. Works from a **local source checkout** (`repoPath`); it doesn't clone or push (the GitHub workflows
+do that). By default the source checkout is never switched or edited: the run uses
+`.cc-worktrees/run-<workflow-id>` from a snapshot that includes every Git-visible local change.
 
 | Input | Default | Meaning |
 |---|---|---|
 | `repoPath` | **required** | Local directory to work in. Need not be a git repo — it's initialized if needed. |
+| `inPlace` | `false` | Require an existing checkout, create/switch to a new outcome branch first, capture all Git-visible changes there, and integrate locally. Parallel child worktrees are temporary. |
+| `contextPaths` | `[]` | Live, read-only absolute file/directory references; agents receive locations, not inlined contents. Requires the Claude backend until equivalent read-root sandboxing exists for other backends. |
 | `instruction` | **required** | The coding goal to decompose and implement. |
-| `changeBranch` | `code-parallel` | Branch the parallel work merges into; also the OpenSpec change name. |
+| `changeBranch` | derived | New branch the parallel work merges into; blank derives `conductor/run-<workflow-id>`. |
 | `openspecHumanApproval` | `true` | Pause after each OpenSpec plan pass for approval or actionable feedback. False uses the read-only `coding_agent` judge. |
 | `openspecMaxIterations` | `5` | Maximum plan/review passes before the workflow fails closed; may be raised. |
 | `openspecPlanAgent` / `codeAgent` | `claude` | Backend for the OpenSpec plan / coders. |
 | `openspecPlanModel` / `codeModel` | `""` | Model id; empty = the backend's default. |
-| `maxTurns` / `maxBudgetUsd` | `500` / `50.0` | Per-agent turn and spend caps. The OpenSpec plan also defaults to 500 turns/`$50` (`openspecMaxTurns`/`openspecMaxBudgetUsd`). Runtime timeouts come from the Conductor task definition. |
+| `maxTurns` / `maxBudgetUsd` | `500` / `50.0` | Per-agent turn and spend caps. The OpenSpec plan also defaults to 500 turns/`$50` (`openspecMaxTurns`/`openspecMaxBudgetUsd`). These are not wall-clock deadlines. |
+
+Every completed merge is committed to the new outcome branch before verification runs. A failed or exhausted
+verification loop is returned as evidence in the final `verificationState`; it never reverts or
+withholds the committed source handoff. The output's `sourceHandoff` object gives the exact
+checkout path, branch, and candidate commit for review.
 
 ```bash
 conductor workflow start --workflow code_parallel -i '{
@@ -210,16 +252,21 @@ token/cost breakdown.
 
 Fetch an issue, prepare an isolated workspace, resolve it with `code_parallel`, push a branch,
 and open a PR whose body closes the issue. The workflow clones its own temporary source checkout.
+When `design:true`, it runs `design_docs` first and the TUI shows the actual design files before
+coding. When `approvePr:true`, Request code changes revises the current candidate workspace,
+re-verifies it, and returns to the gate; Stop and failed verification never push.
 
 | Input | Default | Meaning |
 |---|---|---|
 | `repo` | **required** | Repo URL or `owner/name`. |
 | `issueNumber` | **required** | Issue to resolve. |
 | `base` | `main` | Base branch for the PR. |
+| `design` / `designHumanApproval` | `false` / `true` | Generate design docs before coding and review the actual files. |
+| `maxApprovalRevisions` | `2` | Maximum code-revision requests before publication is blocked. |
 | `openspecHumanApproval` | `true` | Human review each OpenSpec plan pass; false selects the automated read-only judge. |
 | `openspecMaxIterations` | `5` | Maximum plan/review passes before the workflow fails closed. |
 | `openspecPlanAgent` / `codeAgent` | `claude` | Backends. |
-| `maxTurns` / `maxBudgetUsd` | `300` / `50.0` | Per-agent turn and spend caps. Runtime timeouts come from the Conductor task definition. |
+| `maxTurns` / `maxBudgetUsd` | `300` / `50.0` | Per-agent turn and spend caps; no wall-clock deadline. |
 
 ```bash
 conductor workflow start --workflow issue_to_pr -i '{
@@ -232,13 +279,15 @@ conductor workflow start --workflow issue_to_pr -i '{
 
 **Output:** `prNumber`, `prUrl`, `changeBranch`, `subtasks`, `totalTokens`, `totalCostUsd`.
 
-### `pr_review` — review a PR, post comments
+### `pr_review` — review and decide a PR
 
 Read a PR's diff (plus surrounding code for context), produce a structured review with a
-**read-only** agent, and post it as a formal GitHub review: inline file/line comments + a
-summary + a verdict. Verdict is `COMMENT`, or `REQUEST_CHANGES` when a blocking issue is
-found — **never `APPROVE`** (a bot approval could satisfy branch protection). Read-only: it
-can only comment, never modify the PR.
+**read-only** agent, and post one formal GitHub review. A clean review is exactly `LGTM` with no
+inline comments and event `APPROVE`. Concrete required changes use anchored inline comments and
+event `REQUEST_CHANGES`. With the TUI gate enabled, the human decision is authoritative: Approve
+posts the selected comments and approves; Request changes posts the human feedback without
+approval; Investigate further privately resumes the same read-only reviewer and refreshes the
+complete draft; Later leaves the workflow paused and posts nothing. Investigation never posts.
 
 | Input | Default | Meaning |
 |---|---|---|
@@ -247,8 +296,11 @@ can only comment, never modify the PR.
 | `agent` | `claude` | Backend for the reviewer. |
 | `model` | `""` | Model id; empty = backend default. |
 | `approve` | `false` | Open a signalable publication gate before posting the review. |
+| `reviewGuidance` | `""` | Optional trusted focus for the initial reviewer. |
+| `maxInvestigationPasses` | `5` | Maximum private follow-up questions before a final decision is required. |
 | `reviewPromptTemplate` / `reviewPromptTemplateSource` | `""` / `""` | Optional reviewer-template override and its provenance. |
-| `maxTurns` / `maxBudgetUsd` | `250` / `50.0` | Turn and spend caps. Runtime timeouts come from the Conductor task definition. |
+| `reviewInvestigationPromptTemplate` / `reviewInvestigationPromptTemplateSource` | `""` / `""` | Optional private follow-up template and its provenance. |
+| `maxTurns` / `maxBudgetUsd` | `250` / `50.0` | Turn and spend caps; no wall-clock deadline. |
 
 ```bash
 conductor workflow start --workflow pr_review -i '{
@@ -257,8 +309,9 @@ conductor workflow start --workflow pr_review -i '{
 }'
 ```
 
-**Output:** `event` (COMMENT/REQUEST_CHANGES), `inlineCount`, `reviewUrl`, `changedFiles`,
-`tokenUsed`, `costUsd`.
+**Output:** `approvalState`, `publicationState`, `event` (APPROVE/REQUEST_CHANGES),
+`inlineCount`, `reviewUrl`, `changedFiles`, `investigationHistory`, `investigationCount`,
+`lastInvestigationAnswer`, `tokenUsed`, `costUsd`.
 
 ### `local_review` — review a local checkout before committing
 
@@ -289,19 +342,26 @@ conductor workflow start --workflow local_review -i '{
 ### `address_pr` — revise a PR from its feedback
 
 Consolidate a PR's review feedback (conversation comments + reviews + inline threads, skipping
-the harness's own), check out the PR branch, make the changes, and push to the **same branch**
+the harness's own), and append bounded context from URLs in actionable feedback. Linked material
+is provenance-labeled **untrusted evidence**, never workflow instructions. GitHub Actions links
+use the worker's `gh` authentication to include failed-job log tails; inaccessible links only add
+warnings. The workflow then checks out the PR branch, makes the changes, and pushes to the **same branch**
 (updating the PR — no new PR). Safely re-runnable: the harness's own replies are tagged and
-skipped, and it no-ops when there's no outstanding feedback.
+skipped, and it no-ops when there's no outstanding feedback. The exact candidate must pass local
+verification before the human gate. Request code changes uses the same workspace and re-verifies;
+only approval can call the shared publisher. The publisher guards against local/remote branch
+drift, pushes the exact commit once, waits for exact-SHA CI, and comments only after CI passes.
 
 | Input | Default | Meaning |
 |---|---|---|
 | `repo` | **required** | Repo URL or `owner/name`. |
 | `prNumber` | **required** | PR whose feedback to address. |
 | `engine` | `code_parallel` | How to code: `code_parallel` (decompose+parallel) or `coding_agent` (single session, cheaper for small feedback). |
+| `maxApprovalRevisions` | `2` | Maximum human-requested code revision passes. |
 | `agent` | `claude` | Backend. |
 | `openspecHumanApproval` / `openspecMaxIterations` | `true` / `5` | OpenSpec plan review (`code_parallel` engine only). |
 | `fixPromptTemplate` / `fixPromptTemplateSource` | `""` / `""` | Optional fix-template override and its provenance. |
-| `maxTurns` / `maxBudgetUsd` | `250` / `50.0` | Turn and spend caps. Runtime timeouts come from the Conductor task definition. |
+| `maxTurns` / `maxBudgetUsd` | `250` / `50.0` | Turn and spend caps; no wall-clock deadline. |
 
 ```bash
 conductor workflow start --workflow address_pr -i '{
@@ -311,7 +371,7 @@ conductor workflow start --workflow address_pr -i '{
 }'
 ```
 
-**Output:** `head`, `engine`, `commentCount`, `pushed`, `replyUrl`.
+**Output:** `head`, `engine`, `commentCount`, `linkCount`, `linkedContextChars`, `linkWarnings`, `pushed`, `replyUrl`.
 
 ### `github_demo` — minimal clone → change → PR
 
@@ -324,7 +384,7 @@ edit, commit, push, open a PR. Good for smoke-testing GitHub connectivity.
 | `instruction` | **required** | The change to make. |
 | `changeBranch` | `conductor-harness-change` | Branch to push. |
 | `base` | `""` | PR base (empty = repo default). |
-| `prTitle` | `""` | PR title (empty = derived from the commit via `gh --fill`). |
+| `prTitle` | `""` | PR title (empty = derived from the concise summary). |
 | `agent` / `model` | `claude` / `""` | Backend + model. |
 
 ### Internal sub-workflows
@@ -431,13 +491,18 @@ CONDUCTOR_SERVER_URL=http://localhost:8080/api workers/.venv/bin/python workers/
 ```
 
 `WORKER_MODULES` (comma-separated, default
-`coding_agent,gitops,campaign,openspec,openspecops,automation,model_policy,revision`) selects
+`coding_agent,gitops,campaign,openspec,openspecops,automation,model_policy,revision,planning`) selects
 which task modules load; the default covers every workflow. `coding_agent` is the async agent driver
 (`thread_count=8` = 8 concurrent sessions on one event loop); `gitops` holds the git/GitHub
 tasks; `openspec`/`openspecops` shell out to the `openspec` CLI (must be installed on that host —
 see [Prerequisites](#prerequisites)). Split them across hosts with `WORKER_MODULES` if desired —
 note the GitHub workflows assume clone/code/push share a filesystem (single host, or a shared
 volume).
+
+`main.py` refuses an overlapping deployment for the same Conductor URL, so a broad default worker
+cannot duplicate a separately started `coding_agent` worker. Worker task types use one poller each;
+`CONDUCTOR_POLL_TIMEOUT_MS` (default `5000`) controls server long
+polling and `CONDUCTOR_POLL_INTERVAL_MS` (default `500`) controls empty-queue backoff.
 
 ## Layout
 

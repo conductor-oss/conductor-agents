@@ -100,8 +100,8 @@
   "schemaVersion": 2,
   "restartable": true,
   "ownerEmail": "harness@conductor.local",
-  "timeoutPolicy": "TIME_OUT_WF",
-  "timeoutSeconds": 600,
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
   "inputTemplate": {
     "agent": "",
     "approvalJudgePromptTemplate": "",
@@ -125,5 +125,192 @@
     "modelsConfig": "",
     "modelOverrides": {}
   },
-  "overwriteTags": false
+  "overwriteTags": false,
+  "inputSchema": {
+    "name": "pr_address_sweep_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "'owner/name' GitHub repository slug to sweep for actionable reviewer feedback on harness-created pull requests."
+        },
+        "agent": {
+          "type": "string",
+          "default": "",
+          "description": "Coding agent identifier passed through to each dispatched address_pr child workflow."
+        },
+        "approvalJudgePromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline prompt template for the approval judge, passed through to each dispatched child workflow."
+        },
+        "approvalJudgePromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label for the approval judge prompt template."
+        },
+        "approvalMode": {
+          "type": "string",
+          "default": "human",
+          "description": "Approval mode passed through to each dispatched child workflow (e.g. human or auto)."
+        },
+        "fixPromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline prompt template for the fix step, passed through to each dispatched child workflow."
+        },
+        "fixPromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label for the fix prompt template."
+        },
+        "judgeAgent": {
+          "type": "string",
+          "default": "",
+          "description": "Coding agent identifier used for judge steps in each dispatched child workflow."
+        },
+        "judgeMaxBudgetUsd": {
+          "type": "number",
+          "default": 5,
+          "description": "Maximum USD budget for judge steps in each dispatched child workflow."
+        },
+        "judgeMaxTurns": {
+          "type": "integer",
+          "default": 50,
+          "description": "Maximum turns allowed for judge steps in each dispatched child workflow."
+        },
+        "judgeModel": {
+          "type": "string",
+          "default": "",
+          "description": "Legacy single-model override for judge steps in each dispatched child workflow."
+        },
+        "maxActive": {
+          "type": "integer",
+          "default": 2,
+          "description": "Maximum concurrently-active address automation runs allowed before new candidates are capacity-blocked."
+        },
+        "maxApprovalRevisions": {
+          "type": "integer",
+          "default": 2,
+          "description": "Maximum number of approval revision rounds allowed in each dispatched child workflow."
+        },
+        "maxNew": {
+          "type": "integer",
+          "default": 2,
+          "description": "Maximum newly-eligible feedback fingerprints to dispatch this sweep."
+        },
+        "model": {
+          "type": "string",
+          "default": "",
+          "description": "Legacy generic model override applied to plan and code roles in each dispatched child workflow."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model-policy profile to select when resolving models for this sweep."
+        },
+        "modelPolicy": {
+          "type": "object",
+          "default": {},
+          "description": "Inline model policy document merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Label recorded for the inline modelPolicy's provenance."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to the repository model policy file."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "default": {},
+          "description": "Per-role overrides merged on top of the selected profile's roles."
+        },
+        "verificationProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named verification profile passed through to each dispatched child workflow."
+        }
+      },
+      "required": [
+        "repo"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "pr_address_sweep_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "blocked": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Otherwise-eligible feedback fingerprints deferred purely due to capacity (reason: 'capacity')."
+        },
+        "childWorkflowIds": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "childWorkflowId": {
+                "type": "string",
+                "description": "Workflow instance id of the started address_pr child; empty string if the claim was lost."
+              },
+              "claimed": {
+                "type": "boolean",
+                "description": "True if this dispatch won the race to claim the revision and started the child workflow."
+              }
+            }
+          },
+          "description": "Map of dynamic dispatch task reference name (one per eligible candidate this sweep) to that automation_dispatch sub-workflow's output."
+        },
+        "claimed": {
+          "type": "integer",
+          "description": "Number of candidates selected for dispatch within capacity this sweep (same count as 'eligible', despite the name)."
+        },
+        "dispatched": {
+          "type": "integer",
+          "description": "Number of candidates selected for dispatch within capacity this sweep (same count as 'eligible')."
+        },
+        "eligible": {
+          "type": "integer",
+          "description": "Number of candidates selected for dispatch within capacity this sweep."
+        },
+        "scanned": {
+          "type": "integer",
+          "description": "Number of source pull requests fetched from GitHub for this sweep."
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Candidates excluded from dispatch, each annotated with a 'reason' (e.g. no_feedback, retry_backoff, suppressed, exhausted)."
+        }
+      },
+      "required": [
+        "blocked",
+        "childWorkflowIds",
+        "claimed",
+        "dispatched",
+        "eligible",
+        "scanned",
+        "skipped"
+      ]
+    }
+  },
+  "enforceSchema": false
 }

@@ -1,0 +1,80 @@
+{
+  "name": "test_authored_test_validate",
+  "description": "Pre-check an agent-authored test file (exactly one new, test-shaped file that references the changed code) before spending a red/green run on it. Gated behind allowAgentAuthoredTests.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "test_authored_test_validate_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git repository whose current uncommitted working tree the author_missing_test agent step just left dirty."
+        },
+        "candidateCommit": {
+          "type": "string",
+          "description": "The real candidate commit the agent was trying to cover, before the new test file. Used to confirm the authored path did not already exist at this commit."
+        },
+        "changedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "The real candidate's own changed paths, used for the content check: the authored file's text must reference at least one non-test path from this list by name or basename."
+        }
+      },
+      "required": [
+        "repoPath",
+        "candidateCommit"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "test_authored_test_validate_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean",
+          "description": "True only when the agent touched exactly one new, test-shaped file that references the changed code and did not already exist at the baseline."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why the attempt was rejected; empty when accepted."
+        },
+        "authoredPath": {
+          "type": "string",
+          "description": "The single new file's repository-relative path; empty when rejected before a path could be identified."
+        },
+        "touchedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Every path the agent's working tree shows as changed, for diagnostics -- ideally exactly one."
+        },
+        "matchedIdentifier": {
+          "type": "string",
+          "description": "The non-test changed path whose name/basename the authored file's text referenced; empty when rejected or no match found."
+        }
+      },
+      "required": [
+        "accepted",
+        "reason",
+        "authoredPath",
+        "touchedPaths",
+        "matchedIdentifier"
+      ]
+    }
+  }
+}

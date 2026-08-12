@@ -687,8 +687,8 @@ Misc
 
 ## 16. Hard limitations
 
-- **No built-in wall-clock timeout** at session or subagent level. In this harness, runtime
-  deadlines are configured only on the Conductor task definition; the worker does not add one.
+- **No built-in wall-clock timeout** at session or subagent level. This harness also keeps
+  workflow/task-definition timeout fields at zero and adds no worker deadline.
 - Memory grows over long sessions; recycle subprocesses periodically.
 - One subprocess per session bounds per-host concurrency by RAM.
 - Wide parallel subagent fanouts hit API rate limits.
@@ -797,8 +797,8 @@ Design notes for the harness:
   the same worktree with higher limits — the agent keeps everything it already learned.
   Because sessions key on cwd, keep the worktree alive across retries or the resume will
   silently start fresh (gotcha #9).
-- **Runtime deadline.** Configure it only on the Conductor task definition. The harness does
-  not wrap agent sessions in a second wall-clock timeout.
+- **Runtime deadline.** None: task definitions use zero/unset timeout fields and the harness
+  does not wrap agent sessions in a wall-clock timeout.
 - **Planner/reviewer stages** map naturally to `permissionMode: "plan"` + structured output
   (plan JSON), then a second query in `acceptEdits`/`dontAsk` to execute the approved plan —
   or to subagent definitions inside one session when context sharing matters.

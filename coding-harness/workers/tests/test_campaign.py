@@ -8,7 +8,7 @@ import pytest
 from campaign.checks import ChecksConfigError, load_config, run_profile
 from campaign.model import (aggregate_usage, paths_overlap, select_wave,
                             validate_checkpoint, validate_plan)
-from campaign.tasks import campaign_schedule
+from campaign.tasks import campaign_integrate, campaign_merge_state, campaign_schedule
 from common import git
 
 
@@ -32,7 +32,7 @@ def test_dag_rejects_cycles_missing_dependencies_and_escapes():
     ]})
     assert result["valid"] is False
     text = "\n".join(result["errors"])
-    assert "cycle" in text and "missing dependencies" in text and "escapes" in text
+    assert "cycle" in text and "missing dependencies" in text and "unsafe write roots" in text
 
 
 def test_file_disjoint_wave_scheduling_and_blocked_tasks():
@@ -69,6 +69,45 @@ def test_scheduler_forwards_resume_session_feedback_and_limits(fake_task_input):
     assert result["dynamicTasksInput"][ref]["feedback"] == "fix retry"
     assert result["dynamicTasksInput"][ref]["maxTurns"] == 900
     assert result["dynamicTasksInput"][ref]["specContextPath"].endswith("context.md")
+    assert result["dynamicTasks"][0]["subWorkflowParam"]["version"] == 1
+
+
+def test_scheduler_canonicalizes_planner_ids_and_allows_verification_only_tasks(fake_task_input):
+    verification = _task("T2", deps=["T1"])
+    verification["files"] = []
+    result = campaign_schedule(fake_task_input(repoPath="/tmp/repo", plan={"tasks": [
+        _task("T1"),
+        verification,
+    ]})).output_data
+
+    assert result["valid"] is True
+    assert result["remainingIds"] == ["t1", "t2"]
+    assert result["readyIds"] == ["t1"]
+    assert result["dynamicTasksInput"]["wave_1_t1"]["task"]["id"] == "t1"
+    scheduled_t2 = validate_plan({"tasks": [_task("T1"), verification]})["tasks"][1]
+    assert scheduled_t2["files"] == ["src/T1.py"]
+
+
+def test_scheduler_returns_empty_dynamic_payload_for_an_unusable_plan(fake_task_input):
+    task = _task("T1")
+    task["files"] = []
+    task["checks"] = []
+    result = campaign_schedule(fake_task_input(repoPath="/tmp/repo", plan={"tasks": [task]})).output_data
+
+    assert result["valid"] is False
+    assert result["dynamicTasks"] == []
+    assert result["dynamicTasksInput"] == {}
+    assert result["remainingIds"] == []
+
+
+def test_scheduler_rejects_broad_existing_directory_write_roots(fake_task_input, tmp_path):
+    (tmp_path / "src").mkdir()
+    task = _task("broad", files=["src"])
+    result = campaign_schedule(fake_task_input(
+        repoPath=str(tmp_path), plan={"tasks": [task]})).output_data
+    assert result["valid"] is False
+    assert result["dynamicTasks"] == []
+    assert "exact files" in "\n".join(result["errors"])
 
 
 def test_campaign_worktree_resume_keeps_same_path_and_uncommitted_edits(tmp_git_repo):
@@ -96,6 +135,43 @@ def test_usage_aggregation_preserves_sessions_without_campaign_cap():
     out = aggregate_usage([{"tokenUsed": 10, "costUsd": 1.2, "sessionId": "a"},
                            {"totalTokens": 5, "totalCostUsd": 0.3, "sessionId": "b"}])
     assert out == {"totalTokens": 15, "totalCostUsd": 1.5, "sessions": ["a", "b"]}
+
+
+def test_campaign_integration_preserves_task_to_session_mapping(tmp_path, monkeypatch, fake_task_input):
+    monkeypatch.setattr(git, "git", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(git, "worktree_remove", lambda *_args, **_kwargs: None)
+    task = fake_task_input(repoPath=str(tmp_path), results={
+        "wave_1_api": {
+            "taskId": "api", "status": "success", "branch": "campaign-api",
+            "sessionId": "session-api", "tokenUsed": 10, "costUsd": 1.2,
+        },
+        "wave_1_web": {
+            "taskId": "web", "status": "success", "branch": "campaign-web",
+            "sessionId": "session-web", "tokenUsed": 5, "costUsd": 0.3,
+        },
+    })
+
+    result = campaign_integrate(task).output_data
+
+    assert result["sessions"] == {"api": "session-api", "web": "session-web"}
+    assert result["totalTokens"] == 15
+    assert result["totalCostUsd"] == 1.5
+
+
+def test_campaign_state_merge_handles_mapping_and_legacy_session_lists(fake_task_input):
+    task = fake_task_input(completed=["root"], added=["api", "web"],
+                           sessions={"root": "session-root"},
+                           newSessions=["session-api", "session-web"],
+                           remaining=["root", "api", "web", "docs"], waves=[1], wave=2)
+
+    result = campaign_merge_state(task).output_data["result"]
+
+    assert result == {
+        "completed": ["root", "api", "web"],
+        "sessions": {"root": "session-root", "api": "session-api", "web": "session-web"},
+        "remaining": ["docs"],
+        "waves": [1, 2],
+    }
 
 
 def _write_config(repo: Path, data: dict) -> None:

@@ -1,0 +1,152 @@
+{
+  "name": "build_salvage_plan",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "build_salvage_plan_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "all": {
+          "type": "object",
+          "description": "Full workflow context (e.g. Conductor's ${workflow} binding) used to recover a publishable branch/repo/commit from a failed run's own state.",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "description": "Human-readable failure reason surfaced when no more specific reason is available."
+            },
+            "workflowId": {
+              "type": "string",
+              "description": "Failed workflow's ID, echoed into the plan."
+            },
+            "failedWorkflow": {
+              "type": "object",
+              "description": "The failed run's own workflow record.",
+              "properties": {
+                "variables": {
+                  "type": "object",
+                  "description": "Failed workflow variables; currentBranch/currentWorkspacePath/candidateCommit are preferred over the workspace task output.",
+                  "properties": {
+                    "currentBranch": {
+                      "type": "string",
+                      "description": "Branch recorded by the failed run."
+                    },
+                    "currentWorkspacePath": {
+                      "type": "string",
+                      "description": "Workspace/repo path recorded by the failed run."
+                    },
+                    "candidateCommit": {
+                      "type": "string",
+                      "description": "Candidate commit recorded by the failed run."
+                    }
+                  }
+                },
+                "input": {
+                  "type": "object",
+                  "description": "Failed workflow's original input.",
+                  "properties": {
+                    "issueNumber": {
+                      "description": "Issue number the failed run was working on, echoed into the plan (stringified).",
+                      "oneOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "base": {
+                      "type": "string",
+                      "description": "Base branch the failed run targeted; defaults to 'main' when absent."
+                    }
+                  }
+                },
+                "tasks": {
+                  "type": "array",
+                  "description": "Failed workflow's task list; the first task named 'workspace' or 'clone' supplies a branch/repoPath fallback via its outputData.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "referenceTaskName": {
+                        "type": "string",
+                        "description": "Task reference name; 'workspace' or 'clone' is used as the fallback source."
+                      },
+                      "outputData": {
+                        "type": "object",
+                        "description": "That task's output, read for branch/repoPath/worktreePath/baseCommit."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "build_salvage_plan_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string",
+          "description": "Recovered branch name to publish, preferring the failed run's variables over the workspace task output."
+        },
+        "repoPath": {
+          "type": "string",
+          "description": "Recovered repository/worktree path."
+        },
+        "commit": {
+          "type": "string",
+          "description": "Recovered candidate commit SHA."
+        },
+        "issueNumber": {
+          "type": "string",
+          "description": "Issue number from the failed run's input, stringified (empty string when absent)."
+        },
+        "base": {
+          "type": "string",
+          "description": "Base branch from the failed run's input, defaulting to 'main'."
+        },
+        "canPublish": {
+          "type": "string",
+          "enum": [
+            "true",
+            "false"
+          ],
+          "description": "String boolean (consumed by a value-param SWITCH) indicating whether both branch and repoPath were recovered."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Failure reason, from the workflow context or a default explanation."
+        },
+        "workflowId": {
+          "type": "string",
+          "description": "The failed workflow's ID, or empty string."
+        }
+      },
+      "required": [
+        "branch",
+        "repoPath",
+        "commit",
+        "issueNumber",
+        "base",
+        "canPublish",
+        "reason",
+        "workflowId"
+      ]
+    }
+  }
+}

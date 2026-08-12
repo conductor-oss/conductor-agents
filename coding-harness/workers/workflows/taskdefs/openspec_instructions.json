@@ -5,7 +5,146 @@
   "retryLogic": "FIXED",
   "retryDelaySeconds": 3,
   "timeoutSeconds": 0,
-  "responseTimeoutSeconds": 120,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
-  "ownerEmail": "viren@orkes.io"
+  "ownerEmail": "viren@orkes.io",
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "openspec_instructions_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git repo containing the OpenSpec change."
+        },
+        "artifact": {
+          "type": "string",
+          "description": "Artifact id to generate instructions for (e.g. proposal, design, specs, tasks)."
+        },
+        "changeName": {
+          "type": "string",
+          "description": "OpenSpec change id the artifact belongs to (openspec instructions <artifact> --change <changeName> --json)."
+        }
+      },
+      "required": [
+        "repoPath",
+        "artifact",
+        "changeName"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "openspec_instructions_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "changeName": {
+          "type": "string",
+          "description": "The OpenSpec change id this artifact belongs to."
+        },
+        "artifactId": {
+          "type": "string",
+          "description": "The artifact id these instructions were generated for."
+        },
+        "schemaName": {
+          "type": "string",
+          "description": "Name of the OpenSpec schema the change was created under."
+        },
+        "changeDir": {
+          "type": "string",
+          "description": "Absolute path to the change's directory."
+        },
+        "outputPath": {
+          "type": "string",
+          "description": "Artifact's output path relative to the change directory."
+        },
+        "resolvedOutputPath": {
+          "type": "string",
+          "description": "Absolute path the generated artifact file must be written to."
+        },
+        "existingOutputPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Absolute paths of this artifact's output file(s) that already exist on disk."
+        },
+        "description": {
+          "type": "string",
+          "description": "Short description of the artifact, from the schema."
+        },
+        "instruction": {
+          "type": "string",
+          "description": "The generation instruction text the agent must follow to write the artifact."
+        },
+        "context": {
+          "type": "string",
+          "description": "Optional project-level background context injected from openspec/config.yaml, when configured."
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Extra rules for this artifact configured in openspec/config.yaml (e.g. the tasks file-disjoint independence rule); absent when none are configured."
+        },
+        "template": {
+          "type": "string",
+          "description": "Template structure the agent must fill in when writing the artifact file."
+        },
+        "dependencies": {
+          "type": "array",
+          "description": "Artifacts this one depends on, with their completion state.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Dependency artifact id."
+              },
+              "done": {
+                "type": "boolean",
+                "description": "Whether the dependency artifact is already complete."
+              }
+            },
+            "required": [
+              "id",
+              "done"
+            ]
+          }
+        },
+        "unlocks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Artifact ids that become ready once this artifact is completed."
+        },
+        "planningHome": {
+          "description": "Summary of the resolved OpenSpec planning home, as returned by the OpenSpec CLI.",
+          "additionalProperties": true
+        },
+        "root": {
+          "description": "Resolved OpenSpec root descriptor, as returned by the OpenSpec CLI.",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "changeName",
+        "artifactId",
+        "schemaName",
+        "changeDir",
+        "outputPath",
+        "resolvedOutputPath",
+        "description",
+        "instruction",
+        "template",
+        "dependencies",
+        "unlocks"
+      ]
+    }
+  }
 }

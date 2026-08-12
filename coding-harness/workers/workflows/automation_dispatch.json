@@ -3,6 +3,9 @@
   "name": "automation_dispatch",
   "description": "Claim one GitHub revision and fire the corresponding long-running child without blocking future sweeps.",
   "version": 1,
+  "variables": {
+    "childWorkflowId": ""
+  },
   "tasks": [
     {
       "name": "model_profile_resolve",
@@ -91,12 +94,20 @@
                   "modelOverrides": "${workflow.input.modelOverrides}"
                 },
                 "name": "${workflow.input.childWorkflow}",
-                "version": 1
+                "version": "${workflow.input.childWorkflowVersion}"
               }
             },
             "type": "START_WORKFLOW",
             "decisionCases": {},
             "defaultCase": []
+          },
+          {
+            "name": "capture_child_workflow",
+            "taskReferenceName": "capture_child_workflow",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "childWorkflowId": "${start_child.output.workflowId}"
+            }
           },
           {
             "name": "github_automation_state",
@@ -128,6 +139,7 @@
     "approvalMode",
     "attempt",
     "childWorkflow",
+    "childWorkflowVersion",
     "codePromptTemplate",
     "codePromptTemplateSource",
     "designJudgePromptTemplate",
@@ -159,19 +171,20 @@
     "verificationProfile"
   ],
   "outputParameters": {
-    "childWorkflowId": "${start_child.output.workflowId}",
+    "childWorkflowId": "${workflow.variables.childWorkflowId}",
     "claimed": "${claim.output.claimed}"
   },
   "schemaVersion": 2,
   "restartable": true,
   "ownerEmail": "harness@conductor.local",
-  "timeoutPolicy": "TIME_OUT_WF",
-  "timeoutSeconds": 300,
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
   "inputTemplate": {
     "agent": "",
     "approvalJudgePromptTemplate": "",
     "approvalJudgePromptTemplateSource": "",
     "approvalMode": "human",
+    "childWorkflowVersion": 1,
     "codePromptTemplate": "",
     "codePromptTemplateSource": "",
     "designJudgePromptTemplate": "",
@@ -198,5 +211,222 @@
     "modelsConfig": "",
     "modelOverrides": {}
   },
-  "overwriteTags": false
+  "overwriteTags": false,
+  "inputSchema": {
+    "name": "automation_dispatch_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "'owner/name' GitHub repository slug to claim the revision on."
+        },
+        "number": {
+          "type": "integer",
+          "description": "PR or issue number the automation revision applies to."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "review",
+            "address",
+            "issue"
+          ],
+          "description": "Automation kind being claimed and dispatched."
+        },
+        "revision": {
+          "type": "string",
+          "description": "Revision fingerprint (head SHA or feedback fingerprint) being claimed."
+        },
+        "attempt": {
+          "type": "integer",
+          "description": "Attempt number for this revision; passed through to the claim and state-recording tasks."
+        },
+        "childWorkflow": {
+          "type": "string",
+          "description": "Name of the long-running child workflow to start once the claim is won."
+        },
+        "childWorkflowVersion": {
+          "type": "integer",
+          "default": 1,
+          "description": "Version of the child workflow to start."
+        },
+        "agent": {
+          "type": "string",
+          "default": "",
+          "description": "Coding agent identifier passed through to the started child workflow."
+        },
+        "approvalMode": {
+          "type": "string",
+          "default": "human",
+          "description": "Approval mode passed through to the started child workflow (e.g. human or auto)."
+        },
+        "approvalJudgePromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline prompt template for the approval judge, passed through to the child workflow."
+        },
+        "approvalJudgePromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label for the approval judge prompt template."
+        },
+        "codePromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline prompt template for the coding step, passed through to the child workflow."
+        },
+        "codePromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label for the code prompt template."
+        },
+        "designJudgePromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline prompt template for the design judge, passed through to the child workflow."
+        },
+        "designJudgePromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label for the design judge prompt template."
+        },
+        "designPromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline prompt template for the design step, passed through to the child workflow."
+        },
+        "designPromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label for the design prompt template."
+        },
+        "fixPromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline prompt template for the fix step, passed through to the child workflow."
+        },
+        "fixPromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label for the fix prompt template."
+        },
+        "judgeAgent": {
+          "type": "string",
+          "default": "",
+          "description": "Coding agent identifier used for judge steps, passed through to the child workflow."
+        },
+        "judgeMaxBudgetUsd": {
+          "type": "number",
+          "default": 5,
+          "description": "Maximum USD budget for judge steps in the child workflow."
+        },
+        "judgeMaxTurns": {
+          "type": "integer",
+          "default": 50,
+          "description": "Maximum turns allowed for judge steps in the child workflow."
+        },
+        "judgeModel": {
+          "type": "string",
+          "default": "",
+          "description": "Legacy single-model override for judge steps, passed through to the child workflow."
+        },
+        "maxApprovalRevisions": {
+          "type": "integer",
+          "default": 2,
+          "description": "Maximum number of approval revision rounds allowed in the child workflow."
+        },
+        "model": {
+          "type": "string",
+          "default": "",
+          "description": "Legacy generic model override applied to plan and code roles in the child workflow."
+        },
+        "planPromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline prompt template for the planning step, passed through to the child workflow."
+        },
+        "planPromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label for the plan prompt template."
+        },
+        "reviewPromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline prompt template for the review step, passed through to the child workflow."
+        },
+        "reviewPromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label for the review prompt template."
+        },
+        "verificationProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named verification profile passed through to the child workflow."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model profile to select from the merged model policy."
+        },
+        "modelPolicy": {
+          "type": "object",
+          "default": {},
+          "description": "Inline model policy document merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Label recorded for the inline modelPolicy's provenance."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to the repository model policy file."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "default": {},
+          "description": "Per-role overrides merged on top of the selected profile's roles."
+        }
+      },
+      "required": [
+        "repo",
+        "number",
+        "kind",
+        "revision",
+        "childWorkflow"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "automation_dispatch_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "childWorkflowId": {
+          "type": "string",
+          "description": "Workflow instance id of the started child automation workflow; empty string if the claim was lost and no child was started."
+        },
+        "claimed": {
+          "type": "boolean",
+          "description": "True if this dispatch won the race to claim the revision and started the child workflow."
+        }
+      },
+      "required": [
+        "childWorkflowId",
+        "claimed"
+      ]
+    }
+  },
+  "enforceSchema": false
 }

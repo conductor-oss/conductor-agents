@@ -1,0 +1,338 @@
+{
+  "name": "publish_salvage",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "Failure handler for issue_to_pr: when a run dies before reaching its publication gate, push whatever branch survived and open a draft PR carrying the failure reason, so a failed run still delivers a reviewable artifact instead of nothing. Conductor invokes this with workflowId, reason, failureStatus, failureTaskId and the whole failedWorkflow object.",
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "inputParameters": [
+    "workflowId",
+    "reason",
+    "failureStatus",
+    "failureTaskId",
+    "failedWorkflow",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "inputSchema": {
+    "name": "publish_salvage_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "workflowId": {
+          "type": "string",
+          "description": "ID of the failed issue_to_pr (or similar) run that this handler is salvaging; supplied by Conductor's failure-workflow invocation."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Human-readable failure reason from the failed run, supplied by Conductor's failure-workflow invocation."
+        },
+        "failureStatus": {
+          "type": "string",
+          "description": "Terminal status of the failed run (e.g. FAILED, TIMED_OUT), supplied by Conductor's failure-workflow invocation."
+        },
+        "failureTaskId": {
+          "type": "string",
+          "description": "ID of the task that caused the failure, supplied by Conductor's failure-workflow invocation."
+        },
+        "failedWorkflow": {
+          "type": "object",
+          "description": "Full workflow record of the failed run (variables, input, tasks), used to recover a publishable branch/repo/commit.",
+          "properties": {
+            "variables": {
+              "type": "object",
+              "description": "Failed workflow's variables; currentBranch/currentWorkspacePath/candidateCommit are preferred sources for the salvage plan."
+            },
+            "input": {
+              "type": "object",
+              "description": "Failed workflow's original input, e.g. issueNumber and base."
+            },
+            "tasks": {
+              "type": "array",
+              "description": "Failed workflow's task list; used as a fallback source for branch/repoPath via the 'workspace' or 'clone' task's output.",
+              "items": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model profile to resolve; empty string defers to the policy's default profile."
+        },
+        "modelPolicy": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Inline model policy document (or JSON string) merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label recorded for the inline modelPolicy."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to a repository model policy file, overriding the default location."
+        },
+        "modelOverrides": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Per-role model overrides (or a JSON string of the same) merged on top of the selected profile."
+        }
+      },
+      "required": [
+        "workflowId",
+        "reason",
+        "failureStatus",
+        "failureTaskId",
+        "failedWorkflow"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "publish_salvage_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "salvageState": {
+          "type": "string",
+          "enum": [
+            "not_attempted",
+            "nothing_to_publish",
+            "pushed",
+            "salvaged",
+            "pushed_no_pr"
+          ],
+          "description": "Final salvage outcome: 'nothing_to_publish' when no branch/repo could be recovered, 'salvaged' when a PR was opened, 'pushed_no_pr' or 'pushed' when only the branch was pushed, 'not_attempted' if never updated."
+        },
+        "publicationState": {
+          "type": "string",
+          "enum": [
+            "not_attempted",
+            "nothing_to_publish",
+            "pushed",
+            "salvaged",
+            "pushed_no_pr"
+          ],
+          "description": "Alias of salvageState kept for callers expecting a 'publicationState' field."
+        },
+        "pushed": {
+          "type": "boolean",
+          "description": "True if the recovered branch was successfully pushed to the remote; false if nothing was pushable or the push was rejected."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Recovered branch name that was (or would have been) published; empty string if none could be recovered."
+        },
+        "repoPath": {
+          "type": "string",
+          "description": "Recovered repository/worktree path used for the salvage push; empty string if none could be recovered."
+        },
+        "prNumber": {
+          "type": "integer",
+          "description": "Number of the draft PR opened for the salvage; 0 when no PR was opened."
+        },
+        "prUrl": {
+          "type": "string",
+          "description": "URL of the draft PR opened for the salvage; empty string when no PR was opened."
+        },
+        "failedWorkflowId": {
+          "type": "string",
+          "description": "ID of the failed run this handler salvaged, echoed from workflow.input.workflowId."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Failure reason of the run being salvaged, echoed from workflow.input.reason."
+        }
+      },
+      "required": [
+        "salvageState",
+        "publicationState",
+        "pushed",
+        "branch",
+        "repoPath",
+        "prNumber",
+        "prUrl",
+        "failedWorkflowId",
+        "reason"
+      ]
+    }
+  },
+  "inputTemplate": {
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "variables": {
+    "salvageState": "not_attempted",
+    "pushed": false,
+    "prNumber": 0,
+    "prUrl": "",
+    "branch": "",
+    "repoPath": ""
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "build_salvage_plan",
+      "taskReferenceName": "salvage_plan",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "all": "${workflow.input}"
+      }
+    },
+    {
+      "name": "capture_salvage_plan",
+      "taskReferenceName": "capture_salvage_plan",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "branch": "${salvage_plan.output.branch}",
+        "repoPath": "${salvage_plan.output.repoPath}"
+      }
+    },
+    {
+      "name": "compose_salvage_body",
+      "taskReferenceName": "compose_salvage_body",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "plan": "${salvage_plan.output}"
+      }
+    },
+    {
+      "name": "salvage_gate",
+      "taskReferenceName": "salvage_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "canPublish",
+      "inputParameters": {
+        "canPublish": "${salvage_plan.output.canPublish}"
+      },
+      "decisionCases": {
+        "true": [
+          {
+            "name": "git_push",
+            "taskReferenceName": "salvage_push",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "repoPath": "${salvage_plan.output.repoPath}",
+              "branch": "${salvage_plan.output.branch}",
+              "expectedHead": "${salvage_plan.output.commit}",
+              "setUpstream": true
+            }
+          },
+          {
+            "name": "capture_salvage_push",
+            "taskReferenceName": "capture_salvage_push",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "pushed": "${salvage_push.output.pushed}",
+              "salvageState": "pushed"
+            }
+          },
+          {
+            "name": "pr_create",
+            "taskReferenceName": "salvage_pr",
+            "type": "SIMPLE",
+            "optional": true,
+            "inputParameters": {
+              "repoPath": "${salvage_plan.output.repoPath}",
+              "title": "[unfinished] Issue #${salvage_plan.output.issueNumber}: harness run failed",
+              "body": "${compose_salvage_body.output.body}",
+              "summary": "${salvage_plan.output.reason}",
+              "base": "${salvage_plan.output.base}",
+              "head": "${salvage_plan.output.branch}",
+              "draft": true
+            }
+          },
+          {
+            "name": "salvage_outcome",
+            "taskReferenceName": "salvage_outcome",
+            "type": "SIMPLE",
+            "optional": true,
+            "inputParameters": {
+              "number": "${salvage_pr.output.number}"
+            }
+          },
+          {
+            "name": "capture_salvage_pr",
+            "taskReferenceName": "capture_salvage_pr",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "salvageState": "${salvage_outcome.output.state}",
+              "prNumber": "${salvage_pr.output.number}",
+              "prUrl": "${salvage_pr.output.url}"
+            }
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "mark_nothing_to_salvage",
+          "taskReferenceName": "mark_nothing_to_salvage",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "salvageState": "nothing_to_publish"
+          }
+        }
+      ]
+    }
+  ],
+  "outputParameters": {
+    "salvageState": "${workflow.variables.salvageState}",
+    "publicationState": "${workflow.variables.salvageState}",
+    "pushed": "${workflow.variables.pushed}",
+    "branch": "${workflow.variables.branch}",
+    "repoPath": "${workflow.variables.repoPath}",
+    "prNumber": "${workflow.variables.prNumber}",
+    "prUrl": "${workflow.variables.prUrl}",
+    "failedWorkflowId": "${workflow.input.workflowId}",
+    "reason": "${workflow.input.reason}"
+  },
+  "enforceSchema": false
+}

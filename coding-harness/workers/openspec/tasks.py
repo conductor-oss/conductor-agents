@@ -14,7 +14,6 @@ import os
 import re
 import shutil
 import socket
-import subprocess
 import tarfile
 import tempfile
 import urllib.parse
@@ -26,6 +25,7 @@ from conductor.client.worker.worker_task import worker_task
 
 from campaign.model import paths_overlap, validate_plan
 from common import git, github
+from common.exec import run
 from common.results import fail, ok
 
 _MAX_DOWNLOAD = 10 * 1024 * 1024
@@ -51,16 +51,15 @@ def _openspec_bin() -> str:
 def _run(args: list[str], *, cwd: Path, allow_failure: bool = False) -> dict:
     env = dict(os.environ)
     env.update({"OPENSPEC_TELEMETRY": "0", "DO_NOT_TRACK": "1", "NO_COLOR": "1"})
-    proc = subprocess.run([_openspec_bin(), *args], cwd=str(cwd), env=env,
-                          capture_output=True, text=True)
+    proc = run([_openspec_bin(), *args], cwd=str(cwd), env=env, check=False)
     raw = proc.stdout.strip() or proc.stderr.strip()
     try:
         data = json.loads(raw) if raw else {}
     except json.JSONDecodeError:
         data = {"text": raw}
-    if proc.returncode and not allow_failure:
-        raise RuntimeError(f"openspec {' '.join(args)} failed ({proc.returncode}): {raw[:2000]}")
-    return {"exitCode": proc.returncode, "data": data, "stdout": proc.stdout[-4000:],
+    if proc.code and not allow_failure:
+        raise RuntimeError(f"openspec {' '.join(args)} failed ({proc.code}): {raw[:2000]}")
+    return {"exitCode": proc.code, "data": data, "stdout": proc.stdout[-4000:],
             "stderr": proc.stderr[-4000:]}
 
 
@@ -124,7 +123,7 @@ def _download(url: str, dest: Path) -> None:
     opener = urllib.request.build_opener(_SafeRedirect())
     req = urllib.request.Request(url, headers={"User-Agent": "conductor-openspec/1"})
     total = 0
-    with opener.open(req, timeout=30) as response, dest.open("wb") as handle:
+    with opener.open(req) as response, dest.open("wb") as handle:
         while chunk := response.read(64 * 1024):
             total += len(chunk)
             if total > _MAX_DOWNLOAD:
@@ -541,12 +540,11 @@ def openspec_route(task):
         subtasks = []
         for item in tasks:
             criteria = "\n".join(f"- {x}" for x in item.get("acceptanceCriteria") or [])
-            checks = item.get("checks") or []
             description = item["description"]
             if criteria:
                 description += "\nAcceptance criteria:\n" + criteria
             subtasks.append({"id": item["id"], "description": description,
-                             "files": item["files"], "testCmd": " && ".join(checks)})
+                             "files": item["files"]})
         instruction = (f"Implement OpenSpec change {i.get('changeId')}. The normalized execution "
                        "plan and immutable OpenSpec context are authoritative. "
                        + str(i.get("supplementalInstruction") or ""))
@@ -599,14 +597,15 @@ def openspec_finalize(task):
         tasks_file = change / "tasks.md"
         if not tasks_file.exists():
             raise ValueError("apply-ready change has no tasks.md to complete")
-        workflow_id = str(getattr(task, "workflow_instance_id", "") or
+        workflow_id = str(i.get("branchRunId") or i.get("workflowId")
+                          or getattr(task, "workflow_instance_id", "") or
                           getattr(task, "task_id", "openspec"))
         branch = str(i.get("branch") or f"openspec/archive/{change_id}/{workflow_id[:8]}")
         same_repo = _bool(i.get("sameRepo"))
         publish = _bool(i.get("publish"), not same_repo)
         git.ensure_ready(str(repo))
         if not same_repo:
-            git.branch(str(repo), branch)
+            branch = git.branch(str(repo), branch, run_id=workflow_id)["branch"]
         completed = _complete_tasks(tasks_file)
         _run(["validate", change_id, "--type", "change", "--strict",
               "--no-interactive", "--json"], cwd=project)

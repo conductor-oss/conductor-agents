@@ -4,10 +4,148 @@
   "retryCount": 2,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 10,
-  "responseTimeoutSeconds": 120,
-  "pollTimeoutSeconds": 120,
-  "timeoutSeconds": 600,
-  "timeoutPolicy": "TIME_OUT_WF",
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
   "concurrentExecLimit": 3,
-  "ownerEmail": "harness@conductor.local"
+  "ownerEmail": "harness@conductor.local",
+  "inputSchema": {
+    "name": "github_automation_scan_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "review",
+            "address",
+            "issue"
+          ],
+          "description": "Automation sweep kind: 'review' scans open PRs for review, 'address' scans PRs for actionable reviewer feedback, 'issue' scans labeled open issues without a linked PR."
+        },
+        "repo": {
+          "type": "string",
+          "description": "'owner/name' GitHub repository slug to scan."
+        },
+        "maxNew": {
+          "type": "integer",
+          "description": "Maximum newly-eligible candidates to dispatch this sweep. Defaults to 5 for 'review', 2 for 'address', 1 for 'issue'."
+        },
+        "maxActive": {
+          "type": "integer",
+          "description": "Maximum concurrently-active (in-flight) automation runs allowed before new candidates are capacity-blocked; defaults to maxNew."
+        },
+        "issueLabel": {
+          "type": "string",
+          "default": "conductor:auto",
+          "description": "Label an issue must carry to be eligible when kind is 'issue'."
+        }
+      },
+      "description": "Any additional properties are passed through verbatim as extra input to each dispatched automation_dispatch sub-workflow."
+    }
+  },
+  "outputSchema": {
+    "name": "github_automation_scan_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "scanned": {
+          "type": "integer",
+          "description": "Number of source PRs or issues fetched from GitHub for this sweep."
+        },
+        "eligible": {
+          "type": "integer",
+          "description": "Number of candidates selected for dispatch within capacity."
+        },
+        "active": {
+          "type": "integer",
+          "description": "Number of in-flight (active-status) automation workflows found for the tracked candidates."
+        },
+        "candidates": {
+          "type": "array",
+          "description": "Candidates dispatched this sweep.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "review",
+                  "address",
+                  "issue"
+                ],
+                "description": "Automation sweep kind for this candidate."
+              },
+              "childWorkflow": {
+                "type": "string",
+                "description": "Name of the child workflow to launch (pr_review, address_pr, or issue_to_pr)."
+              },
+              "childWorkflowVersion": {
+                "type": "integer",
+                "description": "Version of the child workflow to launch."
+              },
+              "number": {
+                "type": "integer",
+                "description": "PR or issue number."
+              },
+              "revision": {
+                "type": "string",
+                "description": "Revision fingerprint (head SHA or feedback fingerprint) this candidate targets."
+              },
+              "attempt": {
+                "type": "integer",
+                "description": "Attempt count for this revision, from prior trusted markers."
+              },
+              "title": {
+                "type": "string",
+                "description": "PR or issue title."
+              },
+              "url": {
+                "type": "string",
+                "description": "HTML URL of the PR or issue."
+              }
+            }
+          }
+        },
+        "skipped": {
+          "type": "array",
+          "description": "Candidates excluded from dispatch, each annotated with a 'reason' (e.g. draft, no_feedback, retry_backoff, suppressed, exhausted, label_or_state, linked_pr).",
+          "items": {
+            "type": "object"
+          }
+        },
+        "blocked": {
+          "type": "array",
+          "description": "Otherwise-eligible candidates deferred purely due to capacity (reason: 'capacity').",
+          "items": {
+            "type": "object"
+          }
+        },
+        "dynamicTasks": {
+          "type": "array",
+          "description": "Conductor FORK_JOIN_DYNAMIC task definitions, one automation_dispatch sub-workflow per eligible candidate.",
+          "items": {
+            "type": "object"
+          }
+        },
+        "dynamicTasksInput": {
+          "type": "object",
+          "description": "Map of dynamic task reference name to its sub-workflow input, keyed to dynamicTasks."
+        }
+      },
+      "required": [
+        "scanned",
+        "eligible",
+        "active",
+        "candidates",
+        "skipped",
+        "blocked",
+        "dynamicTasks",
+        "dynamicTasksInput"
+      ]
+    }
+  }
 }

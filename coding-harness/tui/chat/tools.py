@@ -7,11 +7,12 @@ of the TUI uses — the harness's guardrails are unchanged.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from .. import catalog, format as fmt, gh, templates
-from ..model_profiles import ProfileError, choose_profile, snapshot_inputs
+from ..model_profiles import ProfileError, apply_profile_snapshot, snapshot_summary
 from ..api import ConductorClient, ConductorError
 
 # Workflows the agent may start (the launchable set).
@@ -19,33 +20,17 @@ _STARTABLE = catalog.LAUNCHABLE
 
 
 def _apply_model_choice(workflow: str, inputs: dict) -> dict:
-    """Apply NLP-extracted explicit choices, otherwise the unique scoped policy."""
-    result = dict(inputs)
-    explicit_profile = str(result.get("modelProfile") or "").strip()
-    repo = str(result.get("repo") or result.get("repoPath") or "")
-    profile = choose_profile(workflow, repo, explicit=explicit_profile)
-    if profile:
-        variant = explicit_profile if explicit_profile in profile.data.get("profiles", {}) else str(profile.data.get("defaultProfile") or "standard")
-        for key, value in snapshot_inputs(profile, profile_variant=variant).items():
-            if not result.get(key): result[key] = value
-        # A profile selection must be executable even for legacy/scheduled
-        # workflows that only accept agent+model, so expose its first code tier
-        # as the generic model override as well as preserving the full snapshot.
-        if not result.get("model"):
-            variant = str(result.get("modelProfile") or profile.data.get("defaultProfile") or "standard")
-            role = ((profile.data.get("profiles") or {}).get(variant, {}).get("roles") or {}).get("code", {})
-            tiers = role.get("tiers") or [role]
-            if tiers and isinstance(tiers[0], dict): result["model"] = tiers[0].get("model") or ""
+    """Apply a policy snapshot, then honor a deliberate concrete-model override."""
+    result = apply_profile_snapshot(workflow, inputs)
     model = str(result.pop("model", "") or "").strip()
     if not model: return result
     lowered = model.lower()
-    agent = "codex" if lowered.startswith(("gpt", "o", "codex")) else "claude" if lowered.startswith("claude") else "gemini" if lowered.startswith("gemini") else ""
     if workflow in {"code_parallel", "issue_to_pr"}:
-        result.update({"planModel": model, "codeModel": model, "planAgent": agent, "codeAgent": agent})
+        result.update({"planModel": model, "codeModel": model})
     elif workflow == "feature_campaign":
-        result.update({"designModel": model, "planModel": model, "codeModel": model, "reviewModel": model, "designAgent": agent, "planAgent": agent, "codeAgent": agent, "reviewAgent": agent})
+        result.update({"designModel": model, "planModel": model, "codeModel": model, "reviewModel": model})
     else:
-        result.update({"model": model, "agent": agent})
+        result["model"] = model
     return result
 
 
@@ -90,18 +75,22 @@ TOOLS = [
             "confirmation from the user (the host enforces it). If the user's request is "
             "ambiguous between workflows, do not call this tool; ask which single workflow "
             "they want. Workflows and their REQUIRED inputs: "
-            "local_review{repoPath}, pr_review{repo, prNumber}, issue_to_pr{repo, issueNumber}, "
+            "local_review{repoPath}, pr_review{repo, prNumber}, issue_to_pr{repo, issueNumber, design}, "
             "address_pr{repo, prNumber}, code_parallel{repoPath, instruction}, "
             "feature_campaign{repoPath, instruction}, "
             "openspec_development{specSource, changeId, repoPath?}; useSpecSourceWorkspace:true selects a local "
-            "checked-out spec repository as the implementation worktree and publishes a draft PR. feature_campaign is checkpoint-first "
-            "and never pushes or opens a PR. "
+            "checked-out spec repository as the implementation worktree and publishes a draft PR. feature_campaign is checkpoint-first, "
+            "keeps its verified branch local by default, and pushes/opens a PR only with explicit createPr:true. "
             "openspec_development accepts local paths, Git remotes, or public HTTPS archives, "
             "routes automatically unless executionMode is set, and may pause when it selects a campaign. "
             "Every coding workflow accepts keepWorktree (default true). GitHub workflows also "
             "accept optional repoPath for a local source checkout; the run uses an isolated worktree. "
-            "code_parallel, issue_to_pr, and address_pr with engine=code_parallel always plan "
-            "through OpenSpec first — there is no design toggle to ask about. "
+            "For direct local implementation use code_parallel{repoPath,inPlace:true,contextPaths?} "
+            "or feature_campaign{repoPath,inPlace:true,contextPaths?}; inPlace never pushes or creates a PR. "
+            "Planning uses OpenSpec only when repoPath already contains openspec/; otherwise "
+            "contextPaths may point to Markdown, text, or document folders and are used directly. "
+            "For issue_to_pr, design must be an explicit boolean supplied by the user; never infer it. "
+            f"{catalog.FEATURE_CAMPAIGN_HINT} "
             "local_review compares the supplied checkout to baseRemote/baseBranch and is read-only; "
             "it never commits, pushes, or posts. Optional inputs (agent/backend, engine, openspecHumanApproval, model, base, …) "
             "may be included; anything omitted uses the workflow default. pr_review and "
@@ -163,11 +152,18 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
-        "name": "decide_approval",
-        "description": "Approve, revise, or stop a pending WAIT checkpoint. Requires confirmation.",
+        "name": "get_approval",
+        "description": "Inspect one pending approval draft, including private PR-review investigation history.",
         "input_schema": {"type": "object", "properties": {
             "task_id": {"type": "string"},
-            "action": {"type": "string", "enum": ["approve", "revise", "stop"]},
+        }, "required": ["task_id"]},
+    },
+    {
+        "name": "decide_approval",
+        "description": "Approve, privately investigate, request changes, or stop a pending WAIT checkpoint. For PR reviews, investigate refreshes the private draft and revise posts only the supplied feedback without approval. Requires confirmation.",
+        "input_schema": {"type": "object", "properties": {
+            "task_id": {"type": "string"},
+            "action": {"type": "string", "enum": ["approve", "investigate", "revise", "stop"]},
             "feedback": {"type": "string"},
         }, "required": ["task_id", "action"]},
     },
@@ -246,6 +242,8 @@ async def _run(name: str, i: dict, ctx: ToolContext) -> str:
         return await _gh(name, i)
     if name == "list_approvals":
         return await _list_approvals(ctx)
+    if name == "get_approval":
+        return await _get_approval(i, ctx)
     if name == "decide_approval":
         return await _decide_approval(i, ctx)
     if name == "list_schedules":
@@ -312,10 +310,23 @@ async def _start(i: dict, ctx: ToolContext) -> str:
     inputs = catalog.normalize_local_paths(i.get("inputs") or {})
     if wf not in catalog.CATALOG:
         return f"error: unknown workflow {wf!r}. Choose one of: {', '.join(_STARTABLE)}"
+    if wf == "issue_to_pr" and "design" not in inputs:
+        return (
+            "design choice required for issue_to_pr — ask the user: "
+            "\"Should this issue create and review design documents before coding?\" "
+            f"{catalog.FEATURE_CAMPAIGN_HINT} No workflow was started."
+        )
+    if wf == "issue_to_pr" and not isinstance(inputs.get("design"), bool):
+        return (
+            "design must be an explicit true or false for issue_to_pr — ask the user for "
+            "a Yes/No answer. No workflow was started."
+        )
     try:
         inputs = _apply_model_choice(wf, inputs)
     except ProfileError as exc:
         return f"error: {exc} No workflow was started."
+    if inputs.get("inPlace") and inputs.get("createPr"):
+        return "inPlace execution is local-only: set createPr:false. No workflow was started."
     missing = [k for k in _required_inputs(wf) if k not in inputs or inputs.get(k) in (None, "")]
     if missing:
         return f"missing required inputs for {wf}: {', '.join(missing)} — ask the user for them."
@@ -345,6 +356,7 @@ async def _start(i: dict, ctx: ToolContext) -> str:
             pretty_parts.append(f"{key}={value}")
     pretty = ", ".join(pretty_parts)
     detail = f"{target}\ninputs: {pretty}"
+    detail += "\n" + snapshot_summary(inputs)
     if applied_templates:
         detail += "\ntemplates: " + ", ".join(
             f"{item.field} ← {item.source}" for item in applied_templates)
@@ -356,9 +368,16 @@ async def _start(i: dict, ctx: ToolContext) -> str:
         detail += (
             f"\nsource checkout: {workspace.source}"
             f"\nrun workspace: {workspace.planned}"
-            f"\nsource changes ignored: {workspace.ignored_changes}"
+            f"\nsource changes included on the new branch: {workspace.included_changes}"
             f"\nkeep worktree: {inputs.get('keepWorktree', True)}"
         )
+    if inputs.get("inPlace"):
+        detail += ("\nIN-PLACE MODE: the harness creates and switches to a new unique branch "
+                   "before committing every Git-visible existing change as its baseline; "
+                   "temporary child worktrees are used only for parallel implementation; "
+                   "the original branch ref is not moved; no push or PR.")
+    if inputs.get("contextPaths"):
+        detail += "\nlive read-only context paths: " + ", ".join(inputs["contextPaths"])
     ok = await ctx.confirm(f"Start {wf}", detail)
     if not ok:
         return "user declined to start the workflow."
@@ -368,20 +387,22 @@ async def _start(i: dict, ctx: ToolContext) -> str:
     wid = await ctx.client.start(wf, inputs)
     ctx.on_run_started(wid)
     gated = (wf == "pr_review" and inputs.get("approve")) or \
-            (wf == "issue_to_pr" and inputs.get("approvePr")) or wf == "feature_campaign"
+            (wf == "issue_to_pr" and inputs.get("approvePr")) or \
+            wf in ("address_pr", "feature_campaign")
     if wf == "openspec_development":
         hint = (" It may pause at feature-campaign checkpoints — "
                 "open it with `o` to review or respond.")
     elif gated:
         hint = (" It will pause at its next review checkpoint — "
-                "open it with `o` to approve, edit, or reject.")
+                "open it with `o` to approve, request changes, or defer.")
     else:
         hint = " Tell the user they can open it with `o`."
     template_note = ""
     if applied_templates:
         template_note = " Templates: " + ", ".join(
             f"{item.field}={item.source}" for item in applied_templates) + "."
-    return f"started {wf} — workflow id {wid} (target {target}).{template_note}{hint}"
+    return (f"started {wf} — workflow id {wid} (target {target}). "
+            f"{snapshot_summary(inputs)}.{template_note}{hint}")
 
 
 async def _register(ctx: ToolContext) -> str:
@@ -440,6 +461,21 @@ async def _list_approvals(ctx: ToolContext) -> str:
     )
 
 
+async def _get_approval(i: dict, ctx: ToolContext) -> str:
+    items = await ctx.client.pending_approvals()
+    item = next((x for x in items if x.task_id == i.get("task_id")), None)
+    if not item:
+        return "error: approval task not found (it may already be resolved)."
+    return json.dumps({
+        "taskId": item.task_id,
+        "workflowId": item.workflow_id,
+        "workflow": item.workflow,
+        "taskRef": item.task_ref,
+        "availableActions": item.input.get("availableActions") or [],
+        "draft": item.draft,
+    }, indent=2, default=str)
+
+
 async def _decide_approval(i: dict, ctx: ToolContext) -> str:
     items = await ctx.client.pending_approvals()
     item = next((x for x in items if x.task_id == i.get("task_id")), None)
@@ -449,22 +485,39 @@ async def _decide_approval(i: dict, ctx: ToolContext) -> str:
         return "error: legacy HUMAN checkpoint; re-register current workflows and relaunch."
     action = i.get("action")
     feedback = str(i.get("feedback") or "").strip()
-    if action == "revise" and not feedback:
-        return "error: revise requires actionable feedback."
+    if action in ("revise", "investigate") and not feedback:
+        noun = "private investigation" if action == "investigate" else "request changes"
+        return f"error: {noun} requires actionable feedback."
+    can_investigate = item.draft.get("canInvestigate")
+    if action == "investigate" and (
+        item.workflow != "pr_review" or not (can_investigate is True or str(can_investigate).lower() == "true")
+    ):
+        return "error: this checkpoint has no private investigation pass available."
     confirmed = await ctx.confirm("Decide approval", f"{action} {item.workflow} checkpoint {item.task_ref}?")
     if not confirmed:
         return "user declined the approval decision."
     draft = item.draft
     if action == "approve":
         output = {"approved": True, "action": "approve"}
-        if item.workflow == "pr_review": output["review"] = draft
+        if item.workflow in ("design_docs", "openspec_plan"):
+            output["feedback"] = ""
+        elif item.workflow == "pr_review": output["review"] = draft
         elif item.workflow == "issue_to_pr": output.update({"title": draft.get("title", ""), "body": draft.get("body", "")})
+        elif item.workflow == "address_pr":
+            output.update({"artifact": draft, "body": draft.get("body", "")})
         else: output["artifact"] = draft
     else:
         output = {"approved": False, "action": action, "feedback": feedback,
                   "suppressed": action == "stop"}
-    revision_capable = item.workflow in ("pr_review", "address_pr")
-    status = "COMPLETED" if action == "approve" or revision_capable \
+    revision_capable = item.workflow in (
+        "design_docs", "openspec_plan", "pr_review", "address_pr", "issue_to_pr",
+    )
+    resumable_action = action == "revise" and revision_capable
+    suppressible_action = action == "stop" and item.workflow in (
+        "pr_review", "address_pr", "issue_to_pr",
+    )
+    investigable_action = action == "investigate" and item.workflow == "pr_review"
+    status = "COMPLETED" if action == "approve" or resumable_action or suppressible_action or investigable_action \
         else "FAILED_WITH_TERMINAL_ERROR"
     await ctx.client.signal_task(item.workflow_id, item.task_ref, status, output,
                                  task_type=item.task_type)
@@ -492,6 +545,7 @@ async def _save_schedule(i: dict, ctx: ToolContext) -> str:
         return f"error: {exc} No schedule was saved."
     payload["startWorkflowRequest"]["input"] = schedule_input
     detail = f"{payload['name']}\n{payload['cronExpression']} {payload['zoneId']}"
+    detail += "\n" + snapshot_summary(payload["startWorkflowRequest"]["input"])
     if applied:
         detail += "\ntemplates: " + ", ".join(
             f"{item.field} ← {item.source}" for item in applied)
@@ -499,7 +553,8 @@ async def _save_schedule(i: dict, ctx: ToolContext) -> str:
     if not confirmed:
         return "user declined schedule save."
     await ctx.client.save_schedule(payload)
-    return f"saved schedule {payload['name']}."
+    return (f"saved schedule {payload['name']}. "
+            f"{snapshot_summary(payload['startWorkflowRequest']['input'])}.")
 
 
 async def _schedule_action(i: dict, ctx: ToolContext) -> str:

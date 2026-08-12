@@ -1,0 +1,46 @@
+{
+  "name": "github_demo_publication_plan",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "github_demo_publication_plan_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "verificationState": {
+          "type": "string",
+          "description": "Upstream verification outcome. Only the literal value \"passed\" avoids a draft PR; any other value (or absence) is treated as blocked."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "github_demo_publication_plan_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "draft": {
+          "type": "boolean",
+          "description": "True unless verificationState is exactly \"passed\"; whether the PR should be opened as a draft."
+        },
+        "outcome": {
+          "type": "string",
+          "description": "Echoes verificationState when it is a non-empty string, otherwise \"blocked\"."
+        }
+      },
+      "required": [
+        "draft",
+        "outcome"
+      ]
+    }
+  }
+}

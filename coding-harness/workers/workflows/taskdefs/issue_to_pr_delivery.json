@@ -1,0 +1,129 @@
+{
+  "name": "issue_to_pr_delivery",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "issue_to_pr_delivery_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "child": {
+          "type": "object",
+          "description": "code_parallel child report: deliveryOutcome/verificationState, proposalText, subtasks, merged, conflicts, totalTokens, totalCostUsd, deliveryRepairAttempts, deliveryReports, missingPaths, rejectedPaths, commandFailures, sandboxDenials. Non-object treated as empty."
+        },
+        "publicationCommit": {
+          "type": "object",
+          "description": "Merge/commit step report: commit (resolved SHA) and rejectedPaths. Non-object treated as empty."
+        },
+        "workspaceState": {
+          "type": "object",
+          "description": "Workspace state snapshot; its head is used as a commit fallback when publicationCommit has none. Non-object treated as empty."
+        },
+        "fallbackCommit": {
+          "description": "Last-resort commit value used when neither publicationCommit.commit nor workspaceState.head is a non-blank string."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "issue_to_pr_delivery_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "incomplete_delivery",
+            "merge_blocked",
+            "audit_unavailable",
+            "implementation_unavailable"
+          ],
+          "description": "Delivery state; forced to incomplete_delivery when the child reported passed but the merge step still had rejected paths."
+        },
+        "commit": {
+          "description": "Resolved delivery commit: publicationCommit.commit, else workspaceState.head, else fallbackCommit."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Child's proposalText, or \"Automated change.\" when not a string."
+        },
+        "subtasks": {
+          "type": "array",
+          "description": "Child's subtasks list, or empty."
+        },
+        "merged": {
+          "type": "array",
+          "description": "Child's merged branch list, or empty."
+        },
+        "conflicts": {
+          "type": "array",
+          "description": "Child's conflicts list, or empty."
+        },
+        "totalTokens": {
+          "type": "number",
+          "description": "Child's totalTokens, or 0 when not numeric."
+        },
+        "totalCostUsd": {
+          "type": "number",
+          "description": "Child's totalCostUsd, or 0 when not numeric."
+        },
+        "repairAttempts": {
+          "type": "number",
+          "description": "Child's deliveryRepairAttempts, or 0 when not numeric."
+        },
+        "reports": {
+          "type": "array",
+          "description": "Child's deliveryReports list, or empty."
+        },
+        "missingPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Child's missingPaths list, or empty."
+        },
+        "rejectedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Union (deduplicated) of the child's rejectedPaths and the publication commit's rejectedPaths."
+        },
+        "commandFailures": {
+          "type": "array",
+          "description": "Child's commandFailures list, or empty."
+        },
+        "sandboxDenials": {
+          "type": "array",
+          "description": "Child's sandboxDenials list, or empty."
+        }
+      },
+      "required": [
+        "state",
+        "commit",
+        "summary",
+        "subtasks",
+        "merged",
+        "conflicts",
+        "totalTokens",
+        "totalCostUsd",
+        "repairAttempts",
+        "reports",
+        "missingPaths",
+        "rejectedPaths",
+        "commandFailures",
+        "sandboxDenials"
+      ]
+    }
+  }
+}

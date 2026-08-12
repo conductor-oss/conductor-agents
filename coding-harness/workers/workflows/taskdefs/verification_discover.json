@@ -1,0 +1,118 @@
+{
+  "name": "verification_discover",
+  "description": "Validate that a candidate parallel plan has unique task IDs and safe, exact, file-disjoint ownership; return structured issues for autonomous replanning.",
+  "retryCount": 0,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "verification_discover_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "subtasks": {
+          "type": "array",
+          "description": "Candidate parallel plan to validate. Each item must be an object with a lowercase kebab-case 'id', a non-empty 'description', and a non-empty 'files' array of exact repository-relative paths not claimed by another subtask.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Lowercase kebab-case slug uniquely identifying the subtask."
+              },
+              "description": {
+                "type": "string",
+                "description": "Non-empty human-readable description of the subtask."
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Non-empty list of exact, repository-relative files this subtask owns."
+              }
+            }
+          }
+        },
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the repository, used to reject files that resolve to directories rather than exact files. Defaults to no directory check when omitted."
+        },
+        "currentSubtasks": {
+          "type": "array",
+          "description": "The plan currently in flight, returned as-is under 'subtasks' when validation fails so a replan has something to fix instead of an empty list.",
+          "items": {
+            "type": "object"
+          }
+        },
+        "exhausted": {
+          "type": "boolean",
+          "description": "Whether the replanning budget is exhausted; when true and validation fails, planningState is 'plan_exhausted' instead of 'needs_replan'. Defaults to false."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "verification_discover_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "valid": {
+          "type": "boolean",
+          "description": "True when every subtask passed validation with no issues."
+        },
+        "planningState": {
+          "type": "string",
+          "enum": [
+            "valid",
+            "needs_replan",
+            "plan_exhausted"
+          ],
+          "description": "Routable verdict: 'valid' to proceed, 'needs_replan' to retry planning, 'plan_exhausted' when the replan budget is spent."
+        },
+        "issues": {
+          "type": "array",
+          "description": "Structured validation issues found in the candidate plan; empty when valid.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "Machine-readable issue code, e.g. empty_plan, invalid_id, duplicate_id, missing_description, missing_files, unsafe_path, directory_claim."
+              },
+              "field": {
+                "type": "string",
+                "description": "Dotted path to the offending field, e.g. subtasks[0].files[1]."
+              },
+              "subtask": {
+                "type": "string",
+                "description": "The subtask id the issue relates to, when known."
+              },
+              "message": {
+                "type": "string",
+                "description": "Human-readable explanation of the issue."
+              }
+            }
+          }
+        },
+        "subtasks": {
+          "type": "array",
+          "description": "The normalized, validated plan when valid; otherwise currentSubtasks (or an empty array) so a repair round has a plan to fix.",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [
+        "valid",
+        "planningState",
+        "issues",
+        "subtasks"
+      ]
+    }
+  }
+}

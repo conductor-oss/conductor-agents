@@ -169,6 +169,46 @@ async def test_approval_inbox_enter_opens_selected_wait():
 
 
 @pytest.mark.asyncio
+async def test_approval_inbox_defer_never_signals_the_task():
+    # Confirmed live: ApprovalModal.action_defer() (bound to Escape) hands back
+    # status=None to mean "leave this pending, decide later." run_detail.py's
+    # own gate flow guards status is None before calling signal_task; the
+    # Approval Inbox's on_decision was missing the same guard, so a bare
+    # f-string in signal_task stringified None to the literal text "None" and
+    # Conductor's server rejected the resulting URL with an opaque HTTP 500
+    # (MethodArgumentTypeMismatchException for TaskResult$Status, value [None]).
+    item = api.PendingApproval(
+        task_id="gate-1", task_ref="review_gate__2", task_type="WAIT",
+        workflow_id="wf-1", workflow="pr_review",
+        input={"repo": "acme/app", "prNumber": 7,
+               "draft": {"summary": "Review is ready", "verdict": "comment"}},
+        scheduled_ms=1000,
+    )
+
+    class ApprovalClient(FakeClient):
+        async def pending_approvals(self):
+            return [item]
+
+    from tui.screens.approvals import ApprovalInbox
+    from tui.widgets.modals import ApprovalModal
+
+    client = ApprovalClient()
+    app = _app(client)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause(0.2)
+        app.push_screen(ApprovalInbox())
+        await pilot.pause(0.5)
+        app.screen.query_one("#approval_table").focus()
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert isinstance(app.screen, ApprovalModal)
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+        assert not client.signals
+        assert isinstance(app.screen, ApprovalInbox)
+
+
+@pytest.mark.asyncio
 async def test_notification_click_opens_inbox_when_multiple_approvals_wait():
     items = [
         api.PendingApproval(
@@ -303,6 +343,38 @@ async def test_launcher_blocks_start_without_required():
         # the review gate defaults ON in the form (tui_default) → approve sent true
         assert scr.spec.build_payload(values) == {
             "repo": "acme/app", "prNumber": 7, "approve": True}
+
+
+@pytest.mark.asyncio
+async def test_issue_launcher_requires_explicit_design_yes_or_no():
+    from tui.screens.launcher import LauncherForm
+    from textual.widgets import Select
+
+    app = _app(FakeClient())
+    async with app.run_test(size=(140, 50)) as pilot:
+        await pilot.pause(0.2)
+        app.push_screen(LauncherForm("issue_to_pr"))
+        await pilot.pause(0.4)
+        scr = app.screen
+        scr._set("repo", "acme/app")
+        scr._widgets["issueNumber"].value = "3"
+
+        values, missing = scr._collect()
+        assert "Create design docs?" in missing
+        assert "feature_campaign" in next(
+            f.help for f in scr.spec.fields if f.name == "design")
+
+        design = scr._widgets["design"]
+        assert isinstance(design, Select)
+        design.value = "no"
+        values, missing = scr._collect()
+        assert not missing
+        assert scr.spec.build_payload(values)["design"] is False
+
+        design.value = "yes"
+        values, missing = scr._collect()
+        assert not missing
+        assert scr.spec.build_payload(values)["design"] is True
 
 
 @pytest.mark.asyncio
@@ -519,12 +591,14 @@ def _pr_review_gate_execution() -> dict:
         "tasks": [
             {"referenceTaskName": "review", "taskDefName": "coding_agent", "taskType": "SIMPLE",
              "status": "COMPLETED", "taskId": "t1",
-             "outputData": {"structured": {"summary": "ok", "verdict": "comment", "comments": []}}},
+             "outputData": {"structured": {"summary": "LGTM", "verdict": "approve", "comments": []}}},
             {"referenceTaskName": "review_gate", "taskType": "WAIT", "status": "IN_PROGRESS",
              "taskId": "gate-1",
              "inputData": {"workflow": "pr_review", "prNumber": 7,
-                           "draft": {"summary": "Looks fine overall", "verdict": "comment",
-                                     "comments": [{"path": "a.py", "line": 3, "body": "nit: rename"}]}}},
+                           "availableActions": ["approve", "investigate", "revise", "stop", "later"],
+                           "draft": {"summary": "LGTM", "verdict": "approve", "comments": [],
+                                     "investigationHistory": [], "investigationCount": 0,
+                                     "maxInvestigationPasses": 5, "canInvestigate": True}}},
         ],
     }
 
@@ -534,6 +608,55 @@ def _design_gate_execution() -> dict:
             "input": {"repoPath": "/tmp/app", "instruction": "Design the change"},
             "tasks": [{"referenceTaskName": "gen_proposal", "taskDefName": "coding_agent", "taskType": "SIMPLE", "status": "COMPLETED", "taskId": "d1", "outputData": {"filesChanged": ["openspec/changes/c1/proposal.md"]}},
                       {"referenceTaskName": "plan_review", "taskType": "WAIT", "status": "IN_PROGRESS", "taskId": "design-review-1", "inputData": {"workflow": "openspec_plan", "draft": {"changeDir": "/tmp/app/openspec/changes/c1", "filesChanged": ["openspec/changes/c1/proposal.md"], "summary": "Initial plan"}}}]}
+
+
+def _software_design_gate_execution() -> dict:
+    return {
+        "workflowId": "wf-software-design",
+        "workflowType": "design_docs",
+        "status": "RUNNING",
+        "startTime": 1000,
+        "input": {"repoPath": "/tmp/app"},
+        "tasks": [{
+            "referenceTaskName": "design_review__1",
+            "taskType": "WAIT",
+            "status": "IN_PROGRESS",
+            "taskId": "software-design-review-1",
+            "inputData": {
+                "workflow": "design_docs",
+                "repoPath": "/tmp/app",
+                "draft": {
+                    "changeDir": "/tmp/app/docs/design",
+                    "filesChanged": ["docs/design/edge.md"],
+                    "summary": "Add a durable edge-case design.",
+                },
+            },
+        }],
+    }
+
+
+def _address_gate_execution() -> dict:
+    return {
+        "workflowId": "wf-address-gate",
+        "workflowType": "address_pr",
+        "status": "RUNNING",
+        "startTime": 1000,
+        "input": {"repo": "acme/app", "prNumber": 12},
+        "tasks": [{
+            "referenceTaskName": "address_gate__1",
+            "taskType": "WAIT",
+            "status": "IN_PROGRESS",
+            "taskId": "address-gate-1",
+            "inputData": {
+                "phase": "pr_update",
+                "branch": "feature",
+                "draft": {
+                    "title": "Address PR #12 feedback",
+                    "body": "Addressed the race and ran the targeted checks.",
+                },
+            },
+        }],
+    }
 
 
 def _campaign_gate_execution() -> dict:
@@ -570,12 +693,59 @@ def test_openspec_plan_draft_omits_proposal_section_when_absent():
     assert "proposal.md:" not in modal._draft_text().plain
 
 
+@pytest.mark.asyncio
+async def test_design_gate_is_labeled_as_design_and_revision_keeps_workflow_alive():
+    from textual.widgets import Button, Label, TextArea
+    from tui.screens.run_detail import RunDetail
+    from tui.widgets.modals import ApprovalModal
+
+    fc = FakeClient(execution=_software_design_gate_execution())
+    app = _app(fc)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause(0.2)
+        app.push_screen(RunDetail("wf-software-design"))
+        await pilot.pause(0.6)
+        assert isinstance(app.screen, ApprovalModal)
+        assert "software design" in str(app.screen.query_one(Label).render()).lower()
+        assert "design changes" in str(app.screen.query_one("#reject", Button).label).lower()
+        app.screen.query_one("#plan_feedback", TextArea).text = "Clarify rollback behavior."
+        await pilot.click("#reject")
+        await pilot.pause(0.3)
+        wid, ref, status, output = fc.signals[-1]
+        assert (wid, ref, status) == ("wf-software-design", "design_review__1", "COMPLETED")
+        assert output == {"approved": False, "feedback": "Clarify rollback behavior."}
+
+
+@pytest.mark.asyncio
+async def test_address_gate_shows_publishable_body_and_approves_with_normalized_body():
+    from textual.widgets import Static
+    from tui.screens.run_detail import RunDetail
+    from tui.widgets.modals import ApprovalModal
+
+    fc = FakeClient(execution=_address_gate_execution())
+    app = _app(fc)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause(0.2)
+        app.push_screen(RunDetail("wf-address-gate"))
+        await pilot.pause(0.6)
+        assert isinstance(app.screen, ApprovalModal)
+        assert "before they are pushed" in app.screen._heading()
+        rendered = app.screen.query_one("#approval_content", Static).render().plain
+        assert "Addressed the race" in rendered
+        await pilot.click("#approve")
+        await pilot.pause(0.3)
+        wid, ref, status, output = fc.signals[-1]
+        assert (wid, ref, status) == ("wf-address-gate", "address_gate__1", "COMPLETED")
+        assert output["action"] == "approve"
+        assert output["body"] == "Addressed the race and ran the targeted checks."
+
+
 def test_pending_gate_detection():
     run, tasks = api.parse_execution(_pr_review_gate_execution())
     d = api.RunDetail(run=run, tasks=tasks)
     gate = d.pending_gate()
     assert gate is not None and gate.ref == "review_gate" and gate.type == "WAIT"
-    assert gate.input["draft"]["verdict"] == "comment"
+    assert gate.input["draft"]["verdict"] == "approve"
 
 
 @pytest.mark.asyncio
@@ -583,18 +753,97 @@ async def test_run_detail_gate_auto_opens_and_approves():
     fc = FakeClient(execution=_pr_review_gate_execution())
     app = _app(fc)
     async with app.run_test(size=(140, 45)) as pilot:
+        from textual.widgets import Button, Static
         from tui.screens.run_detail import RunDetail
         from tui.widgets.modals import ApprovalModal
         await pilot.pause(0.2)
         app.push_screen(RunDetail("wf-gate"))
         await pilot.pause(0.6)
         assert isinstance(app.screen, ApprovalModal)   # auto-opened on pause
+        assert "request changes" in str(app.screen.query_one("#reject", Button).label).lower()
+        assert "investigate" in str(app.screen.query_one("#investigate", Button).label).lower()
+        assert "publish nothing" in str(app.screen.query_one("#stop", Button).label).lower()
+        assert "keep open" in str(app.screen.query_one("#defer", Button).label).lower()
+        hint = app.screen.query_one("#approval_hint", Static).render().plain
+        assert "approves the PR" in hint
+        assert "without approval" in hint
         await pilot.click("#approve")
         await pilot.pause(0.5)
         assert fc.signals, "expected a signal_task call"
         wid, ref, status, output = fc.signals[-1]
         assert wid == "wf-gate" and ref == "review_gate" and status == "COMPLETED"
-        assert output["approved"] is True and output["review"]["verdict"] == "comment"
+        assert output["approved"] is True
+        assert output["review"]["summary"] == "LGTM"
+        assert output["review"]["comments"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_detail_gate_request_changes_posts_human_feedback_without_approval():
+    fc = FakeClient(execution=_pr_review_gate_execution())
+    app = _app(fc)
+    async with app.run_test(size=(140, 45)) as pilot:
+        from textual.widgets import TextArea
+        from tui.screens.run_detail import RunDetail
+        from tui.widgets.modals import ApprovalModal
+        await pilot.pause(0.2)
+        app.push_screen(RunDetail("wf-gate"))
+        await pilot.pause(0.6)
+        assert isinstance(app.screen, ApprovalModal)
+        app.screen.query_one("#approval_feedback", TextArea).text = \
+            "Please add a regression test for the retry path."
+        await pilot.click("#reject")
+        await pilot.pause(0.5)
+        wid, ref, status, output = fc.signals[-1]
+        assert (wid, ref, status) == ("wf-gate", "review_gate", "COMPLETED")
+        assert output == {
+            "approved": False,
+            "action": "revise",
+            "feedback": "Please add a regression test for the retry path.",
+        }
+
+
+@pytest.mark.asyncio
+async def test_run_detail_gate_investigates_privately_with_separate_question_field():
+    fc = FakeClient(execution=_pr_review_gate_execution())
+    app = _app(fc)
+    async with app.run_test(size=(140, 45)) as pilot:
+        from textual.widgets import TextArea
+        from tui.screens.run_detail import RunDetail
+        from tui.widgets.modals import ApprovalModal
+        await pilot.pause(0.2)
+        app.push_screen(RunDetail("wf-gate"))
+        await pilot.pause(0.6)
+        assert isinstance(app.screen, ApprovalModal)
+        app.screen.query_one("#investigation_request", TextArea).text = \
+            "Trace every caller of the changed retry helper."
+        app.screen.query_one("#approval_feedback", TextArea).text = \
+            "This must never be posted by investigation."
+        await pilot.click("#investigate")
+        await pilot.pause(0.5)
+        wid, ref, status, output = fc.signals[-1]
+        assert (wid, ref, status) == ("wf-gate", "review_gate", "COMPLETED")
+        assert output == {
+            "approved": False,
+            "action": "investigate",
+            "feedback": "Trace every caller of the changed retry helper.",
+        }
+
+
+def test_pr_review_draft_renders_private_history_and_hides_exhausted_action():
+    from tui.widgets.modals import ApprovalModal
+    modal = ApprovalModal("pr_review", {
+        "summary": "LGTM", "verdict": "approve", "comments": [],
+        "investigationCount": 5, "maxInvestigationPasses": 5, "canInvestigate": False,
+        "investigationHistory": [{
+            "pass": 5, "status": "success", "question": "Check the race.",
+            "answer": "The lock covers both callers.",
+        }],
+    })
+    rendered = modal._draft_text().plain
+    assert "Private investigations (5/5)" in rendered
+    assert "Check the race." in rendered
+    assert "The lock covers both callers." in rendered
+    assert modal._can_investigate() is False
 
 
 @pytest.mark.asyncio
@@ -725,22 +974,3 @@ async def test_campaign_gate_edits_feedback_and_requests_revision():
         wid, ref, status, output = fc.signals[-1]
         assert (wid, ref, status) == ("wf-campaign", "wave_checkpoint", "COMPLETED")
         assert output["action"] == "revise" and output["feedback"] == "split the migration"
-
-
-@pytest.mark.asyncio
-async def test_campaign_gate_attached_check_confirmation_and_defer():
-    from textual.widgets import Input, Switch
-    fc = FakeClient(execution=_campaign_gate_execution())
-    app = _app(fc)
-    async with app.run_test(size=(160, 55)) as pilot:
-        from tui.screens.run_detail import RunDetail
-        from tui.widgets.modals import ApprovalModal
-        await pilot.pause(0.2); app.push_screen(RunDetail("wf-campaign")); await pilot.pause(0.6)
-        assert isinstance(app.screen, ApprovalModal)
-        app.screen.query_one("#campaign_profile", Input).value = "attached"
-        app.screen.query_one("#campaign_checks", Input).value = "smoke, browser"
-        app.screen.query_one("#campaign_attached", Switch).value = True
-        await pilot.click("#campaign_run_checks"); await pilot.pause(0.4)
-        output = fc.signals[-1][3]
-        assert output["action"] == "run_checks" and output["checks"] == ["smoke", "browser"]
-        assert output["attachedConfirmed"] is True

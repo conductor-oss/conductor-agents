@@ -1,0 +1,93 @@
+{
+  "name": "campaign_publication_plan",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "campaign_publication_plan_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "description": "Campaign outcome; 'verified' is required for a non-draft publish. Falls back to 'incomplete' if not a non-empty string."
+        },
+        "requestedDraft": {
+          "type": "boolean",
+          "description": "Explicit request to publish as a draft; forces draft=true when exactly true."
+        },
+        "testState": {
+          "type": "string",
+          "description": "Test cycle state, echoed back as testCycleState; falls back to 'not_run' if not a string."
+        },
+        "testsPassed": {
+          "type": "boolean",
+          "description": "Whether the final test cycle passed; must be exactly true for a non-draft publish."
+        },
+        "tested": {
+          "description": "Commit/ref produced by the final test cycle. Used as the publish head when non-blank."
+        },
+        "committed": {
+          "description": "Commit/ref to fall back to as the publish head when 'tested' is blank."
+        },
+        "agentAuthoredTest": {
+          "type": "boolean",
+          "description": "Whether the final test cycle accepted a coding-agent-authored test (no pre-existing test covered the change). Forces draft=true when exactly true, even if testsPassed is also true, as defense in depth alongside the red/green check that already proved the test isn't vacuous."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "campaign_publication_plan_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "draft": {
+          "type": "boolean",
+          "description": "True unless outcome is 'verified' and requestedDraft is not true and testsPassed is exactly true and agentAuthoredTest is not true."
+        },
+        "outcome": {
+          "type": "string",
+          "description": "Resolved campaign outcome; 'incomplete' when outcome was not a non-empty string."
+        },
+        "head": {
+          "type": "string",
+          "description": "Publish head: 'tested' when non-blank, otherwise 'committed'."
+        },
+        "testCycleState": {
+          "type": "string",
+          "description": "Resolved test cycle state; 'not_run' when testState was not a string."
+        },
+        "testsPassed": {
+          "type": "boolean",
+          "description": "True only when input testsPassed was exactly true."
+        },
+        "agentAuthoredTest": {
+          "type": "boolean",
+          "description": "Echoes whether a coding-agent-authored test was used; true only when input agentAuthoredTest was exactly true."
+        },
+        "agentAuthoredTestNote": {
+          "type": "string",
+          "description": "A fixed markdown note flagging the agent-authored test for PR-body visibility when agentAuthoredTest is true; empty string otherwise."
+        }
+      },
+      "required": [
+        "draft",
+        "outcome",
+        "head",
+        "testCycleState",
+        "testsPassed",
+        "agentAuthoredTest",
+        "agentAuthoredTestNote"
+      ]
+    }
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "name": "address_decision",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "address_decision_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "gate": {
+          "type": "object",
+          "description": "WAIT gate payload carrying the human's reply-approval decision; shape is normalized regardless of which fields are populated.",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "approve",
+                "revise",
+                "stop"
+              ],
+              "description": "Explicit requested action from the gate payload."
+            },
+            "approved": {
+              "type": "boolean",
+              "description": "Legacy approval flag; treated as action=approve when action is absent and this is true."
+            },
+            "feedback": {
+              "type": "string",
+              "description": "Reviewer feedback/rationale; must be non-blank for a 'revise' action to take effect."
+            },
+            "body": {
+              "type": "string",
+              "description": "Reply body override supplied directly on the gate."
+            },
+            "artifact": {
+              "type": "object",
+              "description": "Fallback container for the reply body.",
+              "properties": {
+                "body": {
+                  "type": "string",
+                  "description": "Fallback reply body, used when gate.body is absent."
+                }
+              }
+            }
+          }
+        },
+        "fallbackBody": {
+          "type": "string",
+          "description": "Reply body used when neither gate.body nor gate.artifact.body is set."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "address_decision_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "approve",
+            "revise",
+            "stop",
+            "unknown"
+          ],
+          "description": "Resolved gate action after validating approval/feedback requirements."
+        },
+        "feedback": {
+          "type": "string",
+          "description": "Reviewer feedback text (empty string when none was supplied)."
+        },
+        "body": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Resolved reply body, preferring gate.body, then gate.artifact.body, then fallbackBody."
+        }
+      },
+      "required": [
+        "action",
+        "feedback",
+        "body"
+      ]
+    }
+  }
+}

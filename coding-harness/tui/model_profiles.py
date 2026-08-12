@@ -106,7 +106,11 @@ def choose_profile(workflow: str, repo: str = "", *, explicit: str = "", profile
         if wf or rp:
             scored.append(((2 if rp else 0) + (1 if wf else 0), profile))
     if not scored:
-        return None
+        # The TUI owns one user policy (/models).  Its default profile is the
+        # policy for every TUI-originated run unless an explicit or scoped
+        # selection above wins.  Keeping the complete policy as an inline
+        # snapshot makes queued runs and schedules immune to later edits.
+        return profiles[0] if len(profiles) == 1 else None
     best = max(score for score, _ in scored)
     winners = [profile for score, profile in scored if score == best]
     if len(winners) != 1:
@@ -119,6 +123,35 @@ def snapshot_inputs(profile: Profile | None, *, profile_variant: str = "") -> di
         return {"modelProfile": profile_variant or "", "modelPolicy": {}, "modelPolicySource": ""}
     return {"modelProfile": profile_variant or str(profile.data.get("defaultProfile") or "standard"), "modelPolicy": profile.data,
             "modelPolicySource": f"user:{profile.path}", "modelPolicySha256": profile.sha256}
+
+
+def apply_profile_snapshot(workflow: str, inputs: dict, *, repo: str = "",
+                           profiles: list[Profile] | None = None) -> dict:
+    """Attach the selected user-policy snapshot without flattening its roles.
+
+    An explicit profile wins over scoped selection; a scoped selection wins over
+    the single global /models policy.  Existing envelope values are retained so
+    re-runs and schedule edits preserve their original durable snapshot.
+    """
+    result = dict(inputs)
+    explicit = str(result.get("modelProfile") or "").strip()
+    target_repo = repo or str(result.get("repo") or result.get("repoPath") or "")
+    profile = choose_profile(workflow, target_repo, explicit=explicit, profiles=profiles)
+    if profile is None:
+        return result
+    variant = explicit if explicit in profile.data.get("profiles", {}) else str(
+        profile.data.get("defaultProfile") or "standard")
+    for key, value in snapshot_inputs(profile, profile_variant=variant).items():
+        if not result.get(key):
+            result[key] = value
+    return result
+
+
+def snapshot_summary(inputs: dict) -> str:
+    """Short operator-facing provenance for a launch or schedule confirmation."""
+    profile = str(inputs.get("modelProfile") or "default")
+    source = str(inputs.get("modelPolicySource") or "bundled")
+    return f"model profile: {profile} ({source})"
 
 
 def write_profile(path: Path, data: dict) -> None:

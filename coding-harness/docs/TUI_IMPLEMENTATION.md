@@ -59,10 +59,9 @@ workflow = one catalog entry; screens/widgets stay generic.
 ## 2. Conductor REST API (verified against OSS 3.x on this server)
 
 Base URL = `CONDUCTOR_SERVER_URL` (default `http://localhost:8080/api`). All JSON unless noted.
-`ConductorClient` wraps one `httpx.AsyncClient(base_url=...)`, with a short HTTP request timeout,
-and raises a typed `ConductorError` on non-2xx (surfaced as the "server unreachable" screen for
-connect errors). This client request guard is unrelated to worker/task runtime: execution
-deadlines are configured only on Conductor task definitions.
+`ConductorClient` wraps one `httpx.AsyncClient(base_url=..., timeout=None)` and raises a typed
+`ConductorError` on non-2xx (surfaced as the "server unreachable" screen for connect errors).
+Requests run until completion or explicit cancellation.
 
 | Purpose | Call | Notes |
 |---|---|---|
@@ -124,7 +123,7 @@ LAUNCHABLE = ["pr_review", "issue_to_pr", "address_pr", "code_parallel"]  # laun
 - **`address_pr`** — `repo`* (text), `prNumber`* (gh_pr), `engine` enum[code_parallel,coding_agent]=code_parallel,
   `agent` enum=claude, `maxSubtasks` int=4 (adv), `maxTurns` int=250 (adv), `maxBudgetUsd` float=50.0 (adv).
 - **`code_parallel`** — `repoPath`* (text — a local dir), `instruction`* (text, multiline),
-  `changeBranch` text=code-parallel, `design` bool=false, `maxSubtasks` int=6,
+  `changeBranch` text="" (derived unique branch), `design` bool=false, `maxSubtasks` int=6,
   `planAgent`/`codeAgent` enum=claude (backend selector as above), `designAgent` enum=claude (adv),
   `planModel`/`codeModel`/`designModel` (adv, ""), `maxTurns` int=500 (adv), `maxBudgetUsd` float=50.0 (adv).
 
@@ -248,7 +247,7 @@ branches — see polling), `start(name, input)->id`, `terminate(id, reason)`, `r
   Track "this session" ids in an `App`-level set.
 - **gh pickers** (`gh.py`): if `shutil.which("gh")` and `repo` is set,
   `gh issue list --repo <slug> --json number,title --limit 30` / `gh pr list …` populate a
-  searchable `Select`. Any failure (no gh, not authed, timeout) → silently fall back to a plain
+  searchable `Select`. Any failure (no gh, not authenticated, command error) → silently fall back to a plain
   number `Input`. Never block the form.
 - **Errors / empty states** (build all from UX "States & edge UX" table): server unreachable →
   full-screen retry card; workers stale → red banner + launcher block; run stuck >60s → amber

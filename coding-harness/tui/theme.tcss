@@ -142,8 +142,6 @@ ApprovalModal #design_feedback, ApprovalModal #campaign_feedback {
     margin-top: 1;
     border: round $primary;
 }
-ApprovalModal #campaign_profile, ApprovalModal #campaign_checks,
-ApprovalModal #campaign_wave_profile, ApprovalModal #campaign_final_profile,
 ApprovalModal #campaign_max_turns, ApprovalModal #campaign_max_budget {
     margin-top: 1;
 }

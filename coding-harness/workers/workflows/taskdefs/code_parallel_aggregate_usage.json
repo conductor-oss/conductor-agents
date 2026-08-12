@@ -1,0 +1,160 @@
+{
+  "name": "code_parallel_aggregate_usage",
+  "description": "Deterministic code_parallel decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "code_parallel_aggregate_usage_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "joined": {
+          "type": "object",
+          "description": "FORK_JOIN_DYNAMIC join output: a map of task reference name to {\"output\": {...}} (or the report itself), one entry per code_subtask usage report.",
+          "additionalProperties": true
+        },
+        "planCost": {
+          "type": "number",
+          "description": "USD cost of the planning step; coerced to 0 when not a non-boolean number."
+        },
+        "planTokens": {
+          "type": "integer",
+          "description": "Tokens used by the planning step; coerced to 0 when not a non-boolean number."
+        },
+        "mergeCost": {
+          "type": "number",
+          "description": "USD cost of the merge step; coerced to 0 when not a non-boolean number."
+        },
+        "mergeTokens": {
+          "type": "integer",
+          "description": "Tokens used by the merge step; coerced to 0 when not a non-boolean number."
+        },
+        "verifyCost": {
+          "type": "number",
+          "default": 0,
+          "description": "USD cost of the verification/test step; coerced to 0 when falsy or not numeric."
+        },
+        "verifyTokens": {
+          "type": "integer",
+          "default": 0,
+          "description": "Tokens used by the verification/test step; coerced to 0 when falsy or not numeric."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "code_parallel_aggregate_usage_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "perSubtask": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "description": "Subtask status; 'unknown' when not a string."
+              },
+              "filesChanged": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "costUsd": {
+                "type": "number"
+              },
+              "tokenUsed": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "status",
+              "filesChanged",
+              "costUsd",
+              "tokenUsed"
+            ]
+          },
+          "description": "One usage entry per joined subtask fork."
+        },
+        "subtaskCount": {
+          "type": "integer",
+          "description": "Number of joined subtask forks."
+        },
+        "tokens": {
+          "type": "object",
+          "properties": {
+            "plan": {
+              "type": "number"
+            },
+            "subtasks": {
+              "type": "number"
+            },
+            "merge": {
+              "type": "number"
+            },
+            "verify": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "plan",
+            "subtasks",
+            "merge",
+            "verify"
+          ],
+          "description": "Token usage broken down by phase."
+        },
+        "cost": {
+          "type": "object",
+          "properties": {
+            "plan": {
+              "type": "number"
+            },
+            "subtasks": {
+              "type": "number"
+            },
+            "merge": {
+              "type": "number"
+            },
+            "verify": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "plan",
+            "subtasks",
+            "merge",
+            "verify"
+          ],
+          "description": "USD cost broken down by phase."
+        },
+        "totalTokens": {
+          "type": "number",
+          "description": "Sum of the plan, subtasks, merge, and verify token totals."
+        },
+        "totalCostUsd": {
+          "type": "number",
+          "description": "Sum of the plan, subtasks, merge, and verify USD costs."
+        }
+      },
+      "required": [
+        "perSubtask",
+        "subtaskCount",
+        "tokens",
+        "cost",
+        "totalTokens",
+        "totalCostUsd"
+      ]
+    }
+  }
+}

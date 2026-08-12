@@ -4,10 +4,90 @@
   "retryCount": 2,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "responseTimeoutSeconds": 60,
-  "pollTimeoutSeconds": 120,
-  "timeoutSeconds": 180,
-  "timeoutPolicy": "TIME_OUT_WF",
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
   "concurrentExecLimit": 1,
-  "ownerEmail": "harness@conductor.local"
+  "ownerEmail": "harness@conductor.local",
+  "inputSchema": {
+    "name": "github_automation_claim_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "'owner/name' GitHub repository slug."
+        },
+        "number": {
+          "type": "integer",
+          "description": "PR or issue number to post the claim marker on."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "review",
+            "address",
+            "issue"
+          ],
+          "description": "Automation kind being claimed."
+        },
+        "revision": {
+          "type": "string",
+          "description": "Revision fingerprint (head SHA or feedback fingerprint) being claimed."
+        },
+        "attempt": {
+          "type": "integer",
+          "default": 1,
+          "description": "Attempt number for this revision."
+        },
+        "claimId": {
+          "type": "string",
+          "description": "Idempotency/workflow identifier for this claim attempt; defaults to the current workflow instance id."
+        }
+      },
+      "required": [
+        "repo",
+        "number",
+        "kind",
+        "revision"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "github_automation_claim_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "claimed": {
+          "type": "boolean",
+          "description": "True if this comment won the race to claim the revision."
+        },
+        "claimCommentId": {
+          "type": "integer",
+          "description": "ID of the GitHub comment this call posted."
+        },
+        "trustedAuthor": {
+          "type": "string",
+          "description": "Authenticated GitHub login used to identify trusted markers."
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "won",
+            "race_lost"
+          ],
+          "description": "Outcome of the claim race."
+        }
+      },
+      "required": [
+        "claimed",
+        "claimCommentId",
+        "trustedAuthor",
+        "reason"
+      ]
+    }
+  }
 }

@@ -4,9 +4,238 @@
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 2,
-  "pollTimeoutSeconds": 120,
-  "responseTimeoutSeconds": 60,
-  "timeoutSeconds": 300,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "pollTimeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "openspec_route_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "assessment": {
+          "type": "object",
+          "description": "Planner's proposed execution assessment (rationale, confidence, risks, and a task DAG) to validate and route. Without a valid tasks array, validation fails and the task raises.",
+          "properties": {
+            "tasks": {
+              "type": "array",
+              "description": "Proposed DAG of implementation tasks.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Task identifier; normalized to a safe slug if needed."
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "What the task must implement."
+                  },
+                  "dependsOn": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "IDs of tasks that must complete before this one."
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Write-root paths/globs this task owns."
+                  },
+                  "acceptanceCriteria": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Criteria the task's work must satisfy; required to be non-empty."
+                  },
+                  "checks": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Blocking check commands for this task."
+                  },
+                  "openspecTaskRefs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Non-empty OpenSpec tasks.md references this task implements."
+                  }
+                }
+              }
+            },
+            "confidence": {
+              "type": "number",
+              "description": "Planner's confidence in the assessment, 0-1."
+            },
+            "recommendedMode": {
+              "type": "string",
+              "description": "Planner's recommended execution mode, e.g. campaign or parallel."
+            },
+            "risks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Planner-identified risks; certain keywords (migration, rollout, attached, managed, cross-cutting) force campaign mode."
+            },
+            "rationale": {
+              "type": "string",
+              "description": "Planner's rationale for the assessment."
+            }
+          }
+        },
+        "maxTasks": {
+          "type": "integer",
+          "default": 25,
+          "description": "Maximum number of tasks accepted in the plan before validation fails."
+        },
+        "maxParallelism": {
+          "type": "integer",
+          "default": 6,
+          "description": "Maximum concurrent subtasks allowed for parallel mode; more tasks than this forces campaign mode."
+        },
+        "executionMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "parallel",
+            "campaign"
+          ],
+          "default": "auto",
+          "description": "Force parallel/campaign routing, or auto-detect from confidence, risk keywords, and task-graph safety. Forcing parallel requires a dependency-free, file-disjoint plan within maxParallelism."
+        },
+        "changeId": {
+          "type": "string",
+          "description": "OpenSpec change id, interpolated into the generated coding-agent instruction text."
+        },
+        "supplementalInstruction": {
+          "type": "string",
+          "description": "Extra text appended to the generated instruction for the coding agent."
+        }
+      },
+      "required": [
+        "assessment"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "openspec_route_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "valid": {
+          "type": "boolean",
+          "description": "Always true on the success path; invalid plans raise instead."
+        },
+        "selectedMode": {
+          "type": "string",
+          "enum": [
+            "parallel",
+            "campaign"
+          ],
+          "description": "Execution mode actually selected."
+        },
+        "recommendedMode": {
+          "type": "string",
+          "enum": [
+            "parallel",
+            "campaign"
+          ],
+          "description": "Mode the deterministic auto-router would have chosen."
+        },
+        "confidence": {
+          "type": "number",
+          "description": "Planner confidence carried through from the assessment."
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Planner rationale carried through from the assessment."
+        },
+        "risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Planner-identified risks carried through from the assessment."
+        },
+        "plan": {
+          "type": "object",
+          "description": "Normalized, validated task DAG.",
+          "properties": {
+            "tasks": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "Validated tasks with normalized ids, dependsOn, files, acceptanceCriteria, checks, and openspecTaskRefs."
+            }
+          },
+          "required": [
+            "tasks"
+          ]
+        },
+        "parallelPlan": {
+          "type": "object",
+          "description": "Subtask list shaped for parallel (code_parallel) execution.",
+          "properties": {
+            "subtasks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Task identifier."
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Task description with acceptance criteria and OpenSpec task refs appended."
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Write-root paths/globs this subtask owns."
+                  }
+                },
+                "required": [
+                  "id",
+                  "description",
+                  "files"
+                ]
+              }
+            }
+          },
+          "required": [
+            "subtasks"
+          ]
+        },
+        "instruction": {
+          "type": "string",
+          "description": "Generated instruction text for the coding agent, referencing the OpenSpec change and normalized plan."
+        }
+      },
+      "required": [
+        "valid",
+        "selectedMode",
+        "recommendedMode",
+        "confidence",
+        "rationale",
+        "risks",
+        "plan",
+        "parallelPlan",
+        "instruction"
+      ]
+    }
+  }
 }

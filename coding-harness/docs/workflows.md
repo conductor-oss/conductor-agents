@@ -9,9 +9,10 @@
 | Review local changes before a commit | `local_review` | `repoPath` |
 | Address existing PR feedback | `address_pr` | `repo`, `prNumber` |
 | Implement a multi-part local change | `code_parallel` | `repoPath`, `instruction` |
-| Run a long-lived, interactive complex feature campaign | `feature_campaign` | `repoPath`, `instruction` |
+| Run a long-lived, interactive complex feature campaign | `feature_campaign` | `repoPath`, `instruction`; set `createPr: true` to publish a PR |
 | Implement an apply-ready OpenSpec change | `openspec_development` | `specSource`, `changeId` (plus `repoPath` except local-source-workspace mode) |
 | Smoke-test GitHub connectivity | `github_demo` | `repoUrl`, `instruction` |
+| Prove build runtimes on both worker pools | `runtime_health` | none |
 
 `design_docs` and `code_subtask` are internal sub-workflows. Let `code_parallel` invoke them.
 
@@ -23,6 +24,40 @@ Implementation workflows use isolated worktrees. `code_parallel` requires a loca
 the GitHub workflows clone from `repo`, and `local_review` intentionally reads the supplied
 checkout directly. `keepWorktree` is available only on workflows that list it in the input
 reference.
+
+For `code_parallel`, every completed merge is committed back to the supplied `repoPath` before
+verification. Verification is diagnostic: a failed or exhausted verification loop is returned in
+the output and does not revert, hide, or withhold the source checkout's candidate commit. Read
+`sourceHandoff` in the workflow output for the exact path, branch, and commit to review.
+
+## Running tests
+
+`test_cycle` is the one sub-workflow that runs a repository's tests. Every workflow that needs a
+test result embeds it rather than discovering and running commands itself:
+
+```text
+code_subtask   → targeted, 1 fix   (per subtask, before its branch is merged)
+code_parallel  → targeted          (after the merge, before the handoff)
+address_pr     → full              (before publication)
+issue_to_pr    → full              (the pre-PR gate)
+feature_campaign → full            (after the final commit; a red suite forces a draft PR)
+```
+
+`targeted` derives an exact-test or affected-unit plan from the candidate's diff. `full` runs the
+repository-wide suite and, with `allowHeavySuites`, may include integration and end-to-end
+targets. The command itself comes from the first source that has one: the caller's `testCommands`,
+then a repository guide, then `.conductor-code/verification.json`, then build-system inference.
+
+It runs up to five times and fixes between runs, so the last run is always a verdict. **It never
+fails** — every outcome, including an unfixable failure or an unavailable verifier, completes with
+a `testCycleState` the caller branches on. See
+[Workflow input reference](workflow-inputs.md) for the full state list.
+
+Discovery and execution run only on the isolated verification worker
+(`WORKER_MODULES=verification`), so a coding worker can never satisfy its own gate. Tests execute
+in a disposable detached clone at the exact candidate commit, never in the working tree, and a
+dependency install runs first for toolchains whose test runner lives in the project rather than
+on the host.
 
 ## Local review
 
@@ -130,15 +165,28 @@ sessions in `code_parallel` default to 500 turns. Override these caps only inten
 See [models and profiles](model-profiles.md) for policy precedence, backend fallback, and cost
 labels. See [prompt templates](templates.md) for prompt-source precedence and reusable role guidance.
 
-Turn and spend caps are agent limits, not wall-clock deadlines. Runtime timeouts belong only to
-the referenced Conductor task definition. There is no workflow `timeoutS` input and no secondary
-worker/backend deadline.
+Turn and spend caps are agent limits, not wall-clock deadlines. There is no workflow, task-definition,
+worker, backend, subprocess, or HTTP execution deadline.
 
 ## Publication gates
 
 The TUI defaults to review gates before posting a PR review or opening an issue-resolution PR.
-Raw CLI/API runs default those publication gates off unless `approve:true` (`pr_review`) or
-`approvePr:true` (`issue_to_pr`) is supplied.
+At a PR-review gate, **Approve PR** submits the displayed findings with event APPROVE;
+**Request changes** posts the human feedback with event REQUEST_CHANGES and does not approve;
+**Investigate further** privately resumes the read-only reviewer with a separate question and
+returns a refreshed complete draft; **Later** leaves the WAIT open and publishes nothing. The
+default investigation limit is five and its history is durable. A clean drafted review is exactly `LGTM`.
+Raw CLI/API `issue_to_pr` runs gate only when `approvePr:true`; `address_pr` always reviews the
+verified candidate before it can update the remote branch. At a coding gate, **Approve** publishes
+the displayed verified candidate, **Request code changes** revises that same candidate workspace
+and re-runs verification before returning to the gate, **Stop** records suppression with no remote
+mutation, and **Later** leaves the WAIT open. Design and OpenSpec gates use explicit design/plan
+labels and expose their generated files.
+
+Code-candidate revision loops are bounded by `maxApprovalRevisions`. `address_pr` delegates every push and success comment to
+`publish_verified_pr`, which checks the exact local candidate and unchanged remote PR head, pushes
+once, and posts success only after exact-SHA CI passes. Empty CI means pending; failed, unknown, or
+exhausted CI produces a terminal `ci_blocked` outcome rather than another resumable WAIT.
 
 ## GitHub automation sweeps
 
@@ -160,5 +208,9 @@ After changing definitions:
 ./run.sh register
 ```
 
-Registration updates sub-workflows first and verifies every SIMPLE task has a registered task
-definition. A workflow that reaches an unregistered SIMPLE task will wait indefinitely.
+Registration updates sub-workflows first, validates every static and generated sub-workflow version
+pin against its local definition, and verifies every SIMPLE task has a registered task definition.
+A workflow that reaches an unregistered SIMPLE task will wait indefinitely. Run
+`scripts/validate_live_paths.py` after registration to exercise the safety-critical approval,
+revision, branch-drift, and exact-SHA CI paths in the live Conductor decision engine without
+touching a repository or GitHub.

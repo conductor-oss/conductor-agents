@@ -131,21 +131,21 @@ def backend_availability(agent: str) -> str:
 
 
 def _legacy_roles(inputs: dict) -> dict:
-    mapping = {"design": ("designAgent", "designModel"), "plan": ("planAgent", "planModel"),
-               "code": ("codeAgent", "codeModel"), "review": ("agent", "model"),
-               "judge": ("judgeAgent", "judgeModel"), "scribe": ("scribeAgent", "scribeModel")}
+    mapping = {"design": "designModel", "plan": "planModel", "code": "codeModel",
+               "review": "reviewModel", "judge": "judgeModel", "scribe": "scribeModel"}
     result = {}
-    for role, (agent_key, model_key) in mapping.items():
-        agent, model = str(inputs.get(agent_key) or "").strip(), str(inputs.get(model_key) or "").strip()
-        if agent or model:
-            _validate_backend(agent, model)
-            result[role] = {k: v for k, v in (("agent", agent), ("model", model)) if v}
+    for role, model_key in mapping.items():
+        model = str(inputs.get(model_key) or "").strip()
+        if model:
+            inferred = _backend_for_model(model)
+            _validate_backend(inferred, model)
+            result[role] = {"agent": inferred, "model": model} if inferred else {"model": model}
     # CLI callers may set one generic model without learning every role-specific
     # field. It deliberately applies to producer roles only; reviewers retain the
     # policy's diversity unless explicitly overridden.
     generic_model = str(inputs.get("model") or "").strip()
-    generic_agent = str(inputs.get("agent") or _backend_for_model(generic_model) or "").strip()
     if generic_model:
+        generic_agent = _backend_for_model(generic_model)
         _validate_backend(generic_agent, generic_model)
         for role in ("plan", "code"):
             result[role] = {"agent": generic_agent, "model": generic_model}
@@ -228,8 +228,9 @@ def select_role_tier(inputs: dict, *, role: str, worktree: str | None = None) ->
 
     A workflow normally supplies ``modelResolution`` from the preflight task.  Directly
     started internal workflows may omit it; resolving here keeps the worker fail-closed.
-    Task-local nonblank ``agent`` / ``model`` values are explicit overrides for this
-    one role, while blank values retain the selected policy tier.
+    A task-local nonblank ``model`` is a compatibility override for this one role;
+    its backend is inferred from the model.  Backend selection otherwise belongs
+    exclusively to the selected policy tier.
     """
     if role not in ROLES:
         raise ModelPolicyError(f"unsupported model role: {role}")
@@ -253,8 +254,10 @@ def select_role_tier(inputs: dict, *, role: str, worktree: str | None = None) ->
     if not tiers or not isinstance(tiers[0], dict):
         raise ModelPolicyError(f"model resolution has no tier for role {role!r}")
     tier = deepcopy(tiers[0])
-    agent = str(inputs.get("agent") or tier.get("agent") or "").strip().lower()
     model = str(inputs.get("model") or tier.get("model") or "").strip()
+    agent = str(tier.get("agent") or "").strip().lower()
+    if inputs.get("model") not in (None, ""):
+        agent = _backend_for_model(model) or agent
     _validate_backend(agent, model)
     if not agent:
         raise ModelPolicyError(f"model resolution has no backend for role {role!r}")

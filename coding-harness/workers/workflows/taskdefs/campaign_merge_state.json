@@ -1,0 +1,142 @@
+{
+  "name": "campaign_merge_state",
+  "description": "Idempotently merge completed campaign tasks, resumable sessions, remaining tasks, and completed waves.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 2,
+  "pollTimeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "campaign_merge_state_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "added": {
+          "description": "Task IDs newly completed this wave, appended to 'completed'. Accepts a comma-separated string or an array of strings.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "completed": {
+          "description": "Task IDs already completed in prior waves. Accepts a comma-separated string or an array of strings.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "newSessions": {
+          "description": "New task-ID-to-session-ID entries from this wave, merged into 'sessions'. Accepts an object map, or an array of session IDs positionally zipped with 'added'.",
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "sessions": {
+          "type": "object",
+          "description": "Existing map of task ID to session ID, accepts an object map or a JSON-encoded string of one."
+        },
+        "remaining": {
+          "description": "Task IDs not yet completed, filtered to drop any that are now in 'completed'. Accepts a comma-separated string or an array of strings.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "waves": {
+          "description": "Wave numbers already recorded as processed. Accepts a comma-separated string or an array.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array"
+            }
+          ]
+        },
+        "wave": {
+          "type": "integer",
+          "description": "Current wave number to append to 'waves', if not null."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "campaign_merge_state_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "type": "object",
+          "description": "Merged campaign state.",
+          "properties": {
+            "completed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "De-duplicated union of previously completed and newly added task IDs, in first-seen order."
+            },
+            "sessions": {
+              "type": "object",
+              "description": "Merged map of task ID to resumable session ID."
+            },
+            "remaining": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Task IDs from 'remaining' input that are not in 'completed'."
+            },
+            "waves": {
+              "type": "array",
+              "description": "De-duplicated list of wave numbers processed, with the current wave appended if not null."
+            }
+          },
+          "required": [
+            "completed",
+            "sessions",
+            "remaining",
+            "waves"
+          ]
+        }
+      },
+      "required": [
+        "result"
+      ]
+    }
+  }
+}

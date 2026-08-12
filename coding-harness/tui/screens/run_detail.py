@@ -204,6 +204,17 @@ class RunDetail(Screen):
                             else "feedback submitted — revising the plan…")
             elif gate.input.get("workflow") == "feature_campaign":
                 self.notify(f"campaign action submitted: {output.get('action', 'continue')}")
+            elif gate.input.get("workflow") == "pr_review":
+                action = output.get("action")
+                self.notify(
+                    "approved — posting comments and approving the PR…"
+                    if action == "approve"
+                    else "investigation requested — the private reviewer is digging deeper…"
+                    if action == "investigate"
+                    else "changes requested — posting your feedback without approval…"
+                    if action == "revise"
+                    else "review suppressed — nothing will be posted"
+                )
             else:
                 self.notify("approved — posting…" if status == "COMPLETED"
                             else "rejected — the run will fail")

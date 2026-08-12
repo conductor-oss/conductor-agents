@@ -22,7 +22,7 @@ from typing import Callable
 class Field:
     name: str                         # form field id (usually == the workflow input key)
     label: str
-    kind: str                         # text|int|float|bool|enum|gh_issue|gh_pr|multiline
+    kind: str                         # text|int|float|bool|bool_choice|enum|gh_issue|gh_pr|multiline
     default: object = None            # None => required
     help: str = ""
     choices: tuple[str, ...] = ()     # for enum
@@ -36,6 +36,10 @@ class Field:
     # `build_payload` still compares against `default`, so a checked box sends the changed
     # value. None => fall back to `default`.
     tui_default: object = None
+    # Interactive launchers must collect this value even when the workflow has a
+    # server-side default. This preserves the workflow's CLI/automation default while
+    # preventing the TUI from silently treating an unanswered question as that default.
+    explicit: bool = False
 
     @property
     def required(self) -> bool:
@@ -77,7 +81,7 @@ class WorkflowSpec:
             if f.name not in values:
                 continue
             val = values[f.name]
-            if not f.required:
+            if not f.required and not f.explicit:
                 if val == f.default or val is None or val == "":
                     continue
             for key in f.targets:
@@ -127,12 +131,28 @@ def normalize_local_paths(values: dict, *, cwd: str | None = None) -> dict:
                 path = Path(cwd or Path.cwd()) / path
             prefix = "file://" if raw_source.startswith("file://") else ""
             normalized["specSource"] = prefix + str(path.resolve(strict=False))
+    raw_context = normalized.get("contextPaths")
+    if isinstance(raw_context, str):
+        raw_context = [line.strip() for line in raw_context.splitlines() if line.strip()]
+    if isinstance(raw_context, list):
+        resolved = []
+        for item in raw_context:
+            path = Path(str(item).strip()).expanduser()
+            if not path.is_absolute():
+                path = Path(cwd or Path.cwd()) / path
+            resolved.append(str(path.resolve(strict=False)))
+        normalized["contextPaths"] = resolved
     return normalized
 
 
 # --------------------------------------------------------------------------- shared field sets
 
 _BACKENDS = ("claude", "codex", "gemini")
+FEATURE_CAMPAIGN_HINT = (
+    "Use feature_campaign instead when tasks depend on or overlap each other, the change "
+    "needs migrations or rollout planning, implementation will take multiple waves, or "
+    "real-system checks need operator checkpoints."
+)
 _MODEL_PROFILE = Field("modelProfile", "Model profile", "text", "", advanced=True,
                        help="profile name; blank = the configured default")
 
@@ -185,18 +205,24 @@ def _prompt_source(value: object) -> str:
 
 
 def _r_pr_review(o: dict) -> ResultCard:
-    url = o.get("reviewUrl") or None
+    publication = str(o.get("publicationState") or ("published" if o.get("reviewUrl") else "not_attempted"))
+    posted = publication == "published"
+    url = (o.get("reviewUrl") or None) if posted else None
     files = o.get("changedFiles") or []
     rows = [
+        ("approval", str(o.get("approvalState") or "automatic")),
+        ("publication", publication),
         ("verdict", str(o.get("event", "?"))),
         ("workspace", "retained" if o.get("workspaceRetained", True) else "cleaned"),
         ("inline comments", str(o.get("inlineCount", 0))),
+        ("private investigations", str(o.get("investigationCount", 0))),
         ("files reviewed", str(len(files) if isinstance(files, list) else files)),
         ("tokens", str(o.get("tokenUsed", 0))),
         ("cost", f"${float(o.get('costUsd') or 0):.2f}"),
         ("prompt", _prompt_source(o.get("reviewPromptTemplate"))),
     ]
-    return ResultCard("Review posted", rows, url, "open review")
+    return ResultCard("Review posted" if posted else "Review not posted",
+                      rows, url, "open review" if posted else "")
 
 
 def _r_local_review(o: dict) -> ResultCard:
@@ -219,7 +245,10 @@ def _r_issue_to_pr(o: dict) -> ResultCard:
     subs = o.get("subtasks") or []
     conflicts = o.get("conflicts") or []
     rows = [
-        ("PR", f"#{o.get('prNumber', '?')}"),
+        ("outcome", str(o.get("publicationState") or o.get("approvalState") or "unknown")),
+        ("approval", str(o.get("approvalState") or "unknown")),
+        ("verification", str(o.get("verificationState") or "unknown")),
+        ("PR", f"#{o.get('prNumber')}" if o.get("prNumber") else "not created"),
         ("branch", str(o.get("changeBranch", "?"))),
         ("workspace", "retained" if o.get("workspaceRetained", True) else "cleaned"),
         ("subtasks", str(len(subs) if isinstance(subs, list) else subs)),
@@ -228,12 +257,17 @@ def _r_issue_to_pr(o: dict) -> ResultCard:
         ("cost", f"${float(o.get('totalCostUsd') or 0):.2f}"),
         ("prompt", _prompt_source(o.get("promptTemplates"))),
     ]
-    return ResultCard("Pull request opened", rows, url, "open PR")
+    title = "Pull request opened" if o.get("publicationState") == "published" else "Pull request not opened"
+    return ResultCard(title, rows, url, "open PR" if url else None)
 
 
 def _r_address_pr(o: dict) -> ResultCard:
     url = o.get("replyUrl") or None
     rows = [
+        ("outcome", str(o.get("publicationState") or o.get("approvalState") or "unknown")),
+        ("approval", str(o.get("approvalState") or "unknown")),
+        ("verification", str(o.get("verificationState") or "unknown")),
+        ("CI", str(o.get("ciVerificationState") or "not started")),
         ("pushed", "yes" if o.get("pushed") else "no"),
         ("engine", str(o.get("engine", "?"))),
         ("PR", f"#{o.get('prNumber', '?')}"),
@@ -241,15 +275,19 @@ def _r_address_pr(o: dict) -> ResultCard:
         ("tokens", str(o.get("totalTokens") or "—")),
         ("prompt", _prompt_source(o.get("agentPromptTemplate"))),
     ]
-    return ResultCard("Feedback addressed", rows, url, "open PR comment")
+    title = "Feedback addressed and published" if o.get("publicationState") == "published" \
+        else "Feedback changes not published"
+    return ResultCard(title, rows, url, "open PR comment" if url else None)
 
 
 def _r_code_parallel(o: dict) -> ResultCard:
     subs = o.get("subtasks") or []
     merged = o.get("merged") or []
     conflicts = o.get("conflicts") or []
+    handoff = o.get("sourceHandoff") or {}
     rows = [
-        ("branch", str(o.get("changeBranch", "?"))),
+        ("branch", str(handoff.get("branch") or o.get("changeBranch") or "missing")),
+        ("commit", str(handoff.get("commit") or o.get("verificationCommit") or "none")),
         ("workspace", "retained" if o.get("workspaceRetained", True) else "cleaned"),
         ("subtasks", str(len(subs) if isinstance(subs, list) else subs)),
         ("merged", str(len(merged) if isinstance(merged, list) else merged)),
@@ -266,9 +304,12 @@ def _r_feature_campaign(o: dict) -> ResultCard:
     tasks = o.get("completedDagTasks") or []
     waves = o.get("completedWaves") or []
     checks = o.get("finalChecks") or {}
+    handoff = o.get("sourceHandoff") or {}
     rows = [
         ("outcome", str(o.get("outcome") or "incomplete")),
-        ("branch", str(o.get("verifiedBranch") or o.get("branch") or "retained (not verified)")),
+        ("branch", str(handoff.get("branch") or o.get("verifiedBranch") or o.get("branch") or "missing")),
+        ("commit", str(handoff.get("commit") or o.get("commit") or "none")),
+        ("published", "yes" if o.get("pushed") else "no"),
         ("workspace", "retained" if o.get("workspaceRetained", True) else "cleaned"),
         ("DAG tasks", str(len(tasks) if isinstance(tasks, list) else tasks)),
         ("waves", str(len(waves) if isinstance(waves, list) else waves)),
@@ -277,18 +318,21 @@ def _r_feature_campaign(o: dict) -> ResultCard:
         ("cost", f"${float(o.get('totalCostUsd') or 0):.2f}"),
         ("review prompt", _prompt_source(o.get("reviewPromptTemplate"))),
     ]
-    return ResultCard("Feature campaign complete", rows, None)
+    url = o.get("prUrl") or None
+    return ResultCard("Feature campaign complete", rows, url, "open pull request")
 
 
 def _r_openspec(o: dict) -> ResultCard:
     archive = o.get("archive") or {}
     if not isinstance(archive, dict):
         archive = {}
+    handoff = o.get("sourceHandoff") or {}
     rows = [
         ("outcome", str(o.get("outcome") or "needs attention")),
         ("change", str(o.get("changeId") or "?")),
         ("workflow", str(o.get("selectedWorkflow") or "?")),
-        ("branch", str(o.get("verifiedBranch") or "retained (not verified)")),
+        ("branch", str(handoff.get("branch") or o.get("verifiedBranch") or "missing")),
+        ("commit", str(handoff.get("commit") or "none")),
         ("workspace", "retained" if o.get("workspaceRetained", True) else "cleaned"),
         ("source workspace", "yes" if (o.get("sourceWorkspace") or {}).get("useSpecSourceWorkspace") else "no"),
         ("materialized", ", ".join(o.get("materializedSourcePaths") or []) or "none"),
@@ -314,8 +358,6 @@ def _automation_fields(max_new: int, max_active: int, *, template_field: str,
     fields = [
         Field("repo", "Repo", "text", help="URL or owner/name"),
         Field("approvalMode", "Approval", "enum", "human", choices=("human", "llm")),
-        Field("agent", "Producer backend", "enum", "", choices=("", *_BACKENDS)),
-        Field("judgeAgent", "Judge backend", "enum", "", choices=("", *_BACKENDS), advanced=True),
         Field("model", "Producer model", "text", "", advanced=True),
         Field("judgeModel", "Judge model", "text", "", advanced=True),
         _MODEL_PROFILE,
@@ -369,7 +411,6 @@ CATALOG: dict[str, WorkflowSpec] = {
                   help="configured remote to fetch for the comparison baseline"),
             Field("baseBranch", "Base branch", "text", "main",
                   help="remote branch to compare the local checkout against"),
-            Field("agent", "Backend", "enum", "", choices=("", *_BACKENDS)),
             Field("model", "Model", "text", "", advanced=True, help="empty = backend default"),
             _MODEL_PROFILE,
             Field("localReviewPromptTemplate", "Prompt template", "template", "", advanced=True,
@@ -382,17 +423,22 @@ CATALOG: dict[str, WorkflowSpec] = {
     "pr_review": WorkflowSpec(
         name="pr_review",
         action="Review a pull request",
-        blurb="Read the PR and post a formal review (inline comments + verdict; never approves).",
+        blurb="Read the PR, then approve it or post a concrete request for changes.",
         fields=(
             Field("repo", "Repo", "text", help="URL or owner/name"),
             Field("prNumber", "PR", "gh_pr", help="pull request number"),
-            Field("agent", "Backend", "enum", "", choices=("", *_BACKENDS)),
             Field("approve", "Review before posting", "bool", False, tui_default=True,
                   help="pause to review/edit the drafted comments before they post"),
+            Field("reviewGuidance", "Review focus", "multiline", "",
+                  help="optional trusted guidance about areas the reviewer should inspect closely"),
             Field("model", "Model", "text", "", advanced=True, help="empty = backend default"),
             _MODEL_PROFILE,
+            Field("maxInvestigationPasses", "Investigation passes", "int", 5, advanced=True,
+                  help="private follow-up questions before a final decision; server-enforced maximum is 5"),
             Field("reviewPromptTemplate", "Prompt template", "template", "", advanced=True,
                   help="override the review prompt; inline text or @repo/path; blank = built-in (or commit .conductor/pr_review.md)"),
+            Field("reviewInvestigationPromptTemplate", "Investigation template", "template", "", advanced=True,
+                  help="override private follow-up review prompts; blank = built-in (or commit .conductor/pr_review_investigation.md)"),
             *_caps(250, 50.0),
         ),
         target=_t_pr,
@@ -401,13 +447,20 @@ CATALOG: dict[str, WorkflowSpec] = {
     "issue_to_pr": WorkflowSpec(
         name="issue_to_pr",
         action="Resolve a GitHub issue into a PR",
-        blurb="Fetch the issue, code the fix in parallel, push a branch, open a PR that closes it.",
+        blurb="Fetch a bounded issue, implement it, verify it, and open one PR. "
+              "Dependent or multi-wave work belongs in feature_campaign.",
         fields=(
             Field("repo", "Repo", "text", help="URL or owner/name"),
             Field("issueNumber", "Issue", "gh_issue", help="issue number"),
             Field("base", "Base branch", "text", "main"),
-            Field("backend", "Backend", "enum", "claude", choices=_BACKENDS,
-                  maps_to=("openspecPlanAgent", "codeAgent"), help="plan + code backend"),
+            Field("design", "Create design docs?", "bool_choice", False, explicit=True,
+                  help="Choose Yes to create and review design documents before implementation. "
+                       + FEATURE_CAMPAIGN_HINT),
+            Field("designHumanApproval", "Human design review", "bool", True,
+                  help="pause on the actual design artifacts before coding"),
+            Field("designDir", "Design docs", "text", "docs/design", advanced=True),
+            Field("designMaxIterations", "Design revisions", "int", 5, advanced=True),
+            Field("maxApprovalRevisions", "Code review revisions", "int", 2, advanced=True),
             Field("openspecHumanApproval", "Human plan review", "bool", True,
                   help="pause after every OpenSpec plan pass; off = read-only coding-agent judge"),
             Field("approvePr", "Review before opening", "bool", False, tui_default=True,
@@ -416,6 +469,8 @@ CATALOG: dict[str, WorkflowSpec] = {
             _MODEL_PROFILE,
             Field("codePromptTemplate", "Coding prompt template", "template", "", advanced=True,
                   help="override the per-subtask coding prompt; inline text or @repo/path; blank = built-in (or .conductor/code.md)"),
+            Field("designPromptTemplate", "Design prompt template", "template", "", advanced=True,
+                  help="override the design prompt; blank = built-in"),
             *_caps(300, 50.0),
         ),
         target=_t_issue,
@@ -431,7 +486,13 @@ CATALOG: dict[str, WorkflowSpec] = {
             Field("engine", "Engine", "enum", "code_parallel",
                   choices=("code_parallel", "coding_agent"),
                   help="code_parallel = decompose+parallel; coding_agent = single session"),
-            Field("agent", "Backend", "enum", "claude", choices=_BACKENDS),
+            Field("design", "Design before coding", "bool", False,
+                  help="create and review design documents before implementation"),
+            Field("designHumanApproval", "Human design review", "bool", True,
+                  help="pause on the actual design artifacts before coding"),
+            Field("designDir", "Design docs", "text", "docs/design", advanced=True),
+            Field("designMaxIterations", "Design revisions", "int", 5, advanced=True),
+            Field("maxApprovalRevisions", "Code review revisions", "int", 2, advanced=True),
             _MODEL_PROFILE,
             Field("openspecHumanApproval", "Human plan review", "bool", True,
                   help="pause after every OpenSpec plan pass (code_parallel engine only); "
@@ -451,9 +512,12 @@ CATALOG: dict[str, WorkflowSpec] = {
         fields=(
             Field("repoPath", "Repo path", "text", help="local directory"),
             Field("instruction", "Instruction", "multiline", help="the coding goal"),
-            Field("changeBranch", "Change branch", "text", "code-parallel"),
-            Field("backend", "Backend", "enum", "claude", choices=_BACKENDS,
-                  maps_to=("openspecPlanAgent", "codeAgent"), help="plan + code backend"),
+            Field("inPlace", "Integrate into this checkout", "bool", False,
+                  help="create a new branch in this checkout, include its current changes, and merge there; no push or PR"),
+            Field("contextPaths", "Context files or directories", "multiline", [], advanced=True,
+                  help="live read-only absolute paths; contents are not attached to prompts"),
+            Field("changeBranch", "New branch", "text", "",
+                  help="blank derives a unique conductor/run-<workflow-id> branch"),
             Field("openspecHumanApproval", "Human plan review", "bool", True,
                   help="pause after every OpenSpec plan pass; off = read-only coding-agent judge"),
             Field("openspecPlanModel", "Plan model", "text", "", advanced=True),
@@ -470,16 +534,25 @@ CATALOG: dict[str, WorkflowSpec] = {
     "feature_campaign": WorkflowSpec(
         name="feature_campaign",
         action="Run an interactive feature campaign",
-        blurb="Design, approve a dependency DAG, implement in resumable waves, and verify a local branch.",
+        blurb="Design, approve a dependency DAG, implement in resumable waves, commit a local branch, and optionally open a PR.",
         fields=(
             Field("repoPath", "Repo path", "text", help="local directory on the worker host"),
             Field("instruction", "Instruction", "multiline", help="the complex feature goal"),
+            Field("inPlace", "Integrate into this checkout", "bool", False,
+                  help="create a new branch in this checkout, include its current changes, and merge there; no push or PR"),
+            Field("contextPaths", "Context files or directories", "multiline", [], advanced=True,
+                  help="live read-only absolute paths; contents are not attached to prompts"),
             Field("keepWorktree", "Keep worktree", "bool", True,
                   help="retain the resumable campaign workspace"),
-            Field("changeBranch", "Change branch", "text", "",
-                  help="blank derives feature-campaign/<workflow-id>"),
-            Field("backend", "Backend", "enum", "", choices=("", *_BACKENDS),
-                  maps_to=("designAgent", "planAgent", "codeAgent", "reviewAgent")),
+            Field("changeBranch", "New branch", "text", "",
+                  help="blank derives a unique feature-campaign/<workflow-id> branch"),
+            Field("createPr", "Create pull request", "bool", False,
+                  help="push the verified branch and open a PR only when enabled"),
+            Field("prBase", "PR base branch", "text", "main", advanced=True),
+            Field("prTitle", "PR title", "text", "", advanced=True,
+                  help="blank derives the title/body from commits"),
+            Field("prBody", "PR body", "multiline", "", advanced=True),
+            Field("prDraft", "Draft PR", "bool", False, advanced=True),
             _MODEL_PROFILE,
             Field("designDir", "Design docs", "text", "docs/design", advanced=True),
             Field("maxTasks", "Max DAG tasks", "int", 25),
@@ -487,9 +560,6 @@ CATALOG: dict[str, WorkflowSpec] = {
             Field("maxWaves", "Max waves", "int", 20, advanced=True),
             Field("designMaxRevisions", "Design revisions", "int", 5, advanced=True),
             Field("planMaxRevisions", "Plan revisions", "int", 5, advanced=True),
-            Field("checksConfig", "Checks config", "text", ".conductor-code/checks.json", advanced=True),
-            Field("waveProfile", "Wave profile", "text", "", advanced=True),
-            Field("finalProfile", "Final profile", "text", "", advanced=True),
             Field("designPromptTemplate", "Design prompt template", "template", "", advanced=True),
             Field("planPromptTemplate", "Planning prompt template", "template", "", advanced=True),
             Field("codePromptTemplate", "Coding prompt template", "template", "", advanced=True),
@@ -516,22 +586,20 @@ CATALOG: dict[str, WorkflowSpec] = {
             Field("specSourceType", "Source type", "enum", "auto", choices=("auto", "local", "git", "url")),
             Field("executionMode", "Execution", "enum", "auto", choices=("auto", "parallel", "campaign")),
             Field("instruction", "Additional guidance", "multiline", ""),
-            Field("backend", "Backend", "enum", "", choices=("", *_BACKENDS), maps_to=("agent",)),
             _MODEL_PROFILE,
             Field("specRef", "Spec Git ref", "text", "", advanced=True),
             Field("specPath", "OpenSpec path", "text", "", advanced=True),
             Field("specWritebackRepo", "Writeback repo", "text", "", advanced=True,
                   help="required for URL sources; external archive changes open a draft PR"),
             Field("specWritebackRef", "Writeback ref", "text", "", advanced=True),
-            Field("changeBranch", "Change branch", "text", "", advanced=True),
+            Field("changeBranch", "New implementation branch", "text", "", advanced=True,
+                  help="blank derives a unique openspec/<change>/<workflow-id> branch"),
             Field("archiveBranch", "Archive branch", "text", "", advanced=True),
             Field("base", "Archive PR base", "text", "main", advanced=True),
             Field("model", "Model", "text", "", advanced=True),
             Field("maxTasks", "Max DAG tasks", "int", 25, advanced=True),
             Field("maxParallelism", "Parallelism", "int", 6),
             Field("maxWaves", "Max waves", "int", 20, advanced=True),
-            Field("checksConfig", "Checks config", "text", ".conductor-code/checks.json", advanced=True),
-            Field("finalProfile", "Final profile", "text", "", advanced=True),
             Field("assessPromptTemplate", "Assessment prompt template", "template", "", advanced=True),
             Field("codePromptTemplate", "Coding prompt template", "template", "", advanced=True),
             Field("reviewPromptTemplate", "Review prompt template", "template", "", advanced=True),

@@ -95,6 +95,31 @@ def _workflow_contract_current(name: str, definition) -> bool:
     return all(task_types.get(ref) == "WAIT" for ref in expected)
 
 
+def _referenced_sub_workflow_names(value) -> set[str]:
+    """Collect every subWorkflowParam.name reachable in a workflow definition.
+
+    A signal checkpoint can move into a nested sub-workflow during a refactor
+    (e.g. address_pr's address_gate now lives in address_pr_approval) --
+    _workflow_contract_current only sees the definition it's handed, so
+    workflow_registered resolves one level of these before concluding stale.
+    """
+    names: set[str] = set()
+
+    def visit(node) -> None:
+        if isinstance(node, dict):
+            sub = node.get("subWorkflowParam")
+            if isinstance(sub, dict) and isinstance(sub.get("name"), str):
+                names.add(sub["name"])
+            for child in node.values():
+                visit(child)
+        elif isinstance(node, list):
+            for child in node:
+                visit(child)
+
+    visit(value)
+    return names
+
+
 def coerce_map(v) -> dict:
     """Conductor's `/workflow/search` serializes input/output as a Java Map
     `toString()` (e.g. `{repo=acme/app, prNumber=7}`), while `/workflow/{id}` returns
@@ -404,11 +429,11 @@ def parse_execution(d: dict) -> tuple[Run, list[TaskNode]]:
 # --------------------------------------------------------------------------- client
 
 class ConductorClient:
-    def __init__(self, base_url: str, timeout: float = 10.0,
+    def __init__(self, base_url: str,
                  credentials: ConductorCredentials | None = None):
         self._base = base_url.rstrip("/")
         self._credentials = credentials if credentials is not None else credentials_from_env()
-        self._client = httpx.AsyncClient(base_url=self._base, timeout=timeout)
+        self._client = httpx.AsyncClient(base_url=self._base, timeout=None)
         self._auth_token: str | None = None
         self._auth_token_time = 0.0
         self._auth_lock = asyncio.Lock()
@@ -549,10 +574,22 @@ class ConductorClient:
 
     async def workflow_registered(self, name: str) -> bool:
         try:
-            r = await self._get(f"/metadata/workflow/{name}")
-            return _workflow_contract_current(name, r.json())
+            definition = (await self._get(f"/metadata/workflow/{name}")).json()
         except ConductorError:
             return False
+        if _workflow_contract_current(name, definition):
+            return True
+        # The expected WAIT checkpoint isn't in this definition directly --
+        # it may have moved into a nested sub-workflow. Resolve one level of
+        # SUB_WORKFLOW references before concluding the contract is stale.
+        for sub_name in _referenced_sub_workflow_names(definition):
+            try:
+                sub_definition = (await self._get(f"/metadata/workflow/{sub_name}")).json()
+            except ConductorError:
+                continue
+            if _workflow_contract_current(name, sub_definition):
+                return True
+        return False
 
     async def list_schedules(self) -> list[Schedule]:
         r = await self._get("/scheduler/schedules")
@@ -722,6 +759,14 @@ class ConductorClient:
                 f"signal {task_ref}: this execution uses a legacy HUMAN checkpoint; "
                 "register the current workflow definitions and relaunch the run"
             )
+        if not status:
+            # A caller forwarding a raw "deferred" decision (status=None, e.g. an
+            # ApprovalModal Escape/"Later") must intercept it before this point --
+            # a bare f-string below would stringify None to the literal text
+            # "None", which Conductor's {status} path variable then rejects as an
+            # HTTP 500 (confirmed live: ".../review_gate__2/None/sync"), not a
+            # clear error. Fail fast here instead of ever sending that request.
+            raise ConductorError(f"signal {task_ref}: no status to signal (was the decision deferred?)")
         body = output or {}
         r = await self._request(
             "POST", f"/tasks/{workflow_id}/{task_ref}/{status}/sync", json=body)

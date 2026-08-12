@@ -1,0 +1,84 @@
+{
+  "name": "address_pr_reply",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "address_pr_reply_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "prNumber": {
+          "description": "Pull request number referenced in the composed reply text.",
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "head": {
+          "type": "string",
+          "description": "Branch name reported in the reply's engine/branch footer."
+        },
+        "proposalText": {
+          "type": "string",
+          "description": "Summary text describing the proposed fix; a placeholder is used when absent."
+        },
+        "subtasks": {
+          "type": "array",
+          "description": "Subtasks addressed, rendered as a bulleted '- **id**: description' list.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Subtask identifier."
+              },
+              "description": {
+                "type": "string",
+                "description": "Subtask description."
+              }
+            }
+          }
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Verification findings, rendered as a bulleted list."
+        },
+        "verified": {
+          "type": "boolean",
+          "description": "Whether verification passed; rendered literally as 'true'/'false' in the reply."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "address_pr_reply_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "reply": {
+          "type": "string",
+          "description": "Composed Markdown reply body posted after addressing PR review feedback."
+        }
+      },
+      "required": [
+        "reply"
+      ]
+    }
+  }
+}

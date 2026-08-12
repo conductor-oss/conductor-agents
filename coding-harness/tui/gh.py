@@ -29,7 +29,7 @@ async def _list(repo: str, kind: str) -> list[tuple[int, str]] | None:
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             stdin=asyncio.subprocess.DEVNULL,
         )
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        out, _ = await proc.communicate()
         if proc.returncode != 0:
             return None
         data = json.loads(out.decode() or "[]")

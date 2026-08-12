@@ -1,0 +1,110 @@
+{
+  "name": "test_authored_test_commit_verify",
+  "description": "Commit a shape-validated agent-authored test, discover how to run it, and red/green-check it -- one task replacing what used to be commit + test_discover + test_authored_test_redgreen plus a SWITCH between them. On any rejection the commit is rolled back so an unproven or unresolved test never rides along in the delivered diff.",
+  "retryCount": 0,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "test_authored_test_commit_verify_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git repository whose current working tree holds exactly one uncommitted, shape-validated authored test file."
+        },
+        "preCandidateCommit": {
+          "type": "string",
+          "description": "The real candidate commit under verification (C0), without the authored test. Rolled back to on any rejection."
+        },
+        "message": {
+          "type": "string",
+          "default": "test_cycle: agent-authored test for previously unmapped changes",
+          "description": "Commit message for the one new test file."
+        },
+        "testMode": {
+          "type": "string",
+          "enum": [
+            "targeted",
+            "full"
+          ],
+          "default": "targeted",
+          "description": "Mode used to discover how to run the newly committed test file."
+        },
+        "allowHeavySuites": {
+          "type": "boolean",
+          "default": false,
+          "description": "Passed through to discovery; only takes effect when testMode is 'full'."
+        },
+        "includeBrowserTests": {
+          "type": "boolean",
+          "default": false,
+          "description": "Passed through to discovery; only takes effect when testMode is 'full'."
+        }
+      },
+      "required": [
+        "repoPath",
+        "preCandidateCommit"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "test_authored_test_commit_verify_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "accepted": {
+          "type": "boolean",
+          "description": "True only when the commit produced a real change, discovery resolved it to a runnable command, and the red/green check accepted it."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Why the attempt was rejected (no committable change, discovery could not resolve it, or the red/green verdict); empty when accepted."
+        },
+        "commit": {
+          "type": "string",
+          "description": "The new commit SHA when accepted; preCandidateCommit (unchanged, any partial commit rolled back) when rejected."
+        },
+        "repairRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Write-scope roots discovery resolved for the new test file; empty when rejected."
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "The discovered commands that verify the new test file; empty when rejected."
+        },
+        "red": {
+          "type": "object",
+          "description": "Result of running the commands with the candidate's real changes rolled back; absent when rejected before the red/green check ran.",
+          "additionalProperties": true
+        },
+        "green": {
+          "type": "object",
+          "description": "Result of running the commands with the candidate's real changes restored; absent when rejected before the red/green check ran.",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "accepted",
+        "reason",
+        "commit",
+        "repairRoots",
+        "commands"
+      ]
+    }
+  }
+}

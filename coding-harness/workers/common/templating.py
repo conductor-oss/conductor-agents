@@ -208,7 +208,16 @@ def resolve_prompt_details(prompt: str, *, template, template_key, context,
         if chosen is not None:
             source = f"bundled:{template_key}"
     if chosen:
-        return _resolution(render_template(chosen, context), source, template_key)
+        # PR-repair templates conventionally use ``{{subtask}}`` as their action
+        # slot.  The workflow's inline prompt is authoritative action context, so
+        # do not leave that placeholder literal when a caller omits
+        # promptContext.subtask.  Without this fallback a repair agent receives
+        # persona guidance but no verifier failure to fix, consumes an attempt,
+        # and re-verifies the same SHA.
+        render_context = dict(context or {})
+        if "{{subtask}}" in chosen and not str(render_context.get("subtask") or "").strip():
+            render_context["subtask"] = prompt
+        return _resolution(render_template(chosen, render_context), source, template_key)
     return _resolution(prompt, "workflow:inline-prompt", template_key)
 
 

@@ -1,0 +1,118 @@
+{
+  "name": "pr_review_investigation",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "pr_review_investigation_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "structured": {
+          "type": "object",
+          "description": "Structured investigation result from the agent, expected shape {answer: string, review?: object}."
+        },
+        "status": {
+          "type": "string",
+          "description": "Agent turn status; only the literal 'success' (with a non-blank structured.answer) counts as a successful investigation."
+        },
+        "error": {
+          "type": "string",
+          "description": "Error detail folded into the placeholder answer when the turn did not succeed."
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "This turn's agent session ID. Used verbatim when non-blank; otherwise priorSessionId is kept."
+        },
+        "priorSessionId": {
+          "type": "string",
+          "description": "Session ID carried over from the previous investigation pass, used when sessionId is absent."
+        },
+        "question": {
+          "description": "The question asked in this investigation turn; recorded as-is in the returned history entry."
+        },
+        "priorReview": {
+          "description": "The previously computed review, preserved unchanged when this turn fails or returns no review."
+        },
+        "history": {
+          "type": "array",
+          "description": "Prior investigation history entries; this turn's entry is appended to them.",
+          "items": {
+            "type": "object"
+          }
+        },
+        "priorTokens": {
+          "type": "number",
+          "description": "Cumulative LLM tokens used before this turn; added to tokens for the new running total."
+        },
+        "tokens": {
+          "type": "number",
+          "description": "LLM tokens consumed by this investigation turn."
+        },
+        "priorCost": {
+          "type": "number",
+          "description": "Cumulative USD cost before this turn; added to cost for the new running total."
+        },
+        "cost": {
+          "type": "number",
+          "description": "USD cost of this investigation turn."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "pr_review_investigation_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string",
+          "description": "The resolved answer text: the agent's answer on success, or a placeholder noting the failure/error while the prior review is preserved."
+        },
+        "review": {
+          "description": "Summarized review ({summary, verdict, comments}) when this turn succeeded and returned a review; otherwise the unchanged priorReview."
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Resolved session ID: this turn's sessionId if non-blank, else priorSessionId, else empty string."
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Prior history entries plus this turn's {pass, question, answer, status} entry."
+        },
+        "count": {
+          "type": "integer",
+          "description": "Number of investigation passes recorded so far, including this one."
+        },
+        "tokenUsed": {
+          "type": "number",
+          "description": "Running total of LLM tokens used (priorTokens + tokens)."
+        },
+        "costUsd": {
+          "type": "number",
+          "description": "Running total of USD cost (priorCost + cost)."
+        }
+      },
+      "required": [
+        "answer",
+        "review",
+        "sessionId",
+        "history",
+        "count",
+        "tokenUsed",
+        "costUsd"
+      ]
+    }
+  }
+}

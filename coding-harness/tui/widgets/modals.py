@@ -377,19 +377,25 @@ class ConfirmModal(ModalScreen):
 
 class ApprovalModal(ModalScreen):
     """HITL review gate: show the drafted output (a PR review's comments, or a PR's
-    title/body) and let the user Approve, Reject, or Edit it in their editor first.
+    title/body) and let the user approve it, privately investigate it, request changes,
+    stop it, or defer it.
 
     Decision flows back via ``on_decision(status, output)``:
       * Approve → ``("COMPLETED", {approved:true, **payload})`` — payload keys match what
         the workflow's downstream JQ reads (pr_review → ``review``; issue_to_pr →
         ``title``/``body``).
-      * Reject  → ``("FAILED_WITH_TERMINAL_ERROR", {approved:false})`` — the run fails.
+      * Request changes → ``("COMPLETED", {action:"revise", feedback:...})``. For
+        ``pr_review`` that feedback is posted once as REQUEST_CHANGES without approval;
+        code-publication workflows still revise and verify their candidate.
+      * Investigate → ``("COMPLETED", {action:"investigate", feedback:...})``. This is
+        private to ``pr_review`` and resumes the read-only reviewer; it never posts.
     Editing round-trips the draft through a local temp JSON file (the draft arrived over
     REST, so a local temp is host-independent); Approve re-reads that file if edited.
     """
 
     BINDINGS = [
         Binding("a", "approve", "approve"),
+        Binding("i", "investigate", "investigate"),
         Binding("r", "revise", "revise"),
         Binding("s", "stop", "stop"),
         Binding("f", "design_files", "view files"),
@@ -416,54 +422,90 @@ class ApprovalModal(ModalScreen):
             with VerticalScroll(id="approval_body"):
                 yield Static(self._draft_text(), id="approval_content")
                 if self._workflow == "feature_campaign":
-                    yield Label("Feedback / reconciliation instruction", classes="muted")
+                    yield Label("For “Revise with feedback” or “Use manual edits”", classes="muted")
                     yield TextArea("", id="campaign_feedback")
-                    yield Input(placeholder="check profile (for run checks)", id="campaign_profile")
-                    yield Input(placeholder="specific check IDs, comma-separated (optional)", id="campaign_checks")
-                    yield Input(placeholder="wave profile (for set profiles)", id="campaign_wave_profile")
-                    yield Input(placeholder="final profile (for set profiles)", id="campaign_final_profile")
-                    yield Input(placeholder="raise max turns for resumed agents (optional)", id="campaign_max_turns")
-                    yield Input(placeholder="raise max budget USD per resumed agent (optional)", id="campaign_max_budget")
-                    with Horizontal(classes="field-row"):
-                        yield Label("Attached server confirmed")
-                        yield Switch(value=False, id="campaign_attached")
-                elif self._workflow == "openspec_plan":
-                    yield Label("Feedback for the next OpenSpec plan pass", classes="muted")
+                    yield Label("Optional limits for resumed agents", classes="muted")
+                    yield Input(placeholder="max turns per resumed agent", id="campaign_max_turns")
+                    yield Input(placeholder="max budget USD per resumed agent", id="campaign_max_budget")
+                elif self._workflow in ("openspec_plan", "design_docs"):
+                    yield Label(
+                        "Feedback for the next design pass"
+                        if self._workflow == "design_docs"
+                        else "Feedback for the next OpenSpec plan pass",
+                        classes="muted",
+                    )
                     yield TextArea("", id="plan_feedback")
                 elif self._workflow in ("pr_review", "address_pr", "issue_to_pr"):
-                    yield Label("Revision feedback (required for Revise)", classes="muted")
+                    if self._workflow == "pr_review" and self._can_investigate():
+                        yield Label(
+                            "Private investigation question (required for Investigate further)",
+                            classes="muted",
+                        )
+                        yield TextArea("", id="investigation_request")
+                    yield Label(
+                        "Feedback to post (required for Request changes)"
+                        if self._workflow == "pr_review"
+                        else "Revision feedback (required for Revise)",
+                        classes="muted",
+                    )
                     yield TextArea("", id="approval_feedback")
-            hint = ("Choose a phase-aware action; Later leaves this checkpoint open indefinitely"
+            hint = ("Choose one action: advance, revise, adopt manual edits, validate, configure, or stop."
                     if self._workflow == "feature_campaign"
+                    else "View files (f), then approve the design or request another pass"
+                    if self._workflow == "design_docs"
                     else "View files (f), then approve the plan or request another pass"
                     if self._workflow == "openspec_plan"
+                    else "Investigate is private and refreshes the draft; Approve posts and approves the PR; Request changes posts only your feedback without approval; Stop posts nothing; Later leaves this checkpoint open"
+                    if self._workflow == "pr_review"
+                    else "Approve opens the PR; Request code changes revises and re-verifies it; Stop publishes nothing; Later leaves this checkpoint open"
+                    if self._workflow == "issue_to_pr"
+                    else "Approve pushes these changes; Request code changes revises and re-verifies them; Stop publishes nothing; Later leaves this checkpoint open"
+                    if self._workflow == "address_pr"
                     else "edit then Approve to post the edited version")
             yield Static(hint, classes="muted", id="approval_hint")
             yield Static("", id="approval_error", classes="banner-error")
             with Horizontal(classes="modal-buttons"):
-                yield Button("Continue ✓" if self._workflow == "feature_campaign" else "Approve ✓",
+                yield Button("Continue to next phase ✓" if self._workflow == "feature_campaign"
+                             else "Approve PR ✓" if self._workflow == "pr_review"
+                             else "Approve ✓",
                              variant="success", id="approve")
+                if self._workflow == "pr_review" and self._can_investigate():
+                    yield Button("Investigate further", id="investigate")
                 if self._workflow == "feature_campaign":
-                    yield Button("Revise ↻", variant="warning", id="campaign_revise")
-                    yield Button("Adopt edits", id="campaign_adopt")
-                    yield Button("Run checks", id="campaign_run_checks")
-                    yield Button("Set profiles", id="campaign_set_profiles")
-                    yield Button("Stop", variant="error", id="campaign_stop")
-                elif self._workflow != "openspec_plan":
+                    yield Button("Revise with feedback ↻", variant="warning", id="campaign_revise")
+                    yield Button("Use manual edits", id="campaign_adopt")
+                    yield Button("Stop campaign", variant="error", id="campaign_stop")
+                elif self._workflow not in ("openspec_plan", "design_docs", "pr_review"):
                     yield Button("Edit ✎", id="edit")
-                elif self._workflow == "openspec_plan":
+                elif self._workflow in ("openspec_plan", "design_docs"):
                     yield Button("View files", id="design_files")
                 if self._workflow != "feature_campaign":
-                    reject_label = "Request changes ↻" if self._workflow == "openspec_plan" else "Revise ↻"
+                    reject_label = (
+                        "Request design changes ↻" if self._workflow == "design_docs"
+                        else "Request plan changes ↻" if self._workflow == "openspec_plan"
+                        else "Request changes" if self._workflow == "pr_review"
+                        else "Request code changes ↻"
+                        if self._workflow in ("issue_to_pr", "address_pr")
+                        else "Revise ↻"
+                    )
                     yield Button(reject_label, variant="warning", id="reject")
                     if self._workflow != "openspec_plan":
-                        yield Button("Stop", variant="error", id="stop")
-                yield Button("Later", id="defer")
+                        yield Button("Stop — publish nothing", variant="error", id="stop")
+                yield Button("Later — keep open", id="defer")
 
     def on_mount(self) -> None:
         self.query_one("#approval_error", Static).display = False
         if self._workflow == "feature_campaign":
-            self.query_one("#approve", Button).focus()
+            blockers = self._campaign_blockers()
+            if blockers:
+                self.query_one("#approve", Button).disabled = True
+                feedback = self.query_one("#campaign_feedback", TextArea)
+                feedback.text = "Correct these blocking checkpoint issues:\n- " + "\n- ".join(blockers)
+                self._error("Continue is unavailable until these blocking issues are resolved. "
+                            "Use Revise with feedback; the details have been copied into the feedback field.")
+                feedback.focus()
+            else:
+                self.query_one("#approve", Button).focus()
         elif self._workflow == "openspec_plan":
             self.query_one("#plan_feedback", TextArea).focus()
         else:
@@ -475,11 +517,16 @@ class ApprovalModal(ModalScreen):
             return f"Feature campaign — {phase} checkpoint"
         if self._workflow == "openspec_plan":
             return "Review the OpenSpec plan before coding starts"
+        if self._workflow == "design_docs":
+            return "Review the software design before coding starts"
         if self._workflow == "issue_to_pr":
             tgt = f" for issue #{self._issue_number}" if self._issue_number else ""
             return f"Review the pull request{tgt} before it opens"
+        if self._workflow == "address_pr":
+            tgt = f" for PR #{self._pr_number}" if self._pr_number else ""
+            return f"Review the proposed code changes{tgt} before they are pushed"
         tgt = f" on PR #{self._pr_number}" if self._pr_number else ""
-        return f"Review the drafted comments{tgt} before they post"
+        return f"Approve or request changes{tgt}"
 
     def _draft_text(self) -> Text:
         d = self._draft
@@ -500,7 +547,7 @@ class ApprovalModal(ModalScreen):
                     t.append(json.dumps(value, indent=2, default=str) if isinstance(value, (dict, list)) else str(value))
                     t.append("\n")
             return t
-        if self._workflow == "openspec_plan":
+        if self._workflow in ("openspec_plan", "design_docs"):
             t.append("Change directory: ", style="bold")
             t.append(str(d.get("changeDir", "")) + "\n")
             files = d.get("filesChanged") or []
@@ -529,8 +576,8 @@ class ApprovalModal(ModalScreen):
                     t.append("\n")
             return t
         if self._workflow == "address_pr":
-            for label, key in (("Branch", "branch"), ("Diff", "diff"), ("Checks", "checks"),
-                               ("Summary", "summary")):
+            for label, key in (("Branch", "branch"), ("Body", "body"), ("Diff", "diff"),
+                               ("Checks", "checks"), ("Summary", "summary")):
                 value = d.get(key)
                 if value not in (None, "", [], {}):
                     t.append(f"{label}:\n", style="bold")
@@ -540,7 +587,8 @@ class ApprovalModal(ModalScreen):
             return t
         # pr_review structured review: summary / verdict / inline comments
         t.append("Verdict: ", style="bold")
-        t.append(f"{d.get('verdict', '?')}\n", style="yellow")
+        t.append(f"{d.get('verdict', '?')}\n",
+                 style="green" if d.get("verdict") == "approve" else "yellow")
         t.append("\nSummary:\n", style="bold")
         t.append(str(d.get("summary", "")).strip() + "\n")
         comments = d.get("comments") or []
@@ -557,6 +605,18 @@ class ApprovalModal(ModalScreen):
                 t.append(f"  [{sev}]", style="grey62")
             t.append("\n")
             t.append(f"    {str(c.get('body', '')).strip()}\n")
+        history = d.get("investigationHistory") or []
+        count = d.get("investigationCount", len(history))
+        limit = d.get("maxInvestigationPasses", 5)
+        t.append(f"\nPrivate investigations ({count}/{limit}):\n", style="bold")
+        if not history:
+            t.append("  (none)\n", style="grey62")
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+            t.append(f"  Pass {item.get('pass', '?')} — {item.get('status', '?')}\n", style="cyan")
+            t.append(f"    Q: {str(item.get('question', '')).strip()}\n")
+            t.append(f"    A: {str(item.get('answer', '')).strip()}\n")
         return t
 
     def _error(self, msg: str) -> None:
@@ -564,11 +624,29 @@ class ApprovalModal(ModalScreen):
         e.update(msg)
         e.display = bool(msg)
 
+    def _campaign_blockers(self) -> list[str]:
+        """Return checkpoint errors that make the workflow reject ``continue``.
+
+        The workflow exposes these in the campaign WAIT draft.  Sending Continue
+        anyway used to make the checkpoint convert it into a revision, which
+        looked like a no-op in the UI and discarded the useful explanation.
+        """
+        errors = self._draft.get("errors")
+        if not isinstance(errors, list):
+            return []
+        return [str(error).strip() for error in errors if str(error).strip()]
+
+    def _can_investigate(self) -> bool:
+        value = self._draft.get("canInvestigate")
+        return value is True or str(value).lower() == "true"
+
     # ------------------------------------------------------------------ actions
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id
         if bid == "approve":
             self.action_approve()
+        elif bid == "investigate":
+            self.action_investigate()
         elif bid == "edit":
             self.action_edit()
         elif bid == "reject":
@@ -604,30 +682,23 @@ class ApprovalModal(ModalScreen):
             return
         if self._workflow == "feature_campaign":
             output = self._campaign_output("continue")
-        elif self._workflow == "openspec_plan":
+        elif self._workflow in ("openspec_plan", "design_docs"):
             output = {"approved": True, "feedback": ""}
         elif self._workflow == "issue_to_pr":
             output = {"approved": True, "action": "approve", "title": draft.get("title", ""),
                       "body": draft.get("body", "")}
         elif self._workflow == "address_pr":
-            output = {"approved": True, "action": "approve", "artifact": draft}
+            output = {"approved": True, "action": "approve", "artifact": draft,
+                      "body": draft.get("body", "")}
         else:
             output = {"approved": True, "action": "approve", "review": draft}
         self._decide("COMPLETED", output)
 
     def _campaign_output(self, action: str) -> dict:
         feedback = self.query_one("#campaign_feedback", TextArea).text.strip()
-        checks = [x.strip() for x in self.query_one("#campaign_checks", Input).value.split(",") if x.strip()]
         return {
             "action": action,
             "feedback": feedback,
-            "profile": self.query_one("#campaign_profile", Input).value.strip(),
-            "checks": checks,
-            "attachedConfirmed": self.query_one("#campaign_attached", Switch).value,
-            "profiles": {
-                "wave": self.query_one("#campaign_wave_profile", Input).value.strip(),
-                "final": self.query_one("#campaign_final_profile", Input).value.strip(),
-            },
             "maxTurns": self._campaign_number("#campaign_max_turns", int),
             "maxBudgetUsd": self._campaign_number("#campaign_max_budget", float),
         }
@@ -642,17 +713,10 @@ class ApprovalModal(ModalScreen):
             return value
 
     def _campaign_action(self, action: str) -> None:
-        mapped = {"adopt": "adopt_edits", "run_checks": "run_checks",
-                  "set_profiles": "set_profiles", "revise": "revise", "stop": "stop"}.get(action, action)
+        mapped = {"adopt": "adopt_edits", "revise": "revise", "stop": "stop"}.get(action, action)
         output = self._campaign_output(mapped)
         if mapped == "revise" and not output["feedback"]:
             self._error("Add actionable feedback before requesting a revision.")
-            return
-        if mapped == "run_checks" and not output["profile"]:
-            self._error("Choose a check profile before running checks.")
-            return
-        if mapped == "set_profiles" and not any(output["profiles"].values()):
-            self._error("Enter at least one wave or final profile.")
             return
         self._decide("COMPLETED", output)
 
@@ -660,20 +724,27 @@ class ApprovalModal(ModalScreen):
         if self._workflow == "feature_campaign":
             self._campaign_action("stop")
             return
-        if self._workflow == "openspec_plan":
+        if self._workflow in ("openspec_plan", "design_docs"):
             feedback = self.query_one("#plan_feedback", TextArea).text.strip()
             if not feedback:
-                self._error("Add actionable feedback before requesting another plan pass.")
+                noun = "design" if self._workflow == "design_docs" else "plan"
+                self._error(f"Add actionable feedback before requesting another {noun} pass.")
                 return
             self._decide("COMPLETED", {"approved": False, "feedback": feedback})
             return
         feedback = self.query_one("#approval_feedback", TextArea).text.strip()
         if not feedback:
-            self._error("Add actionable feedback before requesting a revision.")
+            self._error(
+                "Add the feedback to post before requesting changes."
+                if self._workflow == "pr_review"
+                else "Add actionable feedback before requesting a revision."
+            )
             return
-        # v3 review/address workflows route this completed decision into a new
-        # execution in the same worktree. Other workflows retain fail-closed behavior.
-        status = "COMPLETED" if self._workflow in ("pr_review", "address_pr") \
+        # Review feedback is posted directly; code-publication workflows use the
+        # same action name to enter their independently verified revision paths.
+        status = "COMPLETED" if self._workflow in (
+            "pr_review", "address_pr", "issue_to_pr",
+        ) \
             else "FAILED_WITH_TERMINAL_ERROR"
         self._decide(status,
                      {"approved": False, "action": "revise", "feedback": feedback})
@@ -681,8 +752,22 @@ class ApprovalModal(ModalScreen):
     def action_revise(self) -> None:
         self.action_reject()
 
+    def action_investigate(self) -> None:
+        if self._workflow != "pr_review" or not self._can_investigate():
+            self._error("No private investigation passes remain.")
+            return
+        question = self.query_one("#investigation_request", TextArea).text.strip()
+        if not question:
+            self._error("Add a specific question before requesting a private investigation.")
+            return
+        self._decide("COMPLETED", {
+            "approved": False,
+            "action": "investigate",
+            "feedback": question,
+        })
+
     def action_stop(self) -> None:
-        status = "COMPLETED" if self._workflow in ("pr_review", "address_pr") \
+        status = "COMPLETED" if self._workflow in ("pr_review", "address_pr", "issue_to_pr") \
             else "FAILED_WITH_TERMINAL_ERROR"
         self._decide(status,
                      {"approved": False, "action": "stop", "suppressed": True, "feedback": ""})

@@ -9,17 +9,30 @@ is inspectable/retryable/resumable the same way git_clone or worktree_add are.
 from __future__ import annotations
 
 import json
-import shlex
-import subprocess
+import tempfile
 from pathlib import Path
 
 from conductor.client.worker.worker_task import worker_task
 
-from common import openspec_cli
+from common import (check_execution, openspec_artifact_drain, openspec_cli, openspec_development,
+                    openspec_generate_artifact, plan_validation, polling, pr_description)
 from common.results import fail, ok
 from common.tasks_md import TasksMdError, parse_tasks_md
 
 _CHECK_OUTPUT_TAIL = 8000
+
+
+def _bool(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _validated_subtasks(value: object, repo_path: object = "") -> list[dict]:
+    """Compatibility wrapper around the single parallel-plan validator."""
+    return plan_validation.validate_subtasks(value, repo_path)
 
 
 @worker_task(task_definition_name="openspec_new_change")
@@ -72,63 +85,22 @@ def openspec_tasks_to_subtasks(task):
     i = task.input_data or {}
     path = i.get("tasksPath") or ""
     try:
+        if "useOpenSpec" in i and not _bool(i.get("useOpenSpec"), False):
+            fallback = _validated_subtasks(i.get("fallbackSubtasks") or [], i.get("repoPath"))
+            return ok(task, {"subtasks": fallback, "reparsed": False}, [
+                f"[openspec_tasks_to_subtasks] generic document plan: {len(fallback)} group(s)"
+            ])
         if not path:
             return fail(task, "openspec_tasks_to_subtasks", "tasksPath is required")
         with open(path, "r", encoding="utf-8") as f:
             text = f.read()
-        subtasks = parse_tasks_md(text)
-        return ok(task, {"subtasks": subtasks}, [
+        subtasks = _validated_subtasks(parse_tasks_md(text), i.get("repoPath"))
+        return ok(task, {"subtasks": subtasks, "reparsed": True}, [
             f"[openspec_tasks_to_subtasks] {len(subtasks)} independent group(s): "
             f"{', '.join(s['id'] for s in subtasks)}"
         ])
-    except (TasksMdError, OSError) as e:
+    except (TasksMdError, OSError, ValueError) as e:
         return fail(task, "openspec_tasks_to_subtasks", e)
-
-
-@worker_task(task_definition_name="openspec_run_subtask_check")
-def openspec_run_subtask_check(task):
-    """Execute one subtask's declared `Test:` command for real against the merged
-    worktree — the deterministic half of code_parallel's post-merge verification
-    loop. Never raises on a failing command: a failing test — including one whose
-    declared command can't even be launched (missing binary, not executable) — is
-    an expected outcome the verification loop's fixup pass acts on, not a worker
-    error (see common/results.py).
-
-    The captured stdout/stderr is returned under the key ``log``, not ``output`` —
-    the workflow's FORK_JOIN_DYNAMIC/JOIN consumers unwrap each entry via the
-    codebase's established ``value.output // value`` pattern (see aggregate() in
-    workflows/code_parallel.json), which exists because some join entries arrive
-    pre-wrapped under an ``output`` key; a task-level field also named ``output``
-    would collide with that unwrap and get mistaken for the whole result object."""
-    i = task.input_data or {}
-    repo_path = i.get("repoPath") or ""
-    test_cmd = i.get("testCmd") or ""
-    subtask_id = i.get("id") or ""
-    try:
-        if not repo_path:
-            raise ValueError("repoPath is required")
-        if not test_cmd.strip():
-            return ok(task, {"id": subtask_id, "passed": True, "exitCode": 0, "log": ""},
-                      [f"[openspec_run_subtask_check] {subtask_id}: no Test: command declared, skipping"])
-        argv = shlex.split(test_cmd)
-        try:
-            proc = subprocess.run(argv, cwd=repo_path, stdin=subprocess.DEVNULL,
-                                  capture_output=True, text=True)
-        except OSError as exc:
-            # The command itself couldn't be launched (missing binary, permission
-            # denied, etc.) — a check failure for the loop to fix, not a crash.
-            log = f"{type(exc).__name__}: {exc}"
-            return ok(task, {"id": subtask_id, "passed": False, "exitCode": None, "log": log}, [
-                f"[openspec_run_subtask_check] {subtask_id}: `{test_cmd}` -> FAILED to launch ({log})"
-            ])
-        log = ((proc.stdout or "") + (proc.stderr or ""))[-_CHECK_OUTPUT_TAIL:]
-        passed = proc.returncode == 0
-        return ok(task, {"id": subtask_id, "passed": passed, "exitCode": proc.returncode, "log": log}, [
-            f"[openspec_run_subtask_check] {subtask_id}: `{test_cmd}` -> "
-            f"{'passed' if passed else 'FAILED'} (exit {proc.returncode})"
-        ])
-    except Exception as e:  # noqa: BLE001
-        return fail(task, "openspec_run_subtask_check", e)
 
 
 @worker_task(task_definition_name="openspec_read_proposal")
@@ -162,13 +134,17 @@ def openspec_validate_change(task):
     repo_path = i.get("repoPath") or ""
     change_id = i.get("changeId") or ""
     try:
+        if "skip" in i and str(i.get("skip") or "").strip().lower() not in {"true", "1", "yes", "on"}:
+            return ok(task, {"valid": True, "skipped": True, "exitCode": 0, "issues": [], "log": ""}, [
+                "[openspec_validate_change] skipped: generic document plan"
+            ])
         if not repo_path or not change_id:
             raise ValueError("repoPath and changeId are required")
-        proc = subprocess.run(
-            [openspec_cli.BIN, "validate", change_id, "--type", "change",
-             "--strict", "--no-interactive", "--json"],
-            cwd=repo_path, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-        )
+        argv = [openspec_cli.BIN, "validate", change_id, "--type", "change",
+                "--strict", "--no-interactive", "--json"]
+        with tempfile.TemporaryDirectory(prefix="conductor-openspec-validate-") as state_dir:
+            env = check_execution.isolated_environment(state_dir)
+            proc = check_execution.execute(argv, cwd=repo_path, env=env)
         try:
             data = json.loads(proc.stdout) if proc.stdout.strip() else {}
         except json.JSONDecodeError:
@@ -176,10 +152,84 @@ def openspec_validate_change(task):
         items = data.get("items") or []
         issues = (items[0].get("issues") if items else None) or []
         log = ((proc.stdout or "") + (proc.stderr or ""))[-_CHECK_OUTPUT_TAIL:]
-        valid = proc.returncode == 0
-        return ok(task, {"valid": valid, "exitCode": proc.returncode, "issues": issues, "log": log}, [
+        valid = proc.exit_code == 0
+        return ok(task, {"valid": valid, "exitCode": proc.exit_code, "issues": issues, "log": log}, [
             f"[openspec_validate_change] {change_id} -> {'valid' if valid else 'INVALID'} "
-            f"(exit {proc.returncode}, {len(issues)} issue(s))"
+            f"(exit {proc.exit_code}, {len(issues)} issue(s))"
         ])
     except Exception as e:  # noqa: BLE001
         return fail(task, "openspec_validate_change", e)
+
+
+@worker_task(task_definition_name="execution_runtime_health")
+def execution_runtime_health(task):
+    """Live proof that the broad execution worker has every supported runtime."""
+    report = check_execution.runtime_health_report()
+    worker_guards = polling.registered_worker_guard_report()
+    description_policy = pr_description.policy_health_report()
+    report["workerGuards"] = worker_guards
+    report["runtimeHealthy"] = bool(
+        report["healthy"] and report["idleSleepInhibitionActive"] and worker_guards["healthy"]
+    )
+    report["prDescriptionPolicy"] = description_policy
+    report["healthy"] = bool(report["runtimeHealthy"] and description_policy["healthy"])
+    return ok(task, {**report, "workerRole": "execution", "modules": ["openspecops"]},
+              [f"[execution_runtime_health] healthy={report['healthy']}"])
+
+
+@worker_task(task_definition_name="runtime_health_summary")
+def runtime_health_summary(task):
+    """Combine both worker pools' health into the one answer AGENTS.md asks for.
+
+    A command-launch change is only proven when the execution pool and the
+    isolated verification pool are both healthy, so the conjunction is the
+    result that matters and is named here rather than derived in jq.
+    """
+    i = task.input_data or {}
+    execution = i.get("execution") if isinstance(i.get("execution"), dict) else {}
+    verification = i.get("verification") if isinstance(i.get("verification"), dict) else {}
+    execution_ok = execution.get("healthy") is True
+    verification_ok = verification.get("healthy") is True
+    return ok(task, {"healthy": execution_ok and verification_ok,
+                     "executionHealthy": execution_ok,
+                     "verificationHealthy": verification_ok},
+              [f"[runtime_health_summary] execution={execution_ok} verification={verification_ok}"])
+
+
+@worker_task(task_definition_name="openspec_select_ready")
+def openspec_select_ready(task):
+    i = task.input_data or {}
+    out = openspec_artifact_drain.select_ready(
+        status=i.get("status"), generated=i.get("generated"), repo_path=i.get("repoPath"),
+        change_name=i.get("changeName"), feedback=i.get("feedback"), goal=i.get("goal"),
+        model=i.get("model"), max_turns=i.get("maxTurns"), max_budget_usd=i.get("maxBudgetUsd"),
+        model_profile=i.get("modelProfile"), model_policy=i.get("modelPolicy"),
+        model_policy_source=i.get("modelPolicySource"), model_policy_sha256=i.get("modelPolicySha256"),
+        models_config=i.get("modelsConfig"), model_overrides=i.get("modelOverrides"))
+    return ok(task, out, [f"[openspec_select_ready] ready={out['readyCount']}"])
+
+
+@worker_task(task_definition_name="openspec_merge_pass_progress")
+def openspec_merge_pass_progress(task):
+    i = task.input_data or {}
+    out = openspec_artifact_drain.merge_pass_progress(
+        fan_output=i.get("fanOutput"), ready_ids=i.get("readyIds"),
+        prev_generated=i.get("prevGenerated"), prev_files=i.get("prevFiles"),
+        prev_cost=i.get("prevCost"), prev_tokens=i.get("prevTokens"))
+    return ok(task, out, [f"[openspec_merge_pass_progress] generated={len(out['generated'])}"])
+
+
+@worker_task(task_definition_name="openspec_usage")
+def openspec_usage(task):
+    i = task.input_data or {}
+    out = openspec_development.aggregate_usage(
+        assessment=i.get("assessment"), child=i.get("child"), verification=i.get("verification"))
+    return ok(task, out, [f"[openspec_usage] totalCostUsd={out['totalCostUsd']}"])
+
+
+@worker_task(task_definition_name="openspec_build_prompt")
+def openspec_build_prompt(task):
+    i = task.input_data or {}
+    prompt = openspec_generate_artifact.build_prompt(
+        instr=i.get("instr"), goal=i.get("goal"), feedback=i.get("feedback"))
+    return ok(task, {"prompt": prompt}, ["[openspec_build_prompt] composed"])

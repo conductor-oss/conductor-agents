@@ -1,12 +1,138 @@
 {
   "name": "openspec_finalize",
-  "description": "Mark verified OpenSpec tasks complete, validate, archive the change, and commit lifecycle artifacts.",
+  "description": "Mark verified OpenSpec tasks complete, validate, archive the change on a run-specific branch, and commit lifecycle artifacts.",
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 5,
-  "pollTimeoutSeconds": 120,
-  "responseTimeoutSeconds": 60,
-  "timeoutSeconds": 1800,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "pollTimeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "openspec_finalize_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "writebackRepoPath": {
+          "type": "string",
+          "description": "Absolute path to the git repository to archive the OpenSpec change in and commit against."
+        },
+        "writebackProjectPath": {
+          "type": "string",
+          "description": "Absolute path to the OpenSpec project root (the directory containing openspec/) inside writebackRepoPath's checkout."
+        },
+        "changeId": {
+          "type": "string",
+          "description": "OpenSpec change identifier to complete and archive."
+        },
+        "branchRunId": {
+          "type": "string",
+          "description": "Run identifier used to build the default archive branch name; takes precedence over workflowId."
+        },
+        "workflowId": {
+          "type": "string",
+          "description": "Fallback run identifier for the default archive branch name when branchRunId is absent; defaults to the workflow instance id or task id."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch name to create for the archive commit; defaults to openspec/archive/{changeId}/{first 8 chars of the run id}."
+        },
+        "sameRepo": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when the OpenSpec source and target workspace are the same repository; the current branch is reused instead of creating a new archive branch."
+        },
+        "publish": {
+          "type": "boolean",
+          "description": "Whether the archive branch should be published as a PR downstream; defaults to true unless sameRepo is true."
+        },
+        "forceAddPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Paths to force-add to the archive commit even if gitignored."
+        },
+        "base": {
+          "type": "string",
+          "default": "main",
+          "description": "Base branch reported in the output for a downstream PR; not otherwise used by this task."
+        }
+      },
+      "required": [
+        "writebackRepoPath",
+        "writebackProjectPath",
+        "changeId"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "openspec_finalize_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "archived": {
+          "type": "boolean",
+          "description": "Always true on the success path; failures raise instead."
+        },
+        "changeId": {
+          "type": "string",
+          "description": "OpenSpec change identifier that was archived."
+        },
+        "archivePath": {
+          "type": "string",
+          "description": "Repository-relative path of the archived change under openspec/changes/archive/; empty if no archive directory was found."
+        },
+        "tasksCompleted": {
+          "type": "integer",
+          "description": "Number of previously-incomplete checklist items marked [x] in the change's tasks.md."
+        },
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the repository the archive commit was made in."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Archive branch name, or the current branch when sameRepo is true."
+        },
+        "commit": {
+          "type": "string",
+          "description": "Commit SHA of the archive commit."
+        },
+        "publish": {
+          "type": "boolean",
+          "description": "Whether the archive branch should be published as a PR downstream."
+        },
+        "base": {
+          "type": "string",
+          "description": "Base branch for a downstream PR."
+        },
+        "title": {
+          "type": "string",
+          "description": "Suggested PR title for the archive/implementation change."
+        },
+        "body": {
+          "type": "string",
+          "description": "Suggested PR body for the archive/implementation change."
+        }
+      },
+      "required": [
+        "archived",
+        "changeId",
+        "archivePath",
+        "tasksCompleted",
+        "repoPath",
+        "branch",
+        "commit",
+        "publish",
+        "base",
+        "title",
+        "body"
+      ]
+    }
+  }
 }

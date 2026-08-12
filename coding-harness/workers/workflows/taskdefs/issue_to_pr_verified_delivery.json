@@ -1,0 +1,118 @@
+{
+  "name": "issue_to_pr_verified_delivery",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "issue_to_pr_verified_delivery_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "delivery": {
+          "type": "object",
+          "description": "issue_to_pr_delivery's output: state, commit, repairAttempts, reports, commandFailures, plus its other pass-through fields. Non-object treated as empty."
+        },
+        "verification": {
+          "type": "object",
+          "description": "Post-merge test_cycle output: verificationState, candidateCommit, attempts, repairReports, verification.commands (each with argv/exitCode/output). Non-object treated as empty."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "issue_to_pr_verified_delivery_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "incomplete_delivery",
+            "merge_blocked",
+            "audit_unavailable",
+            "implementation_unavailable"
+          ],
+          "description": "delivery.state as-is unless it was \"passed\", in which case it becomes \"passed\"/\"incomplete_delivery\"/\"implementation_unavailable\" depending on verification.verificationState."
+        },
+        "commit": {
+          "description": "verification.candidateCommit if a non-blank string, else delivery.commit."
+        },
+        "repairAttempts": {
+          "type": "number",
+          "description": "delivery.repairAttempts plus verification.attempts."
+        },
+        "reports": {
+          "type": "array",
+          "description": "delivery.reports concatenated with verification.repairReports."
+        },
+        "commandFailures": {
+          "type": "array",
+          "description": "delivery.commandFailures concatenated with any non-zero-exit commands found in verification.verification.commands."
+        },
+        "verification": {
+          "type": "object",
+          "description": "The verification input object, echoed back unchanged."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Passed through unchanged from delivery."
+        },
+        "subtasks": {
+          "type": "array",
+          "description": "Passed through unchanged from delivery."
+        },
+        "merged": {
+          "type": "array",
+          "description": "Passed through unchanged from delivery."
+        },
+        "conflicts": {
+          "type": "array",
+          "description": "Passed through unchanged from delivery."
+        },
+        "totalTokens": {
+          "type": "number",
+          "description": "Passed through unchanged from delivery."
+        },
+        "totalCostUsd": {
+          "type": "number",
+          "description": "Passed through unchanged from delivery."
+        },
+        "missingPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Passed through unchanged from delivery."
+        },
+        "rejectedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Passed through unchanged from delivery."
+        },
+        "sandboxDenials": {
+          "type": "array",
+          "description": "Passed through unchanged from delivery."
+        }
+      },
+      "required": [
+        "state",
+        "commit",
+        "repairAttempts",
+        "reports",
+        "commandFailures",
+        "verification"
+      ]
+    }
+  }
+}

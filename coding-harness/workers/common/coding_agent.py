@@ -30,7 +30,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import subprocess
 from typing import Any
 
 from common.tool_policy import DEFAULT_ALLOWED_TOOLS, DEFAULT_DISALLOWED_TOOLS
@@ -38,6 +37,7 @@ from common.tool_policy import DEFAULT_ALLOWED_TOOLS, DEFAULT_DISALLOWED_TOOLS
 import claude_agent_sdk as sdk
 
 from .cost import usage_tokens
+from .exec import run
 
 log = logging.getLogger("coding_agent")
 
@@ -55,11 +55,9 @@ def _file_tree(root: str, *, max_files: int = 400, max_chars: int = 8000) -> str
     bloat the prompt — a trailing note tells the agent the list was truncated."""
     files: list[str] = []
     try:
-        r = subprocess.run(
-            ["git", "-C", root, "ls-files", "--cached", "--others", "--exclude-standard"],
-            capture_output=True, text=True,
-        )
-        if r.returncode == 0:
+        r = run(["git", "-C", root, "ls-files", "--cached", "--others", "--exclude-standard"],
+                check=False)
+        if r.code == 0:
             files = [f for f in r.stdout.splitlines() if f.strip()]
     except Exception:  # noqa: BLE001 — priming is best-effort, never fatal
         files = []
@@ -113,6 +111,18 @@ def _infer_backend(backend: str | None, model: str | None) -> str:
     return "claude"
 
 
+def _external_context_paths(worktree: str, context_paths: list[str]) -> list[str]:
+    """Return grants that need an additional filesystem read root.
+
+    A path beneath the agent's current working directory is already readable by
+    every backend.  Treating it as an external mount both rejects normal
+    in-repository design docs and unnecessarily couples them to Claude.
+    """
+    root = os.path.realpath(worktree)
+    return [path for path in context_paths
+            if path != root and not path.startswith(root + os.sep)]
+
+
 def _is_write_surface(tools: list[str] | None) -> bool:
     """True unless the tool surface is restricted to read-only tools. Lets a
     read-only planner (tools=[Read,Grep,Glob]) map to Codex's read-only sandbox."""
@@ -127,6 +137,37 @@ WORKER_SYSTEM_APPEND = (
     "deletions). Do not commit or push — the harness owns git — and do not run "
     "system-destructive commands (`rm -rf`, `sudo`). Finish the task in as few tool "
     "calls as possible."
+)
+
+# This is appended to every backend's user prompt as well as the Claude system
+# prompt.  Codex and Gemini do not consume Claude's system-prompt configuration,
+# so keeping the boundary here makes it non-optional across all coding workers.
+VERIFICATION_BOUNDARY = (
+    "\n\n## Verification boundary (non-negotiable)\n"
+    "Run only build/test commands evidenced by the repository. If such a command "
+    "fails because this execution sandbox denies networking, sockets, file locks, "
+    "or other OS facilities (for example 'Operation not permitted'), that is not "
+    "a project-code failure. Report the exact command and blocker, then stop. Do "
+    "not try to bypass the sandbox or change Gradle's daemon, cache, wrapper, "
+    "file-lock listener, environment, or project configuration; do not create or "
+    "commit cache artifacts. The independent verification worker runs approved "
+    "commands in its disposable worktree."
+)
+
+# Same unconditional treatment as VERIFICATION_BOUNDARY, appended right after it
+# (below) so neither a repo guide nor a caller-supplied promptTemplate can
+# displace it. Grounded in an observed failure: a candidate that touched
+# .github/workflows/*.yml got pushed, GitHub rejected the push because the
+# harness's credential lacks the OAuth `workflow` scope, and the PR never
+# opened at all -- an unrequested workflow-file edit silently blocks delivery.
+SCOPE_BOUNDARY = (
+    "\n\n## Change scope boundary (non-negotiable)\n"
+    "Do not create or modify anything under .github/workflows/, or other CI/CD "
+    "pipeline definitions, unless the task explicitly asks for a CI/workflow "
+    "change. These files run with elevated privileges on GitHub and commonly "
+    "need a credential scope the harness does not have; an unrequested edit "
+    "here does not fail loudly -- it silently blocks the push and the pull "
+    "request never opens."
 )
 
 
@@ -327,6 +368,7 @@ async def run_coding_agent(
     include_repo_guide: bool = True,
     backend: str | None = None,
     write_roots: list[str] | None = None,
+    context_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run one locked-down autonomous coding session to completion (async).
 
@@ -376,6 +418,7 @@ async def run_coding_agent(
     # greenfield "write an app here" task shouldn't require the caller to mkdir first;
     # the write-boundary guard still confines the agent to this tree.
     worktree_abs = os.path.realpath(worktree)
+    context_paths = [os.path.realpath(path) for path in (context_paths or [])]
     try:
         os.makedirs(worktree_abs, exist_ok=True)
     except OSError as e:
@@ -401,6 +444,16 @@ async def run_coding_agent(
     # Both are blocking subprocess drivers (can run for minutes) — a worker thread,
     # not the shared event loop. Conductor task definitions own runtime limits.
     be = _infer_backend(backend, model)
+    external_context_paths = _external_context_paths(worktree_abs, context_paths)
+    if external_context_paths and be != "claude":
+        # Codex/Gemini's current SDK/CLI sandboxes expose no equivalent to
+        # Claude's explicit additional *read* roots.  Do not silently hand a
+        # user-supplied host path to a backend whose write boundary we cannot
+        # prove; callers can select Claude or keep contextPaths inside repoPath.
+        return {"ok": False, "status": "unsupported_context_paths", "result": "",
+                "structured": None, "session_id": None, "num_turns": 0,
+                "tokens": 0, "cost_usd": 0.0, "denials": [], "turn_log": [],
+                "error": "external contextPaths require the Claude backend on this worker"}
     # Cross-backend model guard: an explicit `agent` often arrives with another
     # backend's model id (e.g. code_parallel's default codeModel is a claude-* id
     # while codeAgent="gemini") — the engine would 404 on it. Fall back to the
@@ -421,6 +474,11 @@ async def run_coding_agent(
             name, text = guide
             prompt = (f"Repository guide ({name}) — authoritative conventions for building, "
                       f"testing, and reviewing this repository; follow it:\n\n{text}\n\n---\n\n{prompt}")
+
+    # Keep the boundary after repo-provided guidance and caller templates so it
+    # cannot be displaced by either.  It prevents agents from burning turns on
+    # futile sandbox workarounds such as disabling Gradle's cache-lock listener.
+    prompt += VERIFICATION_BOUNDARY + SCOPE_BOUNDARY
 
     if be == "codex":
         from .codex import run_codex_agent
@@ -458,7 +516,10 @@ async def run_coding_agent(
 
     opts: dict[str, Any] = {
         "cwd": worktree_abs,
-        "add_dirs": [worktree_abs],
+        # Claude's SDK needs explicit additional roots to make user-supplied
+        # references visible.  They are never write roots; the file-tool hook and
+        # the OS sandbox continue to limit writes to ``worktree_abs``.
+        "add_dirs": [worktree_abs, *context_paths],
         "system_prompt": system_prompt,
         "setting_sources": setting_sources if setting_sources is not None else ["project"],
         # env MERGES on top of the inherited env in Python (doc gotcha #17), so this
@@ -484,7 +545,13 @@ async def run_coding_agent(
             "enabled": True,
             "autoAllowBashIfSandboxed": False,
             "allowUnsandboxedCommands": False,
-            "network": {"allowedDomains": allowed_domains or []},
+            # allowLocalBinding: a test that binds a loopback server (e.g.
+            # HTTPServer(("127.0.0.1", 0), ...)) is a routine, same-machine
+            # test fixture, not an egress path -- confirmed live, this exact
+            # sandbox denial surfaced as a false test failure, not a
+            # project-code one. allowedDomains (egress to named remote hosts)
+            # is unrelated and stays caller-controlled.
+            "network": {"allowedDomains": allowed_domains or [], "allowLocalBinding": True},
         }
     if model:
         opts["model"] = model

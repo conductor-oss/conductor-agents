@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from automation.tasks import github_automation_claim, github_automation_scan
+from automation.tasks import _candidate, github_automation_claim, github_automation_scan
 from common import automation
 
 
 TASKDEFS = Path(__file__).resolve().parents[1] / "workflows" / "taskdefs"
 AUTOMATION_PATH_TASKS = {
-    "campaign_checks", "coding_agent", "commit", "git_push",
+    "coding_agent", "commit", "git_push",
     "github_automation_claim", "github_automation_scan", "github_automation_state",
     "local_diff", "merge_worktrees", "pr_comment", "pr_comments", "pr_diff",
     "pr_submit_review", "workspace_cleanup", "workspace_prepare", "worktree_add",
@@ -20,11 +20,12 @@ def _comment(body, author="conductor-bot", ident=1):
     return {"id": ident, "body": body, "user": {"login": author}}
 
 
-def test_automation_path_taskdefs_have_all_three_timeouts():
+def test_automation_path_taskdefs_have_no_timeouts():
     for name in sorted(AUTOMATION_PATH_TASKS):
         taskdef = json.loads((TASKDEFS / f"{name}.json").read_text())
         for field in ("timeoutSeconds", "responseTimeoutSeconds", "pollTimeoutSeconds"):
-            assert int(taskdef.get(field) or 0) > 0, f"{name}: {field} must be positive"
+            assert int(taskdef.get(field) or 0) == 0, f"{name}: {field} must be disabled"
+        assert taskdef["timeoutPolicy"] == "ALERT_ONLY"
 
 
 def test_automation_dispatch_carries_bounded_approval_configuration():
@@ -36,6 +37,20 @@ def test_automation_dispatch_carries_bounded_approval_configuration():
     assert '"reviewPromptTemplate"' in serialized
     assert '"fixPromptTemplate"' in serialized
     assert '"modelProfile"' in serialized
+    assert workflow["version"] == 1
+    start = next(
+        task for task in workflow["tasks"][2]["decisionCases"]["true"]
+        if task["taskReferenceName"] == "start_child"
+    )
+    assert start["inputParameters"]["startWorkflow"]["version"] == \
+        "${workflow.input.childWorkflowVersion}"
+
+
+def test_automation_candidates_pin_each_current_child_workflow_version():
+    source = {"title": "x", "html_url": "https://example.invalid/x"}
+    assert _candidate("review", 1, "r", 1, source)["childWorkflowVersion"] == 2
+    assert _candidate("address", 1, "r", 1, source)["childWorkflowVersion"] == 2
+    assert _candidate("issue", 1, "r", 1, source)["childWorkflowVersion"] == 2
 
 
 def test_markers_require_trusted_author_and_version():

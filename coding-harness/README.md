@@ -60,11 +60,11 @@ The same connection loader is used by `./run.sh`, `workers/register.sh`, and
 | Workflow | Does | Key inputs |
 |---|---|---|
 | **`issue_to_pr`** | GitHub issue → pull request (resolves it, opens a PR that closes the issue) | `repo`, `issueNumber`, optional `base`, `design`, `planAgent`, `codeAgent` |
-| **`pr_review`** | Reviews a PR and posts a formal review (inline comments + verdict; never approves) | `repo`, `prNumber`, optional `agent`, `model`, `approve` |
+| **`pr_review`** | Reviews a PR; supports bounded private follow-up investigation before approve/request-changes publication | `repo`, `prNumber`, optional `reviewGuidance`, `approve` |
 | **`local_review`** | Reviews a local checkout against a freshly fetched remote branch; never writes, commits, pushes, or posts | `repoPath`, optional `baseRemote`, `baseBranch` |
 | **`address_pr`** | Applies a PR's review feedback and updates the same branch | `repo`, `prNumber`, optional `engine`, `agent`, `model`, `design` |
 | **`code_parallel`** | Codes a multi-part change in a local repo (decompose → parallel → merge) — the coding core the others wrap | `repoPath`, `instruction` |
-| **`feature_campaign`** | Checkpoint-first design → DAG → resumable waves → real-system verification; leaves a local branch and never publishes | `repoPath`, `instruction` |
+| **`feature_campaign`** | Checkpoint-first design → DAG → resumable waves → real-system verification; keeps a local branch by default and publishes only when explicitly enabled | `repoPath`, `instruction` |
 | **`openspec_development`** | Apply-ready OpenSpec change → complexity routing → implementation → verification → archive | `repoPath`, `specSource`, `changeId` |
 | **`github_demo`** | Minimal clone → change → PR (GitHub connectivity smoke test) | `repoUrl`, `instruction` |
 
@@ -78,9 +78,9 @@ templates, and use the local-source OpenSpec mode when the checked-out spec repo
 the implementation repository. These are documented in [Models and profiles](docs/model-profiles.md),
 [Prompt templates](docs/templates.md), and [Local OpenSpec development](docs/openspec.md).
 
-Runtime deadlines are owned exclusively by Conductor task definitions. Workflow inputs and
-workers do not impose a second agent wall-clock timeout; adjust `responseTimeoutSeconds`,
-`timeoutSeconds`, and `timeoutPolicy` on the applicable task definition instead.
+The harness has no execution deadlines: workflows, task definitions, workers, subprocesses,
+HTTP clients, and TUI orchestration run until completion or explicit user cancellation.
+Polling long-waits and UI message display durations never abort running work.
 
 ## Terminal UI
 
@@ -128,24 +128,24 @@ Conductor workflow
 `code_parallel` is the coding core. Its `openspec_plan` sub-workflow drives the `openspec` CLI
 through a proposal/specs/design/tasks change — reviewed via the same human-or-AI-judge loop —
 and deterministically parses the generated `tasks.md` into independent sub-tasks; `code_parallel`
-then creates a dynamic Conductor fork, implements each independent slice in its own worktree,
-merges the branches, and aggregates files, tokens, and cost. After merging, a bounded verification
-loop actually runs each sub-task's declared `Test:` command and a read-only semantic judge against
-the OpenSpec artifacts; on failure it runs one consolidated fixup pass and re-checks, and on
-exhausting the iteration cap (`verifyMaxIterations`) it fails closed with no PR. Once verification
-passes, `code_parallel` hands control back to its caller with the OpenSpec change still in place —
-so `issue_to_pr` and `address_pr` never ship an unverified PR, and reviewers see the actual
-proposal/specs/tasks in the PR diff itself. `code_parallel` does not archive the change: archiving
+then validates that every slice has a unique ID and exclusive ownership of exact files. Invalid
+plans feed their concrete issues back to the planner and are autonomously rewritten and rechecked
+before fan-out. The workflow then implements each valid slice in its own worktree, merges the
+branches, and aggregates files, tokens, and cost. Plan validation does not discover or run tests;
+testing is a separate concern in workflows that explicitly opt into the `test_*` tasks.
+`code_parallel` hands control back to its caller with the OpenSpec change still in place.
+`code_parallel` does not archive the change: archiving
 is a manual, out-of-band step a human runs (e.g. via `openspec archive`) after the PR merges. The
-GitHub workflows wrap that core with issue, PR, review, and push operations, and
-compose their PR body/reply from the verified run's actual proposal text, sub-task list,
-verification findings, and cost.
+GitHub workflows wrap that core with issue, PR, review, and push operations. Every generated PR
+description is normalized to one concise `## Summary` paragraph; proposal, subtask, verification,
+warning, cost, and automation metadata remain in workflow output rather than the PR body.
 
 For larger work, `feature_campaign` adds durable WAIT checkpoints after design, plan,
 each integrated wave, and final verification. Its agents resume by session ID, DAG tasks
 run only when dependencies are complete and their planned files are disjoint, and checks
 come from `.conductor-code/checks.json` version 2. A campaign reports cumulative usage but
-does not impose a campaign-wide spend cap, push, or open a PR.
+does not impose a campaign-wide spend cap. It keeps the verified branch local by default;
+`createPr:true` explicitly enables push and PR creation.
 
 `openspec_development` accepts an OpenSpec project/change from the target repo, another local
 checkout, a Git remote, or a public HTTPS zip/tar bundle. It validates the change with the pinned

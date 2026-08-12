@@ -52,8 +52,8 @@
   "schemaVersion": 2,
   "restartable": true,
   "ownerEmail": "harness@conductor.local",
-  "timeoutPolicy": "TIME_OUT_WF",
-  "timeoutSeconds": 180,
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
   "overwriteTags": false,
   "inputTemplate": {
     "modelProfile": "",
@@ -62,5 +62,88 @@
     "modelPolicySha256": "",
     "modelsConfig": "",
     "modelOverrides": {}
-  }
+  },
+  "inputSchema": {
+    "name": "automation_reset_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "'owner/name' GitHub repository slug the revision marker is recorded on."
+        },
+        "number": {
+          "type": "integer",
+          "description": "PR or issue number the automation revision applies to."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "review",
+            "address",
+            "issue"
+          ],
+          "description": "Automation kind whose revision is being reset."
+        },
+        "revision": {
+          "type": "string",
+          "description": "Revision fingerprint (head SHA or feedback fingerprint) being reset for reclaiming."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model profile to select from the merged model policy."
+        },
+        "modelPolicy": {
+          "type": "object",
+          "default": {},
+          "description": "Inline model policy document merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Label recorded for the inline modelPolicy's provenance."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to the repository model policy file."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "default": {},
+          "description": "Per-role overrides merged on top of the selected profile's roles."
+        }
+      },
+      "required": [
+        "repo",
+        "number",
+        "kind",
+        "revision"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "automation_reset_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "reset": {
+          "type": "boolean",
+          "description": "True once the 'reset' state marker comment recording this revision's clearance has been posted."
+        }
+      },
+      "required": [
+        "reset"
+      ]
+    }
+  },
+  "enforceSchema": false
 }

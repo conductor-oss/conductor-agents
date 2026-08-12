@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import subprocess
-import time
+import tempfile
 from pathlib import Path
 from typing import Any
+
+from common import check_execution
 
 
 class ChecksConfigError(ValueError):
@@ -33,6 +34,9 @@ def load_config(repo: str, relpath: str = ".conductor-code/checks.json") -> dict
         if any(key in check for key in ("env", "environmentVariables", "secrets", "credentials")):
             raise ChecksConfigError(
                 f"check {check_id} must not contain credential values; use worker environment variables")
+        if "timeoutSeconds" in check:
+            raise ChecksConfigError(
+                f"check {check_id} must not set timeoutSeconds; commands run until completion or cancellation")
     for name, profile in profiles.items():
         selected = profile.get("checks") or []
         missing = sorted(set(selected) - set(checks))
@@ -43,6 +47,9 @@ def load_config(repo: str, relpath: str = ".conductor-code/checks.json") -> dict
             raise ChecksConfigError(f"profile {name} has invalid environment mode {mode!r}")
         if mode == "managed":
             env = profile.get("environment") or {}
+            if "timeoutSeconds" in env:
+                raise ChecksConfigError(
+                    f"managed profile {name} must not set timeoutSeconds; commands run until completion or cancellation")
             for key in ("up", "readyCheck", "down"):
                 if not env.get(key):
                     raise ChecksConfigError(f"managed profile {name} requires environment.{key}")
@@ -66,16 +73,28 @@ def _argv(command: Any) -> list[str]:
     raise ChecksConfigError("check command must be a string or argv array")
 
 
-def _run(command: Any, *, cwd: str, log_path: Path, tail_chars: int) -> dict[str, Any]:
-    started = time.monotonic()
-    proc = subprocess.run(_argv(command), cwd=cwd, stdin=subprocess.DEVNULL,
-                          capture_output=True, text=True, env=os.environ.copy())
-    text = (proc.stdout or "") + (proc.stderr or "")
+def _safe_output(value: str, limit: int = 12_000) -> str:
+    return "".join(char for char in str(value or "")
+                   if char in {"\n", "\r", "\t"} or ord(char) >= 32)[-limit:]
+
+
+def _run(command: Any, *, cwd: str, log_path: Path, tail_chars: int,
+         env: dict[str, str]) -> dict[str, Any]:
+    argv = _argv(command)
+    try:
+        proc = check_execution.execute(argv, cwd=cwd, env=env)
+        text = _safe_output((proc.stdout or "") + ("\n" if proc.stdout and proc.stderr else "") + (proc.stderr or ""))
+        outcome = proc.outcome
+        exit_code = proc.exit_code
+        duration = proc.duration_seconds
+    except OSError as exc:
+        text = _safe_output(f"unable to start {' '.join(argv)}: {exc}")
+        outcome, exit_code, duration = "infra_blocked", 127, 0.0
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text(text, encoding="utf-8")
-    return {"passed": proc.returncode == 0, "exitCode": proc.returncode,
-            "durationSeconds": round(time.monotonic() - started, 3),
-            "outputTail": text[-tail_chars:], "logPath": str(log_path)}
+    return {"passed": outcome == "passed", "outcome": outcome, "exitCode": exit_code,
+            "durationSeconds": duration, "outputTail": text[-tail_chars:], "logPath": str(log_path),
+            "runtime": {"entrypoint": argv[0], "executable": check_execution.executable_for(argv, cwd=cwd, env=env) or ""}}
 
 
 def run_profile(repo: str, profile_name: str, *, requested: list[str] | None = None,
@@ -96,16 +115,20 @@ def run_profile(repo: str, profile_name: str, *, requested: list[str] | None = N
     required = environment.get("requiredEnv") or []
     missing_env = [name for name in required if not os.environ.get(name)]
     if missing_env:
-        return {"passed": False, "blockingPassed": False, "profile": profile_name,
+        return {"passed": False, "blockingPassed": False, "executionOutcome": "configuration_blocked", "profile": profile_name,
                 "environmentMode": mode, "missingEnvironmentVariables": missing_env,
                 "checks": [], "teardownRan": False,
                 "error": "required attached environment variables are missing"}
     if mode == "attached" and not attached_confirmed:
-        return {"passed": False, "blockingPassed": False, "profile": profile_name,
+        return {"passed": False, "blockingPassed": False, "executionOutcome": "configuration_blocked", "profile": profile_name,
                 "environmentMode": mode, "confirmationRequired": True, "checks": [],
                 "teardownRan": False, "error": "fresh HUMAN confirmation required"}
 
-    artifact_dir = Path(repo) / ".conductor-code" / "artifacts" / "checks" / str(int(time.time() * 1000))
+    artifact_root = Path(os.environ.get("CONDUCTOR_ARTIFACT_ROOT", tempfile.gettempdir())) / "conductor-check-artifacts"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    artifact_dir = Path(tempfile.mkdtemp(prefix="campaign-", dir=artifact_root))
+    state_dir = artifact_dir / "state"
+    execution_env = check_execution.isolated_environment(state_dir, required_env=required)
     results: list[dict[str, Any]] = []
     teardown_ran = False
     setup_error = ""
@@ -113,19 +136,21 @@ def run_profile(repo: str, profile_name: str, *, requested: list[str] | None = N
     try:
         if mode == "managed":
             up = _run(environment["up"], cwd=repo, log_path=artifact_dir / "environment-up.log",
-                      tail_chars=tail_chars)
+                      tail_chars=tail_chars, env=execution_env)
             setup_result["setup"] = up
             if not up["passed"]:
                 setup_error = "managed environment up command failed"
             else:
                 ready = _run(environment["readyCheck"], cwd=repo,
-                             log_path=artifact_dir / "environment-ready.log", tail_chars=tail_chars)
+                             log_path=artifact_dir / "environment-ready.log", tail_chars=tail_chars,
+                             env=execution_env)
                 setup_result["readyCheck"] = ready
                 if not ready["passed"]:
                     setup_error = "managed environment readiness check failed"
         elif mode == "attached" and environment.get("readyCheck"):
             ready = _run(environment["readyCheck"], cwd=repo,
-                         log_path=artifact_dir / "environment-ready.log", tail_chars=tail_chars)
+                         log_path=artifact_dir / "environment-ready.log", tail_chars=tail_chars,
+                         env=execution_env)
             setup_result["readyCheck"] = ready
             if not ready["passed"]:
                 setup_error = "attached environment readiness check failed"
@@ -138,7 +163,7 @@ def run_profile(repo: str, profile_name: str, *, requested: list[str] | None = N
                 result = _run(spec.get("command", spec.get("cmd")),
                               cwd=str(Path(repo) / spec.get("cwd", ".")),
                               log_path=artifact_dir / f"{check_id}-{attempt}.log",
-                              tail_chars=tail_chars)
+                              tail_chars=tail_chars, env=execution_env)
                 result["attempt"] = attempt
                 attempt_results.append(result)
                 if result["passed"]:
@@ -147,6 +172,7 @@ def run_profile(repo: str, profile_name: str, *, requested: list[str] | None = N
             results.append({"id": check_id, "blocking": bool(spec.get("blocking", True)),
                             "passed": bool(last["passed"]), "attempts": attempt_results,
                             "exitCode": last["exitCode"],
+                            "outcome": last["outcome"], "runtime": last["runtime"],
                             "durationSeconds": round(sum(a["durationSeconds"] for a in attempt_results), 3),
                             "outputTail": last["outputTail"], "logPath": last["logPath"]})
     finally:
@@ -154,10 +180,15 @@ def run_profile(repo: str, profile_name: str, *, requested: list[str] | None = N
         if mode == "managed":
             teardown_ran = True
             _run(environment["down"], cwd=repo, log_path=artifact_dir / "environment-down.log",
-                 tail_chars=tail_chars)
+                 tail_chars=tail_chars, env=execution_env)
 
     blocking_passed = not setup_error and all(r["passed"] or not r["blocking"] for r in results)
+    outcome = "passed" if not setup_error and all(r["passed"] for r in results) else next(
+        (r["outcome"] for r in results if r.get("outcome") in {"infra_blocked", "cancelled"}),
+        "configuration_blocked" if setup_error else "code_failed",
+    )
     return {"passed": not setup_error and all(r["passed"] for r in results), "blockingPassed": blocking_passed,
+            "executionOutcome": outcome,
             "profile": profile_name, "environmentMode": mode, "checks": results,
             "teardownRan": teardown_ran, "artifactDir": str(artifact_dir), "error": setup_error,
             **setup_result}

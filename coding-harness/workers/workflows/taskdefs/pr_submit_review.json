@@ -1,12 +1,92 @@
 {
   "name": "pr_submit_review",
-  "description": "Post a formal PR review (inline comments + summary + verdict) via the reviews API. Never APPROVEs. Retry 0 (re-post would duplicate). Input: repo, number, structured.",
+  "description": "Post one formal GitHub review. APPROVE posts the selected findings and approves; REQUEST_CHANGES posts revision feedback without approval. Input: repo, number, structured, event?.",
   "retryCount": 0,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "pr_submit_review_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "Repo slug or URL owning the PR. Falls back to repoUrl when omitted."
+        },
+        "repoUrl": {
+          "type": "string",
+          "description": "Repo URL owning the PR, used when repo is not supplied."
+        },
+        "number": {
+          "type": "integer",
+          "description": "PR number to review."
+        },
+        "structured": {
+          "description": "The agent's structured findings: {summary?, verdict?, comments?}. Accepts a dict or a JSON string, parsed before use.",
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "event": {
+          "type": "string",
+          "description": "Explicit gh review event override (APPROVE/REQUEST_CHANGES/COMMENT). When omitted, derived from structured.verdict: 'request_changes' -> REQUEST_CHANGES, else APPROVE."
+        }
+      },
+      "required": [
+        "number"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "pr_submit_review_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "reviewed": {
+          "type": "boolean",
+          "description": "Always true once a review has been posted (with or without inline comments)."
+        },
+        "event": {
+          "type": "string",
+          "enum": [
+            "APPROVE",
+            "REQUEST_CHANGES",
+            "COMMENT"
+          ],
+          "description": "The gh review event that was actually posted."
+        },
+        "inlineCount": {
+          "type": "integer",
+          "description": "Number of inline comments posted with the review; 0 if inline anchoring failed and findings were folded into the summary instead."
+        },
+        "inline": {
+          "type": "boolean",
+          "description": "True if inline comments were accepted by GitHub; false if the review had to be retried summary-only after a 422."
+        },
+        "url": {
+          "type": "string",
+          "description": "HTML URL of the posted review."
+        }
+      },
+      "required": [
+        "reviewed",
+        "event",
+        "inlineCount",
+        "inline",
+        "url"
+      ]
+    }
+  }
 }

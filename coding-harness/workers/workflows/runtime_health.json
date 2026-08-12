@@ -1,0 +1,324 @@
+{
+  "name": "runtime_health",
+  "description": "Prove supported build runtimes on both the broad execution worker and isolated verification worker.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "inputParameters": [
+    "modelOverrides",
+    "modelPolicy",
+    "modelPolicySha256",
+    "modelPolicySource",
+    "modelProfile",
+    "modelsConfig"
+  ],
+  "inputSchema": {
+    "name": "runtime_health_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model profile to resolve; empty string defers to the policy's default profile."
+        },
+        "modelPolicy": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Inline model policy document (or JSON string) merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label recorded for the inline modelPolicy."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to a repository model policy file, overriding the default location."
+        },
+        "modelOverrides": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Per-role model overrides (or a JSON string of the same) merged on top of the selected profile."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "runtime_health_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "healthy": {
+          "type": "boolean",
+          "description": "True only when both the execution worker pool and the isolated verification worker pool report healthy."
+        },
+        "summary": {
+          "type": "object",
+          "description": "Aggregate verdict combining the execution and verification worker health reports.",
+          "properties": {
+            "healthy": {
+              "type": "boolean",
+              "description": "True only when both executionHealthy and verificationHealthy are true."
+            },
+            "executionHealthy": {
+              "type": "boolean",
+              "description": "True when the execution worker pool's own healthy flag is exactly true."
+            },
+            "verificationHealthy": {
+              "type": "boolean",
+              "description": "True when the verification worker pool's own healthy flag is exactly true."
+            }
+          },
+          "required": [
+            "healthy",
+            "executionHealthy",
+            "verificationHealthy"
+          ]
+        },
+        "executionWorker": {
+          "type": "object",
+          "description": "Full runtime/tooling health report from the broad execution worker pool.",
+          "properties": {
+            "healthy": {
+              "type": "boolean"
+            },
+            "runtimeHealthy": {
+              "type": "boolean"
+            },
+            "optionalFamilies": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "families": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "executionDeadlinePolicy": {
+              "type": "string"
+            },
+            "leaseRenewalEnabled": {
+              "type": "boolean"
+            },
+            "idleSleepInhibitionActive": {
+              "type": "boolean"
+            },
+            "idleSleepInhibitionMechanism": {
+              "type": "string"
+            },
+            "typescriptCompilerPolicy": {
+              "type": "string"
+            },
+            "inheritedCapabilities": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "isolatedCapabilities": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "workerGuards": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "prDescriptionPolicy": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "workerRole": {
+              "type": "string",
+              "enum": [
+                "execution"
+              ]
+            },
+            "modules": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "healthy",
+            "runtimeHealthy",
+            "optionalFamilies",
+            "families",
+            "executionDeadlinePolicy",
+            "leaseRenewalEnabled",
+            "idleSleepInhibitionActive",
+            "idleSleepInhibitionMechanism",
+            "typescriptCompilerPolicy",
+            "inheritedCapabilities",
+            "isolatedCapabilities",
+            "workerGuards",
+            "prDescriptionPolicy",
+            "workerRole",
+            "modules"
+          ]
+        },
+        "verificationWorker": {
+          "type": "object",
+          "description": "Full runtime/tooling health report from the isolated verification worker pool.",
+          "properties": {
+            "healthy": {
+              "type": "boolean"
+            },
+            "optionalFamilies": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "families": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "executionDeadlinePolicy": {
+              "type": "string"
+            },
+            "leaseRenewalEnabled": {
+              "type": "boolean"
+            },
+            "idleSleepInhibitionActive": {
+              "type": "boolean"
+            },
+            "idleSleepInhibitionMechanism": {
+              "type": "string"
+            },
+            "typescriptCompilerPolicy": {
+              "type": "string"
+            },
+            "inheritedCapabilities": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "isolatedCapabilities": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "workerGuards": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "workerRole": {
+              "type": "string",
+              "enum": [
+                "verification"
+              ]
+            },
+            "isolatedWorker": {
+              "type": "boolean"
+            },
+            "modules": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "healthy",
+            "optionalFamilies",
+            "families",
+            "executionDeadlinePolicy",
+            "leaseRenewalEnabled",
+            "idleSleepInhibitionActive",
+            "idleSleepInhibitionMechanism",
+            "typescriptCompilerPolicy",
+            "inheritedCapabilities",
+            "isolatedCapabilities",
+            "workerGuards",
+            "workerRole",
+            "isolatedWorker",
+            "modules"
+          ]
+        }
+      },
+      "required": [
+        "healthy",
+        "summary",
+        "executionWorker",
+        "verificationWorker"
+      ]
+    }
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "execution_runtime_health",
+      "taskReferenceName": "execution_runtime_health",
+      "type": "SIMPLE",
+      "inputParameters": {}
+    },
+    {
+      "name": "verification_health",
+      "taskReferenceName": "verification_runtime_health",
+      "type": "SIMPLE",
+      "inputParameters": {}
+    },
+    {
+      "name": "runtime_health_summary",
+      "taskReferenceName": "runtime_health_summary",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "execution": "${execution_runtime_health.output}",
+        "verification": "${verification_runtime_health.output}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "healthy": "${runtime_health_summary.output.healthy}",
+    "summary": "${runtime_health_summary.output}",
+    "executionWorker": "${execution_runtime_health.output}",
+    "verificationWorker": "${verification_runtime_health.output}"
+  },
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "restartable": true,
+  "inputTemplate": {
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "enforceSchema": false
+}

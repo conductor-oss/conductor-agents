@@ -5,7 +5,64 @@
   "retryLogic": "FIXED",
   "retryDelaySeconds": 5,
   "timeoutSeconds": 0,
-  "responseTimeoutSeconds": 300,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
-  "ownerEmail": "viren@orkes.io"
+  "ownerEmail": "viren@orkes.io",
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "openspec_new_change_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the target git repo to scaffold the OpenSpec change into (openspec/ root is self-bootstrapped if missing)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Arbitrary identifier (e.g. a git branch name) that is slugified into a valid OpenSpec change id (lowercase kebab-case)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional human-readable change description passed to `openspec new change --description`; omitted entirely when blank."
+        }
+      },
+      "required": [
+        "repoPath",
+        "name"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "openspec_new_change_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "changeName": {
+          "type": "string",
+          "description": "The scaffolded OpenSpec change's id, as returned by `openspec new change --json`."
+        },
+        "changeDir": {
+          "type": "string",
+          "description": "Absolute path to the new change's directory."
+        },
+        "schema": {
+          "type": "string",
+          "description": "Name of the OpenSpec schema the change was created under (explicit --schema or the root's default)."
+        },
+        "tasksRuleSeeded": {
+          "type": "boolean",
+          "description": "True if the tasks-artifact file-disjoint independence rule was newly added to openspec/config.yaml; false if it was already present or the config file is missing."
+        }
+      },
+      "required": [
+        "changeName",
+        "changeDir",
+        "schema",
+        "tasksRuleSeeded"
+      ]
+    }
+  }
 }

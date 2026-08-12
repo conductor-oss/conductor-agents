@@ -5,7 +5,128 @@
   "retryLogic": "FIXED",
   "retryDelaySeconds": 3,
   "timeoutSeconds": 0,
-  "responseTimeoutSeconds": 120,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
-  "ownerEmail": "viren@orkes.io"
+  "ownerEmail": "viren@orkes.io",
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "openspec_status_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git repo containing the OpenSpec change."
+        },
+        "changeName": {
+          "type": "string",
+          "description": "OpenSpec change id to report status for (openspec status --change <changeName> --json)."
+        }
+      },
+      "required": [
+        "repoPath",
+        "changeName"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "openspec_status_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "changeName": {
+          "type": "string",
+          "description": "The OpenSpec change id this status is for."
+        },
+        "schemaName": {
+          "type": "string",
+          "description": "Name of the OpenSpec schema the change was created under."
+        },
+        "changeRoot": {
+          "type": "string",
+          "description": "Absolute path to the change's directory."
+        },
+        "isComplete": {
+          "type": "boolean",
+          "description": "True when every artifact required by the schema's apply phase is done."
+        },
+        "applyRequires": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Artifact ids the apply phase requires to be complete, from the schema's `apply.requires` (or every artifact id if unset)."
+        },
+        "artifacts": {
+          "type": "array",
+          "description": "Per-artifact completion status, ordered by build order.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Artifact id."
+              },
+              "outputPath": {
+                "type": "string",
+                "description": "Artifact's output path relative to the change directory."
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "done",
+                  "ready",
+                  "blocked"
+                ],
+                "description": "Artifact's completion status."
+              },
+              "missingDeps": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Dependency artifact ids still missing, present only when status is 'blocked'."
+              }
+            },
+            "required": [
+              "id",
+              "outputPath",
+              "status"
+            ]
+          }
+        },
+        "artifactPaths": {
+          "type": "object",
+          "description": "Map of artifact id to its output/resolved/existing path details, as returned by the OpenSpec CLI.",
+          "additionalProperties": true
+        },
+        "nextSteps": {
+          "description": "Human-oriented next-action guidance for the change, as returned by the OpenSpec CLI.",
+          "additionalProperties": true
+        },
+        "actionContext": {
+          "description": "Machine-oriented action context for the change, as returned by the OpenSpec CLI.",
+          "additionalProperties": true
+        },
+        "planningHome": {
+          "description": "Summary of the resolved OpenSpec planning home, as returned by the OpenSpec CLI.",
+          "additionalProperties": true
+        },
+        "root": {
+          "description": "Resolved OpenSpec root descriptor, as returned by the OpenSpec CLI.",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "changeName",
+        "schemaName",
+        "changeRoot",
+        "isComplete",
+        "applyRequires",
+        "artifacts"
+      ]
+    }
+  }
 }

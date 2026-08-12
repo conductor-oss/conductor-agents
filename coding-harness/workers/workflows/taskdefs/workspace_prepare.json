@@ -1,12 +1,209 @@
 {
   "name": "workspace_prepare",
-  "description": "Create or resume an isolated run worktree from repoPath, or clone repoUrl first. Reports but excludes uncommitted source changes. Supports inherited workspacePath for nested workflows.",
-  "retryCount": 1,
-  "retryLogic": "FIXED",
+  "description": "Create or resume a run-owned branch from repoPath (or clone repoUrl), always suffixing new outcome branches with the stable execution ID. Includes every Git-visible existing change in the branch baseline without moving the source branch; inPlace switches to the new branch before committing. Nested workspacePath reuses the parent branch unchanged.",
+  "retryCount": 3,
+  "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "pollTimeoutSeconds": 120,
-  "responseTimeoutSeconds": 120,
-  "timeoutSeconds": 600,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "pollTimeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "workspace_prepare_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "inPlace": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, create/switch to a run-owned branch inside repoPath itself and commit its Git-visible changes as the baseline. Mutually exclusive with createPr=true."
+        },
+        "createPr": {
+          "type": "boolean",
+          "default": false,
+          "description": "Must be false when inPlace is true; inPlace execution is local-only."
+        },
+        "branchRunId": {
+          "type": "string",
+          "description": "Stable execution ID used to derive the run-owned branch/worktree name. Falls back to workflowId, then the task's workflow instance ID."
+        },
+        "workflowId": {
+          "type": "string",
+          "description": "Fallback run ID used when branchRunId is not supplied."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Requested branch/outcome-branch name; a run-suffix is appended for isolated runs."
+        },
+        "workspacePath": {
+          "type": "string",
+          "description": "Existing worktree path to inherit unchanged (nested-workflow case). When set, no new branch or worktree is created."
+        },
+        "repoPath": {
+          "type": "string",
+          "description": "Path to an existing local git checkout to use as the source. Required (directly or via repoUrl) unless workspacePath is supplied."
+        },
+        "repoUrl": {
+          "type": "string",
+          "description": "Repository URL to clone when repoPath is not supplied and workspacePath is not inherited."
+        },
+        "cloneDest": {
+          "type": "string",
+          "description": "Destination directory for a fresh clone when repoUrl is used. Defaults to a /tmp path derived from the run ID."
+        },
+        "expectedRepos": {
+          "description": "Repository identifiers the local checkout's remotes must match (skipped when a fresh clone was just made). Accepts a comma-separated string or an array of strings.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "fetchSource": {
+          "type": "string",
+          "description": "Optional remote/URL to fetch fetchRefspec from directly, without changing the source repo's remote config."
+        },
+        "fetchRefspec": {
+          "type": "string",
+          "description": "Optional refspec to fetch from fetchSource (or 'origin' if fetchSource is omitted) before snapshotting."
+        },
+        "materializedSourcePaths": {
+          "description": "Path roots (relative) to flag as 'materialized' in the output when they appear among the source's changed files. Accepts a comma-separated string or an array of strings.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "preserveExisting": {
+          "type": "boolean",
+          "default": true,
+          "description": "If true and a worktree for this run already exists, reuse it instead of recreating it."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "workspace_prepare_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "sourceRepoPath": {
+          "type": "string",
+          "description": "Resolved absolute path of the source repository."
+        },
+        "worktreePath": {
+          "type": "string",
+          "description": "Path to the checkout the workflow should operate in (equals sourceRepoPath when inPlace)."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch checked out in worktreePath."
+        },
+        "baseCommit": {
+          "type": "string",
+          "description": "Commit SHA the workflow should treat as its starting point."
+        },
+        "originalBranch": {
+          "type": "string",
+          "description": "The branch the source checkout was on before preparation."
+        },
+        "originalHead": {
+          "type": "string",
+          "description": "The source checkout's HEAD commit before preparation."
+        },
+        "sourceHead": {
+          "type": "string",
+          "description": "The source checkout's HEAD commit (same as originalHead)."
+        },
+        "baselineCommit": {
+          "type": "string",
+          "description": "Commit capturing the source's Git-visible changes at prepare time."
+        },
+        "baselineCreated": {
+          "type": "boolean",
+          "description": "True if a new baseline commit was created; false if an existing one was reused or none was needed (inherited path)."
+        },
+        "baselineIncludedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Paths included in the baseline snapshot/commit."
+        },
+        "statusFingerprint": {
+          "type": "string",
+          "description": "InPlace only: hash of the checkout's working-tree status after the baseline commit."
+        },
+        "ignoredSourceChanges": {
+          "type": "integer",
+          "description": "Always 0; reserved for future use."
+        },
+        "ignoredSourcePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Always empty; reserved for future use."
+        },
+        "materializedSourcePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Changed source paths that fall under one of the requested materializedSourcePaths roots."
+        },
+        "owned": {
+          "type": "boolean",
+          "description": "True only when this call created a fresh run-level worktree it is responsible for cleaning up."
+        },
+        "resumed": {
+          "type": "boolean",
+          "description": "True if an existing worktree/workspace for this run (or inherited workspace) was reused rather than newly created."
+        },
+        "sourceCloned": {
+          "type": "boolean",
+          "description": "True if repoUrl was cloned to produce the source checkout."
+        },
+        "inPlace": {
+          "type": "boolean",
+          "description": "Echoes the inPlace input."
+        }
+      },
+      "required": [
+        "sourceRepoPath",
+        "worktreePath",
+        "branch",
+        "baseCommit",
+        "originalBranch",
+        "originalHead",
+        "sourceHead",
+        "baselineCommit",
+        "baselineCreated",
+        "baselineIncludedPaths",
+        "ignoredSourceChanges",
+        "ignoredSourcePaths",
+        "materializedSourcePaths",
+        "owned",
+        "resumed",
+        "sourceCloned",
+        "inPlace"
+      ]
+    }
+  }
 }

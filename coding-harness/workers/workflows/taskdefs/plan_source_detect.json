@@ -1,0 +1,56 @@
+{
+  "name": "plan_source_detect",
+  "description": "Detect whether a target checkout contains an openspec/ directory. Routes existing OpenSpec projects to OpenSpec planning; otherwise ordinary supplied documents are used directly.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "plan_source_detect_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Path to the target checkout to inspect for an openspec/ directory. Must resolve to an existing directory."
+        }
+      },
+      "required": []
+    }
+  },
+  "outputSchema": {
+    "name": "plan_source_detect_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "openspec",
+            "documents"
+          ],
+          "description": "Planning mode selected based on whether the checkout has an openspec/ directory."
+        },
+        "useOpenSpec": {
+          "type": "boolean",
+          "description": "True when the checkout contains an openspec/ directory."
+        },
+        "openspecPath": {
+          "type": "string",
+          "description": "Absolute path to the openspec/ directory when useOpenSpec is true, else empty string."
+        }
+      },
+      "required": [
+        "mode",
+        "useOpenSpec",
+        "openspecPath"
+      ]
+    }
+  }
+}

@@ -12,13 +12,12 @@ import json
 import pytest
 
 import openspecops.tasks as openspecops_tasks
-from common import openspec_cli, tool_policy
+from common import openspec_cli, plan_validation, tool_policy
 from common.tasks_md import TasksMdError, parse_tasks_md
 from openspecops.tasks import (
     openspec_instructions,
     openspec_new_change,
     openspec_read_proposal,
-    openspec_run_subtask_check,
     openspec_status,
     openspec_tasks_to_subtasks,
     openspec_validate_change,
@@ -110,16 +109,40 @@ def test_openspec_new_change_slugifies_branch_shaped_name(monkeypatch, fake_task
     assert rec.calls[0][:4] == ["openspec", "new", "change", "harness-issue-42"]
 
 
-def test_tasks_rule_tells_the_planner_test_commands_must_be_a_single_invocation():
-    """The planning agent must be told what the coding agent is actually
-    permitted to run, or it writes Test: lines (shell pipes, &&, `test`, a bare
-    `python`) that get denied or misparsed downstream — see design.md's
-    post-implementation-fixes history for the live failures this prevents."""
+def test_tasks_rule_is_plan_only_and_excludes_test_commands():
     rule = openspec_cli.TASKS_RULE
-    for phrase in ("exactly one program invocation", "python3", "pytest"):
-        assert phrase in rule
-    for forbidden in ("`|`", "`&&`", "`test`"):
-        assert forbidden in rule
+
+    assert "Files:" in rule
+    assert "exact repository-relative files" in rule
+    assert "testing is separate" in rule
+    assert "Test:" not in rule
+    assert "pytest" not in rule
+
+
+def test_tasks_to_subtasks_uses_document_plan_fallback_without_touching_openspec(
+        fake_task_input):
+    fallback = [{"id": "ship-api", "description": "Ship API", "files": ["api.py"],
+                 "testCmd": "ignored legacy field"}]
+    result = openspec_tasks_to_subtasks(fake_task_input(
+        tasksPath="{missing=parent}", useOpenSpec=False, fallbackSubtasks=fallback))
+    assert _completed(result)
+    assert result.output_data == {
+        "subtasks": [{"id": "ship-api", "description": "Ship API", "files": ["api.py"]}],
+        "reparsed": False,
+    }
+
+
+@pytest.mark.parametrize("fallback", [
+    [{"id": "Not A Slug", "description": "bad id", "files": ["a.py"]}],
+    [{"id": "one", "description": "first", "files": ["a.py"]},
+     {"id": "two", "description": "second", "files": ["a.py"]}],
+    [{"id": "unsafe", "description": "unsafe path", "files": ["../a.py"]}],
+    [{"id": "missing-files", "description": "no file ownership", "files": []}],
+])
+def test_tasks_to_subtasks_rejects_invalid_dynamic_fork_contract(fake_task_input, fallback):
+    result = openspec_tasks_to_subtasks(fake_task_input(
+        useOpenSpec=False, fallbackSubtasks=fallback))
+    assert _failed(result)
 
 
 # --- slugify_change_name (pure function) -------------------------------------
@@ -174,7 +197,7 @@ def test_openspec_tasks_to_subtasks_parses_file(fake_task_input, tmp_path):
     result = openspec_tasks_to_subtasks(task)
     assert _completed(result)
     assert result.output_data["subtasks"] == [
-        {"id": "setup", "description": "1.1 Do it", "files": ["a.py"], "testCmd": "pytest tests/test_a.py"}
+        {"id": "setup", "description": "1.1 Do it", "files": ["a.py"]}
     ]
 
 
@@ -202,19 +225,19 @@ def test_parse_tasks_md_splits_independent_groups():
     subtasks = parse_tasks_md(text)
     assert subtasks == [
         {"id": "setup", "description": "1.1 Create module\n1.2 Add deps",
-         "files": ["a.py", "b.py"], "testCmd": "pytest tests/test_setup.py"},
-        {"id": "core", "description": "2.1 Implement thing",
-         "files": ["c.py"], "testCmd": "pytest tests/test_core.py"},
+         "files": ["a.py", "b.py"]},
+        {"id": "core", "description": "2.1 Implement thing", "files": ["c.py"]},
     ]
 
 
-def test_parse_tasks_md_fails_closed_on_overlapping_files():
+def test_parser_is_syntax_only_and_shared_validator_rejects_overlap():
     text = (
-        "## 1. Setup\n\nFiles: a.py\nTest: pytest tests/test_setup.py\n\n- [ ] 1.1 X\n\n"
-        "## 2. Overlap\n\nFiles: a.py\nTest: pytest tests/test_overlap.py\n\n- [ ] 2.1 Y\n"
+        "## 1. Setup\n\nFiles: a.py\n\n- [ ] 1.1 X\n\n"
+        "## 2. Overlap\n\nFiles: a.py\n\n- [ ] 2.1 Y\n"
     )
-    with pytest.raises(TasksMdError, match="file-disjoint"):
-        parse_tasks_md(text)
+    parsed = parse_tasks_md(text)
+    with pytest.raises(plan_validation.PlanValidationError):
+        plan_validation.validate_subtasks(parsed)
 
 
 def test_parse_tasks_md_fails_closed_on_missing_files_line():
@@ -223,10 +246,11 @@ def test_parse_tasks_md_fails_closed_on_missing_files_line():
         parse_tasks_md(text)
 
 
-def test_parse_tasks_md_fails_closed_on_missing_test_line():
+def test_parse_tasks_md_does_not_require_or_emit_test_commands():
     text = "## 1. Setup\n\nFiles: a.py\n\n- [ ] 1.1 X\n"
-    with pytest.raises(TasksMdError, match="Test:"):
-        parse_tasks_md(text)
+    assert parse_tasks_md(text) == [
+        {"id": "setup", "description": "1.1 X", "files": ["a.py"]}
+    ]
 
 
 def test_parse_tasks_md_dedupes_slug_collisions():
@@ -248,50 +272,9 @@ def test_bespoke_validate_and_archive_tasks_are_removed():
     assert not hasattr(openspec_cli, "archive")
 
 
-# --- openspec_run_subtask_check (real command execution) --------------------
-
-def test_openspec_run_subtask_check_reports_pass(fake_task_input, tmp_path):
-    task = fake_task_input(repoPath=str(tmp_path), id="setup", testCmd="python3 -c \"print('ok')\"")
-    result = openspec_run_subtask_check(task)
-    assert _completed(result)
-    assert result.output_data["passed"] is True
-    assert result.output_data["exitCode"] == 0
-    assert result.output_data["id"] == "setup"
-
-
-def test_openspec_run_subtask_check_reports_failure(fake_task_input, tmp_path):
-    task = fake_task_input(repoPath=str(tmp_path), id="setup", testCmd="python3 -c \"raise SystemExit(1)\"")
-    result = openspec_run_subtask_check(task)
-    assert _completed(result)
-    assert result.output_data["passed"] is False
-    assert result.output_data["exitCode"] == 1
-
-
-def test_openspec_run_subtask_check_requires_repo_path(fake_task_input):
-    task = fake_task_input(repoPath="", testCmd="pytest")
-    result = openspec_run_subtask_check(task)
-    assert _failed(result)
-
-
-def test_openspec_run_subtask_check_passes_without_a_declared_command(fake_task_input, tmp_path):
-    task = fake_task_input(repoPath=str(tmp_path), id="docs-only", testCmd="")
-    result = openspec_run_subtask_check(task)
-    assert _completed(result)
-    assert result.output_data["passed"] is True
-
-
-def test_openspec_run_subtask_check_reports_missing_binary_as_a_failed_check(fake_task_input, tmp_path):
-    """A Test: command whose binary isn't on PATH (e.g. `python` on a host that
-    only has `python3`) must surface as passed=false so the verification loop's
-    fixup pass gets a turn — not as a worker-level task failure that aborts the
-    whole FORK_JOIN_DYNAMIC and the run with it."""
-    task = fake_task_input(repoPath=str(tmp_path), id="setup",
-                           testCmd="definitely-not-a-real-binary-xyz --version")
-    result = openspec_run_subtask_check(task)
-    assert _completed(result)
-    assert result.output_data["passed"] is False
-    assert "definitely-not-a-real-binary-xyz" in result.output_data["log"]
-
+# The former openspec_run_subtask_check worker was removed.  Plan validation
+# never launches test commands; test execution belongs to explicitly named
+# test_* workers outside code_parallel.
 
 # --- openspec_read_proposal ---------------------------------------------------
 
@@ -316,6 +299,7 @@ def test_openspec_read_proposal_fails_closed_on_missing_file(fake_task_input, tm
 class _FakeCompletedProcess:
     def __init__(self, returncode, stdout="", stderr=""):
         self.returncode = returncode
+        self.exit_code = returncode
         self.stdout = stdout
         self.stderr = stderr
 
@@ -328,7 +312,7 @@ def test_openspec_validate_change_reports_valid(monkeypatch, fake_task_input, tm
         assert "--strict" in cmd and "--no-interactive" in cmd and "--json" in cmd
         return _FakeCompletedProcess(0, stdout=json.dumps(payload))
 
-    monkeypatch.setattr(openspecops_tasks.subprocess, "run", fake_run)
+    monkeypatch.setattr(openspecops_tasks.check_execution, "execute", fake_run)
     task = fake_task_input(repoPath=str(tmp_path), changeId="add-x")
     result = openspec_validate_change(task)
     assert _completed(result)
@@ -346,7 +330,7 @@ def test_openspec_validate_change_reports_invalid_without_raising(monkeypatch, f
     def fake_run(cmd, **kwargs):
         return _FakeCompletedProcess(1, stdout=json.dumps(payload), stderr="")
 
-    monkeypatch.setattr(openspecops_tasks.subprocess, "run", fake_run)
+    monkeypatch.setattr(openspecops_tasks.check_execution, "execute", fake_run)
     task = fake_task_input(repoPath=str(tmp_path), changeId="add-x")
     result = openspec_validate_change(task)
     assert _completed(result)
@@ -360,6 +344,13 @@ def test_openspec_validate_change_requires_repo_path_and_change_id(fake_task_inp
     assert _failed(result)
 
 
+def test_openspec_validate_change_skips_generic_document_plans(fake_task_input):
+    result = openspec_validate_change(fake_task_input(repoPath="/unused", changeId="generic", skip=False))
+    assert _completed(result)
+    assert result.output_data["valid"] is True
+    assert result.output_data["skipped"] is True
+
+
 # --- tool_policy.allowed_tools_for_test_command ------------------------------
 
 def test_allow_pattern_for_default_covered_command_is_a_noop():
@@ -367,10 +358,11 @@ def test_allow_pattern_for_default_covered_command_is_a_noop():
         tool_policy.DEFAULT_ALLOWED_TOOLS
 
 
-def test_allow_pattern_for_non_default_command_is_appended():
-    allowed = tool_policy.allowed_tools_for_test_command("make check")
-    assert allowed[:-1] == tool_policy.DEFAULT_ALLOWED_TOOLS
-    assert allowed[-1] == "Bash(make *)"
+def test_allow_pattern_for_supported_build_command_is_a_noop():
+    # `make` is a supported, scoped build entrypoint in the default policy.
+    # It must not be appended a second time when an OpenSpec task declares it.
+    assert tool_policy.allowed_tools_for_test_command("make check") == \
+        tool_policy.DEFAULT_ALLOWED_TOOLS
 
 
 def test_allow_pattern_documented_compound_command_limitation():

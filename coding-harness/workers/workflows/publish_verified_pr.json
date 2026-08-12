@@ -1,0 +1,508 @@
+{
+  "name": "publish_verified_pr",
+  "version": 1,
+  "description": "Push one approved, locally verified candidate only when the local branch and remote PR head still match, then require exact-SHA GitHub checks before posting the supplied success comment.",
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "inputParameters": [
+    "repoPath",
+    "repo",
+    "headRepo",
+    "prNumber",
+    "branch",
+    "expectedHeadSha",
+    "candidateCommit",
+    "replyBody",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "inputTemplate": {
+    "replyBody": "",
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "inputSchema": {
+    "name": "publish_verified_pr_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the local git checkout holding the verified candidate branch."
+        },
+        "repo": {
+          "type": "string",
+          "description": "GitHub repository (owner/name or URL) that owns the commit, used to query CI checks after pushing."
+        },
+        "headRepo": {
+          "type": "string",
+          "description": "GitHub repository (owner/name or URL) that owns the PR's head branch, used to detect branch drift before pushing."
+        },
+        "prNumber": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "Number of the PR to comment on once CI passes."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Local and remote branch name of the verified candidate to push."
+        },
+        "expectedHeadSha": {
+          "type": "string",
+          "description": "Remote PR branch tip SHA snapshot taken before edits; the push is refused if the branch has drifted since. May be blank to skip the drift check."
+        },
+        "candidateCommit": {
+          "type": "string",
+          "description": "Exact local commit SHA that must still be checked out (in-place guard) and is bound as the push source."
+        },
+        "replyBody": {
+          "type": "string",
+          "default": "",
+          "description": "Comment body to post on the PR once the pushed commit's CI checks pass."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model profile to resolve; empty string defers to the policy's default profile."
+        },
+        "modelPolicy": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Inline model policy document (or JSON string) merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label recorded for the inline modelPolicy."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to a repository model policy file, overriding the default location."
+        },
+        "modelOverrides": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Per-role model overrides (or a JSON string of the same) merged on top of the selected profile."
+        }
+      },
+      "required": [
+        "repoPath",
+        "repo",
+        "headRepo",
+        "prNumber",
+        "branch",
+        "expectedHeadSha",
+        "candidateCommit"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "publish_verified_pr_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string",
+          "description": "Candidate branch name that was targeted for publication, echoed from workflow.input.branch."
+        },
+        "candidateCommit": {
+          "type": "string",
+          "description": "Candidate commit SHA that was targeted for publication, echoed from workflow.input.candidateCommit."
+        },
+        "pushed": {
+          "type": "boolean",
+          "description": "True if the candidate branch was successfully pushed to the remote; false if blocked by branch drift, permission, or policy."
+        },
+        "pushedHead": {
+          "type": "string",
+          "description": "Commit SHA that was actually pushed; empty string if the push never happened."
+        },
+        "ciState": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "passed",
+            "failed",
+            "unknown",
+            "empty",
+            "permission_blocked",
+            "policy_blocked"
+          ],
+          "description": "Final CI verification state observed for the pushed commit, or the publication-block reason when the push itself never happened."
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "check-run",
+                  "status"
+                ]
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "passing",
+                  "failed",
+                  "pending",
+                  "unknown"
+                ]
+              },
+              "rawStatus": {
+                "type": "string"
+              },
+              "conclusion": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "Individual GitHub check-run/status evidence for the pushed commit; empty when the push was blocked or no checks were reported."
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "URLs of the reported CI checks."
+        },
+        "publicationState": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "published",
+            "permission_blocked",
+            "policy_blocked",
+            "ci_blocked",
+            "branch_drift"
+          ],
+          "description": "Final publication outcome: 'published' once the success comment was posted, 'branch_drift' if the remote head moved before pushing, 'ci_blocked' if checks never passed within the polling window, otherwise the specific push/CI block reason."
+        },
+        "replyUrl": {
+          "type": "string",
+          "description": "URL of the posted success comment; empty string unless publicationState is 'published'."
+        }
+      },
+      "required": [
+        "branch",
+        "candidateCommit",
+        "pushed",
+        "pushedHead",
+        "ciState",
+        "checks",
+        "links",
+        "publicationState",
+        "replyUrl"
+      ]
+    }
+  },
+  "variables": {
+    "ciState": "pending",
+    "checks": [],
+    "links": [],
+    "publicationState": "pending",
+    "pushed": false,
+    "pushedHead": "",
+    "replyUrl": ""
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "inplace_guard",
+      "taskReferenceName": "candidate_guard",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "branch": "${workflow.input.branch}",
+        "expectedHead": "${workflow.input.candidateCommit}"
+      }
+    },
+    {
+      "name": "pr_branch_guard",
+      "taskReferenceName": "branch_guard",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repo": "${workflow.input.headRepo}",
+        "branch": "${workflow.input.branch}",
+        "expectedHeadSha": "${workflow.input.expectedHeadSha}"
+      }
+    },
+    {
+      "name": "branch_guard_gate",
+      "taskReferenceName": "branch_guard_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "state",
+      "inputParameters": {
+        "state": "${branch_guard.output.verificationState}"
+      },
+      "decisionCases": {
+        "matched": [
+          {
+            "name": "git_push",
+            "taskReferenceName": "push",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "repoPath": "${workflow.input.repoPath}",
+              "branch": "${workflow.input.branch}",
+              "setUpstream": true,
+              "expectedHead": "${workflow.input.candidateCommit}"
+            }
+          },
+          {
+            "name": "pr_commit_checks",
+            "taskReferenceName": "ci",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "repo": "${workflow.input.repo}",
+              "sha": "${push.output.head}",
+              "pushed": "${push.output.pushed}",
+              "publicationState": "${push.output.publicationState}",
+              "publicationReason": "${push.output.reason}"
+            }
+          },
+          {
+            "name": "capture_initial_ci",
+            "taskReferenceName": "capture_initial_ci",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "ciState": "${ci.output.ciState}",
+              "checks": "${ci.output.checks}",
+              "links": "${ci.output.links}",
+              "pushed": "${push.output.pushed}",
+              "pushedHead": "${push.output.head}"
+            }
+          },
+          {
+            "name": "ci_verification_gate",
+            "taskReferenceName": "ci_verification_gate",
+            "type": "SWITCH",
+            "evaluatorType": "value-param",
+            "expression": "state",
+            "inputParameters": {
+              "state": "${workflow.variables.ciState}"
+            },
+            "decisionCases": {
+              "permission_blocked": [
+                {
+                  "name": "capture_permission_blocked",
+                  "taskReferenceName": "capture_permission_blocked",
+                  "type": "SET_VARIABLE",
+                  "inputParameters": {
+                    "publicationState": "permission_blocked"
+                  }
+                }
+              ],
+              "policy_blocked": [
+                {
+                  "name": "capture_policy_blocked",
+                  "taskReferenceName": "capture_policy_blocked",
+                  "type": "SET_VARIABLE",
+                  "inputParameters": {
+                    "publicationState": "policy_blocked"
+                  }
+                }
+              ],
+              "passed": [
+                {
+                  "name": "pr_comment",
+                  "taskReferenceName": "reply",
+                  "type": "SIMPLE",
+                  "inputParameters": {
+                    "repoPath": "${workflow.input.repoPath}",
+                    "repo": "${workflow.input.repo}",
+                    "number": "${workflow.input.prNumber}",
+                    "body": "${workflow.input.replyBody}"
+                  }
+                },
+                {
+                  "name": "capture_publication_success",
+                  "taskReferenceName": "capture_publication_success",
+                  "type": "SET_VARIABLE",
+                  "inputParameters": {
+                    "publicationState": "published",
+                    "replyUrl": "${reply.output.url}"
+                  }
+                }
+              ],
+              "pending": [
+                {
+                  "name": "ci_poll",
+                  "taskReferenceName": "ci_poll",
+                  "type": "DO_WHILE",
+                  "evaluatorType": "graaljs",
+                  "loopCondition": "(function(){ return $.ci_poll['iteration'] < 6 && ($.ciState === 'pending' || $.ciState === 'empty'); })();",
+                  "inputParameters": {
+                    "ci_poll": "${ci_poll.output}",
+                    "ciState": "${workflow.variables.ciState}"
+                  },
+                  "loopOver": [
+                    {
+                      "name": "wait_for_ci",
+                      "taskReferenceName": "ci_wait",
+                      "type": "WAIT",
+                      "inputParameters": {
+                        "duration": "5m"
+                      }
+                    },
+                    {
+                      "name": "pr_commit_checks",
+                      "taskReferenceName": "ci_poll_check",
+                      "type": "SIMPLE",
+                      "inputParameters": {
+                        "repo": "${workflow.input.repo}",
+                        "sha": "${push.output.head}"
+                      }
+                    },
+                    {
+                      "name": "capture_polled_ci",
+                      "taskReferenceName": "capture_polled_ci",
+                      "type": "SET_VARIABLE",
+                      "inputParameters": {
+                        "ciState": "${ci_poll_check.output.verificationState}",
+                        "checks": "${ci_poll_check.output.checks}",
+                        "links": "${ci_poll_check.output.links}"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "ci_poll_final",
+                  "taskReferenceName": "ci_poll_final",
+                  "type": "SWITCH",
+                  "evaluatorType": "value-param",
+                  "expression": "state",
+                  "inputParameters": {
+                    "state": "${workflow.variables.ciState}"
+                  },
+                  "decisionCases": {
+                    "passed": [
+                      {
+                        "name": "pr_comment",
+                        "taskReferenceName": "reply_after_poll",
+                        "type": "SIMPLE",
+                        "inputParameters": {
+                          "repoPath": "${workflow.input.repoPath}",
+                          "repo": "${workflow.input.repo}",
+                          "number": "${workflow.input.prNumber}",
+                          "body": "${workflow.input.replyBody}"
+                        }
+                      },
+                      {
+                        "name": "capture_polled_publication_success",
+                        "taskReferenceName": "capture_polled_publication_success",
+                        "type": "SET_VARIABLE",
+                        "inputParameters": {
+                          "publicationState": "published",
+                          "replyUrl": "${reply_after_poll.output.url}"
+                        }
+                      }
+                    ]
+                  },
+                  "defaultCase": [
+                    {
+                      "name": "capture_ci_blocked",
+                      "taskReferenceName": "capture_ci_blocked",
+                      "type": "SET_VARIABLE",
+                      "inputParameters": {
+                        "publicationState": "ci_blocked"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "defaultCase": [
+              {
+                "name": "capture_initial_ci_blocked",
+                "taskReferenceName": "capture_initial_ci_blocked",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "publicationState": "ci_blocked"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "capture_branch_drift",
+          "taskReferenceName": "capture_branch_drift",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "publicationState": "branch_drift"
+          }
+        }
+      ]
+    }
+  ],
+  "outputParameters": {
+    "branch": "${workflow.input.branch}",
+    "candidateCommit": "${workflow.input.candidateCommit}",
+    "pushed": "${workflow.variables.pushed}",
+    "pushedHead": "${workflow.variables.pushedHead}",
+    "ciState": "${workflow.variables.ciState}",
+    "checks": "${workflow.variables.checks}",
+    "links": "${workflow.variables.links}",
+    "publicationState": "${workflow.variables.publicationState}",
+    "replyUrl": "${workflow.variables.replyUrl}"
+  },
+  "restartable": true,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "enforceSchema": false
+}

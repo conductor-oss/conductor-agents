@@ -1,8 +1,8 @@
 {
   "updateTime": 1784527269458,
   "name": "feature_campaign",
-  "description": "Interactive, resumable campaign for complex feature work: design and DAG planning checkpoints, dependency-ordered file-disjoint implementation waves, fail-soft integration, profile-driven real-system checks, and final verification. Leaves a verified local branch and never pushes or opens a PR.",
-  "version": 2,
+  "description": "Interactive, resumable campaign for complex feature work: design and DAG planning checkpoints, dependency-ordered file-disjoint implementation waves, fail-soft integration, semantic review, and final verification. Completed changes remain in the integration checkout for review regardless of verification outcome; verified work can also push/open a PR when createPr is explicitly enabled.",
+  "version": 1,
   "tasks": [
     {
       "name": "model_profile_resolve",
@@ -24,9 +24,7 @@
       "inputParameters": {
         "branch": "${workflow.input.changeBranch}",
         "evaluatorType": "graaljs",
-        "expression": "(function(){ return {branch: ($.branch && $.branch.length > 0) ? $.branch : ('feature-campaign/' + $.workflowId), waveProfile: $.waveProfile || '', finalProfile: $.finalProfile || ''}; })();",
-        "finalProfile": "${workflow.input.finalProfile}",
-        "waveProfile": "${workflow.input.waveProfile}",
+        "expression": "(function(){ return {branch: ($.branch && $.branch.length > 0) ? $.branch : 'feature-campaign'}; })();",
         "workflowId": "${workflow.workflowId}"
       },
       "type": "INLINE",
@@ -38,8 +36,11 @@
       "taskReferenceName": "campaign_workspace",
       "inputParameters": {
         "branch": "${campaign_defaults.output.result.branch}",
+        "branchRunId": "${workflow.workflowId}",
         "preserveExisting": true,
         "repoPath": "${workflow.input.repoPath}",
+        "inPlace": "${workflow.input.inPlace}",
+        "createPr": "${workflow.input.createPr}",
         "workflowId": "${workflow.workflowId}",
         "workspacePath": "${workflow.input.workspacePath}"
       },
@@ -54,9 +55,7 @@
         "campaignMaxBudgetUsd": "${workflow.input.maxBudgetUsd}",
         "campaignMaxTurns": "${workflow.input.maxTurns}",
         "designLocation": "${workflow.input.designDir}",
-        "finalProfile": "${campaign_defaults.output.result.finalProfile}",
-        "phase": "design",
-        "waveProfile": "${campaign_defaults.output.result.waveProfile}"
+        "phase": "design"
       },
       "type": "SET_VARIABLE",
       "decisionCases": {},
@@ -127,6 +126,7 @@
           "taskReferenceName": "campaign_design",
           "inputParameters": {
             "agent": "${workflow.input.designAgent}",
+            "contextPaths": "${workflow.input.contextPaths}",
             "allowedWriteRoots": [
               "${workflow.input.designDir}"
             ],
@@ -168,17 +168,6 @@
           "defaultCase": []
         },
         {
-          "name": "design_ready",
-          "taskReferenceName": "design_ready",
-          "inputParameters": {
-            "queryExpression": ".status == \"success\"",
-            "status": "${campaign_design.output.status}"
-          },
-          "type": "JSON_JQ_TRANSFORM",
-          "decisionCases": {},
-          "defaultCase": []
-        },
-        {
           "name": "design_checkpoint",
           "taskReferenceName": "design_checkpoint",
           "inputParameters": {
@@ -186,8 +175,6 @@
               "continue",
               "revise",
               "adopt_edits",
-              "run_checks",
-              "set_profiles",
               "stop"
             ],
             "draft": {
@@ -208,18 +195,11 @@
           "name": "campaign_checkpoint",
           "taskReferenceName": "design_decision",
           "inputParameters": {
-            "blockingPassed": "${design_ready.output.result}",
-            "configPath": "${workflow.input.checksConfig}",
             "decision": "${design_checkpoint.output}",
             "maxBudgetUsd": "${workflow.variables.campaignMaxBudgetUsd}",
             "maxTurns": "${workflow.variables.campaignMaxTurns}",
             "phase": "design",
-            "profile": "${workflow.variables.waveProfile}",
-            "profiles": {
-              "final": "${workflow.variables.finalProfile}",
-              "wave": "${workflow.variables.waveProfile}"
-            },
-            "repoPath": "${campaign_workspace.output.worktreePath}"
+            "blockingStatus": "${campaign_design.output.status}"
           },
           "type": "SIMPLE",
           "decisionCases": {},
@@ -251,33 +231,6 @@
                 "inputParameters": {
                   "designApproved": true,
                   "feedback": ""
-                },
-                "type": "SET_VARIABLE",
-                "decisionCases": {},
-                "defaultCase": []
-              }
-            ],
-            "run_checks": [
-              {
-                "name": "campaign_checks",
-                "taskReferenceName": "design_checks",
-                "inputParameters": {
-                  "attachedConfirmed": "${design_decision.output.attachedConfirmed}",
-                  "checks": "${design_decision.output.checks}",
-                  "configPath": "${workflow.input.checksConfig}",
-                  "phase": "wave",
-                  "profile": "${design_decision.output.profile}",
-                  "repoPath": "${campaign_workspace.output.worktreePath}"
-                },
-                "type": "SIMPLE",
-                "decisionCases": {},
-                "defaultCase": []
-              },
-              {
-                "name": "design_checks_feedback",
-                "taskReferenceName": "design_checks_feedback",
-                "inputParameters": {
-                  "feedback": "Review these requested check results and update the design if needed: ${design_checks.output}"
                 },
                 "type": "SET_VARIABLE",
                 "decisionCases": {},
@@ -392,6 +345,7 @@
           "taskReferenceName": "campaign_plan",
           "inputParameters": {
             "agent": "${workflow.input.planAgent}",
+            "contextPaths": "${workflow.input.contextPaths}",
             "failSoft": true,
             "maxBudgetUsd": "${workflow.variables.campaignMaxBudgetUsd}",
             "maxTurns": "${workflow.variables.campaignMaxTurns}",
@@ -502,18 +456,6 @@
           "defaultCase": []
         },
         {
-          "name": "plan_ready",
-          "taskReferenceName": "plan_ready",
-          "inputParameters": {
-            "queryExpression": ".valid and (.status == \"success\")",
-            "status": "${campaign_plan.output.status}",
-            "valid": "${validate_campaign_plan.output.valid}"
-          },
-          "type": "JSON_JQ_TRANSFORM",
-          "decisionCases": {},
-          "defaultCase": []
-        },
-        {
           "name": "plan_checkpoint",
           "taskReferenceName": "plan_checkpoint",
           "inputParameters": {
@@ -521,8 +463,6 @@
               "continue",
               "revise",
               "adopt_edits",
-              "run_checks",
-              "set_profiles",
               "stop"
             ],
             "draft": {
@@ -542,18 +482,12 @@
           "name": "campaign_checkpoint",
           "taskReferenceName": "plan_decision",
           "inputParameters": {
-            "blockingPassed": "${plan_ready.output.result}",
-            "configPath": "${workflow.input.checksConfig}",
             "decision": "${plan_checkpoint.output}",
             "maxBudgetUsd": "${workflow.variables.campaignMaxBudgetUsd}",
             "maxTurns": "${workflow.variables.campaignMaxTurns}",
             "phase": "plan",
-            "profile": "${workflow.variables.waveProfile}",
-            "profiles": {
-              "final": "${workflow.variables.finalProfile}",
-              "wave": "${workflow.variables.waveProfile}"
-            },
-            "repoPath": "${campaign_workspace.output.worktreePath}"
+            "blockingStatus": "${campaign_plan.output.status}",
+            "blockingValid": "${validate_campaign_plan.output.valid}"
           },
           "type": "SIMPLE",
           "decisionCases": {},
@@ -588,33 +522,6 @@
                   "planApproved": true,
                   "planLocation": "${validate_campaign_plan.output.planLocation}",
                   "remainingTaskIds": "${validate_campaign_plan.output.order}"
-                },
-                "type": "SET_VARIABLE",
-                "decisionCases": {},
-                "defaultCase": []
-              }
-            ],
-            "run_checks": [
-              {
-                "name": "campaign_checks",
-                "taskReferenceName": "plan_checks",
-                "inputParameters": {
-                  "attachedConfirmed": "${plan_decision.output.attachedConfirmed}",
-                  "checks": "${plan_decision.output.checks}",
-                  "configPath": "${workflow.input.checksConfig}",
-                  "phase": "wave",
-                  "profile": "${plan_decision.output.profile}",
-                  "repoPath": "${campaign_workspace.output.worktreePath}"
-                },
-                "type": "SIMPLE",
-                "decisionCases": {},
-                "defaultCase": []
-              },
-              {
-                "name": "plan_checks_feedback",
-                "taskReferenceName": "plan_checks_feedback",
-                "inputParameters": {
-                  "feedback": "Review these requested check results and revise the plan if needed: ${plan_checks.output}"
                 },
                 "type": "SET_VARIABLE",
                 "decisionCases": {},
@@ -702,6 +609,32 @@
       "expression": "approved"
     },
     {
+      "name": "inplace_campaign_checkpoint",
+      "taskReferenceName": "inplace_campaign_checkpoint",
+      "inputParameters": {
+        "inPlace": "${workflow.input.inPlace}"
+      },
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "inPlace",
+      "decisionCases": {
+        "true": [
+          {
+            "name": "commit",
+            "taskReferenceName": "campaign_inplace_checkpoint",
+            "inputParameters": {
+              "repoPath": "${campaign_workspace.output.worktreePath}",
+              "message": "feature campaign in-place design and plan checkpoint"
+            },
+            "type": "SIMPLE",
+            "decisionCases": {},
+            "defaultCase": []
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
       "name": "implementation_phase",
       "taskReferenceName": "implementation_phase",
       "inputParameters": {
@@ -745,6 +678,7 @@
             "repoPath": "${campaign_workspace.output.worktreePath}",
             "sessions": "${workflow.variables.campaignSessions}",
             "specContextPath": "${workflow.input.specContextPath}",
+            "contextPaths": "${workflow.input.contextPaths}",
             "wave": "${workflow.variables.wave}",
             "modelProfile": "${workflow.input.modelProfile}",
             "modelPolicy": "${workflow.input.modelPolicy}",
@@ -789,19 +723,18 @@
           "defaultCase": []
         },
         {
-          "name": "merge_campaign_state",
+          "name": "campaign_merge_state",
           "taskReferenceName": "merge_campaign_state",
           "inputParameters": {
             "added": "${integrate_wave.output.completedTaskIds}",
             "completed": "${workflow.variables.completedTaskIds}",
             "newSessions": "${integrate_wave.output.sessions}",
-            "queryExpression": "{completed: ((.completed + .added) | unique), sessions: (.sessions + .newSessions), remaining: ([.remaining[] | select(. as $id | ((.completed + .added) | index($id) | not))]), waves: ((.waves + [.wave]) | unique)}",
             "remaining": "${schedule_wave.output.remainingIds}",
             "sessions": "${workflow.variables.campaignSessions}",
             "wave": "${workflow.variables.wave}",
             "waves": "${workflow.variables.completedWaves}"
           },
-          "type": "JSON_JQ_TRANSFORM",
+          "type": "SIMPLE",
           "decisionCases": {},
           "defaultCase": []
         },
@@ -818,21 +751,6 @@
           "defaultCase": []
         },
         {
-          "name": "campaign_checks",
-          "taskReferenceName": "wave_checks",
-          "inputParameters": {
-            "attachedConfirmed": "${workflow.variables.attachedConfirmed}",
-            "checks": "${workflow.variables.requestedChecks}",
-            "configPath": "${workflow.input.checksConfig}",
-            "phase": "wave",
-            "profile": "${workflow.variables.waveProfile}",
-            "repoPath": "${campaign_workspace.output.worktreePath}"
-          },
-          "type": "SIMPLE",
-          "decisionCases": {},
-          "defaultCase": []
-        },
-        {
           "name": "coding_agent",
           "taskReferenceName": "wave_review",
           "inputParameters": {
@@ -841,7 +759,7 @@
             "maxBudgetUsd": "${workflow.variables.campaignMaxBudgetUsd}",
             "maxTurns": "${workflow.variables.campaignMaxTurns}",
             "model": "${workflow.input.reviewModel}",
-            "prompt": "Review integrated campaign wave ${workflow.variables.wave} against the approved design, DAG acceptance criteria, and check results. Identify blocking correctness issues, conflicts, or missing work. Do not edit. Integration: ${integrate_wave.output}\nChecks: ${wave_checks.output}",
+            "prompt": "Review integrated campaign wave ${workflow.variables.wave} against the approved design and DAG acceptance criteria. Identify blocking correctness issues, conflicts, or missing work. Do not edit. Integration: ${integrate_wave.output}",
             "promptTemplate": "${workflow.input.reviewPromptTemplate}",
             "promptTemplateSource": "${workflow.input.reviewPromptTemplateSource}",
             "resumeSessionId": "${workflow.variables.reviewSession}",
@@ -870,23 +788,9 @@
           "taskReferenceName": "review_state",
           "inputParameters": {
             "lastReviewFindings": "${wave_review.output.result}",
-            "lastWaveChecks": "${wave_checks.output}",
             "reviewSession": "${wave_review.output.sessionId}"
           },
           "type": "SET_VARIABLE",
-          "decisionCases": {},
-          "defaultCase": []
-        },
-        {
-          "name": "wave_blocking",
-          "taskReferenceName": "wave_blocking",
-          "inputParameters": {
-            "checks": "${wave_checks.output.blockingPassed}",
-            "integrated": "${integrate_wave.output.integrated}",
-            "queryExpression": ".integrated and .checks and (.status == \"success\")",
-            "status": "${wave_review.output.status}"
-          },
-          "type": "JSON_JQ_TRANSFORM",
           "decisionCases": {},
           "defaultCase": []
         },
@@ -898,17 +802,10 @@
               "continue",
               "revise",
               "adopt_edits",
-              "run_checks",
-              "set_profiles",
               "stop"
             ],
             "draft": {
-              "checks": "${wave_checks.output}",
               "integration": "${integrate_wave.output}",
-              "profiles": {
-                "final": "${workflow.variables.finalProfile}",
-                "wave": "${workflow.variables.waveProfile}"
-              },
               "readyTasks": "${schedule_wave.output.readyIds}",
               "remainingTasks": "${merge_campaign_state.output.result.remaining}",
               "review": "${wave_review.output.result}"
@@ -925,18 +822,12 @@
           "name": "campaign_checkpoint",
           "taskReferenceName": "wave_decision",
           "inputParameters": {
-            "blockingPassed": "${wave_blocking.output.result}",
-            "configPath": "${workflow.input.checksConfig}",
             "decision": "${wave_checkpoint.output}",
             "maxBudgetUsd": "${workflow.variables.campaignMaxBudgetUsd}",
             "maxTurns": "${workflow.variables.campaignMaxTurns}",
             "phase": "wave",
-            "profile": "${workflow.variables.waveProfile}",
-            "profiles": {
-              "final": "${workflow.variables.finalProfile}",
-              "wave": "${workflow.variables.waveProfile}"
-            },
-            "repoPath": "${campaign_workspace.output.worktreePath}"
+            "blockingStatus": "${wave_review.output.status}",
+            "blockingIntegrated": "${integrate_wave.output.integrated}"
           },
           "type": "SIMPLE",
           "decisionCases": {},
@@ -983,6 +874,7 @@
                   "maxBudgetUsd": "${workflow.variables.campaignMaxBudgetUsd}",
                   "maxTurns": "${workflow.variables.campaignMaxTurns}",
                   "model": "${workflow.input.codeModel}",
+                  "allowedWriteRoots": "${validate_campaign_plan.output.allowedWriteRoots}",
                   "prompt": "Reconcile the manual edits currently in this campaign worktree with the approved design and DAG. Preserve intentional edits, fix inconsistencies, and run focused checks. Do not commit or push. Operator note: ${wave_decision.output.feedback}",
                   "promptTemplate": "${workflow.input.revisionPromptTemplate}",
                   "promptTemplateSource": "${workflow.input.revisionPromptTemplateSource}",
@@ -1017,8 +909,7 @@
                 "name": "adopt_wave_state",
                 "taskReferenceName": "adopt_wave_state",
                 "inputParameters": {
-                  "attachedConfirmed": false,
-                  "feedback": "Manual edits reconciled; repeat integration review and checks: ${adopt_wave_edits.output.result}",
+                  "feedback": "Manual edits reconciled; repeat integration review: ${adopt_wave_edits.output.result}",
                   "reconcileSession": "${adopt_wave_edits.output.sessionId}"
                 },
                 "type": "SET_VARIABLE",
@@ -1031,11 +922,9 @@
                 "name": "continue_wave",
                 "taskReferenceName": "continue_wave",
                 "inputParameters": {
-                  "attachedConfirmed": false,
                   "completedWaves": "${merge_campaign_state.output.result.waves}",
                   "feedback": "",
                   "remainingTaskIds": "${merge_campaign_state.output.result.remaining}",
-                  "requestedChecks": [],
                   "wave": "${next_wave_number.output.result}"
                 },
                 "type": "SET_VARIABLE",
@@ -1053,6 +942,7 @@
                   "maxBudgetUsd": "${workflow.variables.campaignMaxBudgetUsd}",
                   "maxTurns": "${workflow.variables.campaignMaxTurns}",
                   "model": "${workflow.input.codeModel}",
+                  "allowedWriteRoots": "${validate_campaign_plan.output.allowedWriteRoots}",
                   "prompt": "Apply the operator's corrective wave feedback to the integrated worktree, reconcile it with the approved design and DAG, and run focused checks. Do not commit or push. Feedback: ${wave_decision.output.feedback}",
                   "promptTemplate": "${workflow.input.revisionPromptTemplate}",
                   "promptTemplateSource": "${workflow.input.revisionPromptTemplateSource}",
@@ -1087,38 +977,8 @@
                 "name": "revise_wave_state",
                 "taskReferenceName": "revise_wave_state",
                 "inputParameters": {
-                  "attachedConfirmed": false,
-                  "feedback": "Corrective pass completed; repeat integration review and checks: ${revise_wave_work.output.result}",
+                  "feedback": "Corrective pass completed; repeat integration review: ${revise_wave_work.output.result}",
                   "reconcileSession": "${revise_wave_work.output.sessionId}"
-                },
-                "type": "SET_VARIABLE",
-                "decisionCases": {},
-                "defaultCase": []
-              }
-            ],
-            "run_checks": [
-              {
-                "name": "request_wave_checks",
-                "taskReferenceName": "request_wave_checks",
-                "inputParameters": {
-                  "attachedConfirmed": "${wave_decision.output.attachedConfirmed}",
-                  "feedback": "Run and review the explicitly requested checks before approval.",
-                  "requestedChecks": "${wave_decision.output.checks}",
-                  "waveProfile": "${wave_decision.output.profile}"
-                },
-                "type": "SET_VARIABLE",
-                "decisionCases": {},
-                "defaultCase": []
-              }
-            ],
-            "set_profiles": [
-              {
-                "name": "set_campaign_profiles",
-                "taskReferenceName": "set_campaign_profiles",
-                "inputParameters": {
-                  "feedback": "Profiles changed; reconcile and re-run checks.",
-                  "finalProfile": "${wave_decision.output.profiles.final}",
-                  "waveProfile": "${wave_decision.output.profiles.wave}"
                 },
                 "type": "SET_VARIABLE",
                 "decisionCases": {},
@@ -1145,7 +1005,6 @@
               "name": "revise_wave",
               "taskReferenceName": "revise_wave",
               "inputParameters": {
-                "attachedConfirmed": false,
                 "feedback": "${wave_decision.output.feedback}"
               },
               "type": "SET_VARIABLE",
@@ -1160,22 +1019,20 @@
       "evaluatorType": "graaljs"
     },
     {
-      "name": "implementation_done",
+      "name": "campaign_implementation_done",
       "taskReferenceName": "implementation_done",
+      "type": "SIMPLE",
+      "optional": true,
       "inputParameters": {
         "outcome": "${workflow.variables.outcome}",
-        "queryExpression": "(.remaining | length) == 0 or .outcome != \"running\"",
         "remaining": "${workflow.variables.remainingTaskIds}"
-      },
-      "type": "JSON_JQ_TRANSFORM",
-      "decisionCases": {},
-      "defaultCase": []
+      }
     },
     {
       "name": "implementation_limit_gate",
       "taskReferenceName": "implementation_limit_gate",
       "inputParameters": {
-        "done": "${implementation_done.output.result}"
+        "done": "${implementation_done.output.done}"
       },
       "type": "SWITCH",
       "decisionCases": {
@@ -1209,10 +1066,8 @@
       "name": "final_phase",
       "taskReferenceName": "final_phase",
       "inputParameters": {
-        "attachedConfirmed": false,
         "feedback": "",
-        "phase": "final",
-        "requestedChecks": []
+        "phase": "final"
       },
       "type": "SET_VARIABLE",
       "decisionCases": {},
@@ -1228,7 +1083,7 @@
       "type": "DO_WHILE",
       "decisionCases": {},
       "defaultCase": [],
-      "loopCondition": "(function(){ return $.final_loop['iteration'] < 5 && $.outcome === 'running'; })();",
+      "loopCondition": "(function(){ return $.final_loop['iteration'] < 3 && $.outcome === 'running'; })();",
       "loopOver": [
         {
           "name": "coding_agent",
@@ -1238,10 +1093,12 @@
             "contextFiles": [
               "${workflow.input.specContextPath}"
             ],
+            "contextPaths": "${workflow.input.contextPaths}",
             "failSoft": true,
             "maxBudgetUsd": "${workflow.variables.campaignMaxBudgetUsd}",
             "maxTurns": "${workflow.variables.campaignMaxTurns}",
             "model": "${workflow.input.reviewModel}",
+            "allowedWriteRoots": "${validate_campaign_plan.output.allowedWriteRoots}",
             "prompt": "Perform final real-system verification of this campaign against the instruction, approved design, DAG acceptance criteria, and current repository. Reconcile direct worktree edits and fix any actionable issue from checkpoint feedback, then report remaining findings. Do not commit or push. Instruction: ${workflow.input.instruction}\nFeedback: ${workflow.variables.feedback}",
             "promptTemplate": "${workflow.input.reviewPromptTemplate}",
             "promptTemplateSource": "${workflow.input.reviewPromptTemplateSource}",
@@ -1262,41 +1119,13 @@
           "defaultCase": []
         },
         {
-          "name": "campaign_checks",
-          "taskReferenceName": "final_checks",
-          "inputParameters": {
-            "attachedConfirmed": "${workflow.variables.attachedConfirmed}",
-            "checks": "${workflow.variables.requestedChecks}",
-            "configPath": "${workflow.input.checksConfig}",
-            "phase": "final",
-            "profile": "${workflow.variables.finalProfile}",
-            "repoPath": "${campaign_workspace.output.worktreePath}"
-          },
-          "type": "SIMPLE",
-          "decisionCases": {},
-          "defaultCase": []
-        },
-        {
           "name": "final_state",
           "taskReferenceName": "final_state",
           "inputParameters": {
             "finalSession": "${final_verifier.output.sessionId}",
-            "lastFinalChecks": "${final_checks.output}",
             "lastReviewFindings": "${final_verifier.output.result}"
           },
           "type": "SET_VARIABLE",
-          "decisionCases": {},
-          "defaultCase": []
-        },
-        {
-          "name": "final_blocking",
-          "taskReferenceName": "final_blocking",
-          "inputParameters": {
-            "checks": "${final_checks.output.blockingPassed}",
-            "queryExpression": ".checks and (.status == \"success\")",
-            "status": "${final_verifier.output.status}"
-          },
-          "type": "JSON_JQ_TRANSFORM",
           "decisionCases": {},
           "defaultCase": []
         },
@@ -1308,13 +1137,10 @@
               "continue",
               "revise",
               "adopt_edits",
-              "run_checks",
-              "set_profiles",
               "stop"
             ],
             "draft": {
               "branch": "${campaign_defaults.output.result.branch}",
-              "checks": "${final_checks.output}",
               "review": "${final_verifier.output.result}",
               "sessions": "${workflow.variables.campaignSessions}"
             },
@@ -1329,18 +1155,11 @@
           "name": "campaign_checkpoint",
           "taskReferenceName": "final_decision",
           "inputParameters": {
-            "blockingPassed": "${final_blocking.output.result}",
-            "configPath": "${workflow.input.checksConfig}",
             "decision": "${final_checkpoint.output}",
             "maxBudgetUsd": "${workflow.variables.campaignMaxBudgetUsd}",
             "maxTurns": "${workflow.variables.campaignMaxTurns}",
             "phase": "final",
-            "profile": "${workflow.variables.finalProfile}",
-            "profiles": {
-              "final": "${workflow.variables.finalProfile}",
-              "wave": "${workflow.variables.waveProfile}"
-            },
-            "repoPath": "${campaign_workspace.output.worktreePath}"
+            "blockingStatus": "${final_verifier.output.status}"
           },
           "type": "SIMPLE",
           "decisionCases": {},
@@ -1389,35 +1208,6 @@
                 "defaultCase": []
               }
             ],
-            "run_checks": [
-              {
-                "name": "request_final_checks",
-                "taskReferenceName": "request_final_checks",
-                "inputParameters": {
-                  "attachedConfirmed": "${final_decision.output.attachedConfirmed}",
-                  "feedback": "Run and review the explicitly requested final checks.",
-                  "finalProfile": "${final_decision.output.profile}",
-                  "requestedChecks": "${final_decision.output.checks}"
-                },
-                "type": "SET_VARIABLE",
-                "decisionCases": {},
-                "defaultCase": []
-              }
-            ],
-            "set_profiles": [
-              {
-                "name": "set_final_profiles",
-                "taskReferenceName": "set_final_profiles",
-                "inputParameters": {
-                  "feedback": "Profiles changed; repeat final verification.",
-                  "finalProfile": "${final_decision.output.profiles.final}",
-                  "waveProfile": "${final_decision.output.profiles.wave}"
-                },
-                "type": "SET_VARIABLE",
-                "decisionCases": {},
-                "defaultCase": []
-              }
-            ],
             "stop": [
               {
                 "name": "campaign_incomplete",
@@ -1437,7 +1227,6 @@
               "name": "revise_final",
               "taskReferenceName": "revise_final",
               "inputParameters": {
-                "attachedConfirmed": false,
                 "feedback": "${final_decision.output.feedback}"
               },
               "type": "SET_VARIABLE",
@@ -1495,13 +1284,193 @@
       "expression": "outcome"
     },
     {
+      "name": "commit",
+      "taskReferenceName": "campaign_commit",
+      "inputParameters": {
+        "message": "feature campaign: finalized ${workflow.workflowId}",
+        "repoPath": "${campaign_workspace.output.worktreePath}"
+      },
+      "type": "SIMPLE",
+      "decisionCases": {},
+      "defaultCase": []
+    },
+    {
+      "name": "test_cycle",
+      "taskReferenceName": "campaign_tests",
+      "type": "SUB_WORKFLOW",
+      "optional": true,
+      "subWorkflowParam": {
+        "name": "test_cycle",
+        "version": 1
+      },
+      "inputParameters": {
+        "repoPath": "${campaign_workspace.output.worktreePath}",
+        "candidateCommit": "${campaign_commit.output.commit}",
+        "testMode": "full",
+        "allowHeavySuites": true,
+        "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "tests_outcome_gate",
+      "taskReferenceName": "tests_outcome_gate",
+      "inputParameters": {
+        "testsPassed": "${campaign_tests.output.testsPassed}"
+      },
+      "type": "SWITCH",
+      "decisionCases": {
+        "true": [
+          {
+            "name": "tests_outcome_passed",
+            "taskReferenceName": "tests_outcome_passed",
+            "type": "NOOP",
+            "decisionCases": {},
+            "defaultCase": []
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "tests_not_passed",
+          "taskReferenceName": "tests_not_passed",
+          "inputParameters": {
+            "outcome": "incomplete"
+          },
+          "type": "SET_VARIABLE",
+          "decisionCases": {},
+          "defaultCase": []
+        }
+      ],
+      "evaluatorType": "value-param",
+      "expression": "testsPassed"
+    },
+    {
+      "name": "campaign_publication_plan",
+      "taskReferenceName": "campaign_publication_plan",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "outcome": "${workflow.variables.outcome}",
+        "requestedDraft": "${workflow.input.prDraft}",
+        "testState": "${campaign_tests.output.testCycleState}",
+        "testsPassed": "${campaign_tests.output.testsPassed}",
+        "tested": "${campaign_tests.output.candidateCommit}",
+        "committed": "${campaign_commit.output.commit}",
+        "agentAuthoredTest": "${campaign_tests.output.agentAuthoredTest}"
+      }
+    },
+    {
+      "name": "campaign_publish_gate",
+      "taskReferenceName": "campaign_publish_gate",
+      "inputParameters": {
+        "createPr": "${workflow.input.createPr}"
+      },
+      "type": "SWITCH",
+      "decisionCases": {
+        "true": [
+          {
+            "name": "git_push",
+            "taskReferenceName": "campaign_push",
+            "inputParameters": {
+              "branch": "${campaign_workspace.output.branch}",
+              "repoPath": "${campaign_workspace.output.worktreePath}",
+              "setUpstream": true,
+              "expectedHead": "${campaign_publication_plan.output.head}"
+            },
+            "type": "SIMPLE",
+            "decisionCases": {},
+            "defaultCase": []
+          },
+          {
+            "name": "campaign_push_result_gate",
+            "taskReferenceName": "campaign_push_result_gate",
+            "type": "SWITCH",
+            "evaluatorType": "value-param",
+            "expression": "pushed",
+            "inputParameters": {
+              "pushed": "${campaign_push.output.pushed}"
+            },
+            "decisionCases": {
+              "true": [
+                {
+                  "name": "pr_create",
+                  "taskReferenceName": "campaign_pr",
+                  "inputParameters": {
+                    "base": "${workflow.input.prBase}",
+                    "body": "${workflow.input.prBody}${campaign_publication_plan.output.agentAuthoredTestNote}",
+                    "summary": "${workflow.input.prBody}",
+                    "summaryFallback": "${workflow.input.instruction}",
+                    "draft": "${campaign_publication_plan.output.draft}",
+                    "fill": false,
+                    "head": "${campaign_workspace.output.branch}",
+                    "repoPath": "${campaign_workspace.output.worktreePath}",
+                    "title": "${workflow.input.prTitle}"
+                  },
+                  "type": "SIMPLE",
+                  "decisionCases": {},
+                  "defaultCase": []
+                },
+                {
+                  "name": "campaign_capture_publication",
+                  "taskReferenceName": "campaign_capture_publication",
+                  "type": "SET_VARIABLE",
+                  "inputParameters": {
+                    "publicationState": "${campaign_pr.output.publicationState}",
+                    "pushed": true,
+                    "prNumber": "${campaign_pr.output.number}",
+                    "prUrl": "${campaign_pr.output.url}"
+                  }
+                }
+              ]
+            },
+            "defaultCase": [
+              {
+                "name": "campaign_capture_push_blocked",
+                "taskReferenceName": "campaign_capture_push_blocked",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "publicationState": "${campaign_push.output.publicationState}",
+                  "pushed": false
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "campaign_publish_skipped",
+          "taskReferenceName": "campaign_publish_skipped",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "publicationState": "branch_retained",
+            "pushed": false
+          },
+          "decisionCases": {},
+          "defaultCase": []
+        }
+      ],
+      "evaluatorType": "value-param",
+      "expression": "createPr"
+    },
+    {
       "name": "campaign_summary",
       "taskReferenceName": "campaign_summary",
       "inputParameters": {
         "baseCommit": "${campaign_workspace.output.baseCommit}",
         "branch": "${campaign_workspace.output.branch}",
+        "inPlace": "${campaign_workspace.output.inPlace}",
         "outcome": "${workflow.variables.outcome}",
         "repoPath": "${campaign_workspace.output.worktreePath}",
+        "sourceRepoPath": "${campaign_workspace.output.sourceRepoPath}",
         "sessions": {
           "coding": "${workflow.variables.campaignSessions}",
           "design": "${workflow.variables.designSession}",
@@ -1537,22 +1506,620 @@
       "defaultCase": []
     }
   ],
+  "inputSchema": {
+    "name": "feature_campaign_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to an existing local git checkout to use as the campaign's source repository; required unless workspacePath is supplied to inherit an existing worktree instead."
+        },
+        "instruction": {
+          "type": "string",
+          "description": "Natural-language description of the feature to design, plan, and implement across the campaign's design/plan/implementation/final phases."
+        },
+        "changeBranch": {
+          "type": "string",
+          "default": "",
+          "description": "Requested branch name for the campaign's outcome branch; falls back to 'feature-campaign' when blank."
+        },
+        "codeAgent": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override selecting the coding agent backend for implementation-wave and wave-revision coding sessions."
+        },
+        "codeModel": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override: explicit model id for implementation-wave and wave-revision coding sessions."
+        },
+        "codePromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline template text (or '@relative/path') overriding the default implementation-wave coding prompt."
+        },
+        "codePromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Diagnostic label naming who supplied codePromptTemplate; recorded in logs/output only."
+        },
+        "createPr": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, push the final verified branch and open a PR; mutually exclusive with inPlace=true."
+        },
+        "designAgent": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override selecting the coding agent backend for the design-phase sessions."
+        },
+        "designDir": {
+          "type": "string",
+          "default": "docs/design",
+          "description": "Repository-relative directory the design phase is authorized to write design documents into."
+        },
+        "designMaxRevisions": {
+          "type": "integer",
+          "default": 5,
+          "description": "Maximum number of design checkpoint revision iterations before the design phase is treated as limit-reached."
+        },
+        "designModel": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override: explicit model id for the design-phase sessions."
+        },
+        "designPromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline template text (or '@relative/path') overriding the default design-phase prompt."
+        },
+        "designPromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Diagnostic label naming who supplied designPromptTemplate; recorded in logs/output only."
+        },
+        "importedDesignLocation": {
+          "type": "string",
+          "default": "",
+          "description": "Design location to adopt directly when useImportedPlan is true, skipping the interactive design loop."
+        },
+        "importedPlan": {
+          "type": "object",
+          "default": {},
+          "description": "Pre-built plan document to validate and adopt directly when useImportedPlan is true, skipping the interactive plan loop.",
+          "additionalProperties": true
+        },
+        "inPlace": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, run the campaign directly on repoPath's checked-out branch instead of an isolated worktree; mutually exclusive with createPr=true."
+        },
+        "keepWorktree": {
+          "type": "boolean",
+          "default": true,
+          "description": "If true, retain the campaign's worktree after completion instead of removing it."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "Initial USD spend cap applied to each phase's coding-agent sessions; may be raised by checkpoint decisions."
+        },
+        "maxParallelism": {
+          "type": "integer",
+          "default": 6,
+          "description": "Maximum number of file-disjoint implementation subtasks scheduled in parallel per wave."
+        },
+        "maxTasks": {
+          "type": "integer",
+          "default": 25,
+          "description": "Maximum number of tasks allowed in the plan DAG."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "default": 500,
+          "description": "Initial agent-turn cap applied to each phase's coding-agent sessions; may be raised by checkpoint decisions."
+        },
+        "maxWaves": {
+          "type": "integer",
+          "default": 20,
+          "description": "Maximum number of implementation waves before the campaign is treated as wave-limit-reached with tasks still remaining."
+        },
+        "modelOverrides": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Per-role model overrides (or a JSON string of the same) merged on top of the selected model profile."
+        },
+        "modelPolicy": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Inline model policy document (or JSON string) merged on top of the bundled and repository policies."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label recorded for the inline modelPolicy."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model profile to resolve; empty string defers to the policy's default profile."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to a repository model policy file, overriding the default location."
+        },
+        "planAgent": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override selecting the coding agent backend for the plan-phase sessions."
+        },
+        "planMaxRevisions": {
+          "type": "integer",
+          "default": 5,
+          "description": "Maximum number of plan checkpoint revision iterations before the plan phase is treated as limit-reached."
+        },
+        "planModel": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override: explicit model id for the plan-phase sessions."
+        },
+        "planPromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline template text (or '@relative/path') overriding the default plan-phase prompt."
+        },
+        "planPromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Diagnostic label naming who supplied planPromptTemplate; recorded in logs/output only."
+        },
+        "prBase": {
+          "type": "string",
+          "default": "main",
+          "description": "Base branch to target when opening the campaign's PR."
+        },
+        "prBody": {
+          "type": "string",
+          "default": "",
+          "description": "PR body/summary text; falls back to instruction when blank."
+        },
+        "prDraft": {
+          "type": "boolean",
+          "default": false,
+          "description": "Requested draft state for the opened PR (may be overridden to true by the publication plan based on outcome/test results)."
+        },
+        "prTitle": {
+          "type": "string",
+          "default": "",
+          "description": "Title for the opened PR."
+        },
+        "contextPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Absolute filesystem paths granted to design/implementation/final-verification coding-agent sessions as read-only live context references."
+        },
+        "reviewAgent": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override selecting the coding agent backend for wave-review and final-verification sessions."
+        },
+        "reviewModel": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override: explicit model id for wave-review and final-verification sessions."
+        },
+        "reviewPromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline template text (or '@relative/path') overriding the default wave-review/final-verification prompt."
+        },
+        "reviewPromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Diagnostic label naming who supplied reviewPromptTemplate; recorded in logs/output only."
+        },
+        "revisionPromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline template text (or '@relative/path') overriding the default wave-revision/edit-adoption prompt."
+        },
+        "revisionPromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Diagnostic label naming who supplied revisionPromptTemplate; recorded in logs/output only."
+        },
+        "specContextPath": {
+          "type": "string",
+          "default": "",
+          "description": "Single spec/context file path passed to implementation and final-verification coding-agent sessions as read-only external context."
+        },
+        "useImportedPlan": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, skip the interactive design/plan loops and adopt importedDesignLocation/importedPlan directly."
+        },
+        "workspacePath": {
+          "type": "string",
+          "default": "",
+          "description": "Existing worktree path to inherit unchanged instead of creating a new one (nested-workflow case)."
+        },
+        "maxFixAttempts": {
+          "type": "integer",
+          "default": 4,
+          "description": "Upper bound on structured fix/commit/re-test passes forwarded to the final full test_cycle sub-workflow."
+        }
+      },
+      "required": [
+        "repoPath",
+        "instruction"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "feature_campaign_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string",
+          "description": "Campaign branch name the work was committed on."
+        },
+        "changedFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Sorted union of files committed between the baseline and HEAD, plus any files with uncommitted changes, at campaign end."
+        },
+        "completedDagTasks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Deduplicated union of plan-DAG task IDs completed across all implementation waves."
+        },
+        "completedWaves": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Deduplicated list of implementation wave numbers processed."
+        },
+        "designLocation": {
+          "type": "string",
+          "description": "Resolved design-document location: designDir (or importedDesignLocation when useImportedPlan is true)."
+        },
+        "designPromptTemplate": {
+          "type": "object",
+          "description": "Which design-phase prompt template source was requested vs. actually resolved.",
+          "properties": {
+            "requestedSource": {
+              "type": "string"
+            },
+            "resolvedSource": {
+              "type": "string"
+            },
+            "templateKey": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            }
+          }
+        },
+        "commit": {
+          "type": "string",
+          "description": "Final HEAD commit SHA of the campaign worktree."
+        },
+        "ignoredSourceChanges": {
+          "type": "integer",
+          "description": "Always 0; reserved for future use."
+        },
+        "inPlace": {
+          "type": "boolean",
+          "description": "Whether the campaign ran in place on the source repository."
+        },
+        "originalBranch": {
+          "type": "string",
+          "description": "The branch the source checkout was on before the campaign started."
+        },
+        "originalHead": {
+          "type": "string",
+          "description": "The source checkout's HEAD commit before the campaign started."
+        },
+        "baselineCommit": {
+          "type": "string",
+          "description": "Commit capturing the source's Git-visible changes at workspace-prepare time."
+        },
+        "includedSourcePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Paths included in the workspace baseline snapshot/commit."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "running",
+            "incomplete",
+            "verified"
+          ],
+          "description": "Final campaign outcome; 'verified' only when final verification's checkpoint action was 'continue', otherwise 'incomplete' (or 'running' only in the anomalous case of a paused/unfinished execution)."
+        },
+        "plan": {
+          "type": "object",
+          "description": "Approved or adopted plan document ({tasks: [...]}) ; {} if no plan was ever approved.",
+          "additionalProperties": true
+        },
+        "planLocation": {
+          "type": "string",
+          "description": "Resolved plan-document location; empty string if no plan was ever approved."
+        },
+        "planPromptTemplate": {
+          "type": "object",
+          "description": "Which plan-phase prompt template source was requested vs. actually resolved.",
+          "properties": {
+            "requestedSource": {
+              "type": "string"
+            },
+            "resolvedSource": {
+              "type": "string"
+            },
+            "templateKey": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            }
+          }
+        },
+        "publicationState": {
+          "type": "string",
+          "enum": [
+            "branch_retained",
+            "published",
+            "permission_blocked",
+            "policy_blocked"
+          ],
+          "description": "Outcome of the publication attempt: 'branch_retained' when createPr was false, 'published' on a successful push+PR, or a *_blocked classification when the remote rejected the push/PR update."
+        },
+        "prNumber": {
+          "type": "integer",
+          "description": "Opened PR number; 0 when createPr was false or publication was blocked."
+        },
+        "prUrl": {
+          "type": "string",
+          "description": "Opened PR URL; empty string when createPr was false or publication was blocked."
+        },
+        "pushed": {
+          "type": "boolean",
+          "description": "Whether the campaign branch was successfully pushed to the remote."
+        },
+        "reviewFindings": {
+          "type": "string",
+          "description": "Final text response from the last wave-review or final-verification coding-agent session."
+        },
+        "reviewPromptTemplate": {
+          "type": "object",
+          "description": "Which final-verification prompt template source was requested vs. actually resolved.",
+          "properties": {
+            "requestedSource": {
+              "type": "string"
+            },
+            "resolvedSource": {
+              "type": "string"
+            },
+            "templateKey": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            }
+          }
+        },
+        "sessions": {
+          "type": "object",
+          "description": "Map of task ID to resumable session ID, gathered across design/plan/implementation/review/final phases.",
+          "additionalProperties": true
+        },
+        "sourceRepoPath": {
+          "type": "string",
+          "description": "Resolved absolute path of the source repository."
+        },
+        "sourceHandoff": {
+          "type": "object",
+          "description": "Bundle of campaign provenance fields for downstream consumers.",
+          "properties": {
+            "repoPath": {
+              "type": "string"
+            },
+            "sourceRepoPath": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "commit": {
+              "type": "string"
+            },
+            "originalBranch": {
+              "type": "string"
+            },
+            "originalHead": {
+              "type": "string"
+            },
+            "baselineCommit": {
+              "type": "string"
+            },
+            "includedSourcePaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "presented": {
+              "type": "boolean",
+              "description": "Always true."
+            },
+            "verificationState": {
+              "type": "string",
+              "description": "Same value as the top-level outcome field."
+            },
+            "uncommittedFiles": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "repoPath",
+            "sourceRepoPath",
+            "branch",
+            "commit",
+            "originalBranch",
+            "originalHead",
+            "baselineCommit",
+            "includedSourcePaths",
+            "presented",
+            "verificationState",
+            "uncommittedFiles"
+          ]
+        },
+        "totalCostUsd": {
+          "type": "number",
+          "description": "Total USD cost summed across every coding-agent session recorded in the campaign."
+        },
+        "totalTokens": {
+          "type": "integer",
+          "description": "Total LLM tokens summed across every coding-agent session recorded in the campaign."
+        },
+        "verifiedBranch": {
+          "type": "string",
+          "description": "Same as branch when outcome is 'verified', otherwise empty string."
+        },
+        "workspaceRetained": {
+          "type": "boolean",
+          "description": "True if the campaign worktree was left in place instead of being removed."
+        },
+        "worktreePath": {
+          "type": "string",
+          "description": "Absolute path to the checkout the campaign operated in."
+        },
+        "testCycleState": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "tests_passed",
+            "no_tests_required",
+            "tests_failed_fix_unavailable",
+            "tests_failed_after_fix_budget",
+            "command_discovery_blocked",
+            "candidate_commit_missing",
+            "runtime_unavailable",
+            "verifier_worker_unavailable",
+            null
+          ],
+          "description": "Terminal state of the final full-suite test_cycle sub-workflow; null if that optional sub-workflow never produced output."
+        },
+        "testsPassed": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether the final full-suite test cycle passed; null if that optional sub-workflow never produced output."
+        },
+        "testReport": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Human-readable summary from the final full-suite test_cycle sub-workflow; null if that optional sub-workflow never produced output."
+        }
+      },
+      "required": [
+        "branch",
+        "changedFiles",
+        "completedDagTasks",
+        "completedWaves",
+        "designLocation",
+        "designPromptTemplate",
+        "commit",
+        "ignoredSourceChanges",
+        "inPlace",
+        "originalBranch",
+        "originalHead",
+        "baselineCommit",
+        "includedSourcePaths",
+        "outcome",
+        "plan",
+        "planLocation",
+        "planPromptTemplate",
+        "publicationState",
+        "prNumber",
+        "prUrl",
+        "pushed",
+        "reviewFindings",
+        "reviewPromptTemplate",
+        "sessions",
+        "sourceRepoPath",
+        "sourceHandoff",
+        "totalCostUsd",
+        "totalTokens",
+        "verifiedBranch",
+        "workspaceRetained",
+        "worktreePath",
+        "testCycleState",
+        "testsPassed",
+        "testReport"
+      ]
+    }
+  },
   "inputParameters": [
     "changeBranch",
-    "checksConfig",
     "codeAgent",
     "codeModel",
     "codePromptTemplate",
     "codePromptTemplateSource",
+    "createPr",
     "designAgent",
     "designDir",
     "designMaxRevisions",
     "designModel",
     "designPromptTemplate",
     "designPromptTemplateSource",
-    "finalProfile",
     "importedDesignLocation",
     "importedPlan",
+    "inPlace",
     "instruction",
     "keepWorktree",
     "maxBudgetUsd",
@@ -1571,7 +2138,12 @@
     "planModel",
     "planPromptTemplate",
     "planPromptTemplateSource",
+    "prBase",
+    "prBody",
+    "prDraft",
+    "prTitle",
     "repoPath",
+    "contextPaths",
     "reviewAgent",
     "reviewModel",
     "reviewPromptTemplate",
@@ -1580,8 +2152,8 @@
     "revisionPromptTemplateSource",
     "specContextPath",
     "useImportedPlan",
-    "waveProfile",
-    "workspacePath"
+    "workspacePath",
+    "maxFixAttempts"
   ],
   "outputParameters": {
     "branch": "${campaign_summary.output.branch}",
@@ -1590,21 +2162,46 @@
     "completedWaves": "${workflow.variables.completedWaves}",
     "designLocation": "${workflow.variables.designLocation}",
     "designPromptTemplate": "${campaign_design.output.promptTemplate}",
-    "finalChecks": "${workflow.variables.lastFinalChecks}",
+    "commit": "${campaign_summary.output.candidateCommit}",
     "ignoredSourceChanges": "${campaign_workspace.output.ignoredSourceChanges}",
+    "inPlace": "${campaign_workspace.output.inPlace}",
+    "originalBranch": "${campaign_workspace.output.originalBranch}",
+    "originalHead": "${campaign_workspace.output.originalHead}",
+    "baselineCommit": "${campaign_workspace.output.baselineCommit}",
+    "includedSourcePaths": "${campaign_workspace.output.baselineIncludedPaths}",
     "outcome": "${workflow.variables.outcome}",
     "plan": "${workflow.variables.plan}",
     "planLocation": "${workflow.variables.planLocation}",
     "planPromptTemplate": "${campaign_plan.output.promptTemplate}",
+    "publicationState": "${workflow.variables.publicationState}",
+    "prNumber": "${workflow.variables.prNumber}",
+    "prUrl": "${workflow.variables.prUrl}",
+    "pushed": "${workflow.variables.pushed}",
     "reviewFindings": "${workflow.variables.lastReviewFindings}",
     "reviewPromptTemplate": "${final_verifier.output.promptTemplate}",
     "sessions": "${campaign_summary.output.sessions}",
     "sourceRepoPath": "${campaign_workspace.output.sourceRepoPath}",
+    "sourceHandoff": {
+      "repoPath": "${campaign_summary.output.repoPath}",
+      "sourceRepoPath": "${campaign_summary.output.sourceRepoPath}",
+      "branch": "${campaign_summary.output.branch}",
+      "commit": "${campaign_summary.output.candidateCommit}",
+      "originalBranch": "${campaign_workspace.output.originalBranch}",
+      "originalHead": "${campaign_workspace.output.originalHead}",
+      "baselineCommit": "${campaign_workspace.output.baselineCommit}",
+      "includedSourcePaths": "${campaign_workspace.output.baselineIncludedPaths}",
+      "presented": true,
+      "verificationState": "${workflow.variables.outcome}",
+      "uncommittedFiles": "${campaign_summary.output.uncommittedFiles}"
+    },
     "totalCostUsd": "${campaign_summary.output.totalCostUsd}",
     "totalTokens": "${campaign_summary.output.totalTokens}",
     "verifiedBranch": "${campaign_summary.output.verifiedBranch}",
     "workspaceRetained": "${campaign_workspace_cleanup.output.retained}",
-    "worktreePath": "${campaign_workspace.output.worktreePath}"
+    "worktreePath": "${campaign_workspace.output.worktreePath}",
+    "testCycleState": "${campaign_tests.output.testCycleState}",
+    "testsPassed": "${campaign_tests.output.testsPassed}",
+    "testReport": "${campaign_tests.output.testReport}"
   },
   "schemaVersion": 2,
   "restartable": true,
@@ -1612,7 +2209,6 @@
   "timeoutPolicy": "ALERT_ONLY",
   "timeoutSeconds": 0,
   "variables": {
-    "attachedConfirmed": false,
     "blockedTaskIds": [],
     "campaignMaxBudgetUsd": 50,
     "campaignMaxTurns": 500,
@@ -1623,40 +2219,39 @@
     "designLocation": "",
     "designSession": "",
     "feedback": "",
-    "finalProfile": "",
     "finalSession": "",
-    "lastFinalChecks": {},
     "lastReviewFindings": "",
-    "lastWaveChecks": {},
     "outcome": "running",
     "phase": "prepare",
     "plan": {},
     "planApproved": false,
     "planLocation": "",
     "planSession": "",
+    "publicationState": "pending",
+    "pushed": false,
+    "prNumber": 0,
+    "prUrl": "",
     "reconcileSession": "",
     "remainingTaskIds": [
       "pending"
     ],
-    "requestedChecks": [],
     "reviewSession": "",
-    "wave": 1,
-    "waveProfile": ""
+    "wave": 1
   },
   "inputTemplate": {
     "changeBranch": "",
-    "checksConfig": ".conductor-code/checks.json",
     "codeAgent": "",
     "codeModel": "",
     "codePromptTemplate": "",
     "codePromptTemplateSource": "",
+    "createPr": false,
+    "inPlace": false,
     "designAgent": "",
     "designDir": "docs/design",
     "designMaxRevisions": 5,
     "designModel": "",
     "designPromptTemplate": "",
     "designPromptTemplateSource": "",
-    "finalProfile": "",
     "importedDesignLocation": "",
     "importedPlan": {},
     "keepWorktree": true,
@@ -1670,6 +2265,10 @@
     "planModel": "",
     "planPromptTemplate": "",
     "planPromptTemplateSource": "",
+    "prBase": "main",
+    "prBody": "",
+    "prDraft": false,
+    "prTitle": "",
     "reviewAgent": "",
     "reviewModel": "",
     "reviewPromptTemplate": "",
@@ -1677,15 +2276,17 @@
     "revisionPromptTemplate": "",
     "revisionPromptTemplateSource": "",
     "specContextPath": "",
+    "contextPaths": [],
     "useImportedPlan": false,
-    "waveProfile": "",
     "workspacePath": "",
     "modelProfile": "",
     "modelPolicy": {},
     "modelPolicySource": "",
     "modelPolicySha256": "",
     "modelsConfig": "",
-    "modelOverrides": {}
+    "modelOverrides": {},
+    "maxFixAttempts": 4
   },
-  "overwriteTags": false
+  "overwriteTags": false,
+  "enforceSchema": false
 }

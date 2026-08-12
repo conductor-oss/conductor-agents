@@ -1,0 +1,135 @@
+{
+  "name": "code_parallel_delivery_summary",
+  "description": "Deterministic code_parallel decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "code_parallel_delivery_summary_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "joined": {
+          "type": "object",
+          "description": "FORK_JOIN_DYNAMIC join output: a map of task reference name to {\"output\": {...}} (or the report itself), one entry per code_subtask delivery report.",
+          "additionalProperties": true
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "code_parallel_delivery_summary_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "implementation_unavailable",
+            "audit_unavailable",
+            "incomplete_delivery"
+          ],
+          "description": "Aggregate verdict: 'passed' only when every subtask report's state is 'passed'; otherwise the first shared blocking reason, or 'incomplete_delivery'."
+        },
+        "reports": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "description": "Per-subtask deliveryOutcome or status; 'implementation_unavailable' when neither is a string."
+              },
+              "missingPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "rejectedPaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "commandFailures": {
+                "type": "array",
+                "items": {}
+              },
+              "sandboxDenials": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "repairAttempts": {
+                "type": "number",
+                "description": "Repair attempts made for this subtask; 0 when absent or not numeric."
+              },
+              "commit": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "missingPaths",
+              "rejectedPaths",
+              "commandFailures",
+              "sandboxDenials",
+              "repairAttempts",
+              "commit"
+            ]
+          },
+          "description": "Normalized per-subtask delivery report, one per joined fork."
+        },
+        "missingPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "De-duplicated union of missingPaths across all subtask reports."
+        },
+        "rejectedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "De-duplicated union of rejectedPaths across all subtask reports."
+        },
+        "commandFailures": {
+          "type": "array",
+          "items": {},
+          "description": "Concatenation of every subtask's commandFailures entries (not de-duplicated)."
+        },
+        "sandboxDenials": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "De-duplicated union of sandboxDenials across all subtask reports."
+        },
+        "repairAttempts": {
+          "type": "number",
+          "description": "Sum of repairAttempts across all subtask reports."
+        }
+      },
+      "required": [
+        "state",
+        "reports",
+        "missingPaths",
+        "rejectedPaths",
+        "commandFailures",
+        "sandboxDenials",
+        "repairAttempts"
+      ]
+    }
+  }
+}

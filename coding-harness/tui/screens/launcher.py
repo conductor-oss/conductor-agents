@@ -23,6 +23,12 @@ from ..widgets.modals import PickerModal
 from ..widgets.preflight import Preflight
 
 
+def apply_launch_model_snapshot(workflow: str, payload: dict) -> dict:
+    """Use the shared durable /models snapshot for form-originated launches."""
+    from ..model_profiles import apply_profile_snapshot
+    return apply_profile_snapshot(workflow, payload)
+
+
 class Launcher(Screen):
     BINDINGS = [Binding("escape", "back", "back")]
 
@@ -106,10 +112,11 @@ class LauncherForm(Screen):
             if f.help:
                 yield Label(f.help, classes="field-help")
             return
-        row = Horizontal(Label(f"{f.label}{'*' if f.required else ''}"), w, classes="field-row")
+        marker = "*" if f.required or f.explicit else ""
+        row = Horizontal(Label(f"{f.label}{marker}"), w, classes="field-row")
         if f.kind in ("gh_issue", "gh_pr"):
             row = Horizontal(
-                Label(f"{f.label}{'*' if f.required else ''}"), w,
+                Label(f"{f.label}{marker}"), w,
                 Button("browse", id=f"browse_{f.name}"),
                 classes="field-row",
             )
@@ -121,12 +128,23 @@ class LauncherForm(Screen):
         init = self._init.get(f.name, f.form_default)
         if f.kind == "bool":
             return Switch(value=self._as_bool(init))
+        if f.kind == "bool_choice":
+            value = ("yes" if init else "no") \
+                if f.name in self._init and isinstance(init, bool) else Select.NULL
+            return Select(
+                [("Yes — create and review design docs", "yes"),
+                 ("No — continue without separate design docs", "no")],
+                value=value,
+                allow_blank=True,
+                prompt="Choose Yes or No",
+            )
         if f.kind == "enum":
             opts = [(c, c) for c in f.choices]
             val = init if init in f.choices else (f.default if f.default in f.choices else Select.BLANK)
             return Select(opts, value=val, allow_blank=True)
         if f.kind in ("multiline", "template"):
-            return TextArea(str(init or ""), id=f"w_{f.name}")
+            text = "\n".join(str(item) for item in init) if isinstance(init, list) else str(init or "")
+            return TextArea(text, id=f"w_{f.name}")
         typ = "integer" if f.kind in ("int", "gh_issue", "gh_pr") else ("number" if f.kind == "float" else "text")
         return Input(value="" if init in (None, "") else str(init),
                      type=typ, id=f"w_{f.name}")
@@ -351,27 +369,20 @@ class LauncherForm(Screen):
             self._error(str(exc))
             return
         # Form launches use the same durable model-policy snapshot as chat and
-        # schedules.  A blank picker value selects the uniquely scoped user policy
-        # (or leaves bundled/repository resolution to the worker).
-        from ..model_profiles import ProfileError, choose_profile, snapshot_inputs
+        # schedules. A blank picker value selects the scoped or global /models policy.
+        from ..model_profiles import ProfileError, snapshot_summary
         try:
-            profile_name = str(payload.get("modelProfile") or "").strip()
-            repo = str(payload.get("repo") or payload.get("repoPath") or "")
-            profile = choose_profile(self.spec.name, repo, explicit=profile_name)
-            variant = profile_name or (str(profile.data.get("defaultProfile") or "") if profile else "")
-            for key, value in snapshot_inputs(profile, profile_variant=variant).items():
-                if not payload.get(key):
-                    payload[key] = value
+            payload = apply_launch_model_snapshot(self.spec.name, payload)
         except ProfileError as exc:
             self._error(str(exc))
             return
         from ..workspace import preview
         workspace = preview(payload.get("repoPath", ""))
-        if workspace and workspace.ignored_changes:
+        if workspace and workspace.included_changes:
             self.notify(
-                f"{workspace.ignored_changes} uncommitted source change(s) will be ignored; "
-                "the run starts from committed HEAD",
-                severity="warning",
+                f"{workspace.included_changes} uncommitted source change(s) will be included "
+                "in the new outcome branch baseline",
+                severity="information",
             )
         try:
             wid = await self.app.client.start(self.spec.name, payload)
@@ -379,6 +390,7 @@ class LauncherForm(Screen):
             self._error(f"Start failed: {e}")
             return
         self.app.track(wid)
+        self.app.notify(f"Started {self.spec.name}; {snapshot_summary(payload)}.")
         from .run_detail import RunDetail
         self.app.switch_screen(RunDetail(wid))
 
@@ -407,6 +419,16 @@ class LauncherForm(Screen):
             raw = self._value(f.name)
             if f.kind == "bool":
                 values[f.name] = bool(raw)
+                continue
+            if f.kind == "bool_choice":
+                if raw is None or raw is Select.NULL:
+                    missing.append(f.label)
+                elif raw == "yes":
+                    values[f.name] = True
+                elif raw == "no":
+                    values[f.name] = False
+                else:
+                    raise ValueError(f"{f.label} must be Yes or No")
                 continue
             if raw in (None, "", Select.BLANK):
                 if f.required:

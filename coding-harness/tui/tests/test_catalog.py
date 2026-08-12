@@ -56,24 +56,37 @@ def test_every_required_workflow_input_is_covered(wf_name):
     assert not missing, f"{wf_name}: required inputs not covered by a form field: {missing}"
 
 
-def test_build_payload_omits_defaults_and_expands_maps_to():
+def test_build_payload_omits_defaults_and_defers_backend_to_profile():
     spec = catalog.CATALOG["issue_to_pr"]
-    # user set repo/issue, changed backend to codex, left everything else default
+    # user set repo/issue and left model selection to the selected profile
     values = {f.name: f.default for f in spec.fields}
-    values.update({"repo": "acme/app", "issueNumber": 42, "backend": "codex"})
+    values.update({"repo": "acme/app", "issueNumber": 42})
     payload = spec.build_payload(values)
     assert payload["repo"] == "acme/app"
     assert payload["issueNumber"] == 42
-    # backend expands to both plan + code agents
-    assert payload["openspecPlanAgent"] == "codex" and payload["codeAgent"] == "codex"
+    assert payload["design"] is False
+    assert "openspecPlanAgent" not in payload and "codeAgent" not in payload
     # unchanged defaults are omitted
     assert "base" not in payload and "maxTurns" not in payload
+
+
+def test_issue_to_pr_design_is_an_explicit_tui_choice():
+    design = next(f for f in catalog.CATALOG["issue_to_pr"].fields if f.name == "design")
+    assert design.kind == "bool_choice"
+    assert design.default is False
+    assert design.explicit is True
+    assert "feature_campaign" in design.help
 
 
 def test_target_and_result_helpers():
     assert "acme/app" in catalog.target_for("pr_review", {"repo": "https://github.com/acme/app.git", "prNumber": 7})
     card = catalog.result_for("pr_review", {"reviewUrl": "http://x/pull/7", "event": "COMMENT", "inlineCount": 2})
     assert card and card.primary_url == "http://x/pull/7"
+    stopped = catalog.result_for("pr_review", {
+        "approvalState": "suppressed", "publicationState": "suppressed",
+        "reviewUrl": "", "event": "", "inlineCount": 0,
+    })
+    assert stopped and stopped.title == "Review not posted" and stopped.primary_url is None
     assert catalog.short_repo("git@github.com:acme/app.git") == "acme/app"
 
 
@@ -83,6 +96,9 @@ def test_local_checkout_paths_are_expanded_before_start(tmp_path, monkeypatch):
     assert normalized["repoPath"] == str((tmp_path / "src" / "app").resolve())
     normalized = catalog.normalize_local_paths({"specSource": "~/src/app/design/openspec"})
     assert normalized["specSource"] == str((tmp_path / "src" / "app" / "design" / "openspec").resolve())
+    normalized = catalog.normalize_local_paths({"contextPaths": ["~/design.md", "docs/brief"]})
+    assert normalized["contextPaths"] == [str((tmp_path / "design.md").resolve()),
+                                           str((pathlib.Path.cwd() / "docs" / "brief").resolve())]
 
 
 def test_openspec_plan_is_bounded_review_loop():
@@ -184,7 +200,8 @@ def test_workflow_agent_turn_defaults(wf_name, turn_key, expected):
 
 def test_code_parallel_internal_agent_budgets_are_fifty():
     wf = _load("code_parallel")
-    plan = next(t for t in wf["tasks"] if t["taskReferenceName"] == "openspec_plan")
+    plan = next(t for t in _walk_tasks(wf["tasks"])
+                if t.get("taskReferenceName") == "openspec_plan")
     merge = next(t for t in wf["tasks"] if t["taskReferenceName"] == "merge")
     assert plan["inputParameters"]["openspecMaxBudgetUsd"] == "${workflow.input.openspecMaxBudgetUsd}"
     assert merge["inputParameters"]["maxBudgetUsd"] == "${workflow.input.maxBudgetUsd}"

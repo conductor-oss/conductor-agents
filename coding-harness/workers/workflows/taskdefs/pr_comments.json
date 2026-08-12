@@ -1,12 +1,131 @@
 {
   "name": "pr_comments",
-  "description": "Gather + consolidate a PR's review feedback (conversation, reviews, inline), skipping harness-authored comments. Input: repo (owner/name or URL), number.",
+  "description": "Gather PR feedback (conversation, reviews, inline), skipping harness-authored comments; append bounded, provenance-labeled untrusted context from linked references. Input: repo (owner/name or URL), number.",
   "retryCount": 2,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "pr_comments_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repo": {
+          "type": "string",
+          "description": "GitHub repository (owner/name or URL) that owns the PR."
+        },
+        "repoUrl": {
+          "type": "string",
+          "description": "Alternate spelling for 'repo'; used when 'repo' is not supplied."
+        },
+        "number": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "PR number to gather feedback for."
+        }
+      },
+      "required": [
+        "number"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "pr_comments_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer",
+          "description": "PR number."
+        },
+        "title": {
+          "type": "string",
+          "description": "PR title."
+        },
+        "head": {
+          "type": "string",
+          "description": "Head branch name."
+        },
+        "headSha": {
+          "type": "string",
+          "description": "Head branch tip commit SHA."
+        },
+        "headRepo": {
+          "type": "string",
+          "description": "Head repository as 'owner/name', empty when unavailable."
+        },
+        "base": {
+          "type": "string",
+          "description": "Base branch name."
+        },
+        "url": {
+          "type": "string",
+          "description": "PR URL."
+        },
+        "headRepoUrl": {
+          "type": "string",
+          "description": "Clone URL of the head repository, empty when unavailable."
+        },
+        "feedback": {
+          "type": "string",
+          "description": "Consolidated markdown blob of conversation comments, reviews, inline comments, and any linked context, for the coding agent."
+        },
+        "commentCount": {
+          "type": "integer",
+          "description": "Count of conversation + review + inline comments (excluding harness-authored ones)."
+        },
+        "hasFeedback": {
+          "type": "boolean",
+          "description": "True when commentCount > 0."
+        },
+        "linkedReferences": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Metadata (without content) for external URLs found in feedback and resolved as linked context."
+        },
+        "linkWarnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Warnings encountered while extracting or retrieving linked context."
+        },
+        "linkCount": {
+          "type": "integer",
+          "description": "Number of linked references successfully resolved."
+        },
+        "linkedContextChars": {
+          "type": "integer",
+          "description": "Total character count of resolved linked-context content appended to feedback."
+        }
+      },
+      "required": [
+        "number",
+        "title",
+        "head",
+        "headSha",
+        "headRepo",
+        "base",
+        "url",
+        "headRepoUrl",
+        "feedback",
+        "commentCount",
+        "hasFeedback",
+        "linkedReferences",
+        "linkWarnings",
+        "linkCount",
+        "linkedContextChars"
+      ]
+    }
+  }
 }

@@ -83,8 +83,10 @@ convenience (the working dir must be on the machine running the TUI); most usefu
 **code_parallel** (which has no PR) and **design_docs** (read/edit the generated markdown).
 GitHub-flow runs still review via the PR (`o`).
 
-**Design review loop.** Before chat starts `code_parallel` (directly or through a GitHub
-workflow), it asks whether you want design docs and waits for an explicit yes/no. If enabled,
+**Design review loop.** Before the TUI starts `issue_to_pr`, its form or chat asks whether you
+want design docs and requires an explicit yes/no. The prompt also recommends `feature_campaign`
+when tasks have dependencies or overlapping files, need migrations or rollout planning, span
+multiple implementation waves, or require operator-controlled real-system checks. If enabled,
 `design_docs` writes the docs and pauses at a human gate after each pass: **Approve** continues to
 coding; **Request changes** requires feedback and revises the docs in the next pass. Turn off
 human review to use a structured, read-only coding-agent judge. Design iterations default to 5 and can be raised in
@@ -100,8 +102,8 @@ switch; the harness never tears an attached server down.
 **Local checkout workspaces.** Every launcher has a **Keep worktree** option. GitHub launchers
 also accept an optional **Local checkout**. Chat understands requests such as “address PR 17
 using `~/src/app`”. The TUI expands the path and the workflow creates a resumable
-`.cc-worktrees/run-<workflow-id>` workspace; the source folder's current branch and dirty edits
-are left alone.
+`.cc-worktrees/run-<workflow-id>` workspace on a new branch. Every Git-visible dirty edit is
+included in that branch's baseline while the source folder's branch, index, and files are left alone.
 
 **Review local changes.** Choose **Review local changes** (or ask chat to review a local folder)
 to run `local_review` before committing. This is intentionally not a worktree workflow: it reads
@@ -165,14 +167,15 @@ screen; it discovers signal-based WAIT tasks in parent and nested executions, ex
 WAITs, and shows the repository, phase, artifact, checks, age, and owning execution. The
 app-wide five-second poller keeps the top-bar count and native notifications current.
 
-Actions are **Approve**, **Revise with feedback**, **Stop**, and **Later**; review and PR text is
-editable before approval. For `pr_review` and `address_pr`, Revise starts a new producer
-execution in the same worktree and returns to a human gate, while Stop records suppression and
-publishes nothing. In `approvalMode:"llm"`, those workflows first use the bounded
-`maxApprovalRevisions` budget (default `2`) for automatic judge-feedback revisions, then enter
-this same inbox if rejection continues. `issue_to_pr` currently escalates an LLM rejection
-directly to the inbox. Legacy callers remain compatible: omitted `approvalMode` preserves
-`approve`/`approvePr`, and legacy `address_pr` remains ungated.
+Actions are phase-specific: design gates offer **Approve** / **Request design changes**,
+OpenSpec gates offer **Approve** / **Request plan changes**, and coding gates offer
+**Approve** / **Request code changes** / **Stop** / **Later**. For `pr_review`, **Approve PR**
+posts the selected inline findings and submits an APPROVE review; **Request changes** posts the
+human's feedback as REQUEST_CHANGES without approval; **Investigate further** sends a separate
+private question to the read-only reviewer and refreshes the draft without posting; **Later**
+leaves the WAIT open and posts nothing. Up to five investigation passes are available by default,
+and prior answers remain visible in the checkpoint. Code-candidate revision gates remain bounded by `maxApprovalRevisions`, re-run
+independent verification, and return only when verification passes.
 
 **Notifications**: on a run's completion the TUI rings the terminal bell and posts a
 desktop notification. For a **clickable** notification, install `terminal-notifier`

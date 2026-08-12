@@ -60,7 +60,11 @@ def test_route_selects_parallel_only_for_safe_single_wave(fake_task_input):
         maxTasks=25, maxParallelism=6,
     )).output_data
     assert result["selectedMode"] == "parallel"
-    assert result["parallelPlan"]["subtasks"][0]["testCmd"].startswith("pytest")
+    assert result["parallelPlan"]["subtasks"][0] == {
+        "id": "api",
+        "description": "implement api\nOpenSpec tasks: tasks.md#api\nAcceptance criteria:\n- api works",
+        "files": ["src/api.py"],
+    }
     assert "tasks.md#api" in result["parallelPlan"]["subtasks"][0]["description"]
 
     assessment["tasks"][1]["dependsOn"] = ["api"]

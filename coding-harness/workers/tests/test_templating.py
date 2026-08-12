@@ -67,6 +67,17 @@ def test_resolve_details_reports_inline_source_and_hash(tmp_path):
     assert len(result.sha256) == 64
 
 
+def test_resolve_supplies_inline_prompt_to_missing_subtask_placeholder(tmp_path):
+    result = t.resolve_prompt_details(
+        "Repair the verifier-reported formatting failure.",
+        template="Instruction: {{subtask}}",
+        template_key="address_pr",
+        context={},
+        worktree=str(tmp_path),
+    )
+    assert result.prompt == "Instruction: Repair the verifier-reported formatting failure."
+
+
 def test_resolve_uses_repo_file_when_no_explicit(tmp_path):
     _write_repo_template(tmp_path, "pr_review", "REPO {{diff}}")
     out = t.resolve_prompt("BUILTIN", template="", template_key="pr_review",

@@ -3,7 +3,40 @@
   "description": "Read an OpenSpec change's proposal.md content verbatim, for embedding in openspec_plan's plan_review human-approval draft and in composed PR bodies.",
   "retryCount": 0,
   "timeoutSeconds": 0,
-  "responseTimeoutSeconds": 60,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
-  "ownerEmail": "viren@orkes.io"
+  "ownerEmail": "viren@orkes.io",
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "openspec_read_proposal_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "changeDir": {
+          "type": "string",
+          "description": "Absolute path to the OpenSpec change directory containing proposal.md."
+        }
+      },
+      "required": [
+        "changeDir"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "openspec_read_proposal_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "proposalText": {
+          "type": "string",
+          "description": "Verbatim UTF-8 contents of <changeDir>/proposal.md."
+        }
+      },
+      "required": [
+        "proposalText"
+      ]
+    }
+  }
 }

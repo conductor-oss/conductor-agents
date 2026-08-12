@@ -85,7 +85,7 @@ class ProgressReporter:
         self._stop.set()
         self._wake.set()  # unblock the wait so the thread exits promptly
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            self._thread.join()
 
     def __enter__(self) -> "ProgressReporter":
         return self.start()

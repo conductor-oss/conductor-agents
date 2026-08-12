@@ -1,0 +1,50 @@
+{
+  "name": "openspec_build_prompt",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "openspec_build_prompt_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "instr": {
+          "type": "object",
+          "description": "An openspec_instructions-shaped result (artifactId, instruction, rules, resolvedOutputPath, template consulted). Non-dict values are treated as {}.",
+          "additionalProperties": true
+        },
+        "goal": {
+          "type": "string",
+          "description": "Change goal/description text embedded verbatim into the prompt."
+        },
+        "feedback": {
+          "type": "string",
+          "description": "Prior review feedback text appended to the prompt when non-blank; omitted from the prompt otherwise."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "openspec_build_prompt_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "Composed prompt instructing the agent to write exactly one OpenSpec artifact file, including rules, template, and any review feedback."
+        }
+      },
+      "required": [
+        "prompt"
+      ]
+    }
+  }
+}

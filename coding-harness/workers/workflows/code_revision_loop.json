@@ -4,6 +4,8 @@
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
   "description": "One safe bounded revision round inside an already-owned harness worktree.",
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
   "inputParameters": [
     "accepted",
     "bestCommit",
@@ -32,7 +34,7 @@
     "promptTemplate": "",
     "promptTemplateSource": "",
     "maxTurns": 250,
-    "maxBudgetUsd": 50.0,
+    "maxBudgetUsd": 50,
     "checks": [],
     "findings": [],
     "accepted": false,
@@ -129,5 +131,284 @@
       "tokens": "${produce.output.tokenUsed}",
       "costUsd": "${produce.output.costUsd}"
     }
-  }
+  },
+  "inputSchema": {
+    "name": "code_revision_loop_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "worktreePath": {
+          "type": "string",
+          "description": "Absolute path to a harness-owned worktree (must contain '/.cc-worktrees/run-' or '/.cc-worktrees/revision-') this revision round runs in."
+        },
+        "workflowId": {
+          "type": "string",
+          "description": "Owning workflow instance id used to namespace the git checkpoint ref for this loop."
+        },
+        "loopId": {
+          "type": "string",
+          "description": "Revision-loop identifier used to namespace the git checkpoint ref for this loop."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "Inline prompt text for the coding agent producing this round's candidate."
+        },
+        "modelResolution": {
+          "type": "object",
+          "description": "Precomputed model-policy resolution (from model_profile_resolve) whose roles.code.tiers[0] supplies the model/agent for this round's coding session.",
+          "properties": {
+            "version": {
+              "type": "integer"
+            },
+            "profile": {
+              "type": "string"
+            },
+            "roles": {
+              "type": "object"
+            },
+            "reviewLoop": {
+              "type": "object"
+            },
+            "prices": {
+              "type": "object"
+            },
+            "sources": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "warnings": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "canonicalSha256": {
+              "type": "string"
+            }
+          }
+        },
+        "bestCommit": {
+          "type": "string",
+          "description": "Commit SHA of the best-known-good candidate to restore before producing this round; omitted/empty on the first round when there is no prior best."
+        },
+        "checks": {
+          "type": "array",
+          "default": [],
+          "description": "Verification checks for the current candidate, scored by revision_evaluate.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string"
+              },
+              "weight": {
+                "type": "number"
+              },
+              "passed": {
+                "type": "boolean"
+              },
+              "blocking": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "findings": {
+          "type": "array",
+          "default": [],
+          "description": "Review findings for the current candidate, scored by revision_evaluate.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "severity": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "accepted": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether the candidate was explicitly accepted (e.g. by a judge/reviewer)."
+        },
+        "round": {
+          "type": "integer",
+          "default": 1,
+          "description": "Current revision-loop round number, 1-based; also used as the checkpoint candidateId."
+        },
+        "maxRounds": {
+          "type": "integer",
+          "default": 8,
+          "description": "Round number at which the loop is forced to stop."
+        },
+        "plateauCount": {
+          "type": "integer",
+          "default": 0,
+          "description": "Prior consecutive-round plateau count to extend."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "default": 250,
+          "description": "Maximum agent turns allowed for this round's coding session."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "Maximum USD spend allowed for this round's coding session."
+        },
+        "promptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline prompt template for the coding session, overriding the default 'prompt' text."
+        },
+        "promptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label for the prompt template."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model profile to select from the merged model policy."
+        },
+        "modelPolicy": {
+          "type": "object",
+          "default": {},
+          "description": "Inline model policy document merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Label recorded for the inline modelPolicy's provenance."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to the repository model policy file."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "default": {},
+          "description": "Per-role overrides merged on top of the selected profile's roles."
+        }
+      },
+      "required": [
+        "worktreePath",
+        "workflowId",
+        "loopId",
+        "prompt",
+        "modelResolution"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "code_revision_loop_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "bestCommit": {
+          "type": "string",
+          "description": "Commit SHA saved as this round's candidate checkpoint."
+        },
+        "revisionHistory": {
+          "type": "object",
+          "description": "Full scoring/decision result for this round from revision_evaluate.",
+          "properties": {
+            "score": {
+              "type": "number"
+            },
+            "checksScore": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "reviewScore": {
+              "type": "number"
+            },
+            "acceptanceScore": {
+              "type": "number"
+            },
+            "blockingChecksPassed": {
+              "type": "boolean"
+            },
+            "autoEligible": {
+              "type": "boolean"
+            },
+            "retain": {
+              "type": "boolean"
+            },
+            "improvement": {
+              "type": "number"
+            },
+            "plateauCount": {
+              "type": "integer"
+            },
+            "escalate": {
+              "type": "boolean"
+            },
+            "stopReason": {
+              "type": "string",
+              "enum": [
+                "budget_exhausted",
+                "round_limit",
+                "target",
+                "continue"
+              ]
+            },
+            "needsHuman": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "score",
+            "checksScore",
+            "reviewScore",
+            "acceptanceScore",
+            "blockingChecksPassed",
+            "autoEligible",
+            "retain",
+            "improvement",
+            "plateauCount",
+            "escalate",
+            "stopReason",
+            "needsHuman"
+          ]
+        },
+        "usage": {
+          "type": "object",
+          "description": "Token and cost usage for this round's coding session.",
+          "properties": {
+            "tokens": {
+              "type": "integer",
+              "description": "Total tokens consumed by the coding session."
+            },
+            "costUsd": {
+              "type": "number",
+              "description": "Total USD cost of the coding session."
+            }
+          },
+          "required": [
+            "tokens",
+            "costUsd"
+          ]
+        }
+      },
+      "required": [
+        "bestCommit",
+        "revisionHistory",
+        "usage"
+      ]
+    }
+  },
+  "enforceSchema": false
 }

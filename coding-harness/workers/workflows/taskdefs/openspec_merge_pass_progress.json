@@ -1,0 +1,90 @@
+{
+  "name": "openspec_merge_pass_progress",
+  "description": "Deterministic decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "openspec_merge_pass_progress_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "fanOutput": {
+          "type": "object",
+          "description": "FORK_JOIN_DYNAMIC output map (taskReferenceName -> {output: {...}} or the result dict directly). Non-dict values are treated as {}.",
+          "additionalProperties": true
+        },
+        "readyIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Artifact ids selected in this pass (from openspec_select_ready). Non-list values are treated as []."
+        },
+        "prevGenerated": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Artifact ids generated in prior passes. Non-list values are treated as []."
+        },
+        "prevFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Files changed across prior passes. Non-list values are treated as []."
+        },
+        "prevCost": {
+          "description": "Cumulative USD cost from prior passes. Non-numeric values are treated as 0."
+        },
+        "prevTokens": {
+          "description": "Cumulative token usage from prior passes. Non-numeric values are treated as 0."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "openspec_merge_pass_progress_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "generated": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Sorted, deduplicated union of prevGenerated and readyIds."
+        },
+        "filesChanged": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Deduplicated union of prevFiles and every filesChanged entry from this pass's fan-out results (order-preserving; only added when readyIds is non-empty)."
+        },
+        "costUsd": {
+          "type": "number",
+          "description": "prevCost plus the sum of costUsd across this pass's fan-out results (unchanged when readyIds is empty)."
+        },
+        "tokenUsed": {
+          "type": "number",
+          "description": "prevTokens plus the sum of tokenUsed across this pass's fan-out results (unchanged when readyIds is empty)."
+        }
+      },
+      "required": [
+        "generated",
+        "filesChanged",
+        "costUsd",
+        "tokenUsed"
+      ]
+    }
+  }
+}

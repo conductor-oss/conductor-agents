@@ -1,0 +1,58 @@
+{
+  "name": "usage_accumulate",
+  "description": "Deterministic code_parallel decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "usage_accumulate_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "prevTokens": {
+          "type": "number",
+          "description": "Running token total so far; coerced to 0 when not a non-boolean number."
+        },
+        "newTokens": {
+          "type": "number",
+          "description": "Tokens to add to the running total; coerced to 0 when not a non-boolean number."
+        },
+        "prevCost": {
+          "type": "number",
+          "description": "Running USD cost so far; coerced to 0 when not a non-boolean number."
+        },
+        "newCost": {
+          "type": "number",
+          "description": "USD cost to add to the running total; coerced to 0 when not a non-boolean number."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "usage_accumulate_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "type": "number",
+          "description": "prevTokens + newTokens, after coercing non-numeric inputs to 0."
+        },
+        "cost": {
+          "type": "number",
+          "description": "prevCost + newCost, after coercing non-numeric inputs to 0."
+        }
+      },
+      "required": [
+        "tokens",
+        "cost"
+      ]
+    }
+  }
+}

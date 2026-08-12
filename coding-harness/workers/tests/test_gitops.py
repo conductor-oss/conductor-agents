@@ -9,9 +9,21 @@ dependency — the Claude Agent SDK conflict-resolver invoked by ``merge_worktre
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+
+import pytest
 
 from common import git
-from gitops.tasks import create_branch, merge_worktrees, worktree_add
+from gitops.tasks import (
+    create_branch,
+    git_push,
+    inplace_guard,
+    merge_worktrees,
+    plan_source_detect,
+    pr_create,
+    prepare_repo,
+    worktree_add,
+)
 
 
 def _completed(result) -> bool:
@@ -24,24 +36,275 @@ def _commit_file(repo: str, rel: str, content: str, message: str) -> None:
     git.git(repo, "commit", "-m", message)
 
 
+def test_prepare_repo_rejects_url_shaped_local_path(fake_task_input, tmp_path: Path):
+    malformed = tmp_path / "https:" / "github.com" / "example" / "repo"
+    result = prepare_repo(fake_task_input(repoPath=str(malformed)))
+    assert not _completed(result)
+    assert "local filesystem path" in result.reason_for_incompletion
+    assert not malformed.exists()
+
+
+def test_plan_source_detect_uses_openspec_only_when_present(fake_task_input, tmp_path: Path):
+    generic = plan_source_detect(fake_task_input(repoPath=str(tmp_path)))
+    assert _completed(generic)
+    assert generic.output_data["mode"] == "documents"
+
+    (tmp_path / "openspec").mkdir()
+    openspec = plan_source_detect(fake_task_input(repoPath=str(tmp_path)))
+    assert _completed(openspec)
+    assert openspec.output_data["mode"] == "openspec"
+
+
+def test_inplace_guard_canonicalizes_abbreviated_commit(fake_task_input, tmp_git_repo):
+    repo = str(tmp_git_repo)
+    full_head = git.head(repo)
+    abbreviated_head = git.git(repo, "rev-parse", "--short", "HEAD").stdout.strip()
+
+    result = inplace_guard(fake_task_input(
+        repoPath=repo,
+        branch=git._current_branch(repo),
+        expectedHead=abbreviated_head,
+    ))
+
+    assert _completed(result)
+    assert result.output_data["matched"] is True
+    assert result.output_data["head"] == full_head
+
+
+def test_inplace_guard_still_rejects_real_head_drift(fake_task_input, tmp_git_repo):
+    repo = str(tmp_git_repo)
+    expected = git.git(repo, "rev-parse", "--short", "HEAD").stdout.strip()
+    _commit_file(repo, "drift.txt", "drift\n", "move head")
+
+    result = inplace_guard(fake_task_input(
+        repoPath=repo,
+        branch=git._current_branch(repo),
+        expectedHead=expected,
+    ))
+    assert not _completed(result)
+    assert "checkout drifted" in result.reason_for_incompletion
+
+
+def test_git_push_returns_retained_branch_for_nonretryable_permission_rejection(
+    fake_task_input, tmp_git_repo, monkeypatch
+):
+    repo = str(tmp_git_repo)
+    monkeypatch.setattr("gitops.tasks.github.ensure_git_auth", lambda: None)
+    monkeypatch.setattr("gitops.tasks.git.push", lambda *args, **kwargs: (_ for _ in ()).throw(
+        RuntimeError("refusing to allow a Personal Access Token to create or update workflow "
+                     "without `workflow` scope")
+    ))
+    result = git_push(fake_task_input(repoPath=repo, branch="harness/change"))
+    assert _completed(result)
+    assert result.output_data["pushed"] is False
+    assert result.output_data["publicationState"] == "permission_blocked"
+    assert result.output_data["retryable"] is False
+    assert result.output_data["head"] == git.head(repo)
+
+
+def test_git_push_keeps_transient_failures_retryable_as_task_failures(
+    fake_task_input, tmp_git_repo, monkeypatch
+):
+    monkeypatch.setattr("gitops.tasks.github.ensure_git_auth", lambda: None)
+    monkeypatch.setattr("gitops.tasks.git.push", lambda *args, **kwargs: (_ for _ in ()).throw(
+        RuntimeError("connection reset by peer")
+    ))
+    result = git_push(fake_task_input(repoPath=str(tmp_git_repo), branch="harness/change"))
+    assert not _completed(result)
+
+
+def test_pr_create_reuses_existing_pr(fake_task_input, tmp_git_repo, monkeypatch):
+    monkeypatch.setattr("gitops.tasks.github.pr_create", lambda *args, **kwargs: (_ for _ in ()).throw(
+        RuntimeError("a pull request for branch already exists: "
+                     "https://github.com/acme/app/pull/42")
+    ))
+    updated = {}
+    monkeypatch.setattr("gitops.tasks.github.update_pr_body",
+                        lambda repo, number, body: updated.update(repo=repo, number=number, body=body))
+    monkeypatch.setattr("gitops.tasks.github.pr_set_draft",
+                        lambda repo, number, draft: {"number": number, "draft": draft})
+    result = pr_create(fake_task_input(repoPath=str(tmp_git_repo), head="harness/change"))
+    assert _completed(result)
+    assert result.output_data["existing"] is True
+    assert result.output_data["number"] == 42
+    assert result.output_data["publicationState"] == "published"
+    assert updated["body"] == "## Summary\n\nAutomated change."
+
+
+def test_pr_create_returns_retained_branch_for_permission_rejection(
+    fake_task_input, tmp_git_repo, monkeypatch
+):
+    monkeypatch.setattr("gitops.tasks.github.pr_create", lambda *args, **kwargs: (_ for _ in ()).throw(
+        RuntimeError("write access to repository not granted")
+    ))
+    result = pr_create(fake_task_input(repoPath=str(tmp_git_repo), head="harness/change"))
+    assert _completed(result)
+    assert result.output_data["created"] is False
+    assert result.output_data["publicationState"] == "permission_blocked"
+    assert result.output_data["branch"] == "harness/change"
+
+
+def test_commit_always_returns_a_canonical_full_object_id(tmp_git_repo):
+    repo = str(tmp_git_repo)
+    (tmp_git_repo / "candidate.py").write_text("answer = 42\n")
+
+    created = git.commit(repo, "create candidate")
+    no_op = git.commit(repo, "nothing else to commit")
+
+    assert created["commit"] == git.head(repo)
+    assert len(created["commit"]) == 40
+    assert no_op["commit"] == created["commit"]
+
+
+def test_prepare_repo_initial_commit_excludes_cache_only_files(fake_task_input, tmp_path: Path):
+    repo = tmp_path / "new-repo"
+    cache = repo / ".gradle-local"
+    cache.mkdir(parents=True)
+    (cache / "metadata.bin").write_text("not source")
+
+    result = prepare_repo(fake_task_input(repoPath=str(repo)))
+
+    assert _completed(result)
+    assert git.git(str(repo), "ls-tree", "-r", "--name-only", "HEAD").stdout.strip() == ""
+    assert (cache / "metadata.bin").exists()
+
+
+def test_prepare_repo_inplace_branches_before_capturing_all_visible_changes(
+        fake_task_input, tmp_git_repo):
+    repo = str(tmp_git_repo)
+    original_head = git.head(repo)
+    (tmp_git_repo / "feature.py").write_text("answer = 42\n")
+    (tmp_git_repo / ".gradle-local").mkdir()
+    (tmp_git_repo / ".gradle-local" / "cache").write_text("visible generated state")
+    result = prepare_repo(fake_task_input(repoPath=repo, inPlace=True, workflowId="run-1"))
+    assert _completed(result)
+    out = result.output_data
+    assert out["baselineCreated"] is True
+    assert out["branch"] == "conductor/run-run-1"
+    assert out["originalBranch"] == "main"
+    assert out["originalHead"] == original_head
+    assert out["includedPaths"] == [".gradle-local/cache", "feature.py"]
+    assert git.status_files(repo) == set()
+    assert "conductor-workspace:run-1:baseline" in git.git(
+        repo, "log", "-1", "--format=%B").stdout
+    assert git.git(repo, "rev-parse", "main").stdout.strip() == original_head
+    assert git.git(repo, "ls-tree", "-r", "--name-only", "HEAD").stdout.splitlines() == [
+        ".gradle-local/cache", "README.md", "feature.py"]
+
+
+def test_prepare_repo_inplace_reuses_its_baseline_on_restart(fake_task_input, tmp_git_repo):
+    repo = str(tmp_git_repo)
+    (tmp_git_repo / "feature.py").write_text("answer = 42\n")
+    first = prepare_repo(fake_task_input(repoPath=repo, inPlace=True, workflowId="run-2"))
+    second = prepare_repo(fake_task_input(repoPath=repo, inPlace=True, workflowId="run-2"))
+    assert _completed(first) and _completed(second)
+    assert second.output_data["baselineCommit"] == first.output_data["baselineCommit"]
+    assert second.output_data["baselineCreated"] is False
+    assert second.output_data["resumed"] is True
+
+
+def test_prepare_repo_inplace_includes_generated_only_changes(fake_task_input, tmp_git_repo):
+    (tmp_git_repo / ".gradle-local").mkdir()
+    (tmp_git_repo / ".gradle-local" / "cache").write_text("x")
+    result = prepare_repo(fake_task_input(repoPath=str(tmp_git_repo), inPlace=True))
+    assert _completed(result)
+    assert result.output_data["includedPaths"] == [".gradle-local/cache"]
+    assert git.git(str(tmp_git_repo), "show", "HEAD:.gradle-local/cache").stdout == "x"
+
+
+def test_create_branch_inplace_creates_the_requested_outcome_branch(fake_task_input, tmp_git_repo):
+    source_head = git.head(str(tmp_git_repo))
+    result = create_branch(fake_task_input(
+        repoPath=str(tmp_git_repo), name="code-parallel", inPlace=True,
+        branchRunId="12345678-run"))
+    assert _completed(result)
+    expected = "code-parallel-12345678"
+    assert result.output_data == {"branch": expected, "resumed": False, "inPlace": True}
+    assert git._current_branch(str(tmp_git_repo)) == expected
+    assert git.head(str(tmp_git_repo)) == source_head
+    assert git.git(str(tmp_git_repo), "rev-parse", "main").stdout.strip() == source_head
+
+
+def test_candidate_bound_push_uses_the_verified_sha_and_rejects_a_moved_branch(tmp_git_repo, tmp_path: Path):
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
+    repo = str(tmp_git_repo)
+    git.git(repo, "remote", "add", "origin", str(remote))
+    candidate = git.head(repo)
+
+    pushed = git.push(repo, branch_name="main", remote="origin", expected_head=candidate)
+
+    assert pushed["candidateBound"] is True
+    assert pushed["head"] == candidate
+    assert git.git(str(remote), "rev-parse", "main").stdout.strip() == candidate
+    assert git.git(repo, "rev-parse", "--abbrev-ref", "main@{upstream}").stdout.strip() == "origin/main"
+
+    _commit_file(repo, "later.py", "value = 2\n", "move branch after verification")
+    with pytest.raises(ValueError, match="moved after candidate verification"):
+        git.push(repo, branch_name="main", remote="origin", expected_head=candidate)
+
+
+def test_clone_can_use_a_clean_environment(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, *, check, env=None, clean_env=False, **_kwargs):
+        calls.append({"cmd": cmd, "check": check, "env": env, "clean_env": clean_env})
+        return type("Result", (), {"stdout": "", "stderr": "", "code": 0})()
+
+    monkeypatch.setattr("common.git.run", fake_run)
+    monkeypatch.setattr("common.git._current_branch", lambda _repo: "main")
+    monkeypatch.setattr("common.git.head", lambda _repo: "a" * 40)
+
+    out = git.clone("/source", "/clone", no_local=True, env={"PATH": "/bin"}, clean_env=True)
+
+    assert out["repoPath"] == "/clone"
+    assert calls == [{"cmd": ["git", "clone", "--no-local", "/source", "/clone"],
+                      "check": True, "env": {"PATH": "/bin"}, "clean_env": True}]
+
+
 # --- core path 1: branch / worktree naming + placement ----------------------
 
 def test_create_branch_switches_to_named_branch(fake_task_input, tmp_git_repo):
-    task = fake_task_input(repoPath=str(tmp_git_repo), name="feature/login")
+    task = fake_task_input(
+        repoPath=str(tmp_git_repo), name="feature/login", branchRunId="12345678-run")
     result = create_branch(task)
     assert _completed(result)
-    assert result.output_data["branch"] == "feature/login"
+    assert result.output_data["branch"] == "feature/login-12345678"
     # `git checkout -B` actually moved HEAD onto the new branch.
-    assert git._current_branch(str(tmp_git_repo)) == "feature/login"
+    assert git._current_branch(str(tmp_git_repo)) == "feature/login-12345678"
 
 
-def test_create_branch_is_rerunnable(fake_task_input, tmp_git_repo):
-    """`-B` recreates the ref, so re-running the same name must not error."""
+def test_create_branch_is_rerunnable_without_resetting_an_existing_ref(fake_task_input, tmp_git_repo):
     repo = str(tmp_git_repo)
-    assert _completed(create_branch(fake_task_input(repoPath=repo, name="wip")))
-    second = create_branch(fake_task_input(repoPath=repo, name="wip"))
+    inputs = {"repoPath": repo, "name": "wip", "branchRunId": "12345678-run"}
+    assert _completed(create_branch(fake_task_input(**inputs)))
+    second = create_branch(fake_task_input(**inputs))
     assert _completed(second)
-    assert second.output_data["branch"] == "wip"
+    assert second.output_data["branch"] == "wip-12345678"
+    assert second.output_data["resumed"] is True
+
+
+def test_run_specific_branch_is_stable_per_run_and_unique_between_runs():
+    first = git.run_specific_branch("harness/issue-132", "cd3840a2-1111")
+    second = git.run_specific_branch("harness/issue-132", "1a1a1ba3-2222")
+
+    assert first == "harness/issue-132-cd3840a2"
+    assert second == "harness/issue-132-1a1a1ba3"
+    assert first != second
+    assert git.run_specific_branch(first, "cd3840a2-1111") == first
+
+
+def test_create_branch_force_new_never_reuses_the_checked_out_branch(
+        fake_task_input, tmp_git_repo):
+    repo = str(tmp_git_repo)
+    original = git._current_branch(repo)
+    result = create_branch(fake_task_input(
+        repoPath=repo, name=original, forceNew=True, workflowId="github-demo-run"))
+
+    assert _completed(result)
+    assert result.output_data["branch"] != original
+    assert result.output_data["resumed"] is False
+    assert git._current_branch(repo) == result.output_data["branch"]
 
 
 def test_worktree_add_naming_and_placement(fake_task_input, tmp_git_repo):
@@ -87,6 +350,17 @@ def test_merge_worktrees_clean_merge(fake_task_input, tmp_git_repo):
     assert (tmp_git_repo / "feature.txt").exists()
 
 
+def test_merge_worktrees_preflight_surfaces_then_resolves_a_conflict(fake_task_input, tmp_git_repo):
+    repo = str(tmp_git_repo)
+    _make_conflict(repo, "preflight")
+    before = git.head(repo)
+    result = merge_worktrees(fake_task_input(repoPath=repo, groupIds="preflight", preflight=True))
+    assert _completed(result)
+    assert git.head(repo) != before
+    assert result.output_data["unresolved"] == []
+    assert git.has_conflicts(repo) == []
+
+
 def test_merge_worktrees_aggregates_multiple_branches(fake_task_input, tmp_git_repo):
     repo = str(tmp_git_repo)
     for gid, fname in (("g1", "one.txt"), ("g2", "two.txt")):
@@ -105,6 +379,19 @@ def test_merge_worktrees_aggregates_multiple_branches(fake_task_input, tmp_git_r
     assert (tmp_git_repo / "two.txt").exists()
 
 
+def test_merge_worktrees_reports_non_conflict_errors_as_unresolved(
+    fake_task_input, tmp_git_repo
+):
+    """A missing group branch must never be reported as a successful merge."""
+    result = merge_worktrees(fake_task_input(repoPath=str(tmp_git_repo), groupIds="missing"))
+    assert _completed(result)
+    out = result.output_data
+    assert out["merged"] == []
+    assert out["conflicts"] == []
+    assert out["unresolved"] == ["cc-group-missing"]
+    assert out["errors"] and out["errors"][0]["branch"] == "cc-group-missing"
+
+
 def _make_conflict(repo: str, gid: str) -> None:
     """Diverge README on cc-group-<gid> and on main so a merge conflicts."""
     git.git(repo, "checkout", "-b", f"cc-group-{gid}")
@@ -121,7 +408,7 @@ def test_merge_worktrees_surfaces_and_resolves_conflict(
 
     seen = {}
 
-    def fake_run_agent(prompt, *, cwd, model=None, write=False, timeout=None, **kw):
+    def fake_run_agent(prompt, *, cwd, model=None, write=False, **kw):
         # Stand in for the SDK resolver: clear markers by taking our side.
         seen["prompt"] = prompt
         seen["cwd"] = cwd
@@ -137,6 +424,7 @@ def test_merge_worktrees_surfaces_and_resolves_conflict(
     # The conflict is surfaced (not swallowed) AND recorded as resolved.
     assert out["conflicts"] == ["cc-group-b"]
     assert out["resolved"] == ["cc-group-b"]
+    assert out["unresolved"] == []
     assert out["tokenUsed"] == 42
     assert out["costUsd"] == 0.01
     # Tree is left clean — no lingering conflict markers.
@@ -152,7 +440,7 @@ def test_merge_worktrees_aborts_when_resolution_fails(
     repo = str(tmp_git_repo)
     _make_conflict(repo, "c")
 
-    def fake_run_agent(prompt, *, cwd, model=None, write=False, timeout=None, **kw):
+    def fake_run_agent(prompt, *, cwd, model=None, write=False, **kw):
         return {"ok": False, "error": "could not resolve", "tokens": 5, "cost_usd": 0.0}
 
     monkeypatch.setattr("common.claude.run_agent", fake_run_agent)
@@ -163,5 +451,6 @@ def test_merge_worktrees_aborts_when_resolution_fails(
     out = result.output_data
     assert out["conflicts"] == ["cc-group-c"]
     assert out["resolved"] == []
+    assert out["unresolved"] == ["cc-group-c"]
     # ...and the merge was aborted, so the working tree is NOT left broken.
     assert git.has_conflicts(repo) == []

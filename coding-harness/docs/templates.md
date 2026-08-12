@@ -23,7 +23,7 @@ Common inputs are `reviewPromptTemplate`, `planPromptTemplate`, `codePromptTempl
 phase-specific variants; the [workflow input reference](workflow-inputs.md) is authoritative.
 
 Templates use `{{placeholder}}` values from the workflow context. Typical names are `{{diff}}`,
-`{{feedback}}`, `{{instruction}}`, and `{{subtask}}`. Context that is not consumed by a
+`{{feedback}}`, `{{guidance}}`, `{{instruction}}`, and `{{subtask}}`. Context that is not consumed by a
 placeholder is appended to the prompt, so a concise style-only template still receives the task
 details.
 

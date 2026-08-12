@@ -1,0 +1,51 @@
+{
+  "name": "code_parallel_handoff_summary",
+  "description": "Deterministic code_parallel decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "code_parallel_handoff_summary_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "verification": {
+          "type": "object",
+          "description": "Verification outcome (e.g. code_parallel_verification_outcome output); shallow-copied into the output with 'presented' added. Only its 'passed' field is inspected.",
+          "properties": {
+            "passed": {
+              "type": "boolean"
+            }
+          }
+        },
+        "matched": {
+          "type": "boolean",
+          "description": "Whether the verified candidate is exactly what got presented downstream; only literal true counts."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "code_parallel_handoff_summary_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "description": "A shallow copy of the 'verification' input object with 'presented' added; every other key varies with whatever verification contained.",
+      "properties": {
+        "presented": {
+          "type": "boolean",
+          "description": "True only when matched is literal true and verification.passed is literal true."
+        }
+      },
+      "required": [
+        "presented"
+      ]
+    }
+  }
+}

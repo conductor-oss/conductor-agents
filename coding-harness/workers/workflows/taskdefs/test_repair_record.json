@@ -1,0 +1,213 @@
+{
+  "name": "test_repair_record",
+  "description": "Deterministic test_cycle decision step, replacing a JSON_JQ_TRANSFORM.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "test_repair_record_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "currentCandidate": {
+          "description": "The candidate commit SHA in place before this repair attempt; carried forward as-is when the attempt does not advance.",
+          "type": "string"
+        },
+        "agent": {
+          "type": "object",
+          "description": "The coding agent's turn report for this repair attempt.",
+          "properties": {
+            "status": {
+              "type": "string",
+              "description": "Agent status label; defaults to 'unavailable' when absent."
+            },
+            "agentCompleted": {
+              "type": "boolean",
+              "description": "Whether the agent reported completion."
+            },
+            "turns": {
+              "type": "array",
+              "description": "Agent turns, each possibly containing failed commands.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "commands": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "exitCode": {
+                          "type": "integer",
+                          "description": "Command exit code (or exit_code)."
+                        },
+                        "command": {
+                          "type": "string",
+                          "description": "The command text (or cmd)."
+                        },
+                        "stderr": {
+                          "type": "string",
+                          "description": "Captured stderr for a failed command."
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "denials": {
+              "type": "array",
+              "items": {},
+              "description": "Sandbox denials recorded during the attempt."
+            },
+            "error": {
+              "type": "string",
+              "description": "Agent-reported error, used as a fallback reason when no commit reason is given."
+            }
+          }
+        },
+        "commit": {
+          "type": "object",
+          "description": "The commit outcome of this repair attempt.",
+          "properties": {
+            "commit": {
+              "type": "string",
+              "description": "The new commit SHA, if one was made."
+            },
+            "stagedPaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Paths staged by the repair attempt."
+            },
+            "rejectedPaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Paths rejected from the repair attempt (e.g. outside allowed write scope)."
+            },
+            "noOp": {
+              "type": "boolean",
+              "description": "Whether the commit step was a no-op; the candidate only advances when this is explicitly false."
+            },
+            "reason": {
+              "type": "string",
+              "description": "Reason for the commit outcome, used as the report's reason when present."
+            }
+          }
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "test_repair_record_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "candidate": {
+          "type": "string",
+          "description": "The new candidate commit SHA when this attempt advanced, otherwise currentCandidate unchanged."
+        },
+        "report": {
+          "type": "object",
+          "description": "Auditable report of this repair attempt.",
+          "properties": {
+            "agentStatus": {
+              "type": "string",
+              "description": "Agent status, or 'unavailable' when not reported."
+            },
+            "agentCompleted": {
+              "type": "boolean",
+              "description": "Whether the agent reported completion."
+            },
+            "stagedPaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Paths staged by this attempt."
+            },
+            "rejectedPaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Paths rejected from this attempt."
+            },
+            "sandboxDenials": {
+              "type": "array",
+              "items": {},
+              "description": "Sandbox denials recorded during the attempt."
+            },
+            "commandFailures": {
+              "type": "array",
+              "description": "Non-zero-exit commands run by the agent during this attempt.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "description": "The failing command text."
+                  },
+                  "exitCode": {
+                    "type": "integer",
+                    "description": "Non-zero exit code."
+                  },
+                  "stderr": {
+                    "type": "string",
+                    "description": "Captured stderr."
+                  }
+                }
+              }
+            },
+            "noOp": {
+              "type": "boolean",
+              "description": "Whether the commit step was a no-op; defaults to true when not a boolean."
+            },
+            "persisted": {
+              "type": "boolean",
+              "description": "Whether the candidate actually advanced (a real commit with staged paths and an explicit non-no-op)."
+            },
+            "candidateBefore": {
+              "type": "string",
+              "description": "The candidate commit before this attempt."
+            },
+            "candidateAfter": {
+              "type": "string",
+              "description": "The candidate commit after this attempt (equal to candidateBefore when not persisted)."
+            },
+            "reason": {
+              "type": "string",
+              "description": "Explanation for the outcome, sourced from the commit reason or the agent error."
+            }
+          },
+          "required": [
+            "agentStatus",
+            "agentCompleted",
+            "stagedPaths",
+            "rejectedPaths",
+            "sandboxDenials",
+            "commandFailures",
+            "noOp",
+            "persisted",
+            "candidateBefore",
+            "candidateAfter",
+            "reason"
+          ]
+        }
+      },
+      "required": [
+        "candidate",
+        "report"
+      ]
+    }
+  }
+}

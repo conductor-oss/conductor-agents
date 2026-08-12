@@ -4,9 +4,79 @@
   "retryCount": 2,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "pr_checkout_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Local git checkout to check the PR out into."
+        },
+        "number": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "PR number to check out."
+        },
+        "repo": {
+          "type": "string",
+          "description": "Upstream repository (owner/name or URL) that owns the PR; needed when repoPath's origin is a contributor fork where the PR number doesn't exist."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Local branch name to create for the checkout. Defaults to gh's own naming when omitted."
+        },
+        "force": {
+          "description": "Force-reset an existing local branch of the same name. Accepts a boolean or a truthy string ('1','true','yes','on').",
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": false
+        }
+      },
+      "required": [
+        "repoPath",
+        "number"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "pr_checkout_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer",
+          "description": "PR number that was checked out."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Local branch name now checked out."
+        },
+        "head": {
+          "type": "string",
+          "description": "HEAD commit SHA after checkout."
+        }
+      },
+      "required": [
+        "number",
+        "branch",
+        "head"
+      ]
+    }
+  }
 }

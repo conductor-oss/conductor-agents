@@ -4,9 +4,116 @@
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 2,
-  "pollTimeoutSeconds": 120,
-  "responseTimeoutSeconds": 60,
-  "timeoutSeconds": 300,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "pollTimeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "openspec_source_resolve_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the workspace git checkout that will own the run worktree; required unless useSpecSourceWorkspace selects a local specSource as the workspace."
+        },
+        "specSource": {
+          "type": "string",
+          "description": "OpenSpec source location: an absolute or file:// local path, a git URL, or a public HTTPS archive URL (.zip, .tar.gz, or .tgz)."
+        },
+        "changeId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+          "description": "OpenSpec change identifier; must be lowercase kebab-case."
+        },
+        "specSourceType": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "local",
+            "git",
+            "url"
+          ],
+          "default": "auto",
+          "description": "Force the source type instead of inferring it from specSource."
+        },
+        "useSpecSourceWorkspace": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, use the local specSource's own git checkout as the run workspace instead of repoPath; supported only when specSource is a local path."
+        },
+        "specPath": {
+          "type": "string",
+          "description": "Repository-relative path hint used to locate the OpenSpec project root when it is not at the source root."
+        }
+      },
+      "required": [
+        "specSource",
+        "changeId"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "openspec_source_resolve_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "sourceType": {
+          "type": "string",
+          "enum": [
+            "local",
+            "git",
+            "url"
+          ],
+          "description": "Inferred or forced source type."
+        },
+        "useSpecSourceWorkspace": {
+          "type": "boolean",
+          "description": "Echo of the requested useSpecSourceWorkspace input."
+        },
+        "workspaceRepoPath": {
+          "type": "string",
+          "description": "Git checkout that will own the run worktree: repoPath, or the local specSource's own repo when useSpecSourceWorkspace is true."
+        },
+        "sourceRepoPath": {
+          "type": "string",
+          "description": "Git repository root containing the local specSource, if any; empty for non-local sources or a local source outside any git checkout."
+        },
+        "sourceProjectRelativePath": {
+          "type": "string",
+          "description": "Path of the OpenSpec project root relative to sourceRepoPath; empty when sourceRepoPath is empty."
+        },
+        "sourceOpenSpecRelativePath": {
+          "type": "string",
+          "description": "Path of the openspec/ directory relative to sourceRepoPath; empty when sourceRepoPath is empty."
+        },
+        "materializeLocalSource": {
+          "type": "boolean",
+          "description": "True when the local OpenSpec source should be copied into the run worktree because it shares the workspace's git identity, or is itself becoming the workspace."
+        },
+        "publishOnVerify": {
+          "type": "boolean",
+          "description": "True when the OpenSpec change and its writeback repository must be published back after verification."
+        },
+        "warning": {
+          "type": "string",
+          "description": "Human-readable caveat, e.g. that repoPath was ignored in favor of the source workspace; empty when there is none."
+        }
+      },
+      "required": [
+        "sourceType",
+        "useSpecSourceWorkspace",
+        "workspaceRepoPath",
+        "sourceRepoPath",
+        "sourceProjectRelativePath",
+        "sourceOpenSpecRelativePath",
+        "materializeLocalSource",
+        "publishOnVerify",
+        "warning"
+      ]
+    }
+  }
 }

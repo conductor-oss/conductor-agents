@@ -4,9 +4,70 @@
   "retryCount": 2,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "git_fetch_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Git checkout to fetch into."
+        },
+        "remote": {
+          "type": "string",
+          "default": "origin",
+          "description": "Remote name to fetch from."
+        },
+        "refspec": {
+          "type": "string",
+          "description": "Specific refspec to fetch (e.g. a PR ref)."
+        },
+        "prune": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether to pass --prune to remove stale remote-tracking refs."
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "git_fetch_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "fetched": {
+          "type": "boolean",
+          "description": "Always true on success."
+        },
+        "remote": {
+          "type": "string",
+          "description": "Remote that was fetched from."
+        },
+        "refspec": {
+          "type": "string",
+          "description": "Refspec that was fetched, or empty string when not specified."
+        },
+        "head": {
+          "type": "string",
+          "description": "HEAD commit after the fetch."
+        }
+      },
+      "required": [
+        "fetched",
+        "remote",
+        "refspec",
+        "head"
+      ]
+    }
+  }
 }

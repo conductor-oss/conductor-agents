@@ -186,5 +186,279 @@
     "modelsConfig": "",
     "modelOverrides": {}
   },
-  "overwriteTags": false
+  "overwriteTags": false,
+  "inputSchema": {
+    "name": "local_review_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the local git checkout to review."
+        },
+        "agent": {
+          "type": "string",
+          "default": "",
+          "description": "Coding agent backend identifier for the review session; empty string defers to the harness default."
+        },
+        "baseBranch": {
+          "type": "string",
+          "default": "main",
+          "description": "Remote branch name to fetch and diff the local checkout against."
+        },
+        "baseRemote": {
+          "type": "string",
+          "default": "origin",
+          "description": "Configured git remote name to fetch and diff against."
+        },
+        "localReviewPromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline prompt template (or '@relative/path') overriding the bundled local-review prompt."
+        },
+        "localReviewPromptTemplateSource": {
+          "type": "string",
+          "default": "",
+          "description": "Caller-supplied label for which prompt template source was requested."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "Cap on USD spend for the review agent session."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "default": 250,
+          "description": "Cap on agent turns for the review session."
+        },
+        "model": {
+          "type": "string",
+          "default": "",
+          "description": "Legacy compatibility override for the model used in the 'review' role; empty string defers to the resolved model policy."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model-policy profile to select; empty string defers to the policy's default profile."
+        },
+        "modelPolicy": {
+          "type": "object",
+          "default": {},
+          "description": "Inline model policy document merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Label recorded for the inline modelPolicy's provenance."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy; resolution fails if it does not match."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path inside the worktree to a repository model policy file, overriding the default location."
+        },
+        "modelOverrides": {
+          "type": "object",
+          "default": {},
+          "description": "Per-role overrides merged on top of the selected model profile's roles."
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "local_review_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Resolved absolute path of the reviewed checkout."
+        },
+        "baseRemote": {
+          "type": "string",
+          "description": "Git remote name used as the diff baseline."
+        },
+        "baseBranch": {
+          "type": "string",
+          "description": "Remote branch name used as the diff baseline."
+        },
+        "baseRef": {
+          "type": "string",
+          "description": "'<baseRemote>/<baseBranch>' shorthand for the baseline ref."
+        },
+        "baseCommit": {
+          "type": "string",
+          "description": "SHA of the freshly fetched remote-tracking baseline commit."
+        },
+        "headCommit": {
+          "type": "string",
+          "description": "SHA of the checkout's current HEAD."
+        },
+        "changedFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tracked and untracked file paths that differ from the baseline."
+        },
+        "untrackedFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Untracked file paths present in the working tree."
+        },
+        "hasChanges": {
+          "type": "boolean",
+          "description": "True when changedFiles is non-empty."
+        },
+        "diffChars": {
+          "type": "integer",
+          "description": "Total character length of the untruncated diff."
+        },
+        "diffTruncated": {
+          "type": "boolean",
+          "description": "True when the diff exceeded the internal cap and was truncated before review."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Overall local-change review summary in markdown."
+        },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "comment",
+            "request_changes"
+          ],
+          "description": "Review verdict; 'request_changes' only for blocking correctness or security issues."
+        },
+        "comments": {
+          "type": "array",
+          "description": "Specific findings anchored to the current local files.",
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "line",
+              "body"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Repo-relative file path."
+              },
+              "line": {
+                "type": "integer",
+                "description": "Line number in the current local file."
+              },
+              "body": {
+                "type": "string",
+                "description": "The finding text."
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "blocking",
+                  "suggestion",
+                  "nit",
+                  "question"
+                ],
+                "description": "Severity of the finding."
+              }
+            }
+          }
+        },
+        "review": {
+          "type": "object",
+          "description": "The full structured review object as returned by the agent: {summary, verdict, comments}.",
+          "properties": {
+            "summary": {
+              "type": "string",
+              "description": "Overall local-change review summary in markdown."
+            },
+            "verdict": {
+              "type": "string",
+              "enum": [
+                "comment",
+                "request_changes"
+              ],
+              "description": "Review verdict."
+            },
+            "comments": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              },
+              "description": "Specific findings anchored to the current local files."
+            }
+          },
+          "required": [
+            "summary",
+            "verdict",
+            "comments"
+          ]
+        },
+        "reviewPromptTemplate": {
+          "type": "object",
+          "description": "Which prompt template source was requested vs. actually resolved for the review session.",
+          "properties": {
+            "requestedSource": {
+              "type": "string",
+              "description": "Caller-supplied promptTemplateSource, or 'auto'."
+            },
+            "resolvedSource": {
+              "type": "string",
+              "description": "Actual source the prompt was resolved from."
+            },
+            "templateKey": {
+              "type": "string",
+              "description": "Template key that was used, if any."
+            },
+            "sha256": {
+              "type": "string",
+              "description": "SHA-256 of the rendered prompt template."
+            }
+          }
+        },
+        "tokenUsed": {
+          "type": "integer",
+          "description": "Total tokens consumed by the review agent session."
+        },
+        "costUsd": {
+          "type": "number",
+          "description": "Total USD cost of the review agent session."
+        }
+      },
+      "required": [
+        "baseBranch",
+        "baseCommit",
+        "baseRef",
+        "baseRemote",
+        "changedFiles",
+        "comments",
+        "costUsd",
+        "diffChars",
+        "diffTruncated",
+        "hasChanges",
+        "headCommit",
+        "repoPath",
+        "review",
+        "reviewPromptTemplate",
+        "summary",
+        "tokenUsed",
+        "untrackedFiles",
+        "verdict"
+      ]
+    }
+  },
+  "enforceSchema": false
 }

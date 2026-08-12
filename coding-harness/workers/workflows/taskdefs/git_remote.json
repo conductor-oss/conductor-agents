@@ -4,9 +4,61 @@
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "git_remote_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git checkout to configure."
+        },
+        "url": {
+          "type": "string",
+          "description": "URL to point the remote at."
+        },
+        "name": {
+          "type": "string",
+          "default": "origin",
+          "description": "Remote name to add or update."
+        }
+      },
+      "required": [
+        "repoPath",
+        "url"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "git_remote_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "remote": {
+          "type": "string",
+          "description": "Remote name that was configured."
+        },
+        "url": {
+          "type": "string",
+          "description": "URL the remote now points to."
+        },
+        "existed": {
+          "type": "boolean",
+          "description": "True if the remote already existed and was updated with set-url; false if it was newly added."
+        }
+      },
+      "required": [
+        "remote",
+        "url",
+        "existed"
+      ]
+    }
+  }
 }

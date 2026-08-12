@@ -4,9 +4,112 @@
   "retryCount": 1,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 300,
-  "responseTimeoutSeconds": 120,
-  "pollTimeoutSeconds": 300,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "local_diff_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the local git checkout to diff."
+        },
+        "baseRemote": {
+          "type": "string",
+          "default": "origin",
+          "description": "Configured git remote name to fetch and diff against. Defaults to 'origin'."
+        },
+        "baseBranch": {
+          "type": "string",
+          "default": "main",
+          "description": "Remote branch name to fetch and diff against. Defaults to 'main'."
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "local_diff_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Resolved absolute path of the diffed checkout."
+        },
+        "baseRemote": {
+          "type": "string",
+          "description": "Git remote name used as the diff baseline."
+        },
+        "baseBranch": {
+          "type": "string",
+          "description": "Remote branch name used as the diff baseline."
+        },
+        "baseRef": {
+          "type": "string",
+          "description": "'<baseRemote>/<baseBranch>' shorthand for the baseline ref."
+        },
+        "baseCommit": {
+          "type": "string",
+          "description": "SHA of the freshly fetched remote-tracking baseline commit."
+        },
+        "headCommit": {
+          "type": "string",
+          "description": "SHA of the checkout's current HEAD."
+        },
+        "changedFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tracked and untracked file paths that differ from the baseline."
+        },
+        "untrackedFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Untracked file paths present in the working tree."
+        },
+        "hasChanges": {
+          "type": "boolean",
+          "description": "True when changedFiles is non-empty."
+        },
+        "diff": {
+          "type": "string",
+          "description": "Unified diff text (tracked changes plus appended untracked-file diffs), capped at max_chars."
+        },
+        "diffChars": {
+          "type": "integer",
+          "description": "Total character length of the untruncated diff."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "True when the diff exceeded the cap and was truncated."
+        }
+      },
+      "required": [
+        "repoPath",
+        "baseRemote",
+        "baseBranch",
+        "baseRef",
+        "baseCommit",
+        "headCommit",
+        "changedFiles",
+        "untrackedFiles",
+        "hasChanges",
+        "diff",
+        "diffChars",
+        "truncated"
+      ]
+    }
+  }
 }

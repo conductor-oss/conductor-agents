@@ -4,9 +4,107 @@
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 2,
-  "pollTimeoutSeconds": 120,
-  "responseTimeoutSeconds": 60,
-  "timeoutSeconds": 300,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "pollTimeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "openspec_verify_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "semantic": {
+          "type": "object",
+          "default": {},
+          "description": "Semantic OpenSpec conformance check result.",
+          "properties": {
+            "passed": {
+              "type": "boolean",
+              "description": "Whether semantic conformance passed."
+            },
+            "findings": {
+              "type": "array",
+              "items": {},
+              "description": "Semantic conformance findings; passed through to the output verbatim."
+            }
+          }
+        },
+        "child": {
+          "type": "object",
+          "default": {},
+          "description": "Outcome of the downstream execution (campaign or parallel-merge child workflow).",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "description": "Child outcome; checked for 'verified' when selectedMode is campaign."
+            },
+            "conflicts": {
+              "description": "Truthy when the parallel-merge child left unresolved conflicts; checked when selectedMode is not campaign.",
+              "type": "array",
+              "items": {}
+            }
+          }
+        },
+        "checks": {
+          "type": "object",
+          "default": {},
+          "description": "Blocking automated check results.",
+          "properties": {
+            "blockingPassed": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether all blocking checks passed; defaults to true when absent."
+            }
+          }
+        },
+        "selectedMode": {
+          "type": "string",
+          "enum": [
+            "campaign",
+            "parallel"
+          ],
+          "description": "Routing decision from openspec_route; determines how child outcome is interpreted."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "openspec_verify_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "passed": {
+          "type": "boolean",
+          "description": "Overall lifecycle gate verdict: semantic.passed AND child outcome ok AND checks.blockingPassed."
+        },
+        "childPassed": {
+          "type": "boolean",
+          "description": "Child-workflow verdict: outcome == 'verified' for campaign mode, or absence of conflicts otherwise."
+        },
+        "checksPassed": {
+          "type": "boolean",
+          "description": "Value of checks.blockingPassed (default true when absent)."
+        },
+        "semantic": {
+          "type": "object",
+          "description": "Semantic check input, passed through unchanged."
+        },
+        "findings": {
+          "type": "array",
+          "items": {},
+          "description": "Semantic conformance findings; empty array when semantic.findings is absent."
+        }
+      },
+      "required": [
+        "passed",
+        "childPassed",
+        "checksPassed",
+        "semantic",
+        "findings"
+      ]
+    }
+  }
 }

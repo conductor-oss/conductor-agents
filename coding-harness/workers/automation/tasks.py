@@ -36,7 +36,7 @@ def _conductor_token(base: str) -> str:
         data=json.dumps({"keyId": key, "keySecret": secret}).encode(),
         headers={"Content-Type": "application/json"}, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=5) as response:  # noqa: S310
+        with urllib.request.urlopen(req) as response:  # noqa: S310
             return str(json.loads(response.read() or b"{}").get("token") or "")
     except (OSError, ValueError):
         return ""
@@ -53,7 +53,7 @@ def _workflow_statuses(ids: set[str]) -> dict[str, str]:
         if token:
             req.add_header("X-Authorization", token)
         try:
-            with urllib.request.urlopen(req, timeout=4) as response:  # noqa: S310
+            with urllib.request.urlopen(req) as response:  # noqa: S310
                 execution = json.loads(response.read())
                 suppressed = any(bool((item.get("outputData") or {}).get("suppressed"))
                                  for item in execution.get("tasks") or [])
@@ -75,9 +75,12 @@ def _feedback(repo: str, number: int, login: str) -> tuple[str, int]:
 
 
 def _candidate(kind: str, number: int, revision: str, attempt: int, source: dict) -> dict:
+    child_workflow = {"review": "pr_review", "address": "address_pr", "issue": "issue_to_pr"}[kind]
+    child_version = {"review": 2, "address": 2, "issue": 2}[kind]
     return {
         "kind": kind,
-        "childWorkflow": {"review": "pr_review", "address": "address_pr", "issue": "issue_to_pr"}[kind],
+        "childWorkflow": child_workflow,
+        "childWorkflowVersion": child_version,
         "number": number,
         "revision": revision,
         "attempt": attempt,
@@ -190,7 +193,7 @@ def github_automation_scan(task):
             ref = f"dispatch_{kind}_{item['number']}_{index}"
             dynamic_tasks.append({
                 "name": "automation_dispatch", "taskReferenceName": ref,
-                "type": "SUB_WORKFLOW", "subWorkflowParam": {"name": "automation_dispatch", "version": 1},
+                "type": "SUB_WORKFLOW", "subWorkflowParam": {"name": "automation_dispatch", "version": 2},
             })
             dynamic_inputs[ref] = {**i, **item, "trustedAuthor": login}
         output = {

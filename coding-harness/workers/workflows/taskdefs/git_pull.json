@@ -4,9 +4,78 @@
   "retryCount": 2,
   "retryLogic": "EXPONENTIAL_BACKOFF",
   "retryDelaySeconds": 5,
-  "timeoutSeconds": 86400,
-  "responseTimeoutSeconds": 86400,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "timeoutPolicy": "ALERT_ONLY",
   "ownerEmail": "viren@orkes.io",
-  "pollTimeoutSeconds": 60
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "git_pull_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git checkout to pull into."
+        },
+        "remote": {
+          "type": "string",
+          "default": "origin",
+          "description": "Remote name to pull from."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch name to pull. Defaults to the checkout's current branch when omitted."
+        },
+        "rebase": {
+          "type": "boolean",
+          "default": true,
+          "description": "Integrate with `git pull --rebase` when true (default), `--no-rebase` (merge) when false."
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "git_pull_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "pulled": {
+          "type": "boolean",
+          "description": "True if the pull integrated cleanly; false if it hit conflicts (fail-soft: the rebase/merge is aborted, not left wedged)."
+        },
+        "remote": {
+          "type": "string",
+          "description": "Remote name pulled from."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch name pulled."
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Conflicted paths when pulled=false; empty array when pulled=true."
+        },
+        "head": {
+          "type": "string",
+          "description": "HEAD commit SHA of the checkout after the operation."
+        }
+      },
+      "required": [
+        "pulled",
+        "remote",
+        "branch",
+        "conflicts",
+        "head"
+      ]
+    }
+  }
 }

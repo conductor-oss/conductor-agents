@@ -11,8 +11,8 @@ from pathlib import Path
 class WorkspacePreview:
     source: str
     planned: str
-    ignored_changes: int
-    ignored_paths: tuple[str, ...]
+    included_changes: int
+    included_paths: tuple[str, ...]
 
 
 def preview(repo_path: str) -> WorkspacePreview | None:
@@ -23,11 +23,11 @@ def preview(repo_path: str) -> WorkspacePreview | None:
         try:
             root = subprocess.run(
                 ["git", "-C", str(source), "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True, timeout=5, check=False,
+                capture_output=True, text=True, check=False,
             )
             if root.returncode == 0 and root.stdout.strip():
                 source = Path(root.stdout.strip()).resolve()
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError:
             pass
     planned = source / ".cc-worktrees" / "run-<workflow-id>"
     paths: list[str] = []
@@ -35,7 +35,7 @@ def preview(repo_path: str) -> WorkspacePreview | None:
         try:
             proc = subprocess.run(
                 ["git", "-C", str(source), "status", "--porcelain", "--untracked-files=all"],
-                capture_output=True, text=True, timeout=5, check=False,
+                capture_output=True, text=True, check=False,
             )
             if proc.returncode == 0:
                 paths = [
@@ -43,6 +43,6 @@ def preview(repo_path: str) -> WorkspacePreview | None:
                     for line in proc.stdout.splitlines()
                     if line.strip() and not line[3:].strip().startswith(".cc-worktrees/")
                 ]
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError:
             pass
     return WorkspacePreview(str(source), str(planned), len(paths), tuple(paths))

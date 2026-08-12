@@ -12,6 +12,8 @@ import fcntl
 import os
 import re
 import shutil
+import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -20,7 +22,14 @@ from .exec import RunError, run
 
 WORKTREES = ".cc-worktrees"
 GROUP_BRANCH = "cc-group-{name}"
-RUN_BRANCH = "conductor/run-{name}"
+_NON_PRODUCT_PATH_PARTS = {
+    ".gradle", ".gradle-local", "build", "target", "out", "dist",
+    ".pytest_cache", ".mypy_cache", "coverage", "node_modules",
+    # Running the tests writes bytecode next to the sources. Committing it
+    # makes the next changed-scope discovery see .pyc paths it cannot map to a
+    # test, which blocks verification on an artifact nobody edited.
+    "__pycache__", ".ruff_cache", ".tox", ".gradle-cache", "_build", "vendor",
+}
 
 # git emits these when two processes touch the same repo/refs at once. The
 # parallel code_parallel forks all mutate one repo, so worktree_add/commit can
@@ -29,8 +38,9 @@ _GIT_LOCK_HINTS = ("index.lock", "cannot lock ref", "Unable to create",
                    "another git process", "shallow.lock", "packed-refs.lock")
 
 
-def git(repo: str, *args: str, check: bool = True):
-    return run(["git", "-C", repo, *args], check=check)
+def git(repo: str, *args: str, check: bool = True,
+        env: dict[str, str] | None = None, clean_env: bool = False):
+    return run(["git", "-C", repo, *args], check=check, env=env, clean_env=clean_env)
 
 
 def _trim(s: str) -> str:
@@ -56,6 +66,22 @@ def common_gitdir(repo: str) -> str:
 def _safe_name(value: str) -> str:
     value = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "")).strip("-")
     return value[:96] or "workspace"
+
+
+def validate_repo_path(repo: str) -> str:
+    """Reject a repository URL accidentally supplied where a local path is required.
+
+    Resolving ``.../https://github.com/org/repo`` otherwise creates a genuine
+    local directory. A worker could initialise it and report a misleading no-op
+    instead of explaining that the caller passed the wrong input type.
+    """
+    raw = str(repo or "").strip()
+    if not raw:
+        raise ValueError("repoPath is required")
+    if "://" in raw or any(part.lower() in {"http:", "https:", "ssh:"}
+                         for part in Path(raw).parts):
+        raise ValueError("repoPath must be a local filesystem path, not a repository URL")
+    return str(Path(raw).expanduser().resolve())
 
 
 @contextmanager
@@ -95,26 +121,47 @@ def _git_retry(fn, attempts: int = 5, base: float = 0.3):
 
 
 def ensure_ready(repo: str, *, name: str = "conductor-code",
-                 email: str = "harness@conductor.local") -> dict:
+                 email: str = "harness@conductor.local",
+                 preserve_worktree: bool = False) -> dict:
     """Make ``repo`` git-ready so worktree_add/commit won't fail: init if needed,
     set a LOCAL identity only if none is configured, and create an initial commit
     if there is no HEAD. Idempotent — safe to run on an already-prepared repo."""
+    repo = validate_repo_path(repo)
     os.makedirs(repo, exist_ok=True)
     inside = git(repo, "rev-parse", "--is-inside-work-tree", check=False)
     initialized = False
     if inside.code != 0 or _trim(inside.stdout) != "true":
         git(repo, "init")
         initialized = True
+    repo = str(Path(_trim(git(repo, "rev-parse", "--show-toplevel").stdout)).resolve())
     if not _trim(git(repo, "config", "user.email", check=False).stdout):
         git(repo, "config", "user.email", email)
     if not _trim(git(repo, "config", "user.name", check=False).stdout):
         git(repo, "config", "user.name", name)
     committed = False
     if git(repo, "rev-parse", "--verify", "HEAD", check=False).code != 0:
-        git(repo, "add", "-A", check=False)
-        r = git(repo, "commit", "-m", "conductor-code: initial commit", check=False)
-        if r.code != 0:  # nothing to commit yet — make an empty root commit
-            git(repo, "commit", "--allow-empty", "-m", "conductor-code: initial commit", check=False)
+        if preserve_worktree:
+            # Establish an empty base without consuming the caller's staged,
+            # unstaged, or untracked files. The outcome branch snapshots them later.
+            fd, index_path = tempfile.mkstemp(prefix="conductor-empty-index-")
+            os.close(fd)
+            os.unlink(index_path)
+            env = {"GIT_INDEX_FILE": index_path}
+            try:
+                git(repo, "read-tree", "--empty", env=env)
+                tree = _trim(git(repo, "write-tree", env=env).stdout)
+                root_commit = _trim(git(repo, "commit-tree", tree,
+                                        "-m", "conductor-code: empty initial base",
+                                        env=env).stdout)
+                git(repo, "update-ref", "HEAD", root_commit)
+            finally:
+                try:
+                    os.unlink(index_path)
+                except FileNotFoundError:
+                    pass
+        else:
+            git(repo, "add", "-A", "--", ".")
+            git(repo, "commit", "--allow-empty", "-m", "conductor-code: initial commit")
         committed = True
     branch = _trim(git(repo, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout)
     return {"repoPath": repo, "initialized": initialized,
@@ -122,9 +169,206 @@ def ensure_ready(repo: str, *, name: str = "conductor-code",
             "head": _trim(git(repo, "rev-parse", "HEAD").stdout)}
 
 
-def branch(repo: str, name: str) -> dict:
-    git(repo, "checkout", "-B", name)
-    return {"branch": name}
+def _require_existing_checkout(repo: str) -> str:
+    """Validate the stricter contract used by in-place executions.
+
+    Unlike :func:`ensure_ready`, this never initializes a directory or creates an
+    initial commit.  The caller explicitly supplied an existing checkout and it
+    must stay that checkout for the duration of the run.
+    """
+    repo = validate_repo_path(repo)
+    inside = git(repo, "rev-parse", "--is-inside-work-tree", check=False)
+    if inside.code != 0 or _trim(inside.stdout) != "true":
+        raise ValueError("inPlace requires repoPath to be an existing git checkout")
+    repo = str(Path(_trim(git(repo, "rev-parse", "--show-toplevel").stdout)).resolve())
+    if git(repo, "rev-parse", "--verify", "HEAD", check=False).code != 0:
+        raise ValueError("inPlace requires a checkout with an existing HEAD commit")
+    current = _current_branch(repo)
+    if not current or current == "HEAD":
+        raise ValueError("inPlace requires repoPath to be on a named local branch")
+    for marker in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"):
+        if git(repo, "rev-parse", "--verify", "-q", marker, check=False).code == 0:
+            raise ValueError(f"inPlace checkout has an active git operation ({marker})")
+    return repo
+
+
+def status_fingerprint(repo: str) -> str:
+    """Stable, content-free identity of the checkout's current working state."""
+    import hashlib
+    status = git(repo, "status", "--porcelain=v1", check=False).stdout
+    return hashlib.sha256(status.encode("utf-8")).hexdigest()
+
+
+def _branch_exists(repo: str, name: str) -> bool:
+    return git(repo, "show-ref", "--verify", f"refs/heads/{name}", check=False).code == 0
+
+
+def run_specific_branch(requested: str, run_id: str) -> str:
+    """Return a stable outcome branch name owned by one workflow execution.
+
+    Callers provide a human-readable base such as ``harness/issue-132``.  The
+    workflow execution suffix prevents a later or concurrent run from pushing a
+    divergent history to the same remote ref.  Names that already end in this
+    run's full or short identity are preserved so nested callers do not append
+    the suffix twice.
+    """
+    safe_run = _safe_name(run_id or "manual")
+    short_run = safe_run[:8]
+    base = str(requested or "").strip() or "conductor/run"
+    owned_suffixes = (
+        f"-{safe_run}", f"/{safe_run}", f"-{short_run}", f"/{short_run}",
+    )
+    candidate = base if base.endswith(owned_suffixes) else f"{base}-{short_run}"
+    if run(["git", "check-ref-format", "--branch", candidate], check=False).code != 0:
+        raise ValueError(f"invalid outcome branch name: {candidate!r}")
+    return candidate
+
+
+def allocate_outcome_branch(repo: str, requested: str, run_id: str, *,
+                            source_branch: str = "") -> str:
+    """Return a new run-specific branch that cannot overwrite an existing ref."""
+    candidate = run_specific_branch(requested, run_id)
+    base = candidate
+    if candidate == source_branch or _branch_exists(repo, candidate):
+        candidate = f"{base}-2"
+    counter = 2
+    while candidate == source_branch or _branch_exists(repo, candidate):
+        counter += 1
+        candidate = f"{base}-{counter}"
+    return candidate
+
+
+def _stage_all_visible_changes(repo: str) -> list[str]:
+    """Stage every Git-visible change, including non-ignored generated paths."""
+    git(repo, "add", "-A", "--", ":/")
+    return sorted(line.strip() for line in
+                  git(repo, "diff", "--cached", "--name-only", check=False).stdout.splitlines()
+                  if line.strip())
+
+
+def snapshot_worktree(repo: str, *, run_id: str, original_branch: str,
+                      original_head: str) -> dict:
+    """Create an unreferenced baseline commit without touching source HEAD/index/files."""
+    before_status = status_fingerprint(repo)
+    included = sorted(status_changes(repo, untracked_files_all=True))
+    marker = f"conductor-workspace:{_safe_name(run_id or 'manual')}:baseline"
+    fd, index_path = tempfile.mkstemp(prefix="conductor-workspace-index-")
+    os.close(fd)
+    os.unlink(index_path)
+    env = {"GIT_INDEX_FILE": index_path}
+    try:
+        git(repo, "read-tree", original_head, env=env)
+        git(repo, "add", "-A", "--", ":/", env=env)
+        tree = _trim(git(repo, "write-tree", env=env).stdout)
+        message = (f"conductor workspace baseline [{marker}]\n\n"
+                   f"Conductor-Original-Branch: {original_branch}\n"
+                   f"Conductor-Original-Head: {original_head}")
+        baseline = _trim(git(repo, "commit-tree", tree, "-p", original_head,
+                             "-m", message, env=env).stdout)
+    finally:
+        try:
+            os.unlink(index_path)
+        except FileNotFoundError:
+            pass
+    if (_current_branch(repo) != original_branch or head(repo) != original_head
+            or status_fingerprint(repo) != before_status):
+        raise ValueError("isolated workspace snapshot changed the supplied checkout")
+    return {"baselineCommit": baseline, "baselineCreated": True,
+            "includedPaths": included, "marker": marker}
+
+
+def prepare_inplace(repo: str, *, run_id: str = "", branch_name: str = "",
+                    phase: str = "baseline") -> dict:
+    """Switch to a new run-owned branch, then capture every Git-visible change."""
+    repo = _require_existing_checkout(repo)
+    run = _safe_name(run_id or "manual")
+    current_branch, original_head = _current_branch(repo), head(repo)
+    before = status_fingerprint(repo)
+    marker = f"conductor-workspace:{run}:{phase}"
+    # A restart of the same workflow must not manufacture another baseline.
+    # The marker is local-only and bounded to recent history so unrelated old
+    # harness runs cannot be mistaken for this execution.
+    prior = git(repo, "log", "-n", "200", "--format=%H", "--grep", marker,
+                check=False).stdout.strip().splitlines()
+    if prior:
+        if status_files(repo):
+            raise ValueError("inPlace run already has a baseline but the checkout is now dirty; "
+                             "refuse to create a second baseline")
+        baseline = prior[0].strip()
+        parent = git(repo, "rev-parse", f"{baseline}^", check=False).stdout.strip() or baseline
+        body = git(repo, "show", "-s", "--format=%B", baseline, check=False).stdout
+        original_branch = next((line.split(":", 1)[1].strip() for line in body.splitlines()
+                                if line.startswith("Conductor-Original-Branch:")), "")
+        return {
+            "repoPath": repo,
+            "branch": current_branch,
+            "originalBranch": original_branch,
+            "originalHead": parent,
+            "checkpointCommit": baseline,
+            "baselineCommit": baseline,
+            "baselineCreated": False,
+            "marker": marker,
+            "statusFingerprintBefore": before,
+            "statusFingerprintAfter": before,
+            "includedPaths": [],
+            "resumed": True,
+        }
+    outcome_branch = allocate_outcome_branch(
+        repo, branch_name, run, source_branch=current_branch)
+    original_ref = git(repo, "rev-parse", current_branch).stdout.strip()
+    with _repo_lock(repo):
+        git(repo, "switch", "-c", outcome_branch)
+        included = _stage_all_visible_changes(repo)
+        message = (f"conductor workspace {phase} [{marker}]\n\n"
+                   f"Conductor-Original-Branch: {current_branch}\n"
+                   f"Conductor-Original-Head: {original_head}")
+        result = git(repo, "commit", "--allow-empty", "-m", message, check=False)
+        if result.code != 0:
+            raise RunError("git commit workspace baseline", result.code,
+                           result.stdout, result.stderr)
+        checkpoint = head(repo)
+    if git(repo, "rev-parse", current_branch).stdout.strip() != original_ref:
+        raise ValueError(f"original branch {current_branch!r} moved during workspace preparation")
+    return {
+        "repoPath": repo,
+        "branch": outcome_branch,
+        "originalBranch": current_branch,
+        "originalHead": original_head,
+        "checkpointCommit": checkpoint,
+        "baselineCommit": checkpoint,
+        "baselineCreated": True,
+        "marker": marker,
+        "statusFingerprintBefore": before,
+        "statusFingerprintAfter": status_fingerprint(repo),
+        "includedPaths": included,
+    }
+
+
+def assert_inplace_state(repo: str, *, branch_name: str, expected_head: str,
+                         expected_status: str = "") -> dict:
+    """Fail closed when the user checkout drifted before an integration step."""
+    repo = _require_existing_checkout(repo)
+    actual_branch, actual_head = _current_branch(repo), head(repo)
+    actual_status = status_fingerprint(repo)
+    canonical_expected = canonical_commit(repo, expected_head, field="expected commit")
+    if actual_branch != branch_name or actual_head != canonical_expected:
+        raise ValueError("inPlace checkout drifted: expected "
+                         f"{branch_name}@{canonical_expected[:12]}, "
+                         f"got {actual_branch}@{actual_head[:12]}")
+    if expected_status and actual_status != expected_status:
+        raise ValueError("inPlace checkout has uncommitted changes since its checkpoint")
+    return {"repoPath": repo, "branch": actual_branch, "head": actual_head,
+            "statusFingerprint": actual_status, "matched": True}
+
+
+def branch(repo: str, name: str, *, run_id: str = "", force_new: bool = False) -> dict:
+    source = _current_branch(repo)
+    requested = run_specific_branch(name, run_id)
+    if source == requested and not force_new:
+        return {"branch": requested, "resumed": True}
+    actual = allocate_outcome_branch(repo, name, run_id, source_branch=source)
+    git(repo, "switch", "-c", actual)
+    return {"branch": actual, "resumed": False}
 
 
 def _validated_relative_paths(repo: str, paths: list[str] | tuple[str, ...] | None) -> list[str]:
@@ -141,18 +385,100 @@ def _validated_relative_paths(repo: str, paths: list[str] | tuple[str, ...] | No
     return sorted(set(valid))
 
 
+def is_vetted_change_path(path: str) -> bool:
+    """Whether a changed path is eligible for an automated source commit.
+
+    This is intentionally path-based and conservative: generated build/cache
+    directories are never a repair, while normal source, test, config,
+    migration, lockfile, and documentation paths remain eligible.
+    """
+    normalized = Path(path).as_posix()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return bool(normalized) and not any(part in _NON_PRODUCT_PATH_PARTS
+                                        for part in Path(normalized).parts)
+
+
+def vetted_changes(repo: str) -> dict[str, list[str]]:
+    """Classify the current worktree without staging it."""
+    changed = sorted(status_files(repo))
+    allowed = [path for path in changed if is_vetted_change_path(path)]
+    rejected = [path for path in changed if not is_vetted_change_path(path)]
+    if rejected:
+        # A `git mv source.py build/source.py` can present as a source deletion
+        # plus an untracked generated-path file after we deliberately clear the
+        # index.  Never convert that ambiguous mixed state into an automated
+        # source deletion.  A human can review/clean it, while ordinary source
+        # edits in the same checkout may still be staged.
+        deleted = {
+            line.strip() for line in git(repo, "diff", "--name-only", "--diff-filter=D", "HEAD",
+                                         check=False).stdout.splitlines()
+            if line.strip()
+        }
+        protected = sorted(path for path in allowed if path in deleted)
+        if protected:
+            allowed = [path for path in allowed if path not in deleted]
+            rejected.extend(f"protected deletion: {path}" for path in protected)
+    return {"changed": changed, "allowed": allowed, "rejected": rejected}
+
+
+def stage_vetted_changes(repo: str, *, force_add_paths: list[str] | tuple[str, ...] | None = None,
+                         allow_noop: bool = False) -> dict:
+    """Replace automated staging with the vetted changed-path set only.
+
+    A hard reset is never used; ``git reset`` here only clears the index so a
+    pre-existing staged cache file cannot hitch a ride on the repair commit.
+    """
+    classified = vetted_changes(repo)
+    forced = _validated_relative_paths(repo, force_add_paths)
+    forced = [path for path in forced if is_vetted_change_path(path)]
+    allowed = sorted(set(classified["allowed"] + forced))
+    if not allowed:
+        detail = ", ".join(classified["rejected"]) or "no changed files"
+        if allow_noop:
+            # A coding task may correctly find nothing to change.  Do not turn
+            # that result into a failed workflow, and never stage generated
+            # artifacts merely to manufacture a commit.
+            with _repo_lock(repo):
+                _git_retry(lambda: git(repo, "reset", check=False))
+            return {"staged": [], "rejected": classified["rejected"],
+                    "noOp": True, "reason": f"no meaningful source changes: {detail}"}
+        raise ValueError(f"no meaningful change to commit; rejected generated/cache-only paths: {detail}")
+    with _repo_lock(repo):
+        _git_retry(lambda: git(repo, "reset", check=False))
+        normal = [path for path in allowed if path not in forced]
+        if normal:
+            _git_retry(lambda: git(repo, "add", "--", *normal))
+        if forced:
+            _git_retry(lambda: git(repo, "add", "-f", "--", *forced))
+        staged = git(repo, "diff", "--cached", "--name-only", check=False).stdout.splitlines()
+    if not staged:
+        if allow_noop:
+            return {"staged": [], "rejected": classified["rejected"],
+                    "noOp": True, "reason": "no meaningful source changes were staged"}
+        raise ValueError("no meaningful change was staged for commit")
+    return {"staged": sorted(staged), "rejected": classified["rejected"], "noOp": False}
+
+
 def commit(repo: str, message: str = "conductor-code change", *,
            force_add_paths: list[str] | tuple[str, ...] | None = None) -> dict:
     # Serialized on the shared git dir: parallel forks committing to sibling
     # worktrees write shared refs/reflog and can otherwise collide.
+    staged = stage_vetted_changes(repo, force_add_paths=force_add_paths, allow_noop=True)
+    if staged["noOp"]:
+        return {"commit": head(repo), "stagedPaths": [],
+                "rejectedPaths": staged["rejected"], "noOp": True,
+                "reason": staged["reason"]}
     with _repo_lock(repo):
-        _git_retry(lambda: git(repo, "add", "-A"))
-        paths = _validated_relative_paths(repo, force_add_paths)
-        if paths:
-            _git_retry(lambda: git(repo, "add", "-f", "--", *paths))
-        git(repo, "commit", "-m", message or "conductor-code change", check=False)  # no-op if nothing staged
-        sha = _trim(git(repo, "rev-parse", "--short", "HEAD").stdout)
-    return {"commit": sha}
+        result = git(repo, "commit", "-m", message or "conductor-code change", check=False)
+        if result.code != 0:
+            raise RunError("git commit", result.code, result.stdout, result.stderr)
+        # Commit identities are an API boundary between workers and workflows.
+        # Always return the canonical object ID; returning an abbreviation here
+        # made this field change shape between real and no-op commits.
+        sha = head(repo)
+    return {"commit": sha, "stagedPaths": staged["staged"],
+            "rejectedPaths": staged["rejected"], "noOp": False}
 
 
 def worktree_add(repo: str, name: str, *, preserve_existing: bool = False) -> dict:
@@ -230,7 +556,6 @@ def workspace_add(repo: str, workflow_id: str, *, branch_name: str | None = None
     """Create one persistent run-level worktree below the supplied source checkout."""
     name = f"run-{_safe_name(workflow_id)}"
     wt = os.path.join(os.path.abspath(repo), WORKTREES, name)
-    br = branch_name or RUN_BRANCH.format(name=_safe_name(workflow_id))
     if preserve_existing and os.path.isdir(wt):
         inside = git(wt, "rev-parse", "--is-inside-work-tree", check=False)
         if inside.code == 0 and _trim(inside.stdout) == "true":
@@ -243,17 +568,9 @@ def workspace_add(repo: str, workflow_id: str, *, branch_name: str | None = None
     with _repo_lock(repo):
         git(repo, "worktree", "prune", check=False)
         git(repo, "worktree", "remove", "--force", wt, check=False)
-        checked_out = git(repo, "worktree", "list", "--porcelain", check=False).stdout
-        exists = git(repo, "show-ref", "--verify", f"refs/heads/{br}", check=False).code == 0
-        if exists or f"branch refs/heads/{br}\n" in checked_out:
-            suffix = _safe_name(workflow_id)[:12]
-            candidate = f"{br}/{suffix}"
-            counter = 2
-            while git(repo, "show-ref", "--verify", f"refs/heads/{candidate}",
-                      check=False).code == 0:
-                candidate = f"{br}/{suffix}-{counter}"
-                counter += 1
-            br = candidate
+        br = allocate_outcome_branch(
+            repo, branch_name or "conductor/run", workflow_id,
+            source_branch=_current_branch(repo))
         _git_retry(lambda: git(repo, "worktree", "add", "-b", br, wt, start_point))
     return {
         "worktreePath": wt,
@@ -291,33 +608,91 @@ def worktree_remove(repo: str, name: str) -> dict:
 def status_files(repo: str) -> set[str]:
     """Set of paths with uncommitted changes (porcelain). Used to report
     filesChanged after an agent edits a worktree."""
-    out = git(repo, "status", "--porcelain", check=False).stdout
-    return {line[3:].strip() for line in out.split("\n") if line.strip()}
+    return set(_status_porcelain(repo))
 
 
-def status_changes(repo: str) -> dict[str, str]:
+def _status_porcelain(repo: str, *, untracked_files_all: bool = False) -> dict[str, str]:
+    """Return exact paths and XY codes from porcelain v1's NUL format.
+
+    Newline-delimited porcelain is ambiguous for quoted names, embedded newlines,
+    and renames.  With ``-z`` paths are literal and a rename/copy's destination is
+    the first path followed by a second, source-path field.
+    """
+    args = ["status", "--porcelain=v1", "-z"]
+    if untracked_files_all:
+        args.append("--untracked-files=all")
+    fields = git(repo, *args, check=False).stdout.split("\0")
+    changes: dict[str, str] = {}
+    index = 0
+    while index < len(fields):
+        record = fields[index]
+        index += 1
+        if not record:
+            continue
+        if len(record) < 4 or record[2] != " ":
+            continue
+        code, path = record[:2], record[3:]
+        changes[path] = code
+        if "R" in code or "C" in code:
+            # Consume the source path.  Scope/reporting follows the destination,
+            # which is the path whose resulting contents an agent controls.
+            index += 1
+    return changes
+
+
+def status_changes(repo: str, *, untracked_files_all: bool = False) -> dict[str, str]:
     """Uncommitted changes with a normalized one-letter status per path:
     A = created (untracked/added), M = updated, D = deleted, R = renamed.
     Complements status_files (which strips the codes)."""
-    out = git(repo, "status", "--porcelain", check=False).stdout
     changes: dict[str, str] = {}
-    for line in out.split("\n"):
-        if not line.strip():
-            continue
-        code, path = line[:2], line[3:].strip()
+    for path, code in _status_porcelain(
+            repo, untracked_files_all=untracked_files_all).items():
         if code == "??" or "A" in code:
             status = "A"
         elif "D" in code:
             status = "D"
         elif "R" in code:
             status = "R"
-            # porcelain rename lines are "old -> new"; report the new path
-            if " -> " in path:
-                path = path.split(" -> ", 1)[1].strip()
         else:
             status = "M"
         changes[path] = status
     return changes
+
+
+def index_snapshot(repo: str) -> tuple[str, bytes | None]:
+    """Capture the worktree's exact index so an agent cannot leave staged edits."""
+    path = _trim(git(repo, "rev-parse", "--git-path", "index").stdout)
+    if not os.path.isabs(path):
+        path = os.path.join(repo, path)
+    path = os.path.abspath(path)
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except FileNotFoundError:
+        data = None
+    return path, data
+
+
+def restore_index(snapshot: tuple[str, bytes | None]) -> None:
+    """Restore a snapshot made by :func:`index_snapshot` atomically."""
+    path, data = snapshot
+    if data is None:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary = f"{path}.harness-{os.getpid()}-{threading.get_ident()}"
+    try:
+        with open(temporary, "wb") as handle:
+            handle.write(data)
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.remove(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def local_diff_against_remote(repo: str, *, remote: str = "origin",
@@ -411,6 +786,17 @@ def head(repo: str) -> str:
     return _trim(git(repo, "rev-parse", "HEAD").stdout)
 
 
+def canonical_commit(repo: str, revision: object, *, field: str = "commit") -> str:
+    """Resolve an abbreviated or full object ID to one unambiguous commit ID."""
+    value = str(revision or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{7,64}", value):
+        raise ValueError(f"invalid {field}: {value!r}")
+    resolved = git(repo, "rev-parse", "--verify", f"{value}^{{commit}}", check=False)
+    if resolved.code != 0:
+        raise ValueError(f"{field} does not resolve uniquely: {value}")
+    return _trim(resolved.stdout)
+
+
 def has_conflicts(repo: str) -> list[str]:
     out = git(repo, "diff", "--name-only", "--diff-filter=U", check=False).stdout
     return [f for f in out.split("\n") if f.strip()]
@@ -421,11 +807,14 @@ def _current_branch(repo: str) -> str:
 
 
 def clone(repo_url: str, dest: str | None = None, *, branch: str | None = None,
-          depth: int | None = None) -> dict:
+          depth: int | None = None, no_local: bool = False,
+          env: dict[str, str] | None = None, clean_env: bool = False) -> dict:
     """Clone a remote repo. ``dest`` defaults to the repo name under cwd; a shallow
     clone when ``depth`` is set; a specific ``branch`` when given. Assumes git auth is
     already configured (the worker runs github.ensure_git_auth first)."""
     args = ["clone"]
+    if no_local:
+        args.append("--no-local")
     if branch:
         args += ["--branch", branch]
     if depth:
@@ -434,7 +823,7 @@ def clone(repo_url: str, dest: str | None = None, *, branch: str | None = None,
     if dest:
         args += [dest]
     # `git clone` is run from a neutral cwd; -C would need an existing dir.
-    run_res = run(["git", *args], check=True)  # noqa: F841 — raises on failure
+    run_res = run(["git", *args], check=True, env=env, clean_env=clean_env)  # noqa: F841 — raises on failure
     if not dest:
         # Derive the directory git created (repo name minus .git).
         tail = repo_url.rstrip("/").rsplit("/", 1)[-1]
@@ -478,21 +867,49 @@ def pull(repo: str, *, remote: str = "origin", branch_name: str | None = None,
 
 def push(repo: str, *, branch_name: str | None = None, remote: str = "origin",
          destination_branch: str | None = None, set_upstream: bool = True,
-         force_with_lease: bool = False) -> dict:
+         force_with_lease: bool = False, expected_head: str | None = None) -> dict:
     """Push a branch to a remote. Uses --force-with-lease ONLY when asked (never a
-    bare --force); sets upstream tracking by default."""
+    bare --force); sets upstream tracking by default.
+
+    When ``expected_head`` is supplied, the push is candidate-bound: the named
+    local branch must still resolve to that commit and the exact commit SHA is
+    used as the source side of the refspec.  This prevents a later local commit
+    from being published under an earlier verification result.
+    """
     br = branch_name or _current_branch(repo)
+    destination = destination_branch or br
+    source = br
+    expected = str(expected_head or "").strip()
+    if expected:
+        source = canonical_commit(repo, expected, field="expected candidate commit")
     args = ["push"]
     if set_upstream and "://" not in remote and not remote.startswith("git@"):
         args.append("--set-upstream")
     if force_with_lease:
         args.append("--force-with-lease")
-    refspec = f"{br}:{destination_branch}" if destination_branch and destination_branch != br else br
+    # Git cannot infer a remote destination from a raw SHA source. Use an
+    # explicit heads ref for the candidate-bound form; ordinary branch pushes
+    # retain their existing upstream-friendly short refspec.
+    destination_ref = destination if destination.startswith("refs/") else f"refs/heads/{destination}"
+    refspec = (f"{source}:{destination_ref}" if expected
+               else (f"{source}:{destination}" if destination != br else br))
     args += [remote, refspec]
     with _repo_lock(repo):
+        if expected:
+            actual = _trim(git(repo, "rev-parse", "--verify", f"{br}^{{commit}}", check=False).stdout)
+            if actual != source:
+                raise ValueError("local branch moved after candidate verification: "
+                                 f"expected {source[:12]}, got {actual[:12]}")
         _git_retry(lambda: git(repo, *args))
-    return {"pushed": True, "branch": br, "destinationBranch": destination_branch or br,
-            "remote": remote, "head": head(repo)}
+        # Git accepts --set-upstream with a raw-SHA refspec but does not
+        # actually record tracking for the named local branch.  Keep the
+        # candidate-bound source refspec and configure tracking explicitly.
+        if expected and set_upstream and "://" not in remote and not remote.startswith("git@"):
+            tracking_destination = destination.removeprefix("refs/heads/")
+            git(repo, "branch", "--set-upstream-to", f"{remote}/{tracking_destination}", br)
+    return {"pushed": True, "branch": br, "destinationBranch": destination,
+            "remote": remote, "head": source if expected else head(repo),
+            "candidateBound": bool(expected)}
 
 
 def remote_set(repo: str, url: str, *, name: str = "origin") -> dict:

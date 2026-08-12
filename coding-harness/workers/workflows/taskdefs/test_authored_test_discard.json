@@ -1,0 +1,55 @@
+{
+  "name": "test_authored_test_discard",
+  "description": "Undo a rejected agent-authored test attempt (restore or remove each touched path) so it can never ride along on a later, unrelated repair commit.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "test_authored_test_discard_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git repository the rejected attempt's touched paths are restored/removed in."
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "The touched paths reported by test_authored_test_validate to discard: a tracked path is reverted to HEAD, an untracked one is removed."
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "test_authored_test_discard_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "discarded": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The paths actually restored or removed, sorted."
+        }
+      },
+      "required": [
+        "discarded"
+      ]
+    }
+  }
+}

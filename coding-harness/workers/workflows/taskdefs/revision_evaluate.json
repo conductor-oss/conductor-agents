@@ -4,9 +4,200 @@
   "retryCount": 2,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 2,
-  "timeoutSeconds": 60,
-  "responseTimeoutSeconds": 30,
-  "pollTimeoutSeconds": 60,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "ownerEmail": "viren@orkes.io"
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "revision_evaluate_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "checks": {
+          "type": "array",
+          "description": "Verification checks for the current candidate. Checks with status 'skipped' are excluded from scoring; unpassed checks with blocking!=false mark the candidate as not auto-eligible.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "description": "Check status; 'skipped' excludes this check from scoring."
+              },
+              "weight": {
+                "type": "number",
+                "default": 1,
+                "description": "Relative weight of this check in the checks score."
+              },
+              "passed": {
+                "type": "boolean",
+                "description": "Whether the check passed."
+              },
+              "blocking": {
+                "type": "boolean",
+                "default": true,
+                "description": "Whether failing this check blocks auto-eligibility."
+              }
+            }
+          }
+        },
+        "findings": {
+          "type": "array",
+          "description": "Review findings for the current candidate; 'critical' severity costs 1.0 and 'major' costs 0.5 off the review score, and either severity disqualifies auto-eligibility.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "severity": {
+                "type": "string",
+                "description": "Finding severity, e.g. critical, major, minor."
+              }
+            }
+          }
+        },
+        "accepted": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether the candidate was explicitly accepted (e.g. by a judge/reviewer)."
+        },
+        "weights": {
+          "type": "object",
+          "description": "Score component weights; defaults to {checks: 0.55, review: 0.30, acceptance: 0.15}.",
+          "properties": {
+            "checks": {
+              "type": "number"
+            },
+            "review": {
+              "type": "number"
+            },
+            "acceptance": {
+              "type": "number"
+            }
+          }
+        },
+        "best": {
+          "type": "object",
+          "description": "The best prior candidate result (same shape as this task's output) to compare against; omit on the first round."
+        },
+        "round": {
+          "type": "integer",
+          "default": 1,
+          "description": "Current revision-loop round number, 1-based."
+        },
+        "minImprovement": {
+          "type": "number",
+          "default": 0.05,
+          "description": "Minimum score improvement over the prior best to avoid counting toward a plateau."
+        },
+        "maxRounds": {
+          "type": "integer",
+          "default": 8,
+          "description": "Round number at which the loop is forced to stop (stopReason='round_limit')."
+        },
+        "budgetExhausted": {
+          "type": "boolean",
+          "description": "Whether the model/compute budget for this loop has been exhausted; forces stopReason='budget_exhausted' and needsHuman."
+        },
+        "plateauCount": {
+          "type": "integer",
+          "default": 0,
+          "description": "Prior consecutive-round plateau count to extend."
+        },
+        "plateauRounds": {
+          "type": "integer",
+          "default": 2,
+          "description": "Consecutive plateaued rounds required before escalate is set."
+        },
+        "targetScore": {
+          "type": "number",
+          "default": 1.0,
+          "description": "Score threshold that, combined with auto-eligibility, sets stopReason='target'."
+        },
+        "modelExhausted": {
+          "type": "boolean",
+          "description": "Whether the assigned model tier is exhausted; forces needsHuman."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "revision_evaluate_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "score": {
+          "type": "number",
+          "description": "Overall weighted score for this candidate, rounded to 6 decimals."
+        },
+        "checksScore": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Fraction of check weight passed, or null when there are no scored checks."
+        },
+        "reviewScore": {
+          "type": "number",
+          "description": "1.0 minus the finding-severity penalty, floored at 0."
+        },
+        "acceptanceScore": {
+          "type": "number",
+          "description": "1.0 if accepted was true, else 0.0."
+        },
+        "blockingChecksPassed": {
+          "type": "boolean",
+          "description": "True if no blocking check failed."
+        },
+        "autoEligible": {
+          "type": "boolean",
+          "description": "True if no blocking check failed, the candidate was accepted, and no critical/major finding exists."
+        },
+        "retain": {
+          "type": "boolean",
+          "description": "True if this candidate is better than (or there was no) prior best, so it should be retained."
+        },
+        "improvement": {
+          "type": "number",
+          "description": "Score delta versus the prior best (or the raw score when there was no prior), rounded to 6 decimals."
+        },
+        "plateauCount": {
+          "type": "integer",
+          "description": "Updated consecutive-round plateau count."
+        },
+        "escalate": {
+          "type": "boolean",
+          "description": "True once plateauCount reaches plateauRounds."
+        },
+        "stopReason": {
+          "type": "string",
+          "enum": [
+            "budget_exhausted",
+            "round_limit",
+            "target",
+            "continue"
+          ],
+          "description": "Why the loop should stop, or 'continue' to keep iterating."
+        },
+        "needsHuman": {
+          "type": "boolean",
+          "description": "True when the loop is exhausted (round limit, budget) or the model tier is exhausted."
+        }
+      },
+      "required": [
+        "score",
+        "checksScore",
+        "reviewScore",
+        "acceptanceScore",
+        "blockingChecksPassed",
+        "autoEligible",
+        "retain",
+        "improvement",
+        "plateauCount",
+        "escalate",
+        "stopReason",
+        "needsHuman"
+      ]
+    }
+  }
 }
