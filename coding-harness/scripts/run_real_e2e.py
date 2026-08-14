@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKERS = ROOT / "workers"
 sys.path.insert(0, str(WORKERS))
 
-from common import git, github  # noqa: E402
+from common import github  # noqa: E402
 
 
 DEFAULT_REPO = "conductor-oss/coding-agent-test"
@@ -81,6 +81,25 @@ def worker_gate(conductor: "Conductor", workflow: str) -> list[str]:
 
 
 CASES: tuple[dict[str, Any], ...] = (
+    {
+        # Deliberately the simplest possible case in this catalog -- a cheap,
+        # fast smoke test proving the full feature_campaign pipeline (design,
+        # plan, implementation waves, review, test_cycle, PR) works end to
+        # end, without the cost of a multi-invariant state machine. Still
+        # fits the shared reconciler-shaped template (states/invariants) so
+        # it needs no new issue-body builder or verification path -- "hello
+        # world" here means trivial states/invariants, not a different scaffold.
+        "slug": "hello-world-greeter",
+        "title": "Build a deterministic hello-world greeter",
+        "entity": "greeting",
+        "language": "python",
+        "states": ["requested", "greeted"],
+        "invariants": [
+            "A missing or blank name greets the literal name \"World\" instead.",
+            "The same name always produces byte-for-byte the same greeting text, \"Hello, <name>!\".",
+            "A repeated request ID is idempotent and never emits a second greeted event; a conflicting duplicate (same ID, different name) is an error.",
+        ],
+    },
     {
         "slug": "parcel-event-reconciler",
         "title": "Build a deterministic parcel event reconciler",
@@ -834,10 +853,6 @@ def create_campaign(args: argparse.Namespace, conductor: Conductor) -> Scenario:
     case = choose_case(root, getattr(args, "language", None))
     body = issue_body(case, scenario_id)
     issue = create_issue(args.repo, f"[E2E {scenario_id}] {case['title']}", body)
-    clone_dir = Path(args.checkout_root).resolve() / scenario_id / "repo"
-    clone_dir.parent.mkdir(parents=True, exist_ok=True)
-    github.ensure_git_auth()
-    clone = git.clone(github.clone_url(args.repo), str(clone_dir), branch="main")
     scenario = Scenario(run_dir, conductor)
     scenario.state = {
         "schemaVersion": 1,
@@ -846,7 +861,11 @@ def create_campaign(args: argparse.Namespace, conductor: Conductor) -> Scenario:
         "repo": args.repo,
         "case": case,
         "issue": issue,
-        "checkout": clone,
+        # No local pre-clone: feature_campaign clones `repo` itself (into its
+        # own temp workspace, campaign_workspace/workspace_prepare) -- this
+        # actually exercises that path end to end instead of routing around
+        # it with a clone this script did up front.
+        "checkout": None,
         "phase": "campaign",
         "workflows": {},
         "events": [],
@@ -859,9 +878,17 @@ def create_campaign(args: argparse.Namespace, conductor: Conductor) -> Scenario:
 
     summary = f"Implements {case['title'].lower()} from issue #{issue['number']} with deterministic CLI behavior and focused tests."
     payload = {
-        "repoPath": clone["repoPath"],
+        "repo": args.repo,
+        "repoPath": "",
         "workspacePath": "",
-        "instruction": body,
+        # Issue-driven, not instruction-driven: the issue this call just
+        # created above already carries `body` verbatim, so pointing the
+        # campaign at issueNumber instead of re-passing `instruction`
+        # exercises feature_campaign's issue_fetch path (including its
+        # linked-context resolution) end to end, the same way a real user
+        # pasting an issue link would drive it.
+        "instruction": "",
+        "issueNumber": issue["number"],
         "changeBranch": f"harness/{case['language']}/{scenario_id}",
         "createPr": True,
         "prBase": "main",
@@ -1063,7 +1090,11 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--repo", default=DEFAULT_REPO)
     value.add_argument("--server", default=os.environ.get("CONDUCTOR_SERVER_URL", DEFAULT_SERVER))
     value.add_argument("--reports", default=str(ROOT / "reports" / "real-e2e"))
-    value.add_argument("--checkout-root", default="/tmp/coding-harness-real-e2e")
+    value.add_argument(
+        "--checkout-root", default="/tmp/coding-harness-real-e2e",
+        help="unused by start-campaign since feature_campaign now clones `repo` itself; "
+             "kept only so an existing invocation with this flag doesn't error",
+    )
     value.add_argument("--max-budget", type=float, default=50)
     value.add_argument("--max-turns", type=int, default=500)
     value.add_argument("--max-parallelism", type=int, default=4)

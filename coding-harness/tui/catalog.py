@@ -536,8 +536,15 @@ CATALOG: dict[str, WorkflowSpec] = {
         action="Run an interactive feature campaign",
         blurb="Design, approve a dependency DAG, implement in resumable waves, commit a local branch, and optionally open a PR.",
         fields=(
-            Field("repoPath", "Repo path", "text", help="local directory on the worker host"),
-            Field("instruction", "Instruction", "multiline", help="the complex feature goal"),
+            Field("repo", "Repo (URL or owner/name)", "text", "",
+                  help="clone a fresh temp workspace instead of an existing repoPath checkout"),
+            Field("repoPath", "Repo path", "text", "",
+                  help="local directory on the worker host; leave blank to use Repo instead"),
+            Field("instruction", "Instruction", "multiline", "",
+                  help="the complex feature goal; leave blank to drive from Issue number instead"),
+            Field("issueNumber", "Issue number", "int", 0,
+                  help="drive the campaign from a GitHub issue (fetched, including any linked "
+                       "issues/PRs/docs it references) instead of Instruction; requires Repo"),
             Field("inPlace", "Integrate into this checkout", "bool", False,
                   help="create a new branch in this checkout, include its current changes, and merge there; no push or PR"),
             Field("contextPaths", "Context files or directories", "multiline", [], advanced=True,

@@ -152,7 +152,7 @@
       "inputParameters": {
         "repoPath": "${clone.output.repoPath}",
         "workspacePath": "${publication_workspace.output.worktreePath}",
-        "instruction": "Resolve the following GitHub issue in this repository. Make the minimal, focused change the issue asks for and nothing more.\n\nIssue #${workflow.input.issueNumber}: ${issue.output.title}\n\n${issue.output.body}",
+        "instruction": "Resolve the following GitHub issue in this repository. Make the minimal, focused change the issue asks for and nothing more.\n\nIssue #${workflow.input.issueNumber}: ${issue.output.title}\n\n${issue.output.body}${issue.output.linkedContext}",
         "changeBranch": "harness/issue-${workflow.input.issueNumber}",
         "branchRunId": "${workflow.workflowId}",
         "design": "${workflow.input.design}",

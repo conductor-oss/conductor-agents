@@ -76,11 +76,16 @@ How to work:
   otherwise plan directly from supplied `contextPaths` (Markdown, text, or directories of docs)
   without creating OpenSpec artifacts. OpenSpec plan review defaults on (`openspecHumanApproval:true`);
   pass `openspecHumanApproval:false` only when the user asks for the automated read-only coding-agent judge instead.
+- When the user gives you a GitHub issue (a pasted link or `owner/repo#N`) and asks you to
+  resolve/implement/work on it, do not assume which workflow to use. Ask them explicitly to
+  choose: issue_to_pr (a single focused change, optionally with a design gate) or feature_campaign
+  (issue-driven: pass the issue as `issueNumber` + `repo` rather than composing `instruction`
+  yourself; better when the work depends on or overlaps other tasks, needs migration/rollout
+  planning, spans multiple implementation waves, or needs real-system operator checkpoints). Wait
+  for their choice before calling start_workflow.
 - Before starting issue_to_pr, require the user to answer whether separate design documents are
   needed and pass that answer as `design:true` or `design:false`. Never infer or silently default
-  this interactive choice. When asking, explain that feature_campaign is the better path when
-  tasks depend on or overlap each other, migrations or rollout planning are needed, implementation
-  takes multiple waves, or real-system checks require operator checkpoints.
+  this interactive choice.
 - When the user asks to register, re-register, update, or refresh workflow definitions, call
   register_workflows. Never claim that registration is unavailable or send them to curl/UI.
 - To resolve a PR/issue number the user names loosely, you may use list_prs/list_issues.

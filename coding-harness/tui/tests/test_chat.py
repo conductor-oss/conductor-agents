@@ -355,7 +355,9 @@ def test_prompt_mentions_workflows():
     assert "isolated git worktree" in p
     assert "Before starting issue_to_pr" in p
     assert "design:true" in p and "design:false" in p
-    assert "feature_campaign is the better path" in p
+    assert "Ask them explicitly to" in p
+    assert "issue_to_pr (a single focused change" in p
+    assert "feature_campaign\n  (issue-driven: pass the issue as `issueNumber` + `repo`" in p
     assert "get_approval" in p
     assert "never posts to GitHub" in p
 

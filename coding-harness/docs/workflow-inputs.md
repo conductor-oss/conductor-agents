@@ -153,12 +153,33 @@ Optional: `feedback` = `""`; `model` = `""`; `maxTurns` = `500`; `maxBudgetUsd` 
 
 ## `feature_campaign`
 
-Required: `repoPath`, `instruction`.
+Required: none.
 
-Optional: `workspacePath` = `""`; `keepWorktree` = `true`; `changeBranch` = `""`; `inPlace` = `false`; `contextPaths` = `[]`; `createPr` = `false`; `prBase` = `"main"`; `prTitle` = `""`; `prBody` = `""`; `prDraft` = `false`; `designDir` = `"docs/design"`; `designAgent` = `"claude"`; `designModel` = `""`; `planAgent` = `"claude"`; `planModel` = `""`; `codeAgent` = `"claude"`; `codeModel` = `""`; `reviewAgent` = `"claude"`; `reviewModel` = `""`; `maxTurns` = `500`; `maxBudgetUsd` = `50`; `maxFixAttempts` = `4`; `maxTasks` = `25`; `maxParallelism` = `6`; `maxWaves` = `20`; `designMaxRevisions` = `5`; `planMaxRevisions` = `5`; `useImportedPlan` = `false`; `importedPlan` = `{}`; `importedDesignLocation` = `""`; `specContextPath` = `""`; `designPromptTemplate` = `""`; `designPromptTemplateSource` = `""`; `planPromptTemplate` = `""`; `planPromptTemplateSource` = `""`; `codePromptTemplate` = `""`; `codePromptTemplateSource` = `""`; `reviewPromptTemplate` = `""`; `reviewPromptTemplateSource` = `""`; `revisionPromptTemplate` = `""`; `revisionPromptTemplateSource` = `""`.
+Optional: `repo` = `""`; `repoPath` = `""`; `workspacePath` = `""`; `instruction` = `""`; `issueNumber` = `0`; `keepWorktree` = `true`; `changeBranch` = `""`; `inPlace` = `false`; `contextPaths` = `[]`; `createPr` = `false`; `prBase` = `"main"`; `prTitle` = `""`; `prBody` = `""`; `prDraft` = `false`; `designDir` = `"docs/design"`; `designAgent` = `"claude"`; `designModel` = `""`; `planAgent` = `"claude"`; `planModel` = `""`; `codeAgent` = `"claude"`; `codeModel` = `""`; `reviewAgent` = `"claude"`; `reviewModel` = `""`; `maxTurns` = `500`; `maxBudgetUsd` = `50`; `maxFixAttempts` = `4`; `maxTasks` = `25`; `maxParallelism` = `6`; `maxWaves` = `20`; `designMaxRevisions` = `5`; `planMaxRevisions` = `5`; `useImportedPlan` = `false`; `importedPlan` = `{}`; `importedDesignLocation` = `""`; `specContextPath` = `""`; `designPromptTemplate` = `""`; `designPromptTemplateSource` = `""`; `planPromptTemplate` = `""`; `planPromptTemplateSource` = `""`; `codePromptTemplate` = `""`; `codePromptTemplateSource` = `""`; `reviewPromptTemplate` = `""`; `reviewPromptTemplateSource` = `""`; `revisionPromptTemplate` = `""`; `revisionPromptTemplateSource` = `""`.
+
+Two independent choices, each "at least one of," both runtime-enforced by `campaign_defaults`/
+`campaign_workspace` (`workspace_prepare`) rejecting the run at start if unmet -- neither is
+schema-required because either alone is legitimate:
+
+- **What to build:** `instruction` (free text) or `issueNumber` (a GitHub issue number, requires
+  `repo`). When `issueNumber` is set, the campaign fetches that issue's title/body -- plus any
+  issue/PR/doc/CI links the body itself references, resolved the same untrusted-evidence way
+  `pr_review` resolves links in PR feedback -- and uses that as the effective instruction instead.
+  The originating issue is surfaced in output (`issueNumber`/`issueTitle`/`issueUrl`), and when
+  `createPr` is also true the PR body gets a trailing `Closes #<n>`.
+- **Where to work:** `repo` (a git URL or `owner/name` slug, resolved the same way
+  `pr_review`/`address_pr`/`issue_to_pr` resolve it) clones into a fresh temp workspace and works
+  from there; `repoPath` uses an existing local checkout directly; `workspacePath` inherits an
+  already-prepared worktree (e.g. from a parent campaign). Passing a git URL as `repoPath` fails
+  fast with a clear error instead of being treated as a local path -- use `repo` for that case.
+
+These two choices are orthogonal: an issue can drive implementation against either a freshly
+cloned `repo` or an existing local `repoPath` checkout, and a plain `instruction` works the same
+way against either source.
 
 `prBody` is a summary source, not a free-form PR template. Publication normalizes it to one
-`## Summary` paragraph; when empty, `instruction` supplies the summary.
+`## Summary` paragraph; when empty, the effective instruction (from `instruction` or the fetched
+issue) supplies the summary.
 
 ## `github_demo`
 

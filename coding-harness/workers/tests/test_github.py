@@ -46,6 +46,50 @@ def _patch(monkeypatch, rec: RecordingRun) -> None:
     monkeypatch.setattr("common.github.run", rec)
 
 
+# --- issue_fetch --------------------------------------------------------------
+
+def test_issue_fetch_returns_the_raw_body_untouched_when_it_has_no_links(monkeypatch):
+    meta = {"number": 57, "title": "Hello world", "body": "Just build a greeter, no links here.",
+            "state": "OPEN", "url": "https://github.com/o/r/issues/57", "labels": []}
+    rec = RecordingRun(RunResult(json.dumps(meta), "", 0))
+    _patch(monkeypatch, rec)
+
+    out = github.issue_fetch("o/r", 57)
+
+    assert out["body"] == "Just build a greeter, no links here."
+    assert out["linkedContext"] == ""
+    assert out["linkedReferences"] == []
+    assert out["linkCount"] == 0
+    assert rec.calls[0]["cmd"][:4] == ["gh", "issue", "view", "57"]
+
+
+def test_issue_fetch_resolves_a_linked_github_issue_reference(monkeypatch):
+    # Confirmed gap: issue_fetch never resolved links inside the issue body,
+    # unlike pr_comments (which resolves links found in PR feedback via the
+    # same common/linked_context module). An issue can link to another issue,
+    # a doc file, or a CI run just as easily as a PR comment can.
+    meta = {"number": 57, "title": "Hello world",
+            "body": "See background in https://github.com/o/r/issues/12 for context.",
+            "state": "OPEN", "url": "https://github.com/o/r/issues/57", "labels": []}
+    linked_issue = {"title": "Prior greeter discussion", "body": "We discussed defaulting to World."}
+    rec = RecordingRun(
+        RunResult(json.dumps(meta), "", 0),
+        RunResult(json.dumps(linked_issue), "", 0),
+    )
+    _patch(monkeypatch, rec)
+
+    out = github.issue_fetch("o/r", 57)
+
+    # The raw body is never mutated by the resolved link.
+    assert out["body"] == "See background in https://github.com/o/r/issues/12 for context."
+    assert "## Linked context (untrusted external material)" in out["linkedContext"]
+    assert "Prior greeter discussion" in out["linkedContext"]
+    assert "We discussed defaulting to World." in out["linkedContext"]
+    assert out["linkCount"] == 1
+    assert out["linkedReferences"][0]["kind"] == "github-issue"
+    assert rec.calls[1]["cmd"][:3] == ["gh", "api", "repos/o/r/issues/12"]
+
+
 # --- pr_create ---------------------------------------------------------------
 
 def test_pr_create_argv_and_parsing(fake_task_input, monkeypatch, load_fixture):

@@ -23,13 +23,60 @@
       "taskReferenceName": "campaign_defaults",
       "inputParameters": {
         "branch": "${workflow.input.changeBranch}",
+        "instruction": "${workflow.input.instruction}",
+        "issueNumber": "${workflow.input.issueNumber}",
         "evaluatorType": "graaljs",
-        "expression": "(function(){ return {branch: ($.branch && $.branch.length > 0) ? $.branch : 'feature-campaign'}; })();",
+        "expression": "(function(){ if ((!$.instruction || $.instruction.trim().length === 0) && (!$.issueNumber || $.issueNumber <= 0)) { throw new Error('feature_campaign requires either instruction or issueNumber'); } return {branch: ($.branch && $.branch.length > 0) ? $.branch : 'feature-campaign', closesLine: ($.issueNumber && $.issueNumber > 0) ? ('\\n\\nCloses #' + $.issueNumber) : ''}; })();",
         "workflowId": "${workflow.workflowId}"
       },
       "type": "INLINE",
       "decisionCases": {},
       "defaultCase": []
+    },
+    {
+      "name": "campaign_issue_gate",
+      "taskReferenceName": "campaign_issue_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "(function(){ return ($.issueNumber && $.issueNumber > 0) ? 'issue' : 'local'; })();",
+      "inputParameters": {
+        "issueNumber": "${workflow.input.issueNumber}"
+      },
+      "decisionCases": {
+        "issue": [
+          {
+            "name": "issue_fetch",
+            "taskReferenceName": "campaign_issue",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "repo": "${workflow.input.repo}",
+              "number": "${workflow.input.issueNumber}"
+            }
+          },
+          {
+            "name": "campaign_issue_instruction",
+            "taskReferenceName": "campaign_issue_instruction",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "effectiveInstruction": "Resolve GitHub issue #${workflow.input.issueNumber}: ${campaign_issue.output.title}\n\n${campaign_issue.output.body}${campaign_issue.output.linkedContext}",
+              "issueTitle": "${campaign_issue.output.title}",
+              "issueUrl": "${campaign_issue.output.url}"
+            }
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "campaign_local_instruction",
+          "taskReferenceName": "campaign_local_instruction",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "effectiveInstruction": "${workflow.input.instruction}",
+            "issueTitle": "",
+            "issueUrl": ""
+          }
+        }
+      ]
     },
     {
       "name": "workspace_prepare",
@@ -39,6 +86,7 @@
         "branchRunId": "${workflow.workflowId}",
         "preserveExisting": true,
         "repoPath": "${workflow.input.repoPath}",
+        "repoUrl": "${workflow.input.repo}",
         "inPlace": "${workflow.input.inPlace}",
         "createPr": "${workflow.input.createPr}",
         "workflowId": "${workflow.workflowId}",
@@ -134,10 +182,10 @@
             "maxBudgetUsd": "${workflow.variables.campaignMaxBudgetUsd}",
             "maxTurns": "${workflow.variables.campaignMaxTurns}",
             "model": "${workflow.input.designModel}",
-            "prompt": "Design this feature in ${workflow.input.designDir}. Explore the repository, write or revise coherent design documents, and explicitly cover architecture, interfaces, rollout, tests, and unresolved risks. Reconcile any direct worktree edits. Instruction: ${workflow.input.instruction}\nCheckpoint feedback: ${workflow.variables.feedback}",
+            "prompt": "Design this feature in ${workflow.input.designDir}. Explore the repository, write or revise coherent design documents, and explicitly cover architecture, interfaces, rollout, tests, and unresolved risks. Reconcile any direct worktree edits. Instruction: ${workflow.variables.effectiveInstruction}\nCheckpoint feedback: ${workflow.variables.feedback}",
             "promptContext": {
               "feedback": "${workflow.variables.feedback}",
-              "instruction": "${workflow.input.instruction}"
+              "instruction": "${workflow.variables.effectiveInstruction}"
             },
             "promptTemplate": "${workflow.input.designPromptTemplate}",
             "promptTemplateSource": "${workflow.input.designPromptTemplateSource}",
@@ -350,10 +398,10 @@
             "maxBudgetUsd": "${workflow.variables.campaignMaxBudgetUsd}",
             "maxTurns": "${workflow.variables.campaignMaxTurns}",
             "model": "${workflow.input.planModel}",
-            "prompt": "Read the approved design and repository, then produce a dependency DAG for the requested feature. Return JSON tasks with exactly: id, description, dependsOn, files, acceptanceCriteria, checks. Tasks ready in one wave must have disjoint files. At most ${workflow.input.maxTasks} tasks. Instruction: ${workflow.input.instruction}\nCheckpoint feedback: ${workflow.variables.feedback}",
+            "prompt": "Read the approved design and repository, then produce a dependency DAG for the requested feature. Return JSON tasks with exactly: id, description, dependsOn, files, acceptanceCriteria, checks. Tasks ready in one wave must have disjoint files. At most ${workflow.input.maxTasks} tasks. Instruction: ${workflow.variables.effectiveInstruction}\nCheckpoint feedback: ${workflow.variables.feedback}",
             "promptContext": {
               "feedback": "${workflow.variables.feedback}",
-              "instruction": "${workflow.input.instruction}",
+              "instruction": "${workflow.variables.effectiveInstruction}",
               "maxSubtasks": "${workflow.input.maxTasks}"
             },
             "promptTemplate": "${workflow.input.planPromptTemplate}",
@@ -1099,7 +1147,7 @@
             "maxTurns": "${workflow.variables.campaignMaxTurns}",
             "model": "${workflow.input.reviewModel}",
             "allowedWriteRoots": "${validate_campaign_plan.output.allowedWriteRoots}",
-            "prompt": "Perform final real-system verification of this campaign against the instruction, approved design, DAG acceptance criteria, and current repository. Reconcile direct worktree edits and fix any actionable issue from checkpoint feedback, then report remaining findings. Do not commit or push. Instruction: ${workflow.input.instruction}\nFeedback: ${workflow.variables.feedback}",
+            "prompt": "Perform final real-system verification of this campaign against the instruction, approved design, DAG acceptance criteria, and current repository. Reconcile direct worktree edits and fix any actionable issue from checkpoint feedback, then report remaining findings. Do not commit or push. Instruction: ${workflow.variables.effectiveInstruction}\nFeedback: ${workflow.variables.feedback}",
             "promptTemplate": "${workflow.input.reviewPromptTemplate}",
             "promptTemplateSource": "${workflow.input.reviewPromptTemplateSource}",
             "resumeSessionId": "${workflow.variables.finalSession}",
@@ -1405,9 +1453,9 @@
                   "taskReferenceName": "campaign_pr",
                   "inputParameters": {
                     "base": "${workflow.input.prBase}",
-                    "body": "${workflow.input.prBody}${campaign_publication_plan.output.agentAuthoredTestNote}",
+                    "body": "${workflow.input.prBody}${campaign_publication_plan.output.agentAuthoredTestNote}${campaign_defaults.output.result.closesLine}",
                     "summary": "${workflow.input.prBody}",
-                    "summaryFallback": "${workflow.input.instruction}",
+                    "summaryFallback": "${workflow.variables.effectiveInstruction}",
                     "draft": "${campaign_publication_plan.output.draft}",
                     "fill": false,
                     "head": "${campaign_workspace.output.branch}",
@@ -1512,13 +1560,25 @@
     "data": {
       "type": "object",
       "properties": {
+        "repo": {
+          "type": "string",
+          "default": "",
+          "description": "Repository to clone into a fresh temp workspace and run the campaign from -- a full git URL or an owner/name slug (resolved the same way pr_review/address_pr/issue_to_pr resolve `repo`). Mutually exclusive with repoPath: give one or the other, not both."
+        },
         "repoPath": {
           "type": "string",
-          "description": "Absolute path to an existing local git checkout to use as the campaign's source repository; required unless workspacePath is supplied to inherit an existing worktree instead."
+          "default": "",
+          "description": "Absolute path to an existing local git checkout to use as the campaign's source repository, instead of cloning `repo`. One of `repo`, `repoPath`, or `workspacePath` is required; workspace_prepare rejects the run at start if none is supplied."
         },
         "instruction": {
           "type": "string",
-          "description": "Natural-language description of the feature to design, plan, and implement across the campaign's design/plan/implementation/final phases."
+          "default": "",
+          "description": "Natural-language description of the feature to design, plan, and implement across the campaign's design/plan/implementation/final phases. One of `instruction` or `issueNumber` is required; campaign_defaults rejects the run at start if neither resolves to real content."
+        },
+        "issueNumber": {
+          "type": "integer",
+          "default": 0,
+          "description": "Drive the campaign from a GitHub issue instead of a supplied `instruction` -- fetches the issue's title/body (plus any linked issues/PRs/docs/CI runs it references, resolved the same untrusted-evidence way pr_review resolves linked PR feedback) and uses that as the effective instruction. Requires `repo` to resolve the issue against. Independent of how the source is obtained: combine with either `repo`/`repoPath` (where to work) freely -- `repoPath` typically won't already be the issue's own repo, so `repo` is the more common pairing. Surfaced in output as `issueNumber`/`issueTitle`/`issueUrl`, and a supplied `createPr` PR is auto-linked with a trailing `Closes #<n>`."
         },
         "changeBranch": {
           "type": "string",
@@ -1774,10 +1834,7 @@
           "description": "Upper bound on structured fix/commit/re-test passes forwarded to the final full test_cycle sub-workflow."
         }
       },
-      "required": [
-        "repoPath",
-        "instruction"
-      ]
+      "required": []
     }
   },
   "outputSchema": {
@@ -1814,6 +1871,18 @@
         "designLocation": {
           "type": "string",
           "description": "Resolved design-document location: designDir (or importedDesignLocation when useImportedPlan is true)."
+        },
+        "issueNumber": {
+          "type": "integer",
+          "description": "Echo of the input issueNumber; 0 when the campaign was instruction-driven rather than issue-driven."
+        },
+        "issueTitle": {
+          "type": "string",
+          "description": "The fetched issue's title; empty when the campaign was instruction-driven."
+        },
+        "issueUrl": {
+          "type": "string",
+          "description": "The fetched issue's URL; empty when the campaign was instruction-driven."
         },
         "designPromptTemplate": {
           "type": "object",
@@ -2076,6 +2145,9 @@
         "commit",
         "ignoredSourceChanges",
         "inPlace",
+        "issueNumber",
+        "issueTitle",
+        "issueUrl",
         "originalBranch",
         "originalHead",
         "baselineCommit",
@@ -2121,6 +2193,7 @@
     "importedPlan",
     "inPlace",
     "instruction",
+    "issueNumber",
     "keepWorktree",
     "maxBudgetUsd",
     "maxParallelism",
@@ -2142,6 +2215,7 @@
     "prBody",
     "prDraft",
     "prTitle",
+    "repo",
     "repoPath",
     "contextPaths",
     "reviewAgent",
@@ -2162,6 +2236,9 @@
     "completedWaves": "${workflow.variables.completedWaves}",
     "designLocation": "${workflow.variables.designLocation}",
     "designPromptTemplate": "${campaign_design.output.promptTemplate}",
+    "issueNumber": "${workflow.input.issueNumber}",
+    "issueTitle": "${workflow.variables.issueTitle}",
+    "issueUrl": "${workflow.variables.issueUrl}",
     "commit": "${campaign_summary.output.candidateCommit}",
     "ignoredSourceChanges": "${campaign_workspace.output.ignoredSourceChanges}",
     "inPlace": "${campaign_workspace.output.inPlace}",
@@ -2218,8 +2295,11 @@
     "designApproved": false,
     "designLocation": "",
     "designSession": "",
+    "effectiveInstruction": "",
     "feedback": "",
     "finalSession": "",
+    "issueTitle": "",
+    "issueUrl": "",
     "lastReviewFindings": "",
     "outcome": "running",
     "phase": "prepare",
@@ -2246,6 +2326,8 @@
     "codePromptTemplateSource": "",
     "createPr": false,
     "inPlace": false,
+    "instruction": "",
+    "issueNumber": 0,
     "designAgent": "",
     "designDir": "docs/design",
     "designMaxRevisions": 5,
@@ -2269,6 +2351,8 @@
     "prBody": "",
     "prDraft": false,
     "prTitle": "",
+    "repo": "",
+    "repoPath": "",
     "reviewAgent": "",
     "reviewModel": "",
     "reviewPromptTemplate": "",

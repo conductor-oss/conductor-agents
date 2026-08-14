@@ -6,6 +6,32 @@ from common import git
 from gitops.tasks import workspace_cleanup, workspace_prepare
 
 
+def test_workspace_prepare_clones_a_repo_url_instead_of_requiring_a_local_path(
+        tmp_git_repo, fake_task_input, tmp_path):
+    # Proof for the feature_campaign fix: a caller with no existing local
+    # checkout (only a repo URL/slug) must be able to reach the SAME clone
+    # path pr_review/address_pr/issue_to_pr already use, instead of being
+    # forced to put a URL into repoPath (which git.validate_repo_path
+    # correctly rejects). This exercises the real worker function end to
+    # end with a real `git clone` -- no network, source is the local
+    # tmp_git_repo fixture, but the code path (repoPath empty, repoUrl set)
+    # is identical to what feature_campaign now wires from workflow.input.repo.
+    dest = tmp_path / "cloned-workspace"
+    result = workspace_prepare(fake_task_input(
+        repoPath="", repoUrl=str(tmp_git_repo), cloneDest=str(dest),
+        workflowId="wf-clone", branch="feature/from-url"))
+    out = result.output_data
+
+    assert result.status.name == "COMPLETED", out
+    assert out["sourceCloned"] is True
+    assert Path(out["sourceRepoPath"]) == dest
+    assert dest.joinpath("README.md").is_file()
+    assert Path(out["worktreePath"]).joinpath("README.md").is_file()
+    # A real, independent clone -- not the same working tree as the source.
+    assert dest.resolve() != tmp_git_repo.resolve()
+    assert git.head(str(dest)) == git.head(str(tmp_git_repo))
+
+
 def test_workspace_prepare_snapshots_dirty_source_and_preserves_checkout(
         tmp_git_repo, fake_task_input):
     tracked = tmp_git_repo / "tracked.txt"
