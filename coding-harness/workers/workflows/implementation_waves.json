@@ -1,0 +1,732 @@
+{
+  "name": "implementation_waves",
+  "description": "Schedule and implement an approved dependency-DAG plan in dependency-ordered, file-disjoint parallel waves, extracted from feature_campaign's own implementation_loop so it can be reused. Each wave forks one campaign_subtask per ready task, joins, integrates the results, runs a read-only review, and pauses at a wave_checkpoint WAIT task for a human decision (continue/revise/adopt_edits/stop, with optional bounded turn/budget adjustment, via the same checkpoint-decision shape feature_campaign's other checkpoints use). Never hard-fails: resolves with outcome 'running' (plan fully implemented, or maxWaves reached) or 'incomplete' (a human explicitly stopped) for the caller to act on. code_parallel's own parallel-implementation mechanism is a single non-staged fan-out/fan-in with no human checkpoint -- a different concept entirely -- so this is a standalone extraction, not a merge.",
+  "version": 1,
+  "schemaVersion": 2,
+  "restartable": true,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "inputParameters": [
+    "repoPath",
+    "callerWorkflow",
+    "plan",
+    "remainingTaskIds",
+    "allowedWriteRoots",
+    "codeAgent",
+    "codeModel",
+    "codePromptTemplate",
+    "codePromptTemplateSource",
+    "reviewAgent",
+    "reviewModel",
+    "reviewPromptTemplate",
+    "reviewPromptTemplateSource",
+    "revisionPromptTemplate",
+    "revisionPromptTemplateSource",
+    "maxTasks",
+    "maxParallelism",
+    "maxWaves",
+    "implementationMaxTurns",
+    "implementationMaxBudgetUsd",
+    "specContextPath",
+    "contextPaths",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "inputSchema": {
+    "name": "implementation_waves_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git checkout waves are implemented and committed against."
+        },
+        "callerWorkflow": {
+          "type": "string",
+          "description": "The logical top-level workflow name to stamp onto the wave_checkpoint WAIT payload. The TUI's approval dispatch branches on this to know how to build its decision output -- without it, a gate living inside this sub-workflow would report its own name (implementation_waves) instead of the caller's."
+        },
+        "plan": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "The approved plan's structured {tasks: [...]} document to schedule waves from."
+        },
+        "remainingTaskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Dependency-ordered task ids not yet completed, seeding the first wave's scheduling."
+        },
+        "allowedWriteRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "File-scope restriction applied to a requested revision's or adopted-edits' coding_agent session (not to per-task wave subtasks, which are scoped by the plan itself)."
+        },
+        "codeAgent": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override selecting the coding agent backend for wave subtasks and wave revision/adopt-edits sessions."
+        },
+        "codeModel": {
+          "type": "string",
+          "default": "",
+          "description": "Legacy single-model override for wave subtasks and wave revision/adopt-edits sessions."
+        },
+        "codePromptTemplate": {
+          "type": "string",
+          "default": ""
+        },
+        "codePromptTemplateSource": {
+          "type": "string",
+          "default": ""
+        },
+        "reviewAgent": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override selecting the coding agent backend for the read-only per-wave integration review."
+        },
+        "reviewModel": {
+          "type": "string",
+          "default": ""
+        },
+        "reviewPromptTemplate": {
+          "type": "string",
+          "default": ""
+        },
+        "reviewPromptTemplateSource": {
+          "type": "string",
+          "default": ""
+        },
+        "revisionPromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline prompt template overriding a requested revision's or adopted-edits' coding prompt."
+        },
+        "revisionPromptTemplateSource": {
+          "type": "string",
+          "default": ""
+        },
+        "maxTasks": {
+          "type": "integer",
+          "default": 25,
+          "description": "Upper bound on the number of DAG tasks the scheduler considers."
+        },
+        "maxParallelism": {
+          "type": "integer",
+          "default": 6,
+          "description": "Upper bound on subtasks forked within a single wave."
+        },
+        "maxWaves": {
+          "type": "integer",
+          "default": 20,
+          "description": "Maximum number of scheduling rounds before the plan is left with outcome 'running' but tasks still remaining, exactly like reaching designMaxIterations/planMaxIterations elsewhere -- never a hard TERMINATE."
+        },
+        "implementationMaxTurns": {
+          "type": "integer",
+          "default": 500,
+          "description": "Starting cap on agent turns per wave/review/revision session; a human reviewer may adjust it for subsequent waves via the same checkpoint-decision shape feature_campaign's other checkpoints use."
+        },
+        "implementationMaxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "Starting cap on USD spend per wave/review/revision session; same adjustment mechanism as implementationMaxTurns."
+        },
+        "specContextPath": {
+          "type": "string",
+          "default": ""
+        },
+        "contextPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Absolute filesystem paths granted to wave subtasks as read-only live context references."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": ""
+        },
+        "modelPolicy": {
+          "type": "object",
+          "default": {}
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": ""
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": ""
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": ""
+        },
+        "modelOverrides": {
+          "type": "object",
+          "default": {}
+        }
+      },
+      "required": [
+        "repoPath",
+        "callerWorkflow",
+        "plan",
+        "remainingTaskIds"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "implementation_waves_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "running",
+            "incomplete"
+          ],
+          "description": "'running' when the plan finished (or maxWaves was reached) without an explicit stop; 'incomplete' when a human explicitly stopped a wave. Never a hard TERMINATE -- the caller decides what an 'incomplete' or partially-implemented outcome means for its own state."
+        },
+        "feedback": {
+          "type": "string",
+          "description": "Latest review/checkpoint feedback, or the stop reason, or empty when the plan completed cleanly."
+        },
+        "completedTaskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Task ids successfully integrated across all waves."
+        },
+        "completedWaves": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Deduplicated list of wave numbers processed."
+        },
+        "remainingTaskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Task ids not yet completed; empty when the plan fully implemented, or when a human stopped."
+        },
+        "blockedTaskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Task ids the scheduler could not ready due to unmet or cyclic dependencies."
+        },
+        "sessions": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Per-task coding-agent session ids, for a caller that wants to resume a specific subtask later."
+        },
+        "reviewSession": {
+          "type": "string",
+          "description": "Backend session id of the last integration-review session, usable as a resume id."
+        },
+        "reconcileSession": {
+          "type": "string",
+          "description": "Backend session id of the last revision/adopt-edits session, usable as a resume id."
+        },
+        "lastReviewFindings": {
+          "type": "string",
+          "description": "The last integration review's findings text."
+        },
+        "finalMaxTurns": {
+          "type": "integer",
+          "description": "implementationMaxTurns, or a human-adjusted value from the last reviewed wave. A caller that shares one budget/turn pool across multiple phases (e.g. feature_campaign) should carry this forward as its own next-phase starting point."
+        },
+        "finalMaxBudgetUsd": {
+          "type": "number",
+          "description": "implementationMaxBudgetUsd, or a human-adjusted value from the last reviewed wave. Same carry-forward use as finalMaxTurns."
+        }
+      },
+      "required": [
+        "outcome",
+        "feedback",
+        "completedTaskIds",
+        "completedWaves",
+        "remainingTaskIds",
+        "blockedTaskIds",
+        "sessions",
+        "reviewSession",
+        "reconcileSession",
+        "lastReviewFindings",
+        "finalMaxTurns",
+        "finalMaxBudgetUsd"
+      ]
+    }
+  },
+  "inputTemplate": {
+    "allowedWriteRoots": [],
+    "codeAgent": "",
+    "codeModel": "",
+    "codePromptTemplate": "",
+    "codePromptTemplateSource": "",
+    "reviewAgent": "",
+    "reviewModel": "",
+    "reviewPromptTemplate": "",
+    "reviewPromptTemplateSource": "",
+    "revisionPromptTemplate": "",
+    "revisionPromptTemplateSource": "",
+    "maxTasks": 25,
+    "maxParallelism": 6,
+    "maxWaves": 20,
+    "implementationMaxTurns": 500,
+    "implementationMaxBudgetUsd": 50,
+    "specContextPath": "",
+    "contextPaths": [],
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "variables": {
+    "wave": 1,
+    "outcome": "running",
+    "feedback": "",
+    "completedTaskIds": [],
+    "completedWaves": [],
+    "remainingTaskIds": [],
+    "blockedTaskIds": [],
+    "campaignSessions": {},
+    "reviewSession": "",
+    "reconcileSession": "",
+    "lastReviewFindings": "",
+    "currentMaxTurns": 500,
+    "currentMaxBudgetUsd": 50
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "implementation_init",
+      "taskReferenceName": "implementation_init",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "currentMaxTurns": "${workflow.input.implementationMaxTurns}",
+        "currentMaxBudgetUsd": "${workflow.input.implementationMaxBudgetUsd}",
+        "remainingTaskIds": "${workflow.input.remainingTaskIds}"
+      }
+    },
+    {
+      "name": "implementation_loop",
+      "taskReferenceName": "implementation_loop",
+      "inputParameters": {
+        "implementation_loop": "${implementation_loop.output}",
+        "max_waves": "${workflow.input.maxWaves}",
+        "outcome": "${workflow.variables.outcome}",
+        "remaining": "${workflow.variables.remainingTaskIds}"
+      },
+      "type": "DO_WHILE",
+      "decisionCases": {},
+      "defaultCase": [],
+      "loopCondition": "(function(){ return $.implementation_loop['iteration'] < $.max_waves && $.outcome === 'running' && $.remaining.length > 0; })();",
+      "loopOver": [
+        {
+          "name": "campaign_schedule",
+          "taskReferenceName": "schedule_wave",
+          "inputParameters": {
+            "agent": "${workflow.input.codeAgent}",
+            "blockedTaskIds": "${workflow.variables.blockedTaskIds}",
+            "codePromptTemplate": "${workflow.input.codePromptTemplate}",
+            "codePromptTemplateSource": "${workflow.input.codePromptTemplateSource}",
+            "completedTaskIds": "${workflow.variables.completedTaskIds}",
+            "feedback": "${workflow.variables.feedback}",
+            "maxBudgetUsd": "${workflow.variables.currentMaxBudgetUsd}",
+            "maxParallelism": "${workflow.input.maxParallelism}",
+            "maxTasks": "${workflow.input.maxTasks}",
+            "maxTurns": "${workflow.variables.currentMaxTurns}",
+            "model": "${workflow.input.codeModel}",
+            "plan": "${workflow.input.plan}",
+            "repoPath": "${workflow.input.repoPath}",
+            "sessions": "${workflow.variables.campaignSessions}",
+            "specContextPath": "${workflow.input.specContextPath}",
+            "contextPaths": "${workflow.input.contextPaths}",
+            "wave": "${workflow.variables.wave}",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}"
+          },
+          "type": "SIMPLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "campaign_wave",
+          "taskReferenceName": "campaign_wave",
+          "inputParameters": {
+            "dynamicTasks": "${schedule_wave.output.dynamicTasks}",
+            "dynamicTasksInput": "${schedule_wave.output.dynamicTasksInput}"
+          },
+          "type": "FORK_JOIN_DYNAMIC",
+          "decisionCases": {},
+          "dynamicForkTasksParam": "dynamicTasks",
+          "dynamicForkTasksInputParamName": "dynamicTasksInput",
+          "defaultCase": []
+        },
+        {
+          "name": "wave_join",
+          "taskReferenceName": "wave_join",
+          "type": "JOIN",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "campaign_integrate",
+          "taskReferenceName": "integrate_wave",
+          "inputParameters": {
+            "repoPath": "${workflow.input.repoPath}",
+            "results": "${wave_join.output}"
+          },
+          "type": "SIMPLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "campaign_merge_state",
+          "taskReferenceName": "merge_campaign_state",
+          "inputParameters": {
+            "added": "${integrate_wave.output.completedTaskIds}",
+            "completed": "${workflow.variables.completedTaskIds}",
+            "newSessions": "${integrate_wave.output.sessions}",
+            "remaining": "${schedule_wave.output.remainingIds}",
+            "sessions": "${workflow.variables.campaignSessions}",
+            "wave": "${workflow.variables.wave}",
+            "waves": "${workflow.variables.completedWaves}"
+          },
+          "type": "SIMPLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "wave_state",
+          "taskReferenceName": "wave_state",
+          "inputParameters": {
+            "campaignSessions": "${merge_campaign_state.output.result.sessions}",
+            "completedTaskIds": "${merge_campaign_state.output.result.completed}",
+            "lastReviewFindings": ""
+          },
+          "type": "SET_VARIABLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "coding_agent",
+          "taskReferenceName": "wave_review",
+          "inputParameters": {
+            "agent": "${workflow.input.reviewAgent}",
+            "failSoft": true,
+            "maxBudgetUsd": "${workflow.variables.currentMaxBudgetUsd}",
+            "maxTurns": "${workflow.variables.currentMaxTurns}",
+            "model": "${workflow.input.reviewModel}",
+            "prompt": "Review integrated campaign wave ${workflow.variables.wave} against the approved design and DAG acceptance criteria. Identify blocking correctness issues, conflicts, or missing work. Do not edit. Integration: ${integrate_wave.output}",
+            "promptTemplate": "${workflow.input.reviewPromptTemplate}",
+            "promptTemplateSource": "${workflow.input.reviewPromptTemplateSource}",
+            "resumeSessionId": "${workflow.variables.reviewSession}",
+            "templateKey": "campaign_review",
+            "tools": [
+              "Read",
+              "Grep",
+              "Glob"
+            ],
+            "worktreePath": "${workflow.input.repoPath}",
+            "modelRole": "review",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}",
+            "modelResolution": "${model_policy.output}"
+          },
+          "type": "SIMPLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "review_state",
+          "taskReferenceName": "review_state",
+          "inputParameters": {
+            "lastReviewFindings": "${wave_review.output.result}",
+            "reviewSession": "${wave_review.output.sessionId}"
+          },
+          "type": "SET_VARIABLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "wave_checkpoint",
+          "taskReferenceName": "wave_checkpoint",
+          "inputParameters": {
+            "workflow": "${workflow.input.callerWorkflow}",
+            "actions": [
+              "continue",
+              "revise",
+              "adopt_edits",
+              "stop"
+            ],
+            "draft": {
+              "integration": "${integrate_wave.output}",
+              "readyTasks": "${schedule_wave.output.readyIds}",
+              "remainingTasks": "${merge_campaign_state.output.result.remaining}",
+              "review": "${wave_review.output.result}"
+            },
+            "phase": "wave",
+            "wave": "${workflow.variables.wave}"
+          },
+          "type": "WAIT",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "campaign_checkpoint",
+          "taskReferenceName": "wave_decision",
+          "inputParameters": {
+            "decision": "${wave_checkpoint.output}",
+            "maxBudgetUsd": "${workflow.variables.currentMaxBudgetUsd}",
+            "maxTurns": "${workflow.variables.currentMaxTurns}",
+            "phase": "wave",
+            "blockingStatus": "${wave_review.output.status}",
+            "blockingIntegrated": "${integrate_wave.output.integrated}"
+          },
+          "type": "SIMPLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "wave_limits",
+          "taskReferenceName": "wave_limits",
+          "inputParameters": {
+            "currentMaxBudgetUsd": "${wave_decision.output.maxBudgetUsd}",
+            "currentMaxTurns": "${wave_decision.output.maxTurns}"
+          },
+          "type": "SET_VARIABLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "next_wave_number",
+          "taskReferenceName": "next_wave_number",
+          "inputParameters": {
+            "evaluatorType": "graaljs",
+            "expression": "(function(){ return $.wave + 1; })();",
+            "wave": "${workflow.variables.wave}"
+          },
+          "type": "INLINE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "wave_action",
+          "taskReferenceName": "wave_action",
+          "inputParameters": {
+            "action": "${wave_decision.output.action}"
+          },
+          "type": "SWITCH",
+          "decisionCases": {
+            "adopt_edits": [
+              {
+                "name": "coding_agent",
+                "taskReferenceName": "adopt_wave_edits",
+                "inputParameters": {
+                  "agent": "${workflow.input.codeAgent}",
+                  "failSoft": true,
+                  "maxBudgetUsd": "${workflow.variables.currentMaxBudgetUsd}",
+                  "maxTurns": "${workflow.variables.currentMaxTurns}",
+                  "model": "${workflow.input.codeModel}",
+                  "allowedWriteRoots": "${workflow.input.allowedWriteRoots}",
+                  "prompt": "Reconcile the manual edits currently in this campaign worktree with the approved design and DAG. Preserve intentional edits, fix inconsistencies, and run focused checks. Do not commit or push. Operator note: ${wave_decision.output.feedback}",
+                  "promptTemplate": "${workflow.input.revisionPromptTemplate}",
+                  "promptTemplateSource": "${workflow.input.revisionPromptTemplateSource}",
+                  "resumeSessionId": "${workflow.variables.reconcileSession}",
+                  "templateKey": "campaign_revision",
+                  "worktreePath": "${workflow.input.repoPath}",
+                  "modelRole": "code",
+                  "modelProfile": "${workflow.input.modelProfile}",
+                  "modelPolicy": "${workflow.input.modelPolicy}",
+                  "modelPolicySource": "${workflow.input.modelPolicySource}",
+                  "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                  "modelsConfig": "${workflow.input.modelsConfig}",
+                  "modelOverrides": "${workflow.input.modelOverrides}",
+                  "modelResolution": "${model_policy.output}"
+                },
+                "type": "SIMPLE",
+                "decisionCases": {},
+                "defaultCase": []
+              },
+              {
+                "name": "commit",
+                "taskReferenceName": "commit_adopted_wave_edits",
+                "inputParameters": {
+                  "message": "feature campaign: adopt manual wave edits",
+                  "repoPath": "${workflow.input.repoPath}"
+                },
+                "type": "SIMPLE",
+                "decisionCases": {},
+                "defaultCase": []
+              },
+              {
+                "name": "adopt_wave_state",
+                "taskReferenceName": "adopt_wave_state",
+                "inputParameters": {
+                  "feedback": "Manual edits reconciled; repeat integration review: ${adopt_wave_edits.output.result}",
+                  "reconcileSession": "${adopt_wave_edits.output.sessionId}"
+                },
+                "type": "SET_VARIABLE",
+                "decisionCases": {},
+                "defaultCase": []
+              }
+            ],
+            "continue": [
+              {
+                "name": "continue_wave",
+                "taskReferenceName": "continue_wave",
+                "inputParameters": {
+                  "completedWaves": "${merge_campaign_state.output.result.waves}",
+                  "feedback": "",
+                  "remainingTaskIds": "${merge_campaign_state.output.result.remaining}",
+                  "wave": "${next_wave_number.output.result}"
+                },
+                "type": "SET_VARIABLE",
+                "decisionCases": {},
+                "defaultCase": []
+              }
+            ],
+            "revise": [
+              {
+                "name": "coding_agent",
+                "taskReferenceName": "revise_wave_work",
+                "inputParameters": {
+                  "agent": "${workflow.input.codeAgent}",
+                  "failSoft": true,
+                  "maxBudgetUsd": "${workflow.variables.currentMaxBudgetUsd}",
+                  "maxTurns": "${workflow.variables.currentMaxTurns}",
+                  "model": "${workflow.input.codeModel}",
+                  "allowedWriteRoots": "${workflow.input.allowedWriteRoots}",
+                  "prompt": "Apply the operator's corrective wave feedback to the integrated worktree, reconcile it with the approved design and DAG, and run focused checks. Do not commit or push. Feedback: ${wave_decision.output.feedback}",
+                  "promptTemplate": "${workflow.input.revisionPromptTemplate}",
+                  "promptTemplateSource": "${workflow.input.revisionPromptTemplateSource}",
+                  "resumeSessionId": "${workflow.variables.reconcileSession}",
+                  "templateKey": "campaign_revision",
+                  "worktreePath": "${workflow.input.repoPath}",
+                  "modelRole": "code",
+                  "modelProfile": "${workflow.input.modelProfile}",
+                  "modelPolicy": "${workflow.input.modelPolicy}",
+                  "modelPolicySource": "${workflow.input.modelPolicySource}",
+                  "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                  "modelsConfig": "${workflow.input.modelsConfig}",
+                  "modelOverrides": "${workflow.input.modelOverrides}",
+                  "modelResolution": "${model_policy.output}"
+                },
+                "type": "SIMPLE",
+                "decisionCases": {},
+                "defaultCase": []
+              },
+              {
+                "name": "commit",
+                "taskReferenceName": "commit_revised_wave_work",
+                "inputParameters": {
+                  "message": "feature campaign: corrective wave",
+                  "repoPath": "${workflow.input.repoPath}"
+                },
+                "type": "SIMPLE",
+                "decisionCases": {},
+                "defaultCase": []
+              },
+              {
+                "name": "revise_wave_state",
+                "taskReferenceName": "revise_wave_state",
+                "inputParameters": {
+                  "feedback": "Corrective pass completed; repeat integration review: ${revise_wave_work.output.result}",
+                  "reconcileSession": "${revise_wave_work.output.sessionId}"
+                },
+                "type": "SET_VARIABLE",
+                "decisionCases": {},
+                "defaultCase": []
+              }
+            ],
+            "stop": [
+              {
+                "name": "stop_implementation",
+                "taskReferenceName": "stop_implementation",
+                "inputParameters": {
+                  "feedback": "${wave_decision.output.feedback}",
+                  "outcome": "incomplete",
+                  "remainingTaskIds": []
+                },
+                "type": "SET_VARIABLE",
+                "decisionCases": {},
+                "defaultCase": []
+              }
+            ]
+          },
+          "defaultCase": [
+            {
+              "name": "revise_wave",
+              "taskReferenceName": "revise_wave",
+              "inputParameters": {
+                "feedback": "${wave_decision.output.feedback}"
+              },
+              "type": "SET_VARIABLE",
+              "decisionCases": {},
+              "defaultCase": []
+            }
+          ],
+          "evaluatorType": "value-param",
+          "expression": "action"
+        }
+      ],
+      "evaluatorType": "graaljs"
+    }
+  ],
+  "outputParameters": {
+    "outcome": "${workflow.variables.outcome}",
+    "feedback": "${workflow.variables.feedback}",
+    "completedTaskIds": "${workflow.variables.completedTaskIds}",
+    "completedWaves": "${workflow.variables.completedWaves}",
+    "remainingTaskIds": "${workflow.variables.remainingTaskIds}",
+    "blockedTaskIds": "${workflow.variables.blockedTaskIds}",
+    "sessions": "${workflow.variables.campaignSessions}",
+    "reviewSession": "${workflow.variables.reviewSession}",
+    "reconcileSession": "${workflow.variables.reconcileSession}",
+    "lastReviewFindings": "${workflow.variables.lastReviewFindings}",
+    "finalMaxTurns": "${workflow.variables.currentMaxTurns}",
+    "finalMaxBudgetUsd": "${workflow.variables.currentMaxBudgetUsd}"
+  },
+  "overwriteTags": false,
+  "enforceSchema": false
+}

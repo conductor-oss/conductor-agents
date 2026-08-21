@@ -130,7 +130,7 @@ done
 
 echo "[register] workflows (bulk upsert, sub-workflows first)…"
 # Sub-workflows must be available before workflows that pin their version.
-WORKFLOW_ORDER=(design_docs document_plan test_agent_fallback test_cycle merge_remediation openspec_generate_artifact openspec_artifact_drain openspec_plan campaign_subtask code_revision_loop code_subtask code_parallel feature_campaign openspec_development github_demo local_review publish_salvage issue_to_pr publish_verified_pr address_pr_repair address_pr_approval address_pr pr_review automation_reset automation_dispatch pr_review_sweep pr_address_sweep issue_resolution_sweep runtime_health)
+WORKFLOW_ORDER=(design_docs document_plan test_agent_fallback test_cycle merge_remediation openspec_generate_artifact openspec_artifact_drain openspec_plan campaign_subtask code_revision_loop code_subtask code_parallel pr_draft_approval dag_plan_approval implementation_waves final_verification feature_campaign openspec_development github_demo local_review publish_salvage issue_to_pr publish_verified_pr address_pr_repair address_pr_approval address_pr pr_review automation_reset automation_dispatch pr_review_sweep pr_address_sweep issue_resolution_sweep runtime_health)
 workflow_files=()
 for wf in "${WORKFLOW_ORDER[@]}"; do
   workflow_files+=("workflows/$wf.json")

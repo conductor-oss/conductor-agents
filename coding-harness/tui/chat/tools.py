@@ -45,6 +45,22 @@ def _required_inputs(workflow: str) -> list[str]:
     return keys
 
 
+def _missing_at_least_one_groups(workflow: str, inputs: dict) -> list[tuple[str, ...]]:
+    """Groups from catalog.AT_LEAST_ONE_OF_GROUPS with no member actually set.
+
+    A group member with a non-None Field default (e.g. feature_campaign's repo/repoPath/
+    workspacePath, all default "") never shows up in _required_inputs, so without this a
+    start with none of a group set would silently reach Conductor instead of being caught
+    here -- workspace_prepare would then raise at runtime with a much less actionable error.
+    """
+    spec = catalog.CATALOG.get(workflow)
+    if not spec:
+        return []
+    defaults = {f.name: f.default for f in spec.fields}
+    return [group for group in catalog.AT_LEAST_ONE_OF_GROUPS.get(workflow, ())
+            if not any(inputs.get(k) not in (None, "", defaults.get(k)) for k in group)]
+
+
 TOOLS = [
     {
         "name": "list_runs",
@@ -77,7 +93,9 @@ TOOLS = [
             "they want. Workflows and their REQUIRED inputs: "
             "local_review{repoPath}, pr_review{repo, prNumber}, issue_to_pr{repo, issueNumber, design}, "
             "address_pr{repo, prNumber}, code_parallel{repoPath, instruction}, "
-            "feature_campaign{repoPath, instruction}, "
+            "feature_campaign{one of repo/repoPath/workspacePath, one of instruction/issueNumber} "
+            "-- repoPath is a local directory the user names, repo is a GitHub URL/owner-name slug "
+            "to clone fresh; never put one under the other's key, "
             "openspec_development{specSource, changeId, repoPath?}; useSpecSourceWorkspace:true selects a local "
             "checked-out spec repository as the implementation worktree and publishes a draft PR. feature_campaign is checkpoint-first, "
             "keeps its verified branch local by default, and pushes/opens a PR only with explicit createPr:true. "
@@ -328,8 +346,11 @@ async def _start(i: dict, ctx: ToolContext) -> str:
     if inputs.get("inPlace") and inputs.get("createPr"):
         return "inPlace execution is local-only: set createPr:false. No workflow was started."
     missing = [k for k in _required_inputs(wf) if k not in inputs or inputs.get(k) in (None, "")]
-    if missing:
-        return f"missing required inputs for {wf}: {', '.join(missing)} — ask the user for them."
+    missing_groups = _missing_at_least_one_groups(wf, inputs)
+    if missing or missing_groups:
+        parts = list(missing)
+        parts.extend(f"one of {{{', '.join(group)}}}" for group in missing_groups)
+        return f"missing required inputs for {wf}: {', '.join(parts)} — ask the user for them."
     if not await ctx.client.workflow_registered(wf):
         return (
             f"error: {wf} is missing or stale on the selected Conductor server. "
@@ -513,8 +534,10 @@ async def _decide_approval(i: dict, ctx: ToolContext) -> str:
         "design_docs", "openspec_plan", "pr_review", "address_pr", "issue_to_pr",
     )
     resumable_action = action == "revise" and revision_capable
+    # design_docs now has a real graceful-stop decisionCase (like feature_campaign's),
+    # instead of always hard-failing the whole design_docs sub-workflow.
     suppressible_action = action == "stop" and item.workflow in (
-        "pr_review", "address_pr", "issue_to_pr",
+        "pr_review", "address_pr", "issue_to_pr", "design_docs",
     )
     investigable_action = action == "investigate" and item.workflow == "pr_review"
     status = "COMPLETED" if action == "approve" or resumable_action or suppressible_action or investigable_action \

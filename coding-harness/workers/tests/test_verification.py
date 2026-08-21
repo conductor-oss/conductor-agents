@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -268,6 +269,32 @@ def test_gradle_include_without_colon_maps_exact_changed_test(tmp_path: Path):
     assert found["coverage"] == "focused"
     assert found["candidates"][0]["argv"] == [
         "./gradlew", ":agentspan:test", "--tests", "io.orkes.AgentServiceTest",
+    ]
+
+
+def test_gradle_discovery_does_not_block_a_test_class_named_after_a_heavy_marker(tmp_path: Path):
+    # Reproduces execution eb97ddad-23f1-4b69-9ee0-1d906729293e end to end
+    # (orkes-io/orkes-mcpboot): a changed test file at
+    # lib/src/test/java/io/orkes/cloud/mcpboot/worker/MCPServerWorkerE2ETest.java
+    # wrongly reported command_discovery_blocked because the exact,
+    # maximally-scoped --tests candidate's class name contains "e2e".
+    (tmp_path / "gradlew").write_text("#!/bin/sh\n")
+    (tmp_path / "settings.gradle").write_text("include ':lib'\n")
+    test_file = tmp_path / "lib/src/test/java/io/orkes/cloud/mcpboot/worker/MCPServerWorkerE2ETest.java"
+    test_file.parent.mkdir(parents=True)
+    (tmp_path / "lib/build.gradle").write_text("")
+    test_file.write_text("class MCPServerWorkerE2ETest {}\n")
+    git.ensure_ready(str(tmp_path))
+    test_file.write_text("class MCPServerWorkerE2ETest { int changed; }\n")
+    candidate = _commit(tmp_path, "change the worker e2e test")
+
+    found = verification.discover_commands(str(tmp_path), candidate)
+
+    assert found["executionOutcome"] == "discovered"
+    assert found["coverage"] == "focused"
+    assert found["candidates"][0]["argv"] == [
+        "./gradlew", ":lib:test", "--tests",
+        "io.orkes.cloud.mcpboot.worker.MCPServerWorkerE2ETest",
     ]
 
 
@@ -916,13 +943,19 @@ def test_verifier_detaches_the_clone_remote_before_candidate_code_runs(tmp_git_r
     assert result["sourceRemoteDetached"] is True
 
 
-def test_gradle_verification_uses_an_isolated_cache_home_and_environment(monkeypatch: pytest.MonkeyPatch, tmp_git_repo: Path):
+def test_gradle_verification_uses_a_disposable_checkout_and_the_real_environment(
+        monkeypatch: pytest.MonkeyPatch, tmp_git_repo: Path):
+    # Deployment controls what credentials/config are present (Docker env,
+    # local shell/config files, sandbox-injected credentials); verification
+    # inherits the worker's real environment unfiltered, the same way a human
+    # running the same command by hand would -- see check_execution.isolated_environment.
     (tmp_git_repo / "gradlew").write_text("#!/bin/sh\n")
     candidate = _commit(tmp_git_repo, "gradle candidate")
     seen = {}
 
-    monkeypatch.setenv("GH_TOKEN", "must-not-reach-build")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "must-not-reach-build")
+    monkeypatch.setenv("GH_TOKEN", "a-real-worker-credential")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "a-real-worker-credential")
+    monkeypatch.delenv("GRADLE_USER_HOME", raising=False)
 
     def fake_run(argv, *, cwd, check, env=None, clean_env=False):
         seen["argv"] = argv
@@ -937,12 +970,17 @@ def test_gradle_verification_uses_an_isolated_cache_home_and_environment(monkeyp
 
     assert result["verificationState"] == "passed"
     assert result["commands"][0]["scope"] == "focused"
-    assert "conductor-dependency-cache" in seen["env"]["GRADLE_USER_HOME"]
-    assert not str(tmp_git_repo) in seen["env"]["GRADLE_USER_HOME"]
+    # GRADLE_USER_HOME is never redirected into the isolated dependency-cache
+    # directory -- left unset here (matching the real environment), so Gradle
+    # falls back to its own default and would find ~/.gradle/gradle.properties
+    # exactly as it would outside the harness.
+    assert "GRADLE_USER_HOME" not in seen["env"]
     assert seen["clean_env"] is True
-    assert "GH_TOKEN" not in seen["env"]
-    assert "AWS_SECRET_ACCESS_KEY" not in seen["env"]
-    assert seen["env"]["HOME"].endswith("/home")
+    assert seen["env"]["GH_TOKEN"] == "a-real-worker-credential"
+    assert seen["env"]["AWS_SECRET_ACCESS_KEY"] == "a-real-worker-credential"
+    assert seen["env"]["HOME"] == os.environ["HOME"]
+    # The disposable checkout itself is still a separate, source-remote-detached
+    # git directory -- unrelated to environment inheritance, still enforced.
     assert seen["git_dir_is_isolated"] is True
 
 
@@ -1051,6 +1089,45 @@ def test_heavy_marker_ignores_paths_but_still_blocks_targets(tmp_path: Path):
         verification.validate_argv(["npm", "test", "--", "--e2e"], root=tmp_path)
     with pytest.raises(verification.VerificationBlocked):
         verification.validate_argv(["pytest", "tests/integration/test_api.py"])
+
+
+def test_heavy_marker_exempts_a_single_target_class_filter_value(tmp_path: Path):
+    # A test class genuinely named ...E2ETest is not a broad suite merely
+    # because its author chose that name -- confirmed live: execution
+    # eb97ddad-23f1-4b69-9ee0-1d906729293e wrongly reported
+    # "command_discovery_blocked" for lib/src/test/java/io/orkes/cloud/mcpboot/
+    # worker/MCPServerWorkerE2ETest.java for exactly this reason, even though
+    # the invocation is a single, maximally-scoped --tests <class> run.
+    assert verification.validate_argv(
+        ["./gradlew", ":lib:test", "--tests",
+         "io.orkes.cloud.mcpboot.worker.MCPServerWorkerE2ETest"],
+        root=tmp_path,
+    ) == ["./gradlew", ":lib:test", "--tests",
+          "io.orkes.cloud.mcpboot.worker.MCPServerWorkerE2ETest"]
+    # Maven's -Dtest= equivalent.
+    assert verification.validate_argv(
+        ["./mvnw", "-pl", "lib", "test", "-Dtest=IntegrationE2ESmokeTest"],
+        root=tmp_path,
+    ) == ["./mvnw", "-pl", "lib", "test", "-Dtest=IntegrationE2ESmokeTest"]
+    # dotnet's --filter equivalent.
+    assert verification.validate_argv(
+        ["dotnet", "test", "--filter", "FullyQualifiedName=Widget.E2ETests.SmokeTest"],
+        root=tmp_path,
+    ) == ["dotnet", "test", "--filter", "FullyQualifiedName=Widget.E2ETests.SmokeTest"]
+
+
+def test_heavy_marker_still_blocks_a_heavy_task_or_script_name(tmp_path: Path):
+    # The exemption is shape/position based (which argv slot the token
+    # occupies), never string based (which characters it contains): a heavy
+    # TASK name still sits in the goal/entrypoint position, not a filter
+    # flag's value slot, and must still be blocked.
+    with pytest.raises(verification.VerificationBlocked):
+        verification.validate_argv(["./gradlew", "e2eTest"], root=tmp_path)
+    # A genuinely broad JUnit5 tag selector is a different property from
+    # -Dtest= and must not be swept up by the same prefix exemption.
+    with pytest.raises(verification.VerificationBlocked):
+        verification.validate_argv(["./mvnw", "-pl", "lib", "test", "-Dgroups=integration"],
+                                   root=tmp_path)
 
 
 def test_full_and_targeted_discovery_return_the_same_keys(tmp_path: Path):
@@ -1916,10 +1993,15 @@ def test_validate_agent_argv_full_mode_skips_anti_omission_and_allows_repository
     assert accepted[0]["scope"] == "repository"
 
 
-def test_isolated_environment_keeps_new_toolchain_caches_off_the_host(tmp_path: Path):
+def test_isolated_environment_leaves_toolchain_cache_locations_to_the_real_host(tmp_path: Path):
+    # These used to be forced into a synthetic per-run directory; they are now
+    # simply whatever the real worker environment has (absent here, matching
+    # a fresh os.environ), so a host that already configures one of these
+    # (e.g. a shared NuGet/Composer/Hex cache, or credentials colocated with
+    # it) is used exactly as it would be outside the harness.
     env = check_execution.isolated_environment(str(tmp_path))
     for key in ("NUGET_PACKAGES", "COMPOSER_HOME", "MIX_HOME", "HEX_HOME", "COURSIER_CACHE"):
-        assert str(tmp_path) in env[key], key
+        assert env.get(key) == os.environ.get(key), key
 
 
 # --- Values that used to be derived by one-line jq tasks ----------------------
@@ -2060,6 +2142,45 @@ def test_validate_authored_test_shape_accepts_a_well_formed_new_test_referencing
     assert result["reason"] == ""
     assert result["authoredPath"] == "test_widget.py"
     assert result["matchedIdentifier"] == "widget.py"
+
+
+def test_validate_authored_test_shape_ignores_pre_existing_dirty_paths_when_given_an_authoritative_touched_set(tmp_git_repo: Path):
+    # Confirmed live (execution eb97ddad-23f1-4b69-9ee0-1d906729293e): a raw
+    # whole-tree git status scan attributed 27 pre-existing untracked
+    # .gradle cache artifacts plus one stray untracked test file -- none of
+    # which the Bash-less author_missing_test agent could have produced -- to
+    # that one attempt, and rejected a genuinely well-formed single new test.
+    (tmp_git_repo / ".gradle").mkdir()
+    (tmp_git_repo / ".gradle" / "cache.bin").write_text("stale build cache\n")
+    (tmp_git_repo / "OtherStrayTest.py").write_text("def test_stray():\n    assert True\n")
+    (tmp_git_repo / "test_widget.py").write_text(
+        "import widget\n\n\ndef test_widget_behavior():\n    assert widget.value == 1\n")
+    candidate = git.head(str(tmp_git_repo))
+
+    result = verification.validate_authored_test_shape(
+        str(tmp_git_repo), candidate_commit=candidate, changed_paths=["widget.py"],
+        agent_touched_paths=["test_widget.py"])
+
+    assert result["accepted"] is True
+    assert result["authoredPath"] == "test_widget.py"
+    assert result["touchedPaths"] == ["test_widget.py"]
+
+
+def test_validate_authored_test_shape_still_catches_a_genuinely_smuggled_second_edit(tmp_git_repo: Path):
+    # The authoritative touched-set does not weaken the real guarantee: any
+    # path the agent's own tools genuinely touched this turn is still caught.
+    (tmp_git_repo / "test_widget.py").write_text(
+        "import widget\n\n\ndef test_widget_behavior():\n    assert widget.value == 1\n")
+    (tmp_git_repo / "helper.py").write_text("def helper():\n    return 2\n")
+    candidate = git.head(str(tmp_git_repo))
+
+    result = verification.validate_authored_test_shape(
+        str(tmp_git_repo), candidate_commit=candidate, changed_paths=["widget.py"],
+        agent_touched_paths=["test_widget.py", "helper.py"])
+
+    assert result["accepted"] is False
+    assert "2 paths" in result["reason"]
+    assert sorted(result["touchedPaths"]) == ["helper.py", "test_widget.py"]
 
 
 def test_discard_authored_test_attempt_removes_the_untracked_file_and_restores_a_modified_one(tmp_git_repo: Path):

@@ -1,0 +1,90 @@
+{
+  "name": "reconcile_branch_drift",
+  "description": "Merge a moved remote PR branch into the verified candidate branch; agent resolves conflicts if there are any.",
+  "retryCount": 0,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "pollTimeoutSeconds": 0,
+  "inputSchema": {
+    "name": "reconcile_branch_drift_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the local git checkout holding the verified candidate branch."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch name to reconcile against its remote counterpart."
+        },
+        "remote": {
+          "type": "string",
+          "default": "origin",
+          "description": "Remote name the branch has drifted on."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model identifier passed to the conflict-resolution agent. Falls back to the agent's default when omitted."
+        },
+        "maxResolutionAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 3,
+          "description": "Max agent attempts to resolve the conflict before it is marked unresolved. Clamped server-side to [1, 5]."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50.0,
+          "description": "USD budget ceiling for the conflict-resolution agent."
+        }
+      },
+      "required": [
+        "repoPath",
+        "branch"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "reconcile_branch_drift_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "mergeState": {
+          "type": "string",
+          "enum": [
+            "merged",
+            "resolved",
+            "conflicted"
+          ],
+          "description": "'merged': the remote's new commits touched none of the candidate's own changed files, trusted without re-verification. 'resolved': a real conflict was resolved by the agent -- the caller must re-verify before publishing. 'conflicted': resolution failed after maxResolutionAttempts; nothing is trusted, the merge is left aborted."
+        },
+        "commit": {
+          "type": "string",
+          "description": "HEAD commit SHA of repoPath after a successful merge/resolution; empty string when mergeState is 'conflicted'."
+        },
+        "tokenUsed": {
+          "type": "integer",
+          "description": "Total LLM tokens consumed across all conflict-resolution attempts; 0 for a clean merge."
+        },
+        "costUsd": {
+          "type": "number",
+          "description": "Total USD cost of conflict-resolution attempts; 0 for a clean merge."
+        }
+      },
+      "required": [
+        "mergeState",
+        "commit",
+        "tokenUsed",
+        "costUsd"
+      ]
+    }
+  }
+}

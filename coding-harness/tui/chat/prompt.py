@@ -12,8 +12,11 @@ def _workflow_lines() -> str:
         spec = catalog.CATALOG[name]
         req = [k for f in spec.fields if f.required for k in f.targets]
         opt = [f.name for f in spec.fields if not f.required]
+        req_parts = list(req)
+        req_parts.extend(f"one of {{{', '.join(group)}}}"
+                         for group in catalog.AT_LEAST_ONE_OF_GROUPS.get(name, ()))
         lines.append(f"- {name}: {spec.action}. "
-                     f"required: {', '.join(req)}. optional: {', '.join(opt)}.")
+                     f"required: {', '.join(req_parts)}. optional: {', '.join(opt)}.")
     return "\n".join(lines)
 
 
@@ -37,6 +40,13 @@ expanded absolute `repoPath`; it reads the supplied folder directly and compares
 changes. It never edits, commits, pushes, or posts a review. Other coding workflows create a
 new run-owned branch in an isolated git worktree and include every Git-visible uncommitted
 source change in its baseline.
+A bare local directory or checkout the user names -- an absolute path, a `~/...` path, or a
+relative path -- always maps to that workflow's own local-path input
+({', '.join(catalog.LOCAL_PATH_FIELDS)}: `repoPath` for code_parallel/feature_campaign/
+local_review, `specSource` for openspec_development). Never put a named local directory
+under `repo`, which is exclusively a GitHub URL or `owner/name` slug used to clone a fresh
+copy; `repo` and `repoPath` are mutually exclusive ways to say where to work, not
+interchangeable.
 Leave `keepWorktree:true` unless
 the user explicitly asks for cleanup.
 When the user asks to implement directly in an existing checkout with no PR or push, use

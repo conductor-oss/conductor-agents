@@ -227,9 +227,11 @@ def test_authored_test_validate(task):
     i = task.input_data or {}
     try:
         changed_paths = i.get("changedPaths")
+        agent_touched_paths = i.get("agentTouchedPaths")
         result = verification.validate_authored_test_shape(
             str(i["repoPath"]), candidate_commit=str(i["candidateCommit"]),
-            changed_paths=changed_paths if isinstance(changed_paths, list) else [])
+            changed_paths=changed_paths if isinstance(changed_paths, list) else [],
+            agent_touched_paths=agent_touched_paths if isinstance(agent_touched_paths, list) else None)
         return ok(task, result,
                   [f"[test_authored_test_validate] accepted={result['accepted']} "
                    f"path={result.get('authoredPath') or '(none)'} reason={result.get('reason') or ''}"])

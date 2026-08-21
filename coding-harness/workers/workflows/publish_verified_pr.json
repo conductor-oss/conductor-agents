@@ -1,7 +1,7 @@
 {
   "name": "publish_verified_pr",
   "version": 1,
-  "description": "Push one approved, locally verified candidate only when the local branch and remote PR head still match, then require exact-SHA GitHub checks before posting the supplied success comment.",
+  "description": "Push one approved, locally verified candidate only when the local branch and remote PR head still match (reconciling a moved remote branch first when they don't), then post the supplied success comment. Completes once the branch is updated -- CI status is left to GitHub's own PR page, not polled here.",
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
   "inputParameters": [
@@ -18,7 +18,12 @@
     "modelPolicySource",
     "modelPolicySha256",
     "modelsConfig",
-    "modelOverrides"
+    "modelOverrides",
+    "reconcileModel",
+    "reconcileMaxResolutionAttempts",
+    "reconcileMaxBudgetUsd",
+    "allowAgentTestPlan",
+    "allowAgentAuthoredTests"
   ],
   "inputTemplate": {
     "replyBody": "",
@@ -27,7 +32,12 @@
     "modelPolicySource": "",
     "modelPolicySha256": "",
     "modelsConfig": "",
-    "modelOverrides": {}
+    "modelOverrides": {},
+    "reconcileModel": "",
+    "reconcileMaxResolutionAttempts": 3,
+    "reconcileMaxBudgetUsd": 50.0,
+    "allowAgentTestPlan": true,
+    "allowAgentAuthoredTests": true
   },
   "inputSchema": {
     "name": "publish_verified_pr_input",
@@ -114,6 +124,33 @@
           ],
           "default": {},
           "description": "Per-role model overrides (or a JSON string of the same) merged on top of the selected profile."
+        },
+        "reconcileModel": {
+          "type": "string",
+          "default": "",
+          "description": "Model identifier passed to the branch-drift conflict-resolution agent. Falls back to the agent's default when omitted; only used when the remote branch has drifted."
+        },
+        "reconcileMaxResolutionAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 3,
+          "description": "Max agent attempts to resolve a real branch-drift conflict before publication is blocked as branch_drift."
+        },
+        "reconcileMaxBudgetUsd": {
+          "type": "number",
+          "default": 50.0,
+          "description": "USD budget ceiling for the branch-drift conflict-resolution agent."
+        },
+        "allowAgentTestPlan": {
+          "type": "boolean",
+          "default": true,
+          "description": "Forwarded to the re-verification test_cycle sub-workflow run after a resolved branch-drift conflict: when true and deterministic discovery is configuration_blocked, lets a coding agent search for and propose an existing test command as a last resort."
+        },
+        "allowAgentAuthoredTests": {
+          "type": "boolean",
+          "default": true,
+          "description": "Forwarded to the re-verification test_cycle sub-workflow run after a resolved branch-drift conflict: when true and allowAgentTestPlan's search also finds nothing, lets a coding agent author exactly one new test file, accepted only after a red/green check (fails against the pre-candidate baseline, passes against the real candidate change)."
         }
       },
       "required": [
@@ -149,63 +186,6 @@
           "type": "string",
           "description": "Commit SHA that was actually pushed; empty string if the push never happened."
         },
-        "ciState": {
-          "type": "string",
-          "enum": [
-            "pending",
-            "passed",
-            "failed",
-            "unknown",
-            "empty",
-            "permission_blocked",
-            "policy_blocked"
-          ],
-          "description": "Final CI verification state observed for the pushed commit, or the publication-block reason when the push itself never happened."
-        },
-        "checks": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string"
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "check-run",
-                  "status"
-                ]
-              },
-              "state": {
-                "type": "string",
-                "enum": [
-                  "passing",
-                  "failed",
-                  "pending",
-                  "unknown"
-                ]
-              },
-              "rawStatus": {
-                "type": "string"
-              },
-              "conclusion": {
-                "type": "string"
-              },
-              "url": {
-                "type": "string"
-              }
-            }
-          },
-          "description": "Individual GitHub check-run/status evidence for the pushed commit; empty when the push was blocked or no checks were reported."
-        },
-        "links": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "URLs of the reported CI checks."
-        },
         "publicationState": {
           "type": "string",
           "enum": [
@@ -213,14 +193,33 @@
             "published",
             "permission_blocked",
             "policy_blocked",
-            "ci_blocked",
-            "branch_drift"
+            "branch_drift",
+            "conflict_verification_failed"
           ],
-          "description": "Final publication outcome: 'published' once the success comment was posted, 'branch_drift' if the remote head moved before pushing, 'ci_blocked' if checks never passed within the polling window, otherwise the specific push/CI block reason."
+          "description": "Final publication outcome: 'published' once the push succeeded and the success comment was posted (this workflow does not wait for CI -- GitHub's own PR page reports check status independently), 'branch_drift' if the remote head moved before pushing and reconciliation could not produce a trustable commit (no candidate covers it, or a resolved conflict failed re-verification -- see 'conflict_verification_failed' for that specific case), otherwise the specific push block reason."
         },
         "replyUrl": {
           "type": "string",
           "description": "URL of the posted success comment; empty string unless publicationState is 'published'."
+        },
+        "reconcileState": {
+          "type": "string",
+          "enum": [
+            "",
+            "merged",
+            "resolved",
+            "resolved_but_unverified",
+            "conflicted"
+          ],
+          "description": "Empty when the remote never drifted. 'merged': the remote's new commits did not overlap the candidate's own changes, pushed without re-verification. 'resolved': a real conflict was resolved and re-verified before pushing. 'resolved_but_unverified': a conflict was resolved but re-verification failed, so nothing was pushed. 'conflicted': resolution itself failed, so nothing was pushed."
+        },
+        "reconcileTokens": {
+          "type": "integer",
+          "description": "LLM tokens consumed by branch-drift conflict resolution; 0 when the remote never drifted or the merge was clean."
+        },
+        "reconcileCostUsd": {
+          "type": "number",
+          "description": "USD cost of branch-drift conflict resolution; 0 when the remote never drifted or the merge was clean."
         }
       },
       "required": [
@@ -228,22 +227,24 @@
         "candidateCommit",
         "pushed",
         "pushedHead",
-        "ciState",
-        "checks",
-        "links",
         "publicationState",
-        "replyUrl"
+        "replyUrl",
+        "reconcileState",
+        "reconcileTokens",
+        "reconcileCostUsd"
       ]
     }
   },
   "variables": {
-    "ciState": "pending",
-    "checks": [],
-    "links": [],
     "publicationState": "pending",
     "pushed": false,
     "pushedHead": "",
-    "replyUrl": ""
+    "replyUrl": "",
+    "readyToPush": false,
+    "pushExpectedHead": "",
+    "reconcileState": "",
+    "reconcileTokens": 0,
+    "reconcileCostUsd": 0.0
   },
   "tasks": [
     {
@@ -292,6 +293,148 @@
       "decisionCases": {
         "matched": [
           {
+            "name": "capture_ready_to_push",
+            "taskReferenceName": "capture_ready_to_push",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "readyToPush": true,
+              "pushExpectedHead": "${workflow.input.candidateCommit}"
+            }
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "reconcile_branch_drift",
+          "taskReferenceName": "reconcile",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "repoPath": "${workflow.input.repoPath}",
+            "branch": "${workflow.input.branch}",
+            "model": "${workflow.input.reconcileModel}",
+            "maxResolutionAttempts": "${workflow.input.reconcileMaxResolutionAttempts}",
+            "maxBudgetUsd": "${workflow.input.reconcileMaxBudgetUsd}"
+          }
+        },
+        {
+          "name": "capture_reconcile_usage",
+          "taskReferenceName": "capture_reconcile_usage",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "reconcileTokens": "${reconcile.output.tokenUsed}",
+            "reconcileCostUsd": "${reconcile.output.costUsd}"
+          }
+        },
+        {
+          "name": "reconcile_gate",
+          "taskReferenceName": "reconcile_gate",
+          "type": "SWITCH",
+          "evaluatorType": "value-param",
+          "expression": "state",
+          "inputParameters": {
+            "state": "${reconcile.output.mergeState}"
+          },
+          "decisionCases": {
+            "merged": [
+              {
+                "name": "capture_reconciled_merge",
+                "taskReferenceName": "capture_reconciled_merge",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "readyToPush": true,
+                  "pushExpectedHead": "${reconcile.output.commit}",
+                  "reconcileState": "merged"
+                }
+              }
+            ],
+            "resolved": [
+              {
+                "name": "test_cycle",
+                "taskReferenceName": "revalidate_reconciled_candidate",
+                "type": "SUB_WORKFLOW",
+                "subWorkflowParam": {
+                  "name": "test_cycle",
+                  "version": 1
+                },
+                "inputParameters": {
+                  "repoPath": "${workflow.input.repoPath}",
+                  "candidateCommit": "${reconcile.output.commit}",
+                  "testMode": "targeted",
+                  "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
+                  "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
+                  "modelProfile": "${workflow.input.modelProfile}",
+                  "modelPolicy": "${workflow.input.modelPolicy}",
+                  "modelPolicySource": "${workflow.input.modelPolicySource}",
+                  "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                  "modelsConfig": "${workflow.input.modelsConfig}",
+                  "modelOverrides": "${workflow.input.modelOverrides}"
+                }
+              },
+              {
+                "name": "reconcile_verify_gate",
+                "taskReferenceName": "reconcile_verify_gate",
+                "type": "SWITCH",
+                "evaluatorType": "value-param",
+                "expression": "state",
+                "inputParameters": {
+                  "state": "${revalidate_reconciled_candidate.output.testsPassed}"
+                },
+                "decisionCases": {
+                  "true": [
+                    {
+                      "name": "capture_reconciled_verified",
+                      "taskReferenceName": "capture_reconciled_verified",
+                      "type": "SET_VARIABLE",
+                      "inputParameters": {
+                        "readyToPush": true,
+                        "pushExpectedHead": "${reconcile.output.commit}",
+                        "reconcileState": "resolved"
+                      }
+                    }
+                  ]
+                },
+                "defaultCase": [
+                  {
+                    "name": "capture_reconcile_verification_failed",
+                    "taskReferenceName": "capture_reconcile_verification_failed",
+                    "type": "SET_VARIABLE",
+                    "inputParameters": {
+                      "readyToPush": false,
+                      "publicationState": "conflict_verification_failed",
+                      "reconcileState": "resolved_but_unverified"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "defaultCase": [
+            {
+              "name": "capture_branch_drift",
+              "taskReferenceName": "capture_branch_drift",
+              "type": "SET_VARIABLE",
+              "inputParameters": {
+                "readyToPush": false,
+                "publicationState": "branch_drift",
+                "reconcileState": "conflicted"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "push_ready_gate",
+      "taskReferenceName": "push_ready_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "ready",
+      "inputParameters": {
+        "ready": "${workflow.variables.readyToPush}"
+      },
+      "decisionCases": {
+        "true": [
+          {
             "name": "git_push",
             "taskReferenceName": "push",
             "type": "SIMPLE",
@@ -299,64 +442,20 @@
               "repoPath": "${workflow.input.repoPath}",
               "branch": "${workflow.input.branch}",
               "setUpstream": true,
-              "expectedHead": "${workflow.input.candidateCommit}"
+              "expectedHead": "${workflow.variables.pushExpectedHead}"
             }
           },
           {
-            "name": "pr_commit_checks",
-            "taskReferenceName": "ci",
-            "type": "SIMPLE",
-            "inputParameters": {
-              "repo": "${workflow.input.repo}",
-              "sha": "${push.output.head}",
-              "pushed": "${push.output.pushed}",
-              "publicationState": "${push.output.publicationState}",
-              "publicationReason": "${push.output.reason}"
-            }
-          },
-          {
-            "name": "capture_initial_ci",
-            "taskReferenceName": "capture_initial_ci",
-            "type": "SET_VARIABLE",
-            "inputParameters": {
-              "ciState": "${ci.output.ciState}",
-              "checks": "${ci.output.checks}",
-              "links": "${ci.output.links}",
-              "pushed": "${push.output.pushed}",
-              "pushedHead": "${push.output.head}"
-            }
-          },
-          {
-            "name": "ci_verification_gate",
-            "taskReferenceName": "ci_verification_gate",
+            "name": "push_result_gate",
+            "taskReferenceName": "push_result_gate",
             "type": "SWITCH",
             "evaluatorType": "value-param",
-            "expression": "state",
+            "expression": "pushed",
             "inputParameters": {
-              "state": "${workflow.variables.ciState}"
+              "pushed": "${push.output.pushed}"
             },
             "decisionCases": {
-              "permission_blocked": [
-                {
-                  "name": "capture_permission_blocked",
-                  "taskReferenceName": "capture_permission_blocked",
-                  "type": "SET_VARIABLE",
-                  "inputParameters": {
-                    "publicationState": "permission_blocked"
-                  }
-                }
-              ],
-              "policy_blocked": [
-                {
-                  "name": "capture_policy_blocked",
-                  "taskReferenceName": "capture_policy_blocked",
-                  "type": "SET_VARIABLE",
-                  "inputParameters": {
-                    "publicationState": "policy_blocked"
-                  }
-                }
-              ],
-              "passed": [
+              "true": [
                 {
                   "name": "pr_comment",
                   "taskReferenceName": "reply",
@@ -374,120 +473,28 @@
                   "type": "SET_VARIABLE",
                   "inputParameters": {
                     "publicationState": "published",
+                    "pushed": true,
+                    "pushedHead": "${push.output.head}",
                     "replyUrl": "${reply.output.url}"
                   }
-                }
-              ],
-              "pending": [
-                {
-                  "name": "ci_poll",
-                  "taskReferenceName": "ci_poll",
-                  "type": "DO_WHILE",
-                  "evaluatorType": "graaljs",
-                  "loopCondition": "(function(){ return $.ci_poll['iteration'] < 6 && ($.ciState === 'pending' || $.ciState === 'empty'); })();",
-                  "inputParameters": {
-                    "ci_poll": "${ci_poll.output}",
-                    "ciState": "${workflow.variables.ciState}"
-                  },
-                  "loopOver": [
-                    {
-                      "name": "wait_for_ci",
-                      "taskReferenceName": "ci_wait",
-                      "type": "WAIT",
-                      "inputParameters": {
-                        "duration": "5m"
-                      }
-                    },
-                    {
-                      "name": "pr_commit_checks",
-                      "taskReferenceName": "ci_poll_check",
-                      "type": "SIMPLE",
-                      "inputParameters": {
-                        "repo": "${workflow.input.repo}",
-                        "sha": "${push.output.head}"
-                      }
-                    },
-                    {
-                      "name": "capture_polled_ci",
-                      "taskReferenceName": "capture_polled_ci",
-                      "type": "SET_VARIABLE",
-                      "inputParameters": {
-                        "ciState": "${ci_poll_check.output.verificationState}",
-                        "checks": "${ci_poll_check.output.checks}",
-                        "links": "${ci_poll_check.output.links}"
-                      }
-                    }
-                  ]
-                },
-                {
-                  "name": "ci_poll_final",
-                  "taskReferenceName": "ci_poll_final",
-                  "type": "SWITCH",
-                  "evaluatorType": "value-param",
-                  "expression": "state",
-                  "inputParameters": {
-                    "state": "${workflow.variables.ciState}"
-                  },
-                  "decisionCases": {
-                    "passed": [
-                      {
-                        "name": "pr_comment",
-                        "taskReferenceName": "reply_after_poll",
-                        "type": "SIMPLE",
-                        "inputParameters": {
-                          "repoPath": "${workflow.input.repoPath}",
-                          "repo": "${workflow.input.repo}",
-                          "number": "${workflow.input.prNumber}",
-                          "body": "${workflow.input.replyBody}"
-                        }
-                      },
-                      {
-                        "name": "capture_polled_publication_success",
-                        "taskReferenceName": "capture_polled_publication_success",
-                        "type": "SET_VARIABLE",
-                        "inputParameters": {
-                          "publicationState": "published",
-                          "replyUrl": "${reply_after_poll.output.url}"
-                        }
-                      }
-                    ]
-                  },
-                  "defaultCase": [
-                    {
-                      "name": "capture_ci_blocked",
-                      "taskReferenceName": "capture_ci_blocked",
-                      "type": "SET_VARIABLE",
-                      "inputParameters": {
-                        "publicationState": "ci_blocked"
-                      }
-                    }
-                  ]
                 }
               ]
             },
             "defaultCase": [
               {
-                "name": "capture_initial_ci_blocked",
-                "taskReferenceName": "capture_initial_ci_blocked",
+                "name": "capture_push_blocked",
+                "taskReferenceName": "capture_push_blocked",
                 "type": "SET_VARIABLE",
                 "inputParameters": {
-                  "publicationState": "ci_blocked"
+                  "publicationState": "${push.output.publicationState}",
+                  "pushed": false
                 }
               }
             ]
           }
         ]
       },
-      "defaultCase": [
-        {
-          "name": "capture_branch_drift",
-          "taskReferenceName": "capture_branch_drift",
-          "type": "SET_VARIABLE",
-          "inputParameters": {
-            "publicationState": "branch_drift"
-          }
-        }
-      ]
+      "defaultCase": []
     }
   ],
   "outputParameters": {
@@ -495,11 +502,11 @@
     "candidateCommit": "${workflow.input.candidateCommit}",
     "pushed": "${workflow.variables.pushed}",
     "pushedHead": "${workflow.variables.pushedHead}",
-    "ciState": "${workflow.variables.ciState}",
-    "checks": "${workflow.variables.checks}",
-    "links": "${workflow.variables.links}",
     "publicationState": "${workflow.variables.publicationState}",
-    "replyUrl": "${workflow.variables.replyUrl}"
+    "replyUrl": "${workflow.variables.replyUrl}",
+    "reconcileState": "${workflow.variables.reconcileState}",
+    "reconcileTokens": "${workflow.variables.reconcileTokens}",
+    "reconcileCostUsd": "${workflow.variables.reconcileCostUsd}"
   },
   "restartable": true,
   "timeoutSeconds": 0,

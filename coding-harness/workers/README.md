@@ -176,9 +176,10 @@ Integration conflicts fail soft and return to the checkpoint. Stop retains
 the branch with an incomplete outcome. Campaigns retain the verified branch locally by default;
 set `createPr:true` explicitly to push it and open a PR.
 
-Campaign checks and exact-SHA verification use the same command runner. Each gets an isolated
-per-run home, an external reusable dependency cache, an unbounded process lifetime, external artifact logs,
-and runtime evidence. Attached profiles pass only names declared in `requiredEnv`; set
+Campaign checks and exact-SHA verification use the same command runner. Each gets the worker's
+real environment (whatever the deployment provides -- Docker env, local shell/config files like
+`~/.gradle/gradle.properties`, or a sandbox's injected credentials -- nothing here filters or
+redirects it), an unbounded process lifetime, external artifact logs, and runtime evidence. Set
 `CONDUCTOR_ARTIFACT_ROOT` to choose where retained check logs live. Check/profile `timeoutSeconds`
 is rejected so repository configuration cannot reintroduce a hidden deadline.
 

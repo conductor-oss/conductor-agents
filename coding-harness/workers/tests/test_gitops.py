@@ -22,6 +22,7 @@ from gitops.tasks import (
     plan_source_detect,
     pr_create,
     prepare_repo,
+    reconcile_branch_drift,
     worktree_add,
 )
 
@@ -454,3 +455,95 @@ def test_merge_worktrees_aborts_when_resolution_fails(
     assert out["unresolved"] == ["cc-group-c"]
     # ...and the merge was aborted, so the working tree is NOT left broken.
     assert git.has_conflicts(repo) == []
+
+
+# --- core path 3: reconcile_branch_drift (publish_verified_pr's branch-drift path) ---
+
+def _clone_with_origin(source: Path, dest: Path) -> str:
+    subprocess.run(["git", "clone", str(source), str(dest)], check=True, capture_output=True)
+    git.git(str(dest), "config", "user.name", "Conductor Test")
+    git.git(str(dest), "config", "user.email", "test@conductor.local")
+    git.git(str(dest), "config", "commit.gpgsign", "false")
+    return str(dest)
+
+
+def test_reconcile_branch_drift_merges_cleanly_when_changes_do_not_overlap(fake_task_input, tmp_git_repo, tmp_path):
+    origin = str(tmp_git_repo)
+    local = _clone_with_origin(tmp_git_repo, tmp_path / "local")
+    # The remote drifted (a new commit landed on origin's main after local cloned it)...
+    _commit_file(origin, "from-remote.txt", "remote work\n", "remote drift")
+    # ...while local independently produced its own verified candidate commit.
+    _commit_file(local, "candidate.txt", "candidate work\n", "verified candidate")
+    candidate_head = git.head(local)
+
+    result = reconcile_branch_drift(fake_task_input(repoPath=local, branch="main"))
+
+    assert _completed(result)
+    out = result.output_data
+    assert out["mergeState"] == "merged"
+    assert out["commit"] != candidate_head
+    assert out["tokenUsed"] == 0
+    assert out["costUsd"] == 0.0
+    # Both the candidate's own file and the remote's new file are present --
+    # nothing was discarded or force-overwritten.
+    assert (Path(local) / "candidate.txt").exists()
+    assert (Path(local) / "from-remote.txt").exists()
+    # The original verified candidate commit is still reachable as an ancestor
+    # (a merge, not a rebase) -- its own SHA/content is never rewritten.
+    assert git.git(local, "merge-base", "--is-ancestor", candidate_head, "HEAD", check=False).code == 0
+
+
+def test_reconcile_branch_drift_resolves_a_real_conflict_and_flags_it_for_reverification(
+    fake_task_input, tmp_git_repo, tmp_path, monkeypatch
+):
+    origin = str(tmp_git_repo)
+    local = _clone_with_origin(tmp_git_repo, tmp_path / "local")
+    # Both sides edit the exact same file -- a genuine conflict.
+    _commit_file(origin, "README.md", "remote side\n", "remote edit")
+    _commit_file(local, "README.md", "candidate side\n", "candidate edit")
+
+    def fake_run_agent(prompt, *, cwd, model=None, write=False, **kw):
+        for f in git.has_conflicts(cwd):
+            git.git(cwd, "checkout", "--ours", "--", f, check=False)
+        return {"ok": True, "tokens": 17, "cost_usd": 0.02}
+
+    monkeypatch.setattr("common.claude.run_agent", fake_run_agent)
+
+    result = reconcile_branch_drift(fake_task_input(repoPath=local, branch="main"))
+
+    assert _completed(result)
+    out = result.output_data
+    # "resolved", not "merged": a real conflict was resolved, so the caller
+    # must re-verify this new content before publishing it -- unlike a clean
+    # merge, this is genuinely unverified.
+    assert out["mergeState"] == "resolved"
+    assert out["commit"]
+    assert out["tokenUsed"] == 17
+    assert out["costUsd"] == 0.02
+    assert git.has_conflicts(local) == []
+
+
+def test_reconcile_branch_drift_leaves_the_tree_clean_when_resolution_fails(
+    fake_task_input, tmp_git_repo, tmp_path, monkeypatch
+):
+    origin = str(tmp_git_repo)
+    local = _clone_with_origin(tmp_git_repo, tmp_path / "local")
+    _commit_file(origin, "README.md", "remote side\n", "remote edit")
+    _commit_file(local, "README.md", "candidate side\n", "candidate edit")
+    candidate_head = git.head(local)
+
+    def fake_run_agent(prompt, *, cwd, model=None, write=False, **kw):
+        return {"ok": False, "error": "could not resolve", "tokens": 3, "cost_usd": 0.0}
+
+    monkeypatch.setattr("common.claude.run_agent", fake_run_agent)
+
+    result = reconcile_branch_drift(fake_task_input(repoPath=local, branch="main"))
+
+    assert _completed(result)
+    out = result.output_data
+    assert out["mergeState"] == "conflicted"
+    assert out["commit"] == ""
+    # The merge was aborted: no lingering conflict markers, and the candidate's
+    # own commit is untouched -- nothing unverified is left sitting on top of it.
+    assert git.has_conflicts(local) == []
+    assert git.head(local) == candidate_head

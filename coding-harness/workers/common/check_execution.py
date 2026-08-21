@@ -23,21 +23,6 @@ from pathlib import Path
 from typing import Iterable
 
 
-_BASE_ENV_KEYS = (
-    "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP",
-    "SYSTEMROOT", "WINDIR", "COMSPEC", "SSL_CERT_FILE", "SSL_CERT_DIR",
-    "REQUESTS_CA_BUNDLE", "TERM",
-)
-_RUNTIME_ENV_KEYS = (
-    "JAVA_HOME", "GRADLE_HOME", "MAVEN_HOME", "M2_HOME", "NODE_HOME",
-    "PYENV_ROOT", "ASDF_DIR", "RUSTUP_HOME", "CARGO_HOME", "GOROOT",
-    # Toolchain installation/configuration paths are not credentials. Preserve
-    # them so launchd/systemd workers behave like the trusted interactive host
-    # for Android, Apple/Swift, C/C++, Go, and .NET repositories.
-    "ANDROID_HOME", "ANDROID_SDK_ROOT", "DEVELOPER_DIR", "SDKROOT", "TOOLCHAINS",
-    "CC", "CXX", "CMAKE_PREFIX_PATH", "PKG_CONFIG_PATH", "VCPKG_ROOT", "CONAN_HOME",
-    "GOPATH", "DOTNET_ROOT", "MSBuildSDKsPath", "NUGET_PACKAGES", "SWIFT_EXEC",
-)
 _MAX_CAPTURE_CHARS = 1_000_000
 _TRANSIENT_SPAWN_ERRNOS = {errno.EAGAIN, errno.ENOMEM, errno.EMFILE, errno.ENFILE}
 JAVA_ENTRYPOINTS = {"./gradlew", "gradle", "./mvnw", "mvn"}
@@ -247,19 +232,27 @@ def isolated_environment(
     required_env: Iterable[str] = (),
     dependency_cache_dir: str | Path | None = None,
 ) -> dict[str, str]:
-    """Create a repeatable command environment with per-run homes and caches.
+    """Return the worker's real environment for a repository command.
 
-    ``required_env`` is deliberately name-based: attached campaign profiles
-    can pass a declared endpoint or feature flag without inheriting every
-    credential and incidental shell setting from the worker process.
+    Deployment controls what is actually present here, not this function: a
+    Docker image sets the env vars a build needs, a local run uses the
+    operator's own shell/config (``~/.gradle/gradle.properties``, ``~/.npmrc``,
+    ``~/.m2/settings.xml``, ...), a sandboxed host has them injected before the
+    worker starts. This inherits ``os.environ`` and every HOME-rooted
+    config/cache location unchanged, so a repository that needs an
+    authenticated package registry -- or any other machine-level
+    configuration -- just works, the same way it would for a human running
+    the same command by hand. ``required_env``/``dependency_cache_dir`` are
+    accepted for call-site compatibility (``state_dir``/``dependency_cache_dir``
+    still get created on disk for verification.py's own diagnostic
+    bookkeeping) but no longer filter or redirect anything: everything named
+    in ``required_env`` is already present via full inheritance.
     """
     root = Path(state_dir)
-    home = root / "home"
     cache = Path(dependency_cache_dir) if dependency_cache_dir else root / "cache"
-    for directory in (home, cache, home / ".config", home / ".local" / "share"):
-        directory.mkdir(parents=True, exist_ok=True)
+    cache.mkdir(parents=True, exist_ok=True)
 
-    env = {key: os.environ[key] for key in _BASE_ENV_KEYS if os.environ.get(key)}
+    env = dict(os.environ)
     # Service managers commonly provide only /usr/bin:/bin.  Resolve the
     # ordinary package-manager locations explicitly so a worker launched by
     # launchd/systemd sees the same installed runtimes as an interactive shell.
@@ -269,67 +262,6 @@ def isolated_environment(
         if Path(part).is_dir() and part not in path_parts:
             path_parts.append(part)
     env["PATH"] = os.pathsep.join(path_parts)
-    # Tool-manager paths are intentionally not copied.  A manager's shim often
-    # points into its original HOME, which defeats cache isolation and produces
-    # version drift.  Explicit runtime homes remain supported below.
-    for key in _RUNTIME_ENV_KEYS:
-        if key in {"JAVA_HOME", "CARGO_HOME", "RUSTUP_HOME"}:
-            continue
-        if os.environ.get(key):
-            env[key] = os.environ[key]
-    env.update({
-        "HOME": str(home),
-        "XDG_CONFIG_HOME": str(home / ".config"),
-        "XDG_CACHE_HOME": str(cache / "xdg"),
-        "XDG_DATA_HOME": str(home / ".local" / "share"),
-        "GRADLE_USER_HOME": str(cache / "gradle"),
-        "MAVEN_USER_HOME": str(cache / "maven"),
-        "MAVEN_OPTS": f"-Dmaven.repo.local={cache / 'm2'}",
-        "npm_config_cache": str(cache / "npm"),
-        "npm_config_userconfig": str(home / ".npmrc"),
-        "PNPM_HOME": str(cache / "pnpm-home"),
-        "YARN_CACHE_FOLDER": str(cache / "yarn"),
-        "PIP_CACHE_DIR": str(cache / "pip"),
-        # Do not override GEM_HOME: doing so hides gems installed with the
-        # runtime itself and can make /usr/bin/bundle fail before it reads a
-        # repository Gemfile. Keep downloaded metadata and bundle installs in
-        # the per-run cache without changing Ruby's runtime load path.
-        "GEM_SPEC_CACHE": str(cache / "ruby" / "specs"),
-        "BUNDLE_USER_HOME": str(cache / "ruby" / "bundle-user"),
-        "BUNDLE_PATH": str(cache / "ruby" / "bundle"),
-        "CARGO_HOME": str(cache / "cargo"),
-        # rustup toolchains are installations, not disposable build state. A
-        # fresh empty RUSTUP_HOME makes an installed cargo proxy fail with
-        # "no default toolchain". Preserve an explicitly configured install
-        # while keeping Cargo's downloaded dependency cache isolated/shared.
-        "RUSTUP_HOME": os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup")),
-        "GOMODCACHE": str(cache / "go" / "pkg" / "mod"),
-        "GOCACHE": str(cache / "go" / "build"),
-        # These deliberately shadow any host value so a verification run cannot
-        # write into the operator's shared package caches, matching the GEM_*
-        # and CARGO_HOME treatment above.
-        "NUGET_PACKAGES": str(cache / "nuget"),
-        "DOTNET_CLI_HOME": str(home / "dotnet"),
-        "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
-        "DOTNET_NOLOGO": "1",
-        "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1",
-        "COMPOSER_HOME": str(cache / "composer"),
-        "COMPOSER_CACHE_DIR": str(cache / "composer" / "cache"),
-        "COMPOSER_NO_INTERACTION": "1",
-        "MIX_HOME": str(cache / "mix"),
-        "HEX_HOME": str(cache / "hex"),
-        "COURSIER_CACHE": str(cache / "coursier"),
-        # Browser binaries are provisioned on the host, never downloaded by a
-        # verification run; these only point at where a provisioned cache lives.
-        "PLAYWRIGHT_BROWSERS_PATH": os.environ.get(
-            "PLAYWRIGHT_BROWSERS_PATH", str(cache / "playwright")),
-        "CYPRESS_CACHE_FOLDER": os.environ.get(
-            "CYPRESS_CACHE_FOLDER", str(cache / "cypress")),
-    })
-    for value in required_env:
-        name = str(value)
-        if os.environ.get(name) is not None:
-            env[name] = os.environ[name]
     if java_home:
         env["JAVA_HOME"] = java_home
         java_bin = str(Path(java_home) / "bin")

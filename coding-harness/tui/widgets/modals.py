@@ -767,8 +767,11 @@ class ApprovalModal(ModalScreen):
         })
 
     def action_stop(self) -> None:
-        status = "COMPLETED" if self._workflow in ("pr_review", "address_pr", "issue_to_pr") \
-            else "FAILED_WITH_TERMINAL_ERROR"
+        # design_docs now has a real graceful-stop decisionCase (like feature_campaign's),
+        # instead of always hard-failing the whole design_docs sub-workflow.
+        status = "COMPLETED" if self._workflow in (
+            "pr_review", "address_pr", "issue_to_pr", "design_docs",
+        ) else "FAILED_WITH_TERMINAL_ERROR"
         self._decide(status,
                      {"approved": False, "action": "stop", "suppressed": True, "feedback": ""})
 

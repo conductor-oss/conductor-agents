@@ -573,29 +573,6 @@ def scenario_address_repair_then_approve() -> None:
                    pushed=True, verificationCommit="d" * 40)
 
 
-def scenario_address_direct_engine() -> None:
-    mocks = address_mocks()
-    mocks.update({
-        "code": mock({"agentCompleted": True, "result": "Made the direct fix."}),
-        "cmt": mock({"commit": "7" * 40}),
-        "verify": mock({
-            "candidateCommit": "7" * 40,
-            "verificationState": "passed",
-            "commands": {"targeted-check": {"passed": True}},
-        }),
-        "address_gate__1": mock({"approved": True, "action": "approve",
-                                 "body": "Addressed directly."}),
-        "publish": mock({
-            "publicationState": "published", "pushed": True,
-            "replyUrl": "https://example.invalid/comment/direct", "ciState": "passed",
-        }),
-    })
-    execution = execute(
-        "address_pr", 1,
-        {"repo": "acme/app", "prNumber": 12, "engine": "coding_agent"}, mocks,
-    )
-    require_output(execution, approvalState="approved", publicationState="published",
-                   pushed=True, verificationCommit="7" * 40)
 
 
 def scenario_address_stop() -> None:
@@ -1069,7 +1046,6 @@ SCENARIOS = (
     scenario_address_no_feedback,
     scenario_address_unverified,
     scenario_address_repair_then_approve,
-    scenario_address_direct_engine,
     scenario_address_stop,
     scenario_address_invalid_approve,
     scenario_address_empty_revision,

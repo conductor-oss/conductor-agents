@@ -294,6 +294,75 @@ async def test_client_signal_rejects_a_none_status_before_it_reaches_the_wire():
 
 
 @pytest.mark.asyncio
+async def test_pending_approvals_prefers_the_gates_declared_workflow_from_task_search():
+    # Confirmed live: address_gate (extracted into address_pr_approval.json) reports
+    # workflowType="address_pr_approval" (the sub-workflow's own name) via
+    # /tasks/search, not "address_pr" -- the logical top-level workflow
+    # _decide_approval actually branches on. Without preferring the gate's own
+    # declared `workflow` input, every address_pr approval decision after a
+    # sub-workflow extraction resolves to the wrong branch (missing "body", and
+    # "revise"/"stop" wrongly signaled FAILED_WITH_TERMINAL_ERROR instead of
+    # COMPLETED, since revision_capable/suppressible_action both key off
+    # item.workflow == "address_pr").
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tasks/search":
+            return httpx.Response(200, json={
+                "totalHits": 1,
+                "results": [{
+                    "taskId": "t1", "referenceTaskName": "address_gate__1", "taskType": "WAIT",
+                    "workflowInstanceId": "sub-wf-1", "workflowType": "address_pr_approval",
+                    "scheduledTime": 1000,
+                    "input": {"workflow": "address_pr", "draft": {"summary": "candidate ready"}},
+                }],
+            })
+        assert request.url.path == "/api/workflow/search"
+        return httpx.Response(200, json={"totalHits": 0, "results": []})
+
+    client = api.ConductorClient("http://x/api")
+    client._client = httpx.AsyncClient(base_url="http://x/api",
+                                       transport=httpx.MockTransport(handler))
+    approvals = await client.pending_approvals()
+    assert len(approvals) == 1
+    assert approvals[0].workflow == "address_pr"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_pending_approvals_prefers_declared_workflow_in_the_running_execution_fallback():
+    # Same bug, the other code path: a nested approval sub-workflow (e.g.
+    # address_pr_approval) is itself a RUNNING execution independently
+    # returned by /workflow/search, so its own workflowName is always
+    # truthy and would otherwise permanently shadow the gate's declared
+    # logical-parent override in this fallback branch too.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tasks/search":
+            return httpx.Response(200, json={"totalHits": 0, "results": []})
+        if request.url.path == "/api/workflow/search":
+            return httpx.Response(200, json={
+                "totalHits": 1,
+                "results": [{"workflowId": "sub-wf-1", "workflowType": "address_pr_approval"}],
+            })
+        assert request.url.path == "/api/workflow/sub-wf-1"
+        return httpx.Response(200, json={
+            "workflowId": "sub-wf-1",
+            "workflowName": "address_pr_approval",
+            "tasks": [{
+                "taskId": "t1", "referenceTaskName": "address_gate__1", "taskType": "WAIT",
+                "status": "IN_PROGRESS", "workflowInstanceId": "sub-wf-1", "scheduledTime": 1000,
+                "inputData": {"workflow": "address_pr", "draft": {"summary": "candidate ready"}},
+            }],
+        })
+
+    client = api.ConductorClient("http://x/api")
+    client._client = httpx.AsyncClient(base_url="http://x/api",
+                                       transport=httpx.MockTransport(handler))
+    approvals = await client.pending_approvals()
+    assert len(approvals) == 1
+    assert approvals[0].workflow == "address_pr"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_client_uses_env_key_secret_for_every_api_request(monkeypatch):
     monkeypatch.setenv("CONDUCTOR_AUTH_KEY", "test-key")
     monkeypatch.setenv("CONDUCTOR_AUTH_SECRET", "test-secret")

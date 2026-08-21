@@ -1,0 +1,437 @@
+{
+  "name": "final_verification",
+  "description": "Final real-system verification pass with a human checkpoint, extracted from feature_campaign's own final_loop so it can be reused. A read-only-by-default review agent (with authority to reconcile direct worktree edits and fix actionable checkpoint feedback) verifies the campaign against its instruction, then a human reviews the result via the final_checkpoint WAIT task (continue/revise/adopt_edits/stop, with the same adjustable turn/budget mechanism design_docs/dag_plan_approval/implementation_waves use), for up to finalMaxIterations bounded rounds. Neither code_parallel nor issue_to_pr has an analogous human-reviewed final-verification checkpoint (issue_to_pr's own delivery_audit is a deterministic, non-interactive summary), so this is a standalone extraction, not a merge. Never hard-fails: resolves outcome 'verified' (explicit continue, committed) or 'incomplete' (explicit stop, or the iteration bound reached without either).",
+  "version": 1,
+  "schemaVersion": 2,
+  "restartable": true,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "inputParameters": [
+    "repoPath",
+    "callerWorkflow",
+    "instruction",
+    "branch",
+    "allowedWriteRoots",
+    "reviewAgent",
+    "reviewModel",
+    "reviewPromptTemplate",
+    "reviewPromptTemplateSource",
+    "finalMaxIterations",
+    "finalMaxTurns",
+    "finalMaxBudgetUsd",
+    "specContextPath",
+    "contextPaths",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "inputSchema": {
+    "name": "final_verification_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git checkout verified and, on approval, committed."
+        },
+        "callerWorkflow": {
+          "type": "string",
+          "description": "The logical top-level workflow name to stamp onto the final_checkpoint WAIT payload. The TUI's approval dispatch branches on this to know how to build its decision output -- without it, a gate living inside this sub-workflow would report its own name (final_verification) instead of the caller's."
+        },
+        "instruction": {
+          "type": "string",
+          "description": "Requested feature/change the verification is judged against."
+        },
+        "branch": {
+          "type": "string",
+          "default": "",
+          "description": "The candidate's branch; shown in the final_checkpoint WAIT payload for context."
+        },
+        "allowedWriteRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "File-scope restriction applied to the review/fix session's writes."
+        },
+        "reviewAgent": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override selecting the coding agent backend for the final verification session."
+        },
+        "reviewModel": {
+          "type": "string",
+          "default": ""
+        },
+        "reviewPromptTemplate": {
+          "type": "string",
+          "default": ""
+        },
+        "reviewPromptTemplateSource": {
+          "type": "string",
+          "default": ""
+        },
+        "finalMaxIterations": {
+          "type": "integer",
+          "default": 3,
+          "description": "Maximum number of verify/review rounds before an still-unresolved run resolves with outcome 'incomplete' (never a hard TERMINATE)."
+        },
+        "finalMaxTurns": {
+          "type": "integer",
+          "default": 500,
+          "description": "Starting cap on agent turns per verification session; a human reviewer may adjust it for subsequent rounds via the same checkpoint-decision shape feature_campaign's other checkpoints use."
+        },
+        "finalMaxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "Starting cap on USD spend per verification session; same adjustment mechanism as finalMaxTurns."
+        },
+        "specContextPath": {
+          "type": "string",
+          "default": ""
+        },
+        "contextPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Absolute filesystem paths granted to the verification session as read-only live context references."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": ""
+        },
+        "modelPolicy": {
+          "type": "object",
+          "default": {}
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": ""
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": ""
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": ""
+        },
+        "modelOverrides": {
+          "type": "object",
+          "default": {}
+        }
+      },
+      "required": [
+        "repoPath",
+        "callerWorkflow",
+        "instruction"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "final_verification_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "incomplete"
+          ],
+          "description": "'verified' once a review iteration was explicitly approved and committed; 'incomplete' when a human explicitly stopped, or finalMaxIterations was reached without either. Never a hard TERMINATE -- the caller decides what an 'incomplete' outcome means for its own state."
+        },
+        "feedback": {
+          "type": "string",
+          "description": "Latest review/checkpoint feedback, or the stop reason, or empty on a clean verified outcome."
+        },
+        "reviewFindings": {
+          "type": "string",
+          "description": "The last verification session's findings text."
+        },
+        "commit": {
+          "type": "string",
+          "description": "Commit SHA of the final verified state; empty string unless outcome is 'verified'."
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Backend session id of the last verification session, usable as a resume id."
+        },
+        "finalMaxTurns": {
+          "type": "integer",
+          "description": "finalMaxTurns, or a human-adjusted value from the last reviewed iteration. A caller that shares one budget/turn pool across multiple phases (e.g. feature_campaign) should carry this forward as its own next-phase starting point."
+        },
+        "finalMaxBudgetUsd": {
+          "type": "number",
+          "description": "finalMaxBudgetUsd, or a human-adjusted value from the last reviewed iteration. Same carry-forward use as finalMaxTurns."
+        },
+        "promptTemplate": {
+          "type": "object",
+          "description": "Which final-verification prompt template source was requested vs. actually resolved for the last review session.",
+          "properties": {
+            "requestedSource": {
+              "type": "string"
+            },
+            "resolvedSource": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "required": [
+        "outcome",
+        "feedback",
+        "reviewFindings",
+        "commit",
+        "sessionId",
+        "finalMaxTurns",
+        "finalMaxBudgetUsd",
+        "promptTemplate"
+      ]
+    }
+  },
+  "inputTemplate": {
+    "branch": "",
+    "allowedWriteRoots": [],
+    "reviewAgent": "",
+    "reviewModel": "",
+    "reviewPromptTemplate": "",
+    "reviewPromptTemplateSource": "",
+    "finalMaxIterations": 3,
+    "finalMaxTurns": 500,
+    "finalMaxBudgetUsd": 50,
+    "specContextPath": "",
+    "contextPaths": [],
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "variables": {
+    "outcome": "running",
+    "feedback": "",
+    "reviewFindings": "",
+    "commit": "",
+    "sessionId": "",
+    "lastPromptTemplate": {},
+    "currentMaxTurns": 500,
+    "currentMaxBudgetUsd": 50
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "final_verification_init",
+      "taskReferenceName": "final_verification_init",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "currentMaxTurns": "${workflow.input.finalMaxTurns}",
+        "currentMaxBudgetUsd": "${workflow.input.finalMaxBudgetUsd}"
+      }
+    },
+    {
+      "name": "final_loop",
+      "taskReferenceName": "final_loop",
+      "inputParameters": {
+        "final_loop": "${final_loop.output}",
+        "max_iterations": "${workflow.input.finalMaxIterations}",
+        "outcome": "${workflow.variables.outcome}"
+      },
+      "type": "DO_WHILE",
+      "decisionCases": {},
+      "defaultCase": [],
+      "loopCondition": "(function(){ return $.final_loop['iteration'] < $.max_iterations && $.outcome === 'running'; })();",
+      "loopOver": [
+        {
+          "name": "coding_agent",
+          "taskReferenceName": "final_verifier",
+          "inputParameters": {
+            "agent": "${workflow.input.reviewAgent}",
+            "contextFiles": [
+              "${workflow.input.specContextPath}"
+            ],
+            "contextPaths": "${workflow.input.contextPaths}",
+            "failSoft": true,
+            "maxBudgetUsd": "${workflow.variables.currentMaxBudgetUsd}",
+            "maxTurns": "${workflow.variables.currentMaxTurns}",
+            "model": "${workflow.input.reviewModel}",
+            "allowedWriteRoots": "${workflow.input.allowedWriteRoots}",
+            "prompt": "Perform final real-system verification of this campaign against the instruction, approved design, DAG acceptance criteria, and current repository. Reconcile direct worktree edits and fix any actionable issue from checkpoint feedback, then report remaining findings. Do not commit or push. Instruction: ${workflow.input.instruction}\nFeedback: ${workflow.variables.feedback}",
+            "promptTemplate": "${workflow.input.reviewPromptTemplate}",
+            "promptTemplateSource": "${workflow.input.reviewPromptTemplateSource}",
+            "resumeSessionId": "${workflow.variables.sessionId}",
+            "templateKey": "campaign_review",
+            "worktreePath": "${workflow.input.repoPath}",
+            "modelRole": "code",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}",
+            "modelResolution": "${model_policy.output}"
+          },
+          "type": "SIMPLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "final_state",
+          "taskReferenceName": "final_state",
+          "inputParameters": {
+            "sessionId": "${final_verifier.output.sessionId}",
+            "reviewFindings": "${final_verifier.output.result}",
+            "lastPromptTemplate": "${final_verifier.output.promptTemplate}"
+          },
+          "type": "SET_VARIABLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "final_checkpoint",
+          "taskReferenceName": "final_checkpoint",
+          "inputParameters": {
+            "workflow": "${workflow.input.callerWorkflow}",
+            "actions": [
+              "continue",
+              "revise",
+              "adopt_edits",
+              "stop"
+            ],
+            "draft": {
+              "branch": "${workflow.input.branch}",
+              "review": "${final_verifier.output.result}"
+            },
+            "phase": "final"
+          },
+          "type": "WAIT",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "campaign_checkpoint",
+          "taskReferenceName": "final_review_checkpoint",
+          "inputParameters": {
+            "decision": "${final_checkpoint.output}",
+            "maxBudgetUsd": "${workflow.variables.currentMaxBudgetUsd}",
+            "maxTurns": "${workflow.variables.currentMaxTurns}",
+            "phase": "final",
+            "blockingStatus": "${final_verifier.output.status}"
+          },
+          "type": "SIMPLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "final_limits",
+          "taskReferenceName": "final_limits",
+          "inputParameters": {
+            "currentMaxBudgetUsd": "${final_review_checkpoint.output.maxBudgetUsd}",
+            "currentMaxTurns": "${final_review_checkpoint.output.maxTurns}"
+          },
+          "type": "SET_VARIABLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "final_action",
+          "taskReferenceName": "final_action",
+          "inputParameters": {
+            "action": "${final_review_checkpoint.output.action}"
+          },
+          "type": "SWITCH",
+          "decisionCases": {
+            "continue": [
+              {
+                "name": "commit",
+                "taskReferenceName": "commit_verified_final",
+                "inputParameters": {
+                  "message": "feature campaign: final verified state",
+                  "repoPath": "${workflow.input.repoPath}"
+                },
+                "type": "SIMPLE",
+                "decisionCases": {},
+                "defaultCase": []
+              },
+              {
+                "name": "final_verified",
+                "taskReferenceName": "final_verified",
+                "inputParameters": {
+                  "feedback": "",
+                  "outcome": "verified",
+                  "commit": "${commit_verified_final.output.commit}"
+                },
+                "type": "SET_VARIABLE",
+                "decisionCases": {},
+                "defaultCase": []
+              }
+            ],
+            "stop": [
+              {
+                "name": "final_stopped",
+                "taskReferenceName": "final_stopped",
+                "inputParameters": {
+                  "feedback": "${final_review_checkpoint.output.feedback}",
+                  "outcome": "incomplete"
+                },
+                "type": "SET_VARIABLE",
+                "decisionCases": {},
+                "defaultCase": []
+              }
+            ]
+          },
+          "defaultCase": [
+            {
+              "name": "revise_final",
+              "taskReferenceName": "revise_final",
+              "inputParameters": {
+                "feedback": "${final_review_checkpoint.output.feedback}"
+              },
+              "type": "SET_VARIABLE",
+              "decisionCases": {},
+              "defaultCase": []
+            }
+          ],
+          "evaluatorType": "value-param",
+          "expression": "action"
+        }
+      ],
+      "evaluatorType": "graaljs"
+    }
+  ],
+  "outputParameters": {
+    "outcome": "${workflow.variables.outcome}",
+    "feedback": "${workflow.variables.feedback}",
+    "reviewFindings": "${workflow.variables.reviewFindings}",
+    "commit": "${workflow.variables.commit}",
+    "sessionId": "${workflow.variables.sessionId}",
+    "finalMaxTurns": "${workflow.variables.currentMaxTurns}",
+    "finalMaxBudgetUsd": "${workflow.variables.currentMaxBudgetUsd}",
+    "promptTemplate": "${workflow.variables.lastPromptTemplate}"
+  },
+  "overwriteTags": false,
+  "enforceSchema": false
+}

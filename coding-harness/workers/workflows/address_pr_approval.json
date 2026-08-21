@@ -299,6 +299,7 @@
           "taskReferenceName": "address_gate",
           "type": "WAIT",
           "inputParameters": {
+            "workflow": "address_pr",
             "phase": "pr_update",
             "availableActions": [
               "approve",

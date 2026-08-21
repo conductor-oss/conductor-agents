@@ -1,0 +1,597 @@
+{
+  "name": "pr_draft_approval",
+  "description": "Human-approval gate for a not-yet-published PR draft (title/body/base/head, no PR number yet), extracted from issue_to_pr's pr_approval_loop so it can be reused by any workflow that verifies a candidate first and only wants to publish once a human is satisfied with it. A human must explicitly approve the draft via the pr_gate WAIT task, optionally requesting up to maxApprovalRevisions bounded, independently re-verified revisions (via code_parallel) first. Always starts with approvalState 'pending' and resolves it to exactly one of: approved, suppressed, blocked, verification_blocked, revision_exhausted.",
+  "version": 1,
+  "schemaVersion": 2,
+  "restartable": true,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "inputParameters": [
+    "callerWorkflow",
+    "repoPath",
+    "workspacePath",
+    "branch",
+    "title",
+    "body",
+    "summary",
+    "base",
+    "issueNumber",
+    "subtasks",
+    "candidateCommit",
+    "verificationState",
+    "verification",
+    "merged",
+    "conflicts",
+    "totalTokens",
+    "totalCostUsd",
+    "originalContext",
+    "maxApprovalRevisions",
+    "agent",
+    "maxTurns",
+    "maxBudgetUsd",
+    "maxSubtasks",
+    "codePromptTemplate",
+    "codePromptTemplateSource",
+    "openspecMaxIterations",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "inputSchema": {
+    "name": "pr_draft_approval_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "callerWorkflow": {
+          "type": "string",
+          "description": "The logical top-level workflow name (e.g. 'issue_to_pr', 'feature_campaign') to stamp onto the pr_gate WAIT payload. The TUI's approval dispatch (_decide_approval) branches on this to know how to build its decision output -- without it, a gate living inside this sub-workflow would report its own name (pr_draft_approval) instead of the caller's, and every approve/revise/stop decision on it would resolve to the wrong branch."
+        },
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git checkout a requested revision's code_parallel pass operates on."
+        },
+        "workspacePath": {
+          "type": "string",
+          "description": "Workspace path a requested revision's code_parallel pass reuses (same isolated worktree the original candidate was built in)."
+        },
+        "branch": {
+          "type": "string",
+          "description": "The candidate's branch; shown as the draft's head and used as the revision's changeBranch."
+        },
+        "title": {
+          "type": "string",
+          "description": "The initial draft PR title shown to the human."
+        },
+        "body": {
+          "type": "string",
+          "description": "The initial draft PR body shown to the human."
+        },
+        "summary": {
+          "type": "string",
+          "default": "",
+          "description": "The initial draft PR summary (a caller may keep this distinct from body, e.g. for pr_create's separate summary field)."
+        },
+        "base": {
+          "type": "string",
+          "default": "main",
+          "description": "PR base branch; shown as the draft's base."
+        },
+        "issueNumber": {
+          "type": "integer",
+          "default": 0,
+          "description": "The originating GitHub issue number, if any, shown in the draft for context. 0 when the candidate wasn't issue-driven."
+        },
+        "subtasks": {
+          "type": "array",
+          "default": [],
+          "description": "Initial subtask list; echoed back unless a revision replaces it."
+        },
+        "candidateCommit": {
+          "type": "string",
+          "description": "The already-verified candidate commit a human is being asked to approve for publication."
+        },
+        "verificationState": {
+          "type": "string",
+          "default": "passed",
+          "description": "The candidate's verification state (expected 'passed' -- this workflow is only ever called after a passing verification)."
+        },
+        "verification": {
+          "type": "object",
+          "default": {},
+          "description": "The candidate's full verification result; echoed back unless a revision replaces it."
+        },
+        "merged": {
+          "type": "array",
+          "default": [],
+          "description": "Initial merged-subtask list; echoed back unless a revision replaces it."
+        },
+        "conflicts": {
+          "type": "array",
+          "default": [],
+          "description": "Initial merge-conflict list; echoed back unless a revision replaces it."
+        },
+        "totalTokens": {
+          "type": "number",
+          "default": 0,
+          "description": "Initial cumulative token count; echoed back unless a revision replaces it."
+        },
+        "totalCostUsd": {
+          "type": "number",
+          "default": 0,
+          "description": "Initial cumulative USD cost; echoed back unless a revision replaces it."
+        },
+        "originalContext": {
+          "type": "string",
+          "default": "",
+          "description": "Background text (e.g. the originating issue's title+body, or a campaign's effective instruction) included as context in a requested revision's instruction, alongside the human's own revision feedback."
+        },
+        "maxApprovalRevisions": {
+          "type": "integer",
+          "default": 2,
+          "description": "Upper bound on human-requested revision rounds before an still-pending approval is relabeled revision_exhausted."
+        },
+        "agent": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override selecting the coding agent backend for a requested revision's code_parallel pass."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "default": 250,
+          "description": "Cap on agent turns for a requested revision's code_parallel pass."
+        },
+        "maxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "Cap on USD spend for a requested revision's code_parallel pass."
+        },
+        "maxSubtasks": {
+          "type": "integer",
+          "default": 4,
+          "description": "Cap on parallel subtasks for a requested revision's code_parallel pass."
+        },
+        "codePromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline template text (or '@relative/path') overriding a requested revision's coding prompt."
+        },
+        "codePromptTemplateSource": {
+          "type": "string",
+          "default": ""
+        },
+        "openspecMaxIterations": {
+          "type": "integer",
+          "default": 5,
+          "description": "Forwarded to a requested revision's code_parallel pass for its own OpenSpec plan-repair bound, if triggered."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": ""
+        },
+        "modelPolicy": {
+          "type": "object",
+          "default": {}
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": ""
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": ""
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": ""
+        },
+        "modelOverrides": {
+          "type": "object",
+          "default": {}
+        }
+      },
+      "required": [
+        "callerWorkflow",
+        "repoPath",
+        "workspacePath",
+        "branch",
+        "title",
+        "body",
+        "candidateCommit"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "pr_draft_approval_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "approvalState": {
+          "type": "string",
+          "enum": [
+            "approved",
+            "suppressed",
+            "blocked",
+            "verification_blocked",
+            "revision_exhausted"
+          ],
+          "description": "The resolved terminal approval state; the caller's publication gate branches on this."
+        },
+        "title": {
+          "type": "string",
+          "description": "The input title, or a human-edited title from approval."
+        },
+        "body": {
+          "type": "string",
+          "description": "The input body, or a human-edited body from approval, or a revision's proposal text."
+        },
+        "summary": {
+          "type": "string",
+          "description": "The input summary, or a revision's proposal text."
+        },
+        "branch": {
+          "type": "string",
+          "description": "The input branch, or a revision's new branch."
+        },
+        "workspacePath": {
+          "type": "string",
+          "description": "The input workspacePath, or a revision's new worktree."
+        },
+        "candidateCommit": {
+          "type": "string",
+          "description": "The input candidateCommit, or a revision's new verified commit."
+        },
+        "verificationState": {
+          "type": "string",
+          "description": "The input verificationState, or a revision's own re-verification state."
+        },
+        "verification": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "The input verification, or a revision's own re-verification result."
+        },
+        "subtasks": {
+          "type": "array",
+          "description": "The input subtasks, or a revision's subtask list."
+        },
+        "merged": {
+          "type": "array",
+          "description": "The input merged list, or a revision's merged-subtask list."
+        },
+        "conflicts": {
+          "type": "array",
+          "description": "The input conflicts list, or a revision's merge-conflict list."
+        },
+        "totalTokens": {
+          "type": "number",
+          "description": "The input totalTokens, or a revision's cumulative token count."
+        },
+        "totalCostUsd": {
+          "type": "number",
+          "description": "The input totalCostUsd, or a revision's cumulative USD cost."
+        }
+      },
+      "required": [
+        "approvalState",
+        "title",
+        "body",
+        "summary",
+        "branch",
+        "workspacePath",
+        "candidateCommit",
+        "verificationState",
+        "verification",
+        "subtasks",
+        "merged",
+        "conflicts",
+        "totalTokens",
+        "totalCostUsd"
+      ]
+    }
+  },
+  "inputTemplate": {
+    "summary": "",
+    "base": "main",
+    "issueNumber": 0,
+    "subtasks": [],
+    "verificationState": "passed",
+    "verification": {},
+    "merged": [],
+    "conflicts": [],
+    "totalTokens": 0,
+    "totalCostUsd": 0,
+    "originalContext": "",
+    "maxApprovalRevisions": 2,
+    "agent": "",
+    "maxTurns": 250,
+    "maxBudgetUsd": 50,
+    "maxSubtasks": 4,
+    "codePromptTemplate": "",
+    "codePromptTemplateSource": "",
+    "openspecMaxIterations": 5,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "variables": {
+    "approvalState": "pending",
+    "currentTitle": "",
+    "currentBody": "",
+    "currentSummary": "",
+    "currentBranch": "",
+    "currentWorkspacePath": "",
+    "currentSubtasks": [],
+    "currentCandidate": "",
+    "currentVerificationState": "passed",
+    "currentVerification": {},
+    "currentMerged": [],
+    "currentConflicts": [],
+    "currentTotalTokens": 0,
+    "currentTotalCostUsd": 0
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      },
+      "optional": true
+    },
+    {
+      "name": "draft_approval_init",
+      "taskReferenceName": "draft_approval_init",
+      "type": "SET_VARIABLE",
+      "optional": true,
+      "inputParameters": {
+        "approvalState": "pending",
+        "currentTitle": "${workflow.input.title}",
+        "currentBody": "${workflow.input.body}",
+        "currentSummary": "${workflow.input.summary}",
+        "currentBranch": "${workflow.input.branch}",
+        "currentWorkspacePath": "${workflow.input.workspacePath}",
+        "currentSubtasks": "${workflow.input.subtasks}",
+        "currentCandidate": "${workflow.input.candidateCommit}",
+        "currentVerificationState": "${workflow.input.verificationState}",
+        "currentVerification": "${workflow.input.verification}",
+        "currentMerged": "${workflow.input.merged}",
+        "currentConflicts": "${workflow.input.conflicts}",
+        "currentTotalTokens": "${workflow.input.totalTokens}",
+        "currentTotalCostUsd": "${workflow.input.totalCostUsd}"
+      }
+    },
+    {
+      "name": "pr_approval_loop",
+      "taskReferenceName": "pr_approval_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ return $.pr_approval_loop['iteration'] <= $.maxRevisions && $.approvalState === 'pending'; })();",
+      "inputParameters": {
+        "pr_approval_loop": "${pr_approval_loop.output}",
+        "maxRevisions": "${workflow.input.maxApprovalRevisions}",
+        "approvalState": "${workflow.variables.approvalState}"
+      },
+      "loopOver": [
+        {
+          "name": "pr_gate",
+          "taskReferenceName": "pr_gate",
+          "type": "WAIT",
+          "inputParameters": {
+            "workflow": "${workflow.input.callerWorkflow}",
+            "phase": "pr_draft",
+            "availableActions": [
+              "approve",
+              "revise",
+              "stop",
+              "later"
+            ],
+            "issueNumber": "${workflow.input.issueNumber}",
+            "repoPath": "${workflow.variables.currentWorkspacePath}",
+            "subtasks": "${workflow.variables.currentSubtasks}",
+            "draft": {
+              "kind": "pr_draft",
+              "title": "${workflow.variables.currentTitle}",
+              "body": "${workflow.variables.currentBody}",
+              "base": "${workflow.input.base}",
+              "head": "${workflow.variables.currentBranch}"
+            }
+          }
+        },
+        {
+          "name": "pr_decision",
+          "taskReferenceName": "normalize_pr_decision",
+          "type": "SIMPLE",
+          "optional": true,
+          "inputParameters": {
+            "gate": "${pr_gate.output}",
+            "fallbackTitle": "${workflow.variables.currentTitle}",
+            "fallbackBody": "${workflow.variables.currentBody}"
+          }
+        },
+        {
+          "name": "pr_approval_action",
+          "taskReferenceName": "pr_approval_action",
+          "type": "SWITCH",
+          "evaluatorType": "value-param",
+          "expression": "action",
+          "inputParameters": {
+            "action": "${normalize_pr_decision.output.action}"
+          },
+          "decisionCases": {
+            "approve": [
+              {
+                "name": "approve_pr_draft",
+                "taskReferenceName": "approve_pr_draft",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "approvalState": "approved",
+                  "currentTitle": "${normalize_pr_decision.output.title}",
+                  "currentBody": "${normalize_pr_decision.output.body}"
+                }
+              }
+            ],
+            "revise": [
+              {
+                "name": "code_parallel",
+                "taskReferenceName": "revise_candidate",
+                "type": "SUB_WORKFLOW",
+                "optional": true,
+                "subWorkflowParam": {
+                  "name": "code_parallel",
+                  "version": 1
+                },
+                "inputParameters": {
+                  "repoPath": "${workflow.input.repoPath}",
+                  "workspacePath": "${workflow.variables.currentWorkspacePath}",
+                  "instruction": "Revise the existing candidate only in response to this human review. Preserve already-correct work, make the minimal requested changes, and independently verify them.\n\nOriginal context:\n${workflow.input.originalContext}\n\nHuman revision feedback:\n${normalize_pr_decision.output.feedback}",
+                  "changeBranch": "${workflow.variables.currentBranch}",
+                  "design": false,
+                  "openspecHumanApproval": false,
+                  "openspecMaxIterations": "${workflow.input.openspecMaxIterations}",
+                  "codePromptTemplate": "${workflow.input.codePromptTemplate}",
+                  "codePromptTemplateSource": "${workflow.input.codePromptTemplateSource}",
+                  "codeAgent": "${workflow.input.agent}",
+                  "maxTurns": "${workflow.input.maxTurns}",
+                  "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+                  "maxSubtasks": "${workflow.input.maxSubtasks}",
+                  "modelProfile": "${workflow.input.modelProfile}",
+                  "modelPolicy": "${workflow.input.modelPolicy}",
+                  "modelPolicySource": "${workflow.input.modelPolicySource}",
+                  "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                  "modelsConfig": "${workflow.input.modelsConfig}",
+                  "modelOverrides": "${workflow.input.modelOverrides}"
+                }
+              },
+              {
+                "name": "revised_verification_gate",
+                "taskReferenceName": "revised_verification_gate",
+                "type": "SWITCH",
+                "evaluatorType": "value-param",
+                "expression": "state",
+                "inputParameters": {
+                  "state": "${revise_candidate.output.verificationState}"
+                },
+                "decisionCases": {
+                  "passed": [
+                    {
+                      "name": "capture_revised_candidate",
+                      "taskReferenceName": "capture_revised_candidate",
+                      "type": "SET_VARIABLE",
+                      "inputParameters": {
+                        "approvalState": "pending",
+                        "currentBody": "${revise_candidate.output.proposalText}",
+                        "currentSummary": "${revise_candidate.output.proposalText}",
+                        "currentWorkspacePath": "${revise_candidate.output.sourceHandoff.repoPath}",
+                        "currentBranch": "${revise_candidate.output.sourceHandoff.branch}",
+                        "currentCandidate": "${revise_candidate.output.verificationCommit}",
+                        "currentVerificationState": "passed",
+                        "currentVerification": "${revise_candidate.output.verification}",
+                        "currentSubtasks": "${revise_candidate.output.subtasks}",
+                        "currentMerged": "${revise_candidate.output.merged}",
+                        "currentConflicts": "${revise_candidate.output.conflicts}",
+                        "currentTotalTokens": "${revise_candidate.output.totalTokens}",
+                        "currentTotalCostUsd": "${revise_candidate.output.totalCostUsd}"
+                      }
+                    }
+                  ]
+                },
+                "defaultCase": [
+                  {
+                    "name": "block_unverified_revision",
+                    "taskReferenceName": "block_unverified_revision",
+                    "type": "SET_VARIABLE",
+                    "inputParameters": {
+                      "approvalState": "verification_blocked",
+                      "currentBody": "${revise_candidate.output.proposalText}",
+                      "currentSummary": "${revise_candidate.output.proposalText}",
+                      "currentWorkspacePath": "${revise_candidate.output.sourceHandoff.repoPath}",
+                      "currentBranch": "${revise_candidate.output.sourceHandoff.branch}",
+                      "currentCandidate": "${revise_candidate.output.verificationCommit}",
+                      "currentVerificationState": "${revise_candidate.output.verificationState}"
+                    }
+                  }
+                ]
+              }
+            ],
+            "stop": [
+              {
+                "name": "suppress_pr_draft",
+                "taskReferenceName": "suppress_pr_draft",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "approvalState": "suppressed"
+                }
+              }
+            ]
+          },
+          "defaultCase": [
+            {
+              "name": "block_unknown_approval",
+              "taskReferenceName": "block_unknown_approval",
+              "type": "SET_VARIABLE",
+              "inputParameters": {
+                "approvalState": "blocked"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "approval_loop_outcome",
+      "taskReferenceName": "approval_loop_outcome",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "state",
+      "inputParameters": {
+        "state": "${workflow.variables.approvalState}"
+      },
+      "decisionCases": {
+        "pending": [
+          {
+            "name": "mark_revision_exhausted",
+            "taskReferenceName": "mark_revision_exhausted",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "approvalState": "revision_exhausted"
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    }
+  ],
+  "outputParameters": {
+    "approvalState": "${workflow.variables.approvalState}",
+    "title": "${workflow.variables.currentTitle}",
+    "body": "${workflow.variables.currentBody}",
+    "summary": "${workflow.variables.currentSummary}",
+    "branch": "${workflow.variables.currentBranch}",
+    "workspacePath": "${workflow.variables.currentWorkspacePath}",
+    "candidateCommit": "${workflow.variables.currentCandidate}",
+    "verificationState": "${workflow.variables.currentVerificationState}",
+    "verification": "${workflow.variables.currentVerification}",
+    "subtasks": "${workflow.variables.currentSubtasks}",
+    "merged": "${workflow.variables.currentMerged}",
+    "conflicts": "${workflow.variables.currentConflicts}",
+    "totalTokens": "${workflow.variables.currentTotalTokens}",
+    "totalCostUsd": "${workflow.variables.currentTotalCostUsd}"
+  },
+  "overwriteTags": false,
+  "enforceSchema": false
+}

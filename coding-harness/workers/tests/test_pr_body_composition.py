@@ -88,8 +88,3 @@ def test_address_pr_compose_reply_code_parallel_path_includes_review_content():
     assert "Tokens: 10" not in body and "Cost: $0.01" not in body
 
 
-def test_address_pr_compose_reply_coding_agent_path_uses_agent_result(tmp_path):
-    workflow = _load("address_pr")
-    body = _task(workflow, "direct_candidate")["inputParameters"]["currentReplyBody"]
-    assert "${code.output.result}" in body
-    assert "coding_agent" in body

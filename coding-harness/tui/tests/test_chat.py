@@ -58,6 +58,40 @@ async def test_start_workflow_requires_inputs_then_confirms():
 
 
 @pytest.mark.asyncio
+async def test_feature_campaign_requires_at_least_one_where_and_what_input():
+    # repo/repoPath/workspacePath and instruction/issueNumber all default to "" / 0 in the
+    # catalog, so none of them show up in _required_inputs on their own -- without the
+    # AT_LEAST_ONE_OF_GROUPS check, a start with none of them set would silently reach
+    # Conductor instead of being caught here (workspace_prepare would then raise a much
+    # less actionable error at runtime).
+    fc = FakeClient()
+    ctx, _ = _ctx(fc)
+    out = await tools.dispatch("start_workflow", {"workflow": "feature_campaign", "inputs": {}}, ctx)
+    assert "missing required inputs" in out
+    assert "one of {repo, repoPath, workspacePath}" in out
+    assert "one of {instruction, issueNumber}" in out
+    assert not fc.started
+
+    # Only a "where to work" input given -- still missing the "what to do" group.
+    out = await tools.dispatch(
+        "start_workflow", {"workflow": "feature_campaign", "inputs": {"repoPath": "/tmp/repo"}}, ctx)
+    assert "missing required inputs" in out
+    assert "one of {instruction, issueNumber}" in out
+    assert "one of {repo, repoPath, workspacePath}" not in out
+    assert not fc.started
+
+    # One member of each group is enough -- issueNumber substitutes for instruction, and
+    # workspacePath substitutes for repo/repoPath.
+    out = await tools.dispatch(
+        "start_workflow",
+        {"workflow": "feature_campaign", "inputs": {"workspacePath": "/tmp/wt", "issueNumber": 3,
+                                                     "repo": "acme/app"}},
+        ctx)
+    assert "missing required inputs" not in out
+    assert fc.started
+
+
+@pytest.mark.asyncio
 async def test_start_injects_gate_default_unless_overridden():
     fc = FakeClient()
     ctx, _ = _ctx(fc)
@@ -284,6 +318,29 @@ async def test_chat_revise_and_stop_fail_approval_closed(action, suppressed):
 
 
 @pytest.mark.asyncio
+async def test_chat_stop_on_design_docs_completes_gracefully_not_failed():
+    # design_docs now has a real graceful-stop decisionCase (like
+    # feature_campaign's), instead of always hard-failing the whole
+    # design_docs sub-workflow -- confirmed live this required adding
+    # design_docs to suppressible_action's workflow list too.
+    class ApprovalClient(FakeClient):
+        async def pending_approvals(self):
+            return [api.PendingApproval(
+                task_id="task-1", task_ref="design_review", task_type="WAIT",
+                workflow_id="wf-child", workflow="design_docs",
+                input={"draft": {"summary": "draft"}}, scheduled_ms=1)]
+
+    fc = ApprovalClient()
+    ctx, _ = _ctx(fc)
+    out = await tools.dispatch("decide_approval", {"task_id": "task-1", "action": "stop"}, ctx)
+    assert "stop recorded" in out
+    wid, ref, status, output = fc.signals[-1]
+    assert (wid, ref, status) == ("wf-child", "design_review", "COMPLETED")
+    assert output["action"] == "stop"
+    assert output["suppressed"] is True
+
+
+@pytest.mark.asyncio
 async def test_chat_gets_private_review_history_and_requests_investigation():
     class ApprovalClient(FakeClient):
         async def pending_approvals(self):
@@ -355,6 +412,26 @@ def test_prompt_mentions_workflows():
     assert "isolated git worktree" in p
     assert "Before starting issue_to_pr" in p
     assert "design:true" in p and "design:false" in p
+
+
+def test_prompt_tells_the_model_a_named_local_directory_is_repoPath_not_repo():
+    # A bare directory the user names must map to repoPath (or specSource for
+    # openspec_development) -- never to repo, which is exclusively a GitHub URL/slug.
+    # This was previously left entirely to the model's own judgment with no explicit rule.
+    p = prompt.system_prompt("http://localhost:8080/api")
+    assert "always maps to that workflow's own local-path input" in p
+    assert "exclusively a GitHub URL or `owner/name` slug" in p
+    assert "mutually exclusive ways to say where to work" in p
+
+
+def test_prompt_states_feature_campaigns_at_least_one_of_groups():
+    # feature_campaign's repo/repoPath/workspacePath and instruction/issueNumber all
+    # default to "" / 0 in the catalog, so a naive required-field render silently reported
+    # "required: " (nothing) for this workflow -- see catalog.AT_LEAST_ONE_OF_GROUPS.
+    p = prompt.system_prompt("http://localhost:8080/api")
+    line = next(l for l in p.splitlines() if l.startswith("- feature_campaign:"))
+    assert "one of {repo, repoPath, workspacePath}" in line
+    assert "one of {instruction, issueNumber}" in line
     assert "Ask them explicitly to" in p
     assert "issue_to_pr (a single focused change" in p
     assert "feature_campaign\n  (issue-driven: pass the issue as `issueNumber` + `repo`" in p

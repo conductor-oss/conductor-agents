@@ -23,7 +23,9 @@
     "modelProfile",
     "modelsConfig",
     "prTitle",
-    "repoUrl"
+    "repoUrl",
+    "allowAgentTestPlan",
+    "allowAgentAuthoredTests"
   ],
   "inputSchema": {
     "name": "github_demo_input",
@@ -127,6 +129,16 @@
           ],
           "default": {},
           "description": "Per-role model overrides (or a JSON string of the same) merged on top of the selected profile."
+        },
+        "allowAgentTestPlan": {
+          "type": "boolean",
+          "default": true,
+          "description": "Forwarded to the verify test_cycle sub-workflow: when true and deterministic discovery is configuration_blocked, lets a coding agent search for and propose an existing test command as a last resort."
+        },
+        "allowAgentAuthoredTests": {
+          "type": "boolean",
+          "default": true,
+          "description": "Forwarded to the verify test_cycle sub-workflow: when true and allowAgentTestPlan's search also finds nothing, lets a coding agent author exactly one new test file, accepted only after a red/green check (fails against the pre-candidate baseline, passes against the real candidate change)."
         }
       },
       "required": [
@@ -237,7 +249,9 @@
     "modelPolicySource": "",
     "modelPolicySha256": "",
     "modelsConfig": "",
-    "modelOverrides": {}
+    "modelOverrides": {},
+    "allowAgentTestPlan": true,
+    "allowAgentAuthoredTests": true
   },
   "variables": {
     "publicationState": "pending",
@@ -337,7 +351,9 @@
         "modelOverrides": "${workflow.input.modelOverrides}",
         "maxFixAttempts": 4,
         "testMode": "full",
-        "allowHeavySuites": true
+        "allowHeavySuites": true,
+        "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
+        "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}"
       },
       "optional": true
     },

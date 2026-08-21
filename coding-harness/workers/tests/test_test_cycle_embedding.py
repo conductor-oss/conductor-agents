@@ -104,7 +104,16 @@ def test_a_post_test_commit_reaches_every_downstream_head_guard():
         < campaign_refs.index("campaign_publication_plan") \
         < campaign_refs.index("campaign_publish_gate")
     push = next(task for task in _walk(campaign) if task.get("name") == "git_push")
+    # Resolved via a workflow variable now (campaign_pr_approval_gate sits
+    # between publication_plan and this push, possibly revising the
+    # candidate through pr_draft_approval), but the exact-SHA guarantee is
+    # unchanged: skip_campaign_pr_approval (requirePrApproval's default
+    # off-path) sets it straight from the publication plan's own head.
     assert push["inputParameters"]["expectedHead"] == \
+        "${workflow.variables.publishCandidateCommit}"
+    skip = next(task for task in _walk(campaign)
+               if task.get("taskReferenceName") == "skip_campaign_pr_approval")
+    assert skip["inputParameters"]["publishCandidateCommit"] == \
         "${campaign_publication_plan.output.head}"
 
     # code_subtask: the merge picks up whatever the subtask branch ends on.

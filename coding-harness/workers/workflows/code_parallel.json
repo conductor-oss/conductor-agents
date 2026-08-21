@@ -62,6 +62,7 @@
             "name": "design_docs",
             "taskReferenceName": "design",
             "inputParameters": {
+              "callerWorkflow": "${workflow.input.callerWorkflow}",
               "contextPaths": "${workflow.input.contextPaths}",
               "designDir": "${workflow.input.designDir}",
               "designMaxBudgetUsd": "${workflow.input.designMaxBudgetUsd}",
@@ -592,6 +593,8 @@
         "repoPath": "${workspace.output.worktreePath}",
         "candidateCommit": "${workflow.variables.candidateCommit}",
         "testMode": "targeted",
+        "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
+        "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
         "maxFixAttempts": "${workflow.input.maxFixAttempts}",
         "allowedWriteRoots": "${build_forks.output.allowedWriteRoots}",
         "maxTurns": "${workflow.input.maxTurns}",
@@ -683,6 +686,7 @@
   "inputParameters": [
     "repoPath",
     "instruction",
+    "callerWorkflow",
     "changeBranch",
     "branchRunId",
     "openspecPlanModel",
@@ -716,7 +720,9 @@
     "inPlace",
     "workspacePath",
     "contextPaths",
-    "maxFixAttempts"
+    "maxFixAttempts",
+    "allowAgentTestPlan",
+    "allowAgentAuthoredTests"
   ],
   "outputParameters": {
     "agentCompleted": true,
@@ -800,6 +806,7 @@
     "codeModel": "",
     "codePromptTemplate": "",
     "codePromptTemplateSource": "",
+    "callerWorkflow": "code_parallel",
     "contextPaths": [],
     "design": false,
     "designDir": "docs/design",
@@ -828,7 +835,9 @@
     "specContextPath": "",
     "usePrecomputedPlan": false,
     "workspacePath": "",
-    "maxFixAttempts": 4
+    "maxFixAttempts": 4,
+    "allowAgentTestPlan": true,
+    "allowAgentAuthoredTests": true
   },
   "overwriteTags": false,
   "inputSchema": {
@@ -844,6 +853,11 @@
         "instruction": {
           "type": "string",
           "description": "Natural-language description of the requested change, used to drive design authoring, OpenSpec/document planning, and (via replan prompts) plan repair."
+        },
+        "callerWorkflow": {
+          "type": "string",
+          "default": "code_parallel",
+          "description": "The logical top-level workflow name to stamp onto design_docs' human-review WAIT payload when design:true. Defaults to code_parallel's own name for a standalone launch; a caller that embeds code_parallel (issue_to_pr, address_pr) should pass its own name instead so the TUI's approval dispatch identifies the real caller, not this intermediate sub-workflow."
         },
         "changeBranch": {
           "type": "string",
@@ -1042,6 +1056,16 @@
           "type": "integer",
           "default": 4,
           "description": "Upper bound on structured fix/commit/re-test passes performed by the post-merge test_cycle sub-workflow."
+        },
+        "allowAgentTestPlan": {
+          "type": "boolean",
+          "default": true,
+          "description": "Forwarded to the post-merge test_cycle sub-workflow: when true and deterministic discovery is configuration_blocked, lets a coding agent search for and propose an existing test command as a last resort."
+        },
+        "allowAgentAuthoredTests": {
+          "type": "boolean",
+          "default": true,
+          "description": "Forwarded to the post-merge test_cycle sub-workflow: when true and allowAgentTestPlan's search also finds nothing, lets a coding agent author exactly one new test file, accepted only after a red/green check (fails against the pre-candidate baseline, passes against the real candidate change)."
         }
       },
       "required": [

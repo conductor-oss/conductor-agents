@@ -208,7 +208,64 @@ def test_address_pr_approval_gate_waits_for_a_human_before_anything_publishes():
         rendered.index('"taskReferenceName": "revise_address_candidate"')
 
 
-def test_address_pr_requires_independent_local_and_exact_sha_ci_verification():
+def test_pr_draft_approval_gate_waits_for_a_human_before_anything_publishes():
+    approval = _load("pr_draft_approval")
+    gate = _task(approval, "pr_gate")
+    assert gate["type"] == "WAIT"
+    assert gate["inputParameters"]["workflow"] == "${workflow.input.callerWorkflow}"
+    assert gate["inputParameters"]["availableActions"] == \
+        ["approve", "revise", "stop", "later"]
+    assert gate["inputParameters"]["draft"]["title"] == "${workflow.variables.currentTitle}"
+    rendered = json.dumps(approval)
+    assert rendered.index('"taskReferenceName": "pr_gate"') < \
+        rendered.index('"taskReferenceName": "revise_candidate"')
+    revise = _task(approval, "revise_candidate")
+    assert revise["subWorkflowParam"] == {"name": "code_parallel", "version": 1}
+    assert "${workflow.input.originalContext}" in revise["inputParameters"]["instruction"]
+    assert "${normalize_pr_decision.output.feedback}" in revise["inputParameters"]["instruction"]
+
+
+def test_design_docs_callers_all_identify_themselves_by_name():
+    # Confirmed live (via the address_pr_approval precedent): a gate living
+    # inside a sub-workflow reports Conductor's own workflowType as that
+    # sub-workflow's name, not the logical top-level caller's -- design_docs
+    # is now reachable up to two levels deep (issue_to_pr -> code_parallel ->
+    # design_docs), so every hop must forward its own real identity rather
+    # than letting design_docs fall back to reporting its own name.
+    design_docs = _load("design_docs")
+    gate = _task(design_docs, "design_review")
+    assert gate["inputParameters"]["workflow"] == "${workflow.input.callerWorkflow}"
+    assert "callerWorkflow" in design_docs["inputSchema"]["data"]["required"]
+
+    code_parallel = _load("code_parallel")
+    assert code_parallel["inputTemplate"]["callerWorkflow"] == "code_parallel"
+    cp_design_call = _task(code_parallel, "design")
+    assert cp_design_call["inputParameters"]["callerWorkflow"] == "${workflow.input.callerWorkflow}"
+
+    campaign = _load("feature_campaign")
+    campaign_design_call = _task(campaign, "campaign_design_docs")
+    assert campaign_design_call["inputParameters"]["callerWorkflow"] == "feature_campaign"
+
+    for wf_name in ("issue_to_pr", "address_pr"):
+        workflow = _load(wf_name)
+        cp_call = _task(workflow, "cp")
+        assert cp_call["subWorkflowParam"]["name"] == "code_parallel"
+        assert cp_call["inputParameters"]["callerWorkflow"] == wf_name, wf_name
+
+
+def test_issue_to_pr_and_feature_campaign_both_reach_pr_draft_approval():
+    # The whole point of the extraction: prove it's genuinely reusable, not
+    # just moved out of issue_to_pr into a differently-shaped dead end.
+    for wf_name in ("issue_to_pr", "feature_campaign"):
+        workflow = _load(wf_name)
+        call = next(node for node in _walk(workflow)
+                   if node.get("type") == "SUB_WORKFLOW"
+                   and node.get("subWorkflowParam", {}).get("name") == "pr_draft_approval")
+        assert call["inputParameters"]["callerWorkflow"] == wf_name, wf_name
+        assert call["inputParameters"]["candidateCommit"], wf_name
+
+
+def test_address_pr_requires_local_verification_then_publishes_without_waiting_on_ci():
     workflow = _load("address_pr")
     rendered = json.dumps(workflow)
     assert '"taskReferenceName": "verify"' in rendered
@@ -232,8 +289,10 @@ def test_address_pr_requires_independent_local_and_exact_sha_ci_verification():
     published = json.dumps(publisher)
     assert published.index('"taskReferenceName": "candidate_guard"') < published.index('"taskReferenceName": "push"')
     assert published.index('"taskReferenceName": "branch_guard"') < published.index('"taskReferenceName": "push"')
-    assert published.index('"taskReferenceName": "push"') < published.index('"taskReferenceName": "ci"')
-    assert published.index('"taskReferenceName": "ci"') < published.index('"taskReferenceName": "reply"')
+    # Publication completes once the branch is updated -- no CI wait/poll.
+    assert published.index('"taskReferenceName": "push"') < published.index('"taskReferenceName": "reply"')
+    assert '"taskReferenceName": "ci"' not in published
+    assert '"taskReferenceName": "ci_poll"' not in published
 
 
 def test_failed_local_verification_uses_shared_bounded_remediation_and_hands_back_the_candidate():
@@ -304,7 +363,7 @@ def test_remediation_stops_after_a_blocked_discovery_or_verifier_result():
     assert "infra_blocked" not in loop["loopCondition"]
 
 
-def test_shared_publish_path_keeps_parent_approval_branch_guard_and_exact_sha_ci_gate():
+def test_shared_publish_path_keeps_parent_approval_and_branch_guard():
     parent = _load("address_pr")
     publish = _load("publish_verified_pr")
     parent_rendered = json.dumps(parent)
@@ -313,12 +372,96 @@ def test_shared_publish_path_keeps_parent_approval_branch_guard_and_exact_sha_ci
         parent_rendered.index('"taskReferenceName": "publish"')
     assert rendered.index('"taskReferenceName": "candidate_guard"') < rendered.index('"taskReferenceName": "push"')
     assert rendered.index('"taskReferenceName": "branch_guard"') < rendered.index('"taskReferenceName": "push"')
-    assert rendered.index('"taskReferenceName": "push"') < rendered.index('"taskReferenceName": "ci"')
-    assert '"taskReferenceName": "ci_poll"' in rendered
+    # Completes once the push/comment land -- no CI wait/poll (see
+    # test_publish_completes_without_waiting_on_ci below for why).
+    assert '"taskReferenceName": "ci"' not in rendered
+    assert '"taskReferenceName": "ci_poll"' not in rendered
     assert _task(publish, "candidate_guard")["inputParameters"]["expectedHead"] == "${workflow.input.candidateCommit}"
-    assert _task(publish, "push")["inputParameters"]["expectedHead"] == "${workflow.input.candidateCommit}"
+    # push is still bound to an exact SHA -- just one resolved through
+    # workflow.variables.pushExpectedHead now, since a reconciled (and, for a
+    # real conflict, re-verified) branch-drift commit differs from the
+    # original candidateCommit. See test_publish_reconciles_branch_drift_*
+    # below for exactly what populates pushExpectedHead in each case.
+    assert _task(publish, "push")["inputParameters"]["expectedHead"] == "${workflow.variables.pushExpectedHead}"
     assert _task(publish, "branch_guard")["inputParameters"]["repo"] == "${workflow.input.headRepo}"
     assert _task(publish, "reply")["inputParameters"]["repo"] == "${workflow.input.repo}"
+
+
+def test_publish_completes_without_waiting_on_ci():
+    # Dropped deliberately: this workflow's job is publishing the verified
+    # candidate, not monitoring CI -- GitHub's own PR page already reports
+    # check status independently, and nothing downstream (address_pr's own
+    # output) used the old ciVerificationState for anything but display.
+    publish = _load("publish_verified_pr")
+    gate = next(x for x in _walk(publish) if x.get("taskReferenceName") == "push_result_gate")
+    assert gate["type"] == "SWITCH"
+    assert gate["inputParameters"]["pushed"] == "${push.output.pushed}"
+    published = gate["decisionCases"]["true"]
+    assert [t["taskReferenceName"] for t in published] == ["reply", "capture_publication_success"]
+    success = next(t for t in published if t["taskReferenceName"] == "capture_publication_success")
+    assert success["inputParameters"]["publicationState"] == "published"
+    blocked = next(t for t in gate["defaultCase"] if t["taskReferenceName"] == "capture_push_blocked")
+    assert blocked["inputParameters"]["publicationState"] == "${push.output.publicationState}"
+    assert blocked["inputParameters"]["pushed"] is False
+
+    rendered = json.dumps(publish)
+    for removed in ("ciState", "ci_verification_gate", "ci_poll_final", "pr_commit_checks"):
+        assert removed not in rendered
+
+    address = _load("address_pr")
+    assert "ciVerificationState" not in json.dumps(address)
+
+
+def test_publish_reconciles_branch_drift_instead_of_just_reporting_it():
+    # A non-force push already refuses a moved remote branch on its own (git's
+    # own fast-forward protection) -- branch_guard_gate's job is deciding what
+    # to do about that, not re-implementing the refusal. Confirmed live
+    # (execution 9ae65177...): reporting "branch_drift" and giving up wasted
+    # a fully-verified candidate whenever the PR branch moved during a run.
+    publish = _load("publish_verified_pr")
+    matched = next(x for x in _walk(publish) if x.get("taskReferenceName") == "branch_guard_gate")["decisionCases"]["matched"]
+    ready = next(t for t in matched if t["taskReferenceName"] == "capture_ready_to_push")
+    assert ready["inputParameters"]["readyToPush"] is True
+    assert ready["inputParameters"]["pushExpectedHead"] == "${workflow.input.candidateCommit}"
+
+    drifted = next(x for x in _walk(publish) if x.get("taskReferenceName") == "branch_guard_gate")["defaultCase"]
+    reconcile = next(t for t in drifted if t["taskReferenceName"] == "reconcile")
+    assert reconcile["name"] == "reconcile_branch_drift"
+
+    gate = next(t for t in drifted if t["taskReferenceName"] == "reconcile_gate")
+    # A clean merge (the remote's new commits never touched the candidate's
+    # own changed files) is trusted without re-verification.
+    merged = next(t for t in gate["decisionCases"]["merged"] if t["taskReferenceName"] == "capture_reconciled_merge")
+    assert merged["inputParameters"]["readyToPush"] is True
+    assert merged["inputParameters"]["pushExpectedHead"] == "${reconcile.output.commit}"
+
+    # A resolved conflict is genuinely new content and must be re-verified
+    # before it is ever trusted for publication.
+    resolved = gate["decisionCases"]["resolved"]
+    revalidate = next(t for t in resolved if t["taskReferenceName"] == "revalidate_reconciled_candidate")
+    assert revalidate["type"] == "SUB_WORKFLOW"
+    assert revalidate["subWorkflowParam"] == {"name": "test_cycle", "version": 1}
+    assert revalidate["inputParameters"]["candidateCommit"] == "${reconcile.output.commit}"
+    verify_gate = next(t for t in resolved if t["taskReferenceName"] == "reconcile_verify_gate")
+    assert verify_gate["inputParameters"]["state"] == "${revalidate_reconciled_candidate.output.testsPassed}"
+    verified = next(t for t in verify_gate["decisionCases"]["true"]
+                    if t["taskReferenceName"] == "capture_reconciled_verified")
+    assert verified["inputParameters"]["readyToPush"] is True
+    unverified = next(t for t in verify_gate["defaultCase"]
+                      if t["taskReferenceName"] == "capture_reconcile_verification_failed")
+    assert unverified["inputParameters"]["readyToPush"] is False
+    assert unverified["inputParameters"]["publicationState"] == "conflict_verification_failed"
+
+    # Resolution failing outright (not even a conflict to re-verify) is the
+    # only remaining case that still gives up -- nothing to push exists yet.
+    conflicted = next(t for t in gate["defaultCase"] if t["taskReferenceName"] == "capture_branch_drift")
+    assert conflicted["inputParameters"]["readyToPush"] is False
+    assert conflicted["inputParameters"]["publicationState"] == "branch_drift"
+
+    # push only ever runs when something was actually deemed trustworthy.
+    push_gate = next(x for x in _walk(publish) if x.get("taskReferenceName") == "push_ready_gate")
+    assert push_gate["inputParameters"]["ready"] == "${workflow.variables.readyToPush}"
+    assert any(t["taskReferenceName"] == "push" for t in push_gate["decisionCases"]["true"])
 
 
 def test_every_other_automated_publication_is_bound_to_its_candidate_commit():
@@ -339,9 +482,18 @@ def test_every_other_automated_publication_is_bound_to_its_candidate_commit():
     assert issue["outputParameters"]["changeBranch"] == "${workflow.variables.currentBranch}"
     assert _task(issue, "capture_initial_candidate")["inputParameters"]["currentBranch"] == \
         "${publication_workspace.output.branch}"
-    # The gate used to read a jq task whose whole expression was the literal
-    # "auto"; the constant now sits on the SWITCH itself.
-    assert _task(issue, "approve_gate")["inputParameters"]["mode"] == "auto"
+    # approvePr was "reserved for future manual-approval wiring" but never
+    # actually read -- the gate's mode was hardcoded to the literal "auto",
+    # making pr_approval_loop permanently dead code. Confirmed live and fixed:
+    # the gate now reads the real input, and the loop itself is extracted
+    # into pr_draft_approval so other workflows (feature_campaign) can reuse it.
+    gate = _task(issue, "approve_gate")
+    assert gate["inputParameters"]["approvePr"] == "${workflow.input.approvePr}"
+    assert set(gate["decisionCases"].keys()) == {"true", "false"}
+    approval = gate["decisionCases"]["true"][0]
+    assert approval["type"] == "SUB_WORKFLOW"
+    assert approval["subWorkflowParam"] == {"name": "pr_draft_approval", "version": 1}
+    assert approval["inputParameters"]["callerWorkflow"] == "issue_to_pr"
     from common import issue_to_pr as issue_to_pr_logic
 
     plan_task = _task(issue, "select_publication_plan")

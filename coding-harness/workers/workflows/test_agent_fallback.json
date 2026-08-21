@@ -403,7 +403,8 @@
                   "inputParameters": {
                     "repoPath": "${workflow.input.repoPath}",
                     "candidateCommit": "${workflow.variables.candidateCommit}",
-                    "changedPaths": "${workflow.input.changedPaths}"
+                    "changedPaths": "${workflow.input.changedPaths}",
+                    "agentTouchedPaths": "${author_missing_test.output.filesChanged}"
                   }
                 },
                 {

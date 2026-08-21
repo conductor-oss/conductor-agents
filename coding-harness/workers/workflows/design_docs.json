@@ -16,6 +16,8 @@
     "designPromptTemplate",
     "designPromptTemplateSource",
     "humanApproval",
+    "failClosed",
+    "callerWorkflow",
     "instruction",
     "modelOverrides",
     "modelPolicy",
@@ -35,6 +37,7 @@
     "designMaxTurns": 500,
     "designMaxBudgetUsd": 50,
     "humanApproval": true,
+    "failClosed": true,
     "designMaxIterations": 5,
     "modelProfile": "",
     "modelPolicy": {},
@@ -46,6 +49,7 @@
   },
   "variables": {
     "designApproved": false,
+    "designStopped": false,
     "designFeedback": "",
     "designReview": "",
     "lastFilesChanged": [],
@@ -53,7 +57,10 @@
     "lastCostUsd": 0,
     "lastTokenUsed": 0,
     "lastSessionId": "",
-    "designCommit": ""
+    "lastPromptTemplate": {},
+    "designCommit": "",
+    "currentMaxTurns": 500,
+    "currentMaxBudgetUsd": 50
   },
   "tasks": [
     {
@@ -71,15 +78,25 @@
       }
     },
     {
+      "name": "design_init",
+      "taskReferenceName": "design_init",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "currentMaxTurns": "${workflow.input.designMaxTurns}",
+        "currentMaxBudgetUsd": "${workflow.input.designMaxBudgetUsd}"
+      }
+    },
+    {
       "name": "design_loop",
       "taskReferenceName": "design_loop",
       "type": "DO_WHILE",
       "evaluatorType": "graaljs",
-      "loopCondition": "(function(){ return $.design_loop['iteration'] < $.max_iterations && $.approved !== true && $.approved !== 'true'; })();",
+      "loopCondition": "(function(){ return $.design_loop['iteration'] < $.max_iterations && $.approved !== true && $.approved !== 'true' && !$.stopped; })();",
       "inputParameters": {
         "design_loop": "${design_loop.output}",
         "max_iterations": "${workflow.input.designMaxIterations}",
-        "approved": "${workflow.variables.designApproved}"
+        "approved": "${workflow.variables.designApproved}",
+        "stopped": "${workflow.variables.designStopped}"
       },
       "loopOver": [
         {
@@ -91,8 +108,8 @@
             "contextPaths": "${workflow.input.contextPaths}",
             "agent": "${workflow.input.designAgent}",
             "model": "${workflow.input.designModel}",
-            "maxTurns": "${workflow.input.designMaxTurns}",
-            "maxBudgetUsd": "${workflow.input.designMaxBudgetUsd}",
+            "maxTurns": "${workflow.variables.currentMaxTurns}",
+            "maxBudgetUsd": "${workflow.variables.currentMaxBudgetUsd}",
             "allowedWriteRoots": [
               "${workflow.input.designDir}"
             ],
@@ -104,7 +121,7 @@
               "designDir": "${workflow.input.designDir}",
               "feedback": "${workflow.variables.designFeedback}"
             },
-            "prompt": "You are a senior software architect. Create or revise mutually consistent GitHub-flavored markdown design documents under ${workflow.input.designDir}/. Read existing design docs first. architecture.md is the source of truth for complete file layout, shared contracts, exact types, interfaces, data model, and naming conventions. Write only markdown design docs; do not write application code.\n\nRequested change:\n${workflow.input.instruction}\n\nPrevious review feedback (empty on first pass):\n${workflow.variables.designFeedback}\n\nAddress every feedback item, then summarize the design and files changed.",
+            "prompt": "You are a senior software architect. Create or revise mutually consistent GitHub-flavored markdown design documents under ${workflow.input.designDir}/. Read existing design docs first. architecture.md is the source of truth for complete file layout, shared contracts, exact types, interfaces, data model, and naming conventions. Write only markdown design docs; do not write application code. Reconcile any direct worktree edits a reviewer made to the design docs themselves.\n\nRequested change:\n${workflow.input.instruction}\n\nPrevious review feedback (empty on first pass):\n${workflow.variables.designFeedback}\n\nAddress every feedback item, then summarize the design and files changed.",
             "modelRole": "design",
             "modelProfile": "${workflow.input.modelProfile}",
             "modelPolicy": "${workflow.input.modelPolicy}",
@@ -124,7 +141,8 @@
             "lastAgent": "${design.output.agent}",
             "lastCostUsd": "${design.output.costUsd}",
             "lastTokenUsed": "${design.output.tokenUsed}",
-            "lastSessionId": "${design.output.sessionId}"
+            "lastSessionId": "${design.output.sessionId}",
+            "lastPromptTemplate": "${design.output.promptTemplate}"
           }
         },
         {
@@ -143,7 +161,14 @@
                 "taskReferenceName": "design_review",
                 "type": "WAIT",
                 "inputParameters": {
-                  "workflow": "design_docs",
+                  "workflow": "${workflow.input.callerWorkflow}",
+                  "phase": "design",
+                  "availableActions": [
+                    "continue",
+                    "revise",
+                    "adopt_edits",
+                    "stop"
+                  ],
                   "repoPath": "${workflow.input.repoPath}",
                   "designDir": "${workflow.input.designDir}",
                   "draft": {
@@ -155,14 +180,82 @@
                 }
               },
               {
-                "name": "set_human_review",
-                "taskReferenceName": "set_human_review",
+                "name": "design_review_normalize",
+                "taskReferenceName": "design_review_normalize",
+                "type": "INLINE",
+                "evaluatorType": "graaljs",
+                "inputParameters": {
+                  "decision": "${design_review.output}",
+                  "expression": "(function(){ var d = $.decision || {}; var action = d.action; var known = ['continue', 'revise', 'adopt_edits', 'stop']; if (known.indexOf(action) === -1) { action = (d.approved === true || d.approved === 'true') ? 'continue' : 'revise'; } return {action: action, feedback: d.feedback || ''}; })();"
+                }
+              },
+              {
+                "name": "campaign_checkpoint",
+                "taskReferenceName": "design_review_checkpoint",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "decision": "${design_review_normalize.output.result}",
+                  "phase": "design",
+                  "blockingStatus": "${design.output.status}",
+                  "maxTurns": "${workflow.variables.currentMaxTurns}",
+                  "maxBudgetUsd": "${workflow.variables.currentMaxBudgetUsd}"
+                }
+              },
+              {
+                "name": "design_limits",
+                "taskReferenceName": "design_limits",
                 "type": "SET_VARIABLE",
                 "inputParameters": {
-                  "designApproved": "${design_review.output.approved}",
-                  "designFeedback": "${design_review.output.feedback}",
-                  "designReview": "human"
+                  "currentMaxTurns": "${design_review_checkpoint.output.maxTurns}",
+                  "currentMaxBudgetUsd": "${design_review_checkpoint.output.maxBudgetUsd}"
                 }
+              },
+              {
+                "name": "design_review_action",
+                "taskReferenceName": "design_review_action",
+                "type": "SWITCH",
+                "evaluatorType": "value-param",
+                "expression": "action",
+                "inputParameters": {
+                  "action": "${design_review_checkpoint.output.action}"
+                },
+                "decisionCases": {
+                  "continue": [
+                    {
+                      "name": "design_approved",
+                      "taskReferenceName": "design_approved",
+                      "type": "SET_VARIABLE",
+                      "inputParameters": {
+                        "designApproved": true,
+                        "designFeedback": "",
+                        "designReview": "human"
+                      }
+                    }
+                  ],
+                  "stop": [
+                    {
+                      "name": "design_stopped",
+                      "taskReferenceName": "design_stopped",
+                      "type": "SET_VARIABLE",
+                      "inputParameters": {
+                        "designStopped": true,
+                        "designFeedback": "${design_review_checkpoint.output.feedback}",
+                        "designReview": "human"
+                      }
+                    }
+                  ]
+                },
+                "defaultCase": [
+                  {
+                    "name": "design_revision",
+                    "taskReferenceName": "design_revision",
+                    "type": "SET_VARIABLE",
+                    "inputParameters": {
+                      "designFeedback": "${design_review_checkpoint.output.feedback}",
+                      "designReview": "human"
+                    }
+                  }
+                ]
               }
             ]
           },
@@ -257,23 +350,39 @@
       },
       "defaultCase": [
         {
-          "name": "design_not_approved",
-          "taskReferenceName": "design_not_approved",
-          "type": "TERMINATE",
+          "name": "fail_closed_gate",
+          "taskReferenceName": "fail_closed_gate",
+          "type": "SWITCH",
+          "evaluatorType": "value-param",
+          "expression": "failClosed",
           "inputParameters": {
-            "terminationStatus": "FAILED",
-            "terminationReason": "Design was not approved within ${workflow.input.designMaxIterations} iterations.",
-            "workflowOutput": {
-              "approved": false,
-              "feedback": "${workflow.variables.designFeedback}"
-            }
-          }
+            "failClosed": "${workflow.input.failClosed}"
+          },
+          "decisionCases": {
+            "true": [
+              {
+                "name": "design_not_approved",
+                "taskReferenceName": "design_not_approved",
+                "type": "TERMINATE",
+                "inputParameters": {
+                  "terminationStatus": "FAILED",
+                  "terminationReason": "Design was not approved (stopped, or the iteration limit was reached).",
+                  "workflowOutput": {
+                    "approved": false,
+                    "feedback": "${workflow.variables.designFeedback}"
+                  }
+                }
+              }
+            ]
+          },
+          "defaultCase": []
         }
       ]
     }
   ],
   "outputParameters": {
     "approved": "${workflow.variables.designApproved}",
+    "stopped": "${workflow.variables.designStopped}",
     "reviewMode": "${workflow.variables.designReview}",
     "feedback": "${workflow.variables.designFeedback}",
     "iterations": "${design_loop.output.iteration}",
@@ -282,7 +391,10 @@
     "costUsd": "${workflow.variables.lastCostUsd}",
     "tokenUsed": "${workflow.variables.lastTokenUsed}",
     "sessionId": "${workflow.variables.lastSessionId}",
-    "designCommit": "${workflow.variables.designCommit}"
+    "designCommit": "${workflow.variables.designCommit}",
+    "finalMaxTurns": "${workflow.variables.currentMaxTurns}",
+    "finalMaxBudgetUsd": "${workflow.variables.currentMaxBudgetUsd}",
+    "promptTemplate": "${workflow.variables.lastPromptTemplate}"
   },
   "inputSchema": {
     "name": "design_docs_input",
@@ -293,6 +405,10 @@
         "repoPath": {
           "type": "string",
           "description": "Absolute path to the git checkout the design docs are authored and committed in."
+        },
+        "callerWorkflow": {
+          "type": "string",
+          "description": "The logical top-level workflow name (e.g. 'feature_campaign', 'issue_to_pr', 'code_parallel', 'address_pr') to stamp onto the design_review WAIT payload. design_docs is reused by multiple callers, some nested two levels deep (issue_to_pr -> code_parallel -> design_docs); without this, the TUI's approval dispatch would see this sub-workflow's own name instead of the caller's, and every approve/revise/stop decision on it would resolve to the wrong branch."
         },
         "instruction": {
           "type": "string",
@@ -336,7 +452,12 @@
         "humanApproval": {
           "type": "boolean",
           "default": true,
-          "description": "When true, each design iteration is reviewed by a human WAIT task; when false, an agent design-judge session reviews it instead."
+          "description": "When true, each design iteration is reviewed by a human WAIT task (which may also request bounded turn/budget increases via the shared campaign-checkpoint decision shape, or explicitly stop early); when false, an agent design-judge session reviews it instead (fixed turns/budget, no early stop)."
+        },
+        "failClosed": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true (the default -- matches every existing caller), a design never approved (stopped early, or the iteration limit reached) TERMINATEs the whole workflow FAILED. When false, the workflow completes normally instead with approved:false in its output, leaving the caller free to degrade gracefully (e.g. feature_campaign marks its own outcome incomplete rather than failing the entire campaign)."
         },
         "designMaxIterations": {
           "type": "integer",
@@ -384,7 +505,8 @@
       },
       "required": [
         "repoPath",
-        "instruction"
+        "instruction",
+        "callerWorkflow"
       ]
     }
   },
@@ -396,7 +518,11 @@
       "properties": {
         "approved": {
           "type": "boolean",
-          "description": "True once a design iteration was approved by human review or the design judge; on the not-approved path the workflow instead terminates FAILED with its own {approved:false, feedback} output."
+          "description": "True once a design iteration was approved by human review or the design judge. On the not-approved path (stopped, or the iteration limit reached), the workflow either TERMINATEs FAILED with its own {approved:false, feedback} output (failClosed:true, the default) or completes normally with approved:false (failClosed:false)."
+        },
+        "stopped": {
+          "type": "boolean",
+          "description": "True when a human explicitly stopped the loop early (the 'stop' checkpoint action) rather than exhausting designMaxIterations without approval. Only reachable with humanApproval:true."
         },
         "reviewMode": {
           "type": "string",
@@ -441,10 +567,31 @@
         "designCommit": {
           "type": "string",
           "description": "Commit SHA of the approved design docs; empty string unless the design was approved and committed."
+        },
+        "finalMaxTurns": {
+          "type": "integer",
+          "description": "designMaxTurns, or a human-adjusted value from the last reviewed iteration. A caller that shares one budget/turn pool across multiple phases (e.g. feature_campaign) should carry this forward as its own next-phase starting point."
+        },
+        "finalMaxBudgetUsd": {
+          "type": "number",
+          "description": "designMaxBudgetUsd, or a human-adjusted value from the last reviewed iteration. Same carry-forward use as finalMaxTurns."
+        },
+        "promptTemplate": {
+          "type": "object",
+          "description": "Which design-phase prompt template source was requested vs. actually resolved for the last design-authoring session.",
+          "properties": {
+            "requestedSource": {
+              "type": "string"
+            },
+            "resolvedSource": {
+              "type": "string"
+            }
+          }
         }
       },
       "required": [
         "approved",
+        "stopped",
         "reviewMode",
         "feedback",
         "iterations",
@@ -453,7 +600,10 @@
         "costUsd",
         "tokenUsed",
         "sessionId",
-        "designCommit"
+        "designCommit",
+        "finalMaxTurns",
+        "finalMaxBudgetUsd",
+        "promptTemplate"
       ]
     }
   },

@@ -30,6 +30,14 @@
           },
           "default": [],
           "description": "The real candidate's own changed paths, used for the content check: the authored file's text must reference at least one non-test path from this list by name or basename."
+        },
+        "agentTouchedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "The authoring coding_agent task's own before/after reconciliation (its filesChanged output) -- the authoritative record of what that turn actually wrote. When given, only these paths are considered touched, so anything else already dirty in the workspace (a stray untracked file, a build-tool-generated cache artifact) is never blamed on this attempt. Omit or leave empty to fall back to a raw whole-tree git status scan."
         }
       },
       "required": [

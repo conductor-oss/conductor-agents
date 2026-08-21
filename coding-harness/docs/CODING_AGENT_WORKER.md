@@ -773,18 +773,14 @@ branch, pushing to the **same branch** (updates the PR — no new PR). The harne
 replies carry the marker and are skipped, so the loop is safely re-runnable; the outer
 gate returns cleanly when there's no outstanding feedback.
 
-The **`engine` input** selects how the coding is done (nested `engine_gate` SWITCH):
-- `code_parallel` (default) — embeds the full decompose → parallel forks → merge
-  sub-workflow (same core as `issue_to_pr`), reusing the prepared PR worktree and branch as
-  its `changeBranch`. Best for multi-part reviews; it commits internally.
-- `coding_agent` — a single session on the PR branch (`+ commit`). Cheapest for small,
-  cohesive feedback.
+Addressing review feedback always embeds the full `code_parallel` decompose → parallel
+forks → merge sub-workflow (same core as `issue_to_pr`), reusing the prepared PR worktree
+and branch as its `changeBranch`. It commits internally.
 
 ```bash
 conductor workflow start -w address_pr -i '{
   "repo": "https://github.com/you/your-repo.git",
-  "prNumber": 4,
-  "engine": "code_parallel"
+  "prNumber": 4
 }'
 ```
 

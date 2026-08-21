@@ -145,6 +145,28 @@ def normalize_local_paths(values: dict, *, cwd: str | None = None) -> dict:
     return normalized
 
 
+# Fields normalize_local_paths (above) expands (~/relative -> absolute) before a workflow
+# starts. The chat system prompt (chat/prompt.py) reads this same set so it can tell the
+# model which argument names accept a local filesystem path, instead of that guidance
+# living only as separately-maintained prose that can drift from what this module does.
+LOCAL_PATH_FIELDS = ("repoPath", "specSource", "contextPaths")
+
+# Some workflows accept several mutually-substitutable ways to say "where to work" or
+# "what to do" (feature_campaign: repo/repoPath/workspacePath: any one of them; separately
+# instruction/issueNumber: any one of them). A workflow input with a non-None `default`
+# never registers as `Field.required`, even when the workflow's own runtime demands at
+# least one member of its group be set (workspace_prepare raises otherwise) -- so the flat
+# required-field list alone silently reports these workflows as needing nothing at all.
+# Listed once here so both the chat prompt and the chat tool's own missing-input guard can
+# state and enforce the real constraint instead of missing it.
+AT_LEAST_ONE_OF_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "feature_campaign": (
+        ("repo", "repoPath", "workspacePath"),
+        ("instruction", "issueNumber"),
+    ),
+}
+
+
 # --------------------------------------------------------------------------- shared field sets
 
 _BACKENDS = ("claude", "codex", "gemini")
@@ -267,9 +289,7 @@ def _r_address_pr(o: dict) -> ResultCard:
         ("outcome", str(o.get("publicationState") or o.get("approvalState") or "unknown")),
         ("approval", str(o.get("approvalState") or "unknown")),
         ("verification", str(o.get("verificationState") or "unknown")),
-        ("CI", str(o.get("ciVerificationState") or "not started")),
         ("pushed", "yes" if o.get("pushed") else "no"),
-        ("engine", str(o.get("engine", "?"))),
         ("PR", f"#{o.get('prNumber', '?')}"),
         ("workspace", "retained" if o.get("workspaceRetained", True) else "cleaned"),
         ("tokens", str(o.get("totalTokens") or "—")),
@@ -483,9 +503,6 @@ CATALOG: dict[str, WorkflowSpec] = {
         fields=(
             Field("repo", "Repo", "text", help="URL or owner/name"),
             Field("prNumber", "PR", "gh_pr", help="pull request number"),
-            Field("engine", "Engine", "enum", "code_parallel",
-                  choices=("code_parallel", "coding_agent"),
-                  help="code_parallel = decompose+parallel; coding_agent = single session"),
             Field("design", "Design before coding", "bool", False,
                   help="create and review design documents before implementation"),
             Field("designHumanApproval", "Human design review", "bool", True,
@@ -555,6 +572,8 @@ CATALOG: dict[str, WorkflowSpec] = {
                   help="blank derives a unique feature-campaign/<workflow-id> branch"),
             Field("createPr", "Create pull request", "bool", False,
                   help="push the verified branch and open a PR only when enabled"),
+            Field("requirePrApproval", "Require human PR approval", "bool", False, advanced=True,
+                  help="gate the PR draft behind a human approval/revision loop before it's pushed"),
             Field("prBase", "PR base branch", "text", "main", advanced=True),
             Field("prTitle", "PR title", "text", "", advanced=True,
                   help="blank derives the title/body from commits"),
@@ -567,6 +586,7 @@ CATALOG: dict[str, WorkflowSpec] = {
             Field("maxWaves", "Max waves", "int", 20, advanced=True),
             Field("designMaxRevisions", "Design revisions", "int", 5, advanced=True),
             Field("planMaxRevisions", "Plan revisions", "int", 5, advanced=True),
+            Field("finalMaxRevisions", "Final verification revisions", "int", 3, advanced=True),
             Field("designPromptTemplate", "Design prompt template", "template", "", advanced=True),
             Field("planPromptTemplate", "Planning prompt template", "template", "", advanced=True),
             Field("codePromptTemplate", "Coding prompt template", "template", "", advanced=True),

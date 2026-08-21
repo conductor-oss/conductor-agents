@@ -56,6 +56,20 @@ def test_every_required_workflow_input_is_covered(wf_name):
     assert not missing, f"{wf_name}: required inputs not covered by a form field: {missing}"
 
 
+def test_at_least_one_of_groups_reference_real_workflow_inputs():
+    """Every catalog.AT_LEAST_ONE_OF_GROUPS member must be a real registered workflow input,
+    or the chat missing-input guard would silently never fire for a typo'd name. Checked
+    against the workflow's own inputParameters, not just the TUI's form fields -- a group
+    member like feature_campaign's workspacePath is a real, chat-settable input (the nested-
+    workflow "inherit the parent's worktree" case) with no interactive form field of its own."""
+    for wf_name, groups in catalog.AT_LEAST_ONE_OF_GROUPS.items():
+        params = set(_load(wf_name).get("inputParameters") or [])
+        for group in groups:
+            assert len(group) >= 2, f"{wf_name}: a one-member group is just a required field"
+            unknown = set(group) - params
+            assert not unknown, f"{wf_name}: at-least-one-of group names unknown input(s) {unknown}"
+
+
 def test_build_payload_omits_defaults_and_defers_backend_to_profile():
     spec = catalog.CATALOG["issue_to_pr"]
     # user set repo/issue and left model selection to the selected profile

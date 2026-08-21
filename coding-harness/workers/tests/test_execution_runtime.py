@@ -26,16 +26,27 @@ def _fake_jdk(root: Path) -> Path:
     return home
 
 
-def test_isolated_check_environment_only_forwards_declared_profile_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("GH_TOKEN", "must-not-leak")
+def test_isolated_check_environment_inherits_the_real_worker_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # Deployment controls what is present (Docker env, local shell/config
+    # files, sandbox-injected credentials) -- isolated_environment no longer
+    # filters or redirects any of it, so a repository that needs an
+    # authenticated package registry (or any other machine-level
+    # configuration) just works, the same way it would for a human running
+    # the same command by hand. required_env is accepted for call-site
+    # compatibility but is now a no-op: everything is already inherited.
+    monkeypatch.setenv("GH_TOKEN", "a-real-worker-credential")
     monkeypatch.setenv("CAMPAIGN_URL", "http://127.0.0.1:9999")
+    monkeypatch.setenv("GRADLE_USER_HOME", "/real/home/.gradle")
 
     env = check_execution.isolated_environment(tmp_path, required_env=["CAMPAIGN_URL"])
 
     assert env["CAMPAIGN_URL"] == "http://127.0.0.1:9999"
-    assert "GH_TOKEN" not in env
-    assert env["GRADLE_USER_HOME"].startswith(str(tmp_path))
-    assert env["npm_config_cache"].startswith(str(tmp_path))
+    assert env["GH_TOKEN"] == "a-real-worker-credential"
+    # GRADLE_USER_HOME (and every other tool's config/cache location) is left
+    # exactly as the real environment set it -- never redirected into a
+    # synthetic per-run directory, so ~/.gradle/gradle.properties-style
+    # credentials resolve the same way they would outside the harness.
+    assert env["GRADLE_USER_HOME"] == "/real/home/.gradle"
 
 
 def test_shared_environment_resolves_java_without_interactive_java_home(
@@ -202,7 +213,11 @@ def test_common_exec_preserves_nonzero_exit_details_after_shared_executor_migrat
 
 
 def test_campaign_uses_shared_isolated_environment_and_external_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("GH_TOKEN", "must-not-leak")
+    # A "none" mode profile still runs with the worker's real environment
+    # (isolated_environment now inherits it unconditionally) -- "none" only
+    # means this profile declares no extra requiredEnv/attached precondition,
+    # not that the check runs env-free.
+    monkeypatch.setenv("GH_TOKEN", "a-real-worker-credential")
     artifact_root = tmp_path / "harness-artifacts"
     monkeypatch.setenv("CONDUCTOR_ARTIFACT_ROOT", str(artifact_root))
     config = {
@@ -220,7 +235,7 @@ def test_campaign_uses_shared_isolated_environment_and_external_artifacts(tmp_pa
     assert result["executionOutcome"] == "passed"
     assert result["artifactDir"].startswith(str(artifact_root))
     assert not str(result["artifactDir"]).startswith(str(tmp_path / ".conductor-code"))
-    assert result["checks"][0]["outputTail"] == "absent"
+    assert result["checks"][0]["outputTail"] == "a-real-worker-credential"
 
 
 def test_campaign_configuration_rejects_execution_timeouts(tmp_path: Path):

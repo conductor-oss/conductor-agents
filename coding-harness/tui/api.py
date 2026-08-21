@@ -640,7 +640,14 @@ class ConductorClient:
                     task_ref=str(task.get("referenceTaskName") or task.get("taskRefName") or ""),
                     task_type=task_type,
                     workflow_id=str(task.get("workflowInstanceId") or task.get("workflowId") or ""),
-                    workflow=str(task.get("workflowType") or task.get("workflowName") or inputs.get("workflow") or ""),
+                    # A gate's declared inputs.workflow wins over the raw Conductor
+                    # workflowType/workflowName: when a checkpoint has been extracted into a
+                    # reusable approval sub-workflow (e.g. address_pr_approval, pr_draft_approval),
+                    # workflowType is that sub-workflow's OWN name, not the logical top-level
+                    # workflow (address_pr, issue_to_pr, feature_campaign, ...) the rest of this
+                    # dispatch (_decide_approval) branches on. workflowType/workflowName only
+                    # cover the non-nested case or a server that omits inputs entirely.
+                    workflow=str(inputs.get("workflow") or task.get("workflowType") or task.get("workflowName") or ""),
                     input=inputs,
                     scheduled_ms=_to_ms(task.get("scheduledTime") or task.get("startTime")),
                 ))
@@ -668,8 +675,8 @@ class ConductorClient:
                         f"/workflow/{workflow_id}", includeTasks="true")).json() or {}
                 except ConductorError:
                     return []
-                workflow = str(execution.get("workflowName") or execution.get("workflowType") or
-                               row.get("workflowType") or row.get("workflowName") or "")
+                fallback_workflow = str(execution.get("workflowName") or execution.get("workflowType") or
+                                       row.get("workflowType") or row.get("workflowName") or "")
                 found: list[PendingApproval] = []
                 for task in execution.get("tasks") or []:
                     if str(task.get("taskType") or task.get("type") or "") != "WAIT":
@@ -688,7 +695,12 @@ class ConductorClient:
                                      task.get("taskRefName") or ""),
                         task_type="WAIT",
                         workflow_id=str(task.get("workflowInstanceId") or workflow_id),
-                        workflow=workflow or str(inputs.get("workflow") or ""),
+                        # Same precedence as the /tasks/search branch above: when this
+                        # RUNNING execution IS itself a nested approval sub-workflow
+                        # (e.g. address_pr_approval), its own workflowName always reports
+                        # truthy and would otherwise permanently shadow the gate's
+                        # declared logical-parent override.
+                        workflow=str(inputs.get("workflow") or fallback_workflow or ""),
                         input=inputs,
                         scheduled_ms=_to_ms(task.get("scheduledTime") or task.get("startTime")),
                     ))

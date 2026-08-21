@@ -717,6 +717,29 @@ async def test_design_gate_is_labeled_as_design_and_revision_keeps_workflow_aliv
 
 
 @pytest.mark.asyncio
+async def test_design_gate_stop_completes_gracefully_instead_of_hard_failing():
+    # design_docs now has a real graceful-stop decisionCase (like
+    # feature_campaign's), instead of always hard-failing the whole
+    # design_docs sub-workflow -- action_stop must signal COMPLETED for it,
+    # not FAILED_WITH_TERMINAL_ERROR, or the stop decisionCase never runs.
+    from tui.screens.run_detail import RunDetail
+    from tui.widgets.modals import ApprovalModal
+
+    fc = FakeClient(execution=_software_design_gate_execution())
+    app = _app(fc)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause(0.2)
+        app.push_screen(RunDetail("wf-software-design"))
+        await pilot.pause(0.6)
+        assert isinstance(app.screen, ApprovalModal)
+        await pilot.click("#stop")
+        await pilot.pause(0.3)
+        wid, ref, status, output = fc.signals[-1]
+        assert (wid, ref, status) == ("wf-software-design", "design_review__1", "COMPLETED")
+        assert output["action"] == "stop"
+
+
+@pytest.mark.asyncio
 async def test_address_gate_shows_publishable_body_and_approves_with_normalized_body():
     from textual.widgets import Static
     from tui.screens.run_detail import RunDetail

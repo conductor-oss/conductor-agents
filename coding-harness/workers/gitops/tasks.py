@@ -499,6 +499,38 @@ def commit(task):
         return fail(task, "commit", e)
 
 
+def _resolve_conflict_with_agent(repo: str, conflicted: list[str], *, source_label: str,
+                                 model: str | None, max_attempts: int,
+                                 max_budget_usd: float, commit_message: str) -> dict:
+    """Ask a coding agent to resolve conflict markers already left in the
+    worktree by a failed ``git merge``/``git rebase``, bounded by
+    ``max_attempts``. Shared by ``merge_worktrees`` (group-branch fan-in) and
+    ``reconcile_branch_drift`` (a moved remote PR branch) -- same evidence
+    bar either way: only an actual conflict spends agent turns, and the
+    result is only trusted once every marker is gone and the commit lands.
+    """
+    from common.claude import run_agent
+    total_tokens, total_cost = 0, 0.0
+    prompt = (
+        f"Resolve ALL git merge conflicts in these files: {', '.join(conflicted)}. "
+        "Keep both sides' changes where possible. Remove every conflict marker "
+        "(<<<<<<<, =======, >>>>>>>). Edit only the conflicted files."
+    )
+    for attempt in range(1, max_attempts + 1):
+        res = run_agent(prompt, cwd=repo, model=model, write=True, max_budget_usd=max_budget_usd)
+        total_tokens += res["tokens"]
+        total_cost += res["cost_usd"]
+        if res["ok"]:
+            unsafe = [path for path in conflicted if not git.is_vetted_change_path(path)]
+            if unsafe:
+                raise ValueError("resolved conflict contains generated/cache path: " + ", ".join(unsafe))
+            git.git(repo, "add", "--", *conflicted)
+            committed = git.git(repo, "commit", "-m", commit_message, check=False)
+            if committed.code == 0 and not git.has_conflicts(repo):
+                return {"resolved": True, "attempts": attempt, "tokenUsed": total_tokens, "costUsd": total_cost}
+    return {"resolved": False, "attempts": max_attempts, "tokenUsed": total_tokens, "costUsd": total_cost}
+
+
 @worker_task(task_definition_name="worktree_add")
 def worktree_add(task):
     i = task.input_data or {}
@@ -576,30 +608,17 @@ def merge_worktrees(task):
                 logs.append(f"[merge_worktrees] conflict on {br}: {', '.join(conflicted)}")
                 # Keep the clean/preflight path usable in deployments that do
                 # not install a coding backend; only an actual conflict needs it.
-                from common.claude import run_agent
-                prompt = (
-                    f"Resolve ALL git merge conflicts in these files: {', '.join(conflicted)}. "
-                    "Keep both sides' changes where possible. Remove every conflict marker "
-                    "(<<<<<<<, =======, >>>>>>>). Edit only the conflicted files."
-                )
-                for attempt in range(1, max_resolution_attempts + 1):
-                    res = run_agent(prompt, cwd=repo, model=model, write=True,
-                                    max_budget_usd=float(i.get("maxBudgetUsd") or 50.0))
-                    total_tokens += res["tokens"]
-                    total_cost += res["cost_usd"]
-                    if res["ok"]:
-                        unsafe = [path for path in conflicted if not git.is_vetted_change_path(path)]
-                        if unsafe:
-                            raise ValueError("resolved conflict contains generated/cache path: " + ", ".join(unsafe))
-                        # A merge that resolves to our side can have no ordinary cached
-                        # diff, yet still needs these paths staged to conclude the merge.
-                        git.git(repo, "add", "--", *conflicted)
-                        committed = git.git(repo, "commit", "-m", f"merge_worktrees: resolve conflict from {br}", check=False)
-                        if committed.code == 0 and not git.has_conflicts(repo):
-                            resolved.append(br)
-                            logs.append(f"[merge_worktrees] resolved {br} on attempt {attempt} (tokens={res['tokens']} cost=${res['cost_usd']:.4f})")
-                            break
-                    logs.append(f"[merge_worktrees] resolution attempt {attempt}/{max_resolution_attempts} did not complete {br}")
+                resolution = _resolve_conflict_with_agent(
+                    repo, conflicted, source_label=br, model=model,
+                    max_attempts=max_resolution_attempts,
+                    max_budget_usd=float(i.get("maxBudgetUsd") or 50.0),
+                    commit_message=f"merge_worktrees: resolve conflict from {br}")
+                total_tokens += resolution["tokenUsed"]
+                total_cost += resolution["costUsd"]
+                if resolution["resolved"]:
+                    resolved.append(br)
+                    logs.append(f"[merge_worktrees] resolved {br} on attempt {resolution['attempts']} "
+                                f"(tokens={resolution['tokenUsed']} cost=${resolution['costUsd']:.4f})")
                 else:
                     unresolved.append(br)
                     git.git(repo, "merge", "--abort", check=False)
@@ -664,6 +683,57 @@ def git_pull(task):
         return ok(task, out, [log])
     except Exception as e:  # noqa: BLE001
         return fail(task, "git_pull", e)
+
+
+@worker_task(task_definition_name="reconcile_branch_drift")
+def reconcile_branch_drift(task):
+    """Merge the current remote branch tip into the verified candidate branch,
+    resolving conflicts with a coding agent when they occur.
+
+    Only reached when pr_branch_guard finds the remote PR branch has moved
+    since the candidate was checked out. A clean merge (mergeState="merged")
+    touches none of the files the candidate itself changed -- that is what
+    "no conflict" means -- so it is trusted for publication without
+    re-verification. A resolved conflict (mergeState="resolved") introduces
+    genuinely new content; the caller must re-verify it before publishing.
+    mergeState="conflicted" means resolution failed after maxResolutionAttempts;
+    nothing is trusted and the merge is left aborted.
+    """
+    i = task.input_data or {}
+    repo = i["repoPath"]
+    remote = i.get("remote") or "origin"
+    branch = i["branch"]
+    model = i.get("model") or None
+    max_attempts = max(1, min(int(i.get("maxResolutionAttempts") or 3), 5))
+    max_budget_usd = float(i.get("maxBudgetUsd") or 50.0)
+    try:
+        # rebase=False (a merge, not a rebase): the candidate's own verified
+        # commit stays intact as an ancestor instead of being rewritten to a
+        # new SHA, and pull() already fetches before integrating.
+        pulled = git.pull(repo, remote=remote, branch_name=branch, rebase=False)
+        if pulled["pulled"]:
+            return ok(task, {"mergeState": "merged", "commit": pulled["head"],
+                             "tokenUsed": 0, "costUsd": 0.0},
+                      [f"[reconcile_branch_drift] merged {remote}/{branch} cleanly -> {pulled['head'][:12]}"])
+        conflicted = pulled["conflicts"]
+        # git.pull() aborts on conflict to leave the tree clean; redo the merge
+        # without aborting so the marker text the agent needs actually exists.
+        git.git(repo, "merge", "--no-edit", f"{remote}/{branch}", check=False)
+        resolution = _resolve_conflict_with_agent(
+            repo, conflicted, source_label=f"{remote}/{branch}", model=model,
+            max_attempts=max_attempts, max_budget_usd=max_budget_usd,
+            commit_message=f"reconcile_branch_drift: merge {remote}/{branch}")
+        if resolution["resolved"]:
+            return ok(task, {"mergeState": "resolved", "commit": git.head(repo),
+                             "tokenUsed": resolution["tokenUsed"], "costUsd": resolution["costUsd"]},
+                      [f"[reconcile_branch_drift] resolved conflict with {remote}/{branch} on attempt "
+                       f"{resolution['attempts']} (tokens={resolution['tokenUsed']} cost=${resolution['costUsd']:.4f})"])
+        git.git(repo, "merge", "--abort", check=False)
+        return ok(task, {"mergeState": "conflicted", "commit": "",
+                         "tokenUsed": resolution["tokenUsed"], "costUsd": resolution["costUsd"]},
+                  [f"[reconcile_branch_drift] unresolved after {max_attempts} attempts against {remote}/{branch}"])
+    except Exception as e:  # noqa: BLE001
+        return fail(task, "reconcile_branch_drift", e)
 
 
 @worker_task(task_definition_name="git_push")

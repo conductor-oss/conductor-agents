@@ -53,6 +53,22 @@ _GENERATED_PARTS = {".gradle", ".gradle-local", ".conductor-verify-build", "buil
 _SCAN_SKIP_PARTS = _GENERATED_PARTS | {"node_modules", "vendor", "_build", "deps", "bin", "obj", ".venv"}
 _JAVA_ENTRYPOINTS = check_execution.JAVA_ENTRYPOINTS
 _HEAVY_MARKERS = ("acceptance", "benchmark", "docker", "e2e", "integration", "performance", "publish", "release", "spotless", "test-harness")
+# Flags whose value slot carries one already-selected test's identifier (an
+# exact class name, a workspace/package name, a rake/CTest name filter)
+# rather than a task/script/module name a human or agent chose freely. Every
+# one of this module's own changed-scope planners derives that value
+# mechanically from a real changed file or package (the Java/Kotlin FQCN in
+# _targeted_gradle_candidates/_targeted_maven_candidates, the workspace name
+# in _targeted_javascript_candidates, the class list in the PHP/composer
+# planner, ...), so scanning it for "e2e"/"integration"/etc. only ever
+# produces a false block when the test/class/package itself happens to be
+# named that -- which does not make running that one target broad. A heavy
+# TASK or SCRIPT name (Gradle's own e2eTest, a Makefile target,
+# run-integration-suite.sh) sits in a different argv slot -- the
+# goal/entrypoint position, checked separately by each tool's own goal
+# allowlist above -- and stays untouched by this exemption.
+_FILTER_FLAGS_WITH_SEPARATE_VALUE = {"--tests", "--filter", "-R"}
+_FILTER_VALUE_PREFIXES = ("-Dtest=", "TEST=", "SPEC=")
 _SAFE_ENV_KEYS = (
     "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP",
     "SYSTEMROOT", "WINDIR", "COMSPEC", "SSL_CERT_FILE", "SSL_CERT_DIR",
@@ -197,15 +213,35 @@ def _is_lightweight(argv: list[str], root: Path | None = None) -> bool:
     A marker only disqualifies a command when it appears in a token the caller
     chose, never in one that merely names a file the repository happens to
     store under ``integration/`` or ``e2e/``.  Matching on paths made a project
-    unverifiable purely because of how it organizes its tests.
+    unverifiable purely because of how it organizes its tests. The same
+    principle applies to a single-target filter flag's value (see
+    _is_target_filter_value): a test class genuinely named ...E2ETest is not
+    a broad suite merely because its author chose that name, when the
+    invocation still runs exactly that one class.
     """
-    for value in argv:
+    for index, value in enumerate(argv):
         if not any(marker in value.lower() for marker in _HEAVY_MARKERS):
             continue
         if root is not None and _names_existing_path(root, value):
             continue
+        if _is_target_filter_value(argv, index):
+            continue
         return False
     return True
+
+
+def _is_target_filter_value(argv: list[str], index: int) -> bool:
+    """True when argv[index] sits in the VALUE slot of a single-target filter flag.
+
+    Purely shape/position based, never string based: this asks which argv
+    slot a token occupies, never what characters it contains. A heavy TASK or
+    SCRIPT name occupies a different slot (the goal/entrypoint position) and
+    is untouched -- see the module comment above _FILTER_FLAGS_WITH_SEPARATE_VALUE.
+    """
+    value = argv[index]
+    if value.startswith(_FILTER_VALUE_PREFIXES):
+        return True
+    return index > 0 and argv[index - 1] in _FILTER_FLAGS_WITH_SEPARATE_VALUE
 
 
 def _names_existing_path(root: Path, value: str) -> bool:
@@ -1812,12 +1848,14 @@ def _isolated_environment(
     java_home: str | None = None,
     dependency_cache_dir: str | Path | None = None,
 ) -> dict[str, str]:
-    """Return a credential-free environment for candidate-controlled builds.
+    """Return the worker's real environment for a candidate-controlled build.
 
-    A disposable worktree alone does not stop a Gradle/Maven/npm project from
-    reading the worker's inherited GH_TOKEN or cloud credentials.  Preserve
-    only runtime/locale/certificate settings, give the command a fresh home,
-    and require callers to execute it with ``clean_env=True``.
+    Inherits the worker's full environment (see
+    ``check_execution.isolated_environment``): a repository that needs an
+    authenticated package registry or other machine-level configuration
+    resolves it the same way a human running the same command by hand would.
+    Deployment (Docker env, local shell config, sandbox provisioning) decides
+    what is actually present -- this function does not filter it.
     """
     # Kept as a stable internal API for callers/tests; campaign checks use the
     # exact same underlying environment builder.
@@ -2526,7 +2564,8 @@ def _execute_selected_commands(worktree: str, temp: str, selected: list[dict],
 # --------------------------------------------------------------------------
 
 def validate_authored_test_shape(repo: str, *, candidate_commit: str,
-                                 changed_paths: list[str]) -> dict:
+                                 changed_paths: list[str],
+                                 agent_touched_paths: list[str] | None = None) -> dict:
     """Pre-check an agent-authored test file before spending a red/green run.
 
     Operates on ``repo``'s CURRENT uncommitted working tree -- what the
@@ -2534,10 +2573,27 @@ def validate_authored_test_shape(repo: str, *, candidate_commit: str,
     or filesystem mutation. ``candidate_commit`` is the real candidate the
     agent was trying to cover (before the new test); ``changed_paths`` is
     that candidate's own changed-path list, used for the content check.
+
+    ``agent_touched_paths``, when given, is the authoring coding_agent task's
+    own before/after reconciliation (workers/coding_agent/tasks.py's
+    ``filesChanged`` output) -- the authoritative record of what THIS turn
+    actually wrote. Without it, a raw whole-tree ``git status`` scan below
+    would attribute anything else already dirty in the workspace (a stray
+    untracked fixture file, a Gradle/.gradle cache artifact a Bash-less agent
+    could never have produced) to this one attempt, and reject a genuinely
+    well-formed single new test file for "touching" paths it never touched.
     """
     root = Path(repo).resolve()
     empty = {"accepted": False, "reason": "", "authoredPath": "", "touchedPaths": [], "matchedIdentifier": ""}
     changes = git.status_changes(repo, untracked_files_all=True)
+    if agent_touched_paths is not None:
+        allowed = {path for path in agent_touched_paths if isinstance(path, str)}
+        candidates = {path: code for path, code in changes.items() if path in allowed}
+    else:
+        candidates = dict(changes)
+    # Defense in depth even with an authoritative set: a build-tool-generated
+    # path is never evidence of what the agent authored.
+    changes = {path: code for path, code in candidates.items() if not is_generated_path(path)}
     touched = sorted(changes)
     if not touched:
         return {**empty, "reason": "agent made no change"}

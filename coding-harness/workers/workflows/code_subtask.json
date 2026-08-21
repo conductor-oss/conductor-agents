@@ -26,7 +26,9 @@
     "repoPath",
     "contextPaths",
     "specContextPath",
-    "templateKey"
+    "templateKey",
+    "allowAgentTestPlan",
+    "allowAgentAuthoredTests"
   ],
   "inputSchema": {
     "name": "code_subtask_input",
@@ -152,6 +154,16 @@
           },
           "default": [],
           "description": "Absolute filesystem paths (files or directories) granted to the coding agent as read-only live context references."
+        },
+        "allowAgentTestPlan": {
+          "type": "boolean",
+          "default": true,
+          "description": "Forwarded to this subtask's own test_cycle sub-workflow: when true and deterministic discovery is configuration_blocked, lets a coding agent search for and propose an existing test command as a last resort."
+        },
+        "allowAgentAuthoredTests": {
+          "type": "boolean",
+          "default": true,
+          "description": "Forwarded to this subtask's own test_cycle sub-workflow: when true and allowAgentTestPlan's search also finds nothing, lets a coding agent author exactly one new test file, accepted only after a red/green check (fails against the pre-candidate baseline, passes against the real candidate change)."
         }
       },
       "required": [
@@ -392,7 +404,9 @@
     "specContextPath": "",
     "allowedTools": [],
     "allowedWriteRoots": [],
-    "contextPaths": []
+    "contextPaths": [],
+    "allowAgentTestPlan": true,
+    "allowAgentAuthoredTests": true
   },
   "variables": {
     "deliveryState": "pending",
@@ -612,6 +626,8 @@
         "repoPath": "${wt.output.worktreePath}",
         "candidateCommit": "${cmt.output.commit}",
         "testMode": "targeted",
+        "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
+        "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
         "maxFixAttempts": 1,
         "allowedWriteRoots": "${workflow.input.allowedWriteRoots}",
         "model": "${workflow.input.model}",

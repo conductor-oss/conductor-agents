@@ -1,0 +1,527 @@
+{
+  "name": "dag_plan_approval",
+  "description": "Author and get human approval for a dependency-DAG implementation plan (id/description/dependsOn/files/acceptanceCriteria/checks per task), extracted from feature_campaign's own plan_loop so it can be reused. A human reviews each authored draft via the plan_checkpoint WAIT task (using the same checkpoint-decision shape feature_campaign's other checkpoints use -- continue/revise/adopt_edits/stop, with optional bounded turn/budget adjustment), for up to planMaxIterations bounded rounds. Always starts with approved=false and resolves to exactly one of: approved=true, or approved=false with stopped indicating whether that was an explicit stop versus exhausting the iteration bound.",
+  "version": 1,
+  "schemaVersion": 2,
+  "restartable": true,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "inputParameters": [
+    "repoPath",
+    "instruction",
+    "callerWorkflow",
+    "contextPaths",
+    "maxTasks",
+    "planAgent",
+    "planModel",
+    "planPromptTemplate",
+    "planPromptTemplateSource",
+    "planMaxTurns",
+    "planMaxBudgetUsd",
+    "planMaxIterations",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "inputSchema": {
+    "name": "dag_plan_approval_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "Absolute path to the git checkout the plan is authored against and (once approved) recorded for."
+        },
+        "instruction": {
+          "type": "string",
+          "description": "Requested feature/change; drives the plan-authoring prompt."
+        },
+        "callerWorkflow": {
+          "type": "string",
+          "description": "The logical top-level workflow name (e.g. 'feature_campaign') to stamp onto the plan_checkpoint WAIT payload. The TUI's approval dispatch branches on this to know how to build its decision output -- without it, a gate living inside this sub-workflow would report its own name (dag_plan_approval) instead of the caller's."
+        },
+        "contextPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Absolute filesystem paths granted to the plan-authoring session as read-only live context references."
+        },
+        "maxTasks": {
+          "type": "integer",
+          "default": 25,
+          "description": "Upper bound on the number of DAG tasks the plan may contain."
+        },
+        "planAgent": {
+          "type": "string",
+          "default": "",
+          "description": "Compatibility override selecting the coding agent backend for the plan-authoring session."
+        },
+        "planModel": {
+          "type": "string",
+          "default": "",
+          "description": "Legacy single-model override applied to the plan-authoring session."
+        },
+        "planPromptTemplate": {
+          "type": "string",
+          "default": "",
+          "description": "Inline prompt template for the plan-authoring session."
+        },
+        "planPromptTemplateSource": {
+          "type": "string",
+          "default": ""
+        },
+        "planMaxTurns": {
+          "type": "integer",
+          "default": 500,
+          "description": "Starting cap on agent turns per plan-authoring session; a human reviewer may adjust it for subsequent rounds via the same checkpoint-decision shape feature_campaign's other checkpoints use."
+        },
+        "planMaxBudgetUsd": {
+          "type": "number",
+          "default": 50,
+          "description": "Starting cap on USD spend per plan-authoring session; same adjustment mechanism as planMaxTurns."
+        },
+        "planMaxIterations": {
+          "type": "integer",
+          "default": 5,
+          "description": "Maximum number of author/review rounds before an still-unapproved plan resolves with approved:false (never a hard TERMINATE -- the caller decides what an unapproved plan means for its own outcome)."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": ""
+        },
+        "modelPolicy": {
+          "type": "object",
+          "default": {}
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": ""
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": ""
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": ""
+        },
+        "modelOverrides": {
+          "type": "object",
+          "default": {}
+        }
+      },
+      "required": [
+        "repoPath",
+        "instruction",
+        "callerWorkflow"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "dag_plan_approval_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "approved": {
+          "type": "boolean",
+          "description": "True once a plan iteration was approved by human review."
+        },
+        "stopped": {
+          "type": "boolean",
+          "description": "True when a human explicitly stopped the loop early (the 'stop' checkpoint action) rather than exhausting planMaxIterations without approval."
+        },
+        "feedback": {
+          "type": "string",
+          "description": "Latest review feedback to fold into the next plan iteration, or the stop reason, or empty on approval."
+        },
+        "plan": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "The approved plan's structured {tasks: [...]} document; empty object unless approved."
+        },
+        "planLocation": {
+          "type": "string",
+          "description": "Resolved plan location from validation; empty unless approved."
+        },
+        "remainingTaskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Dependency-ordered task ids ready for implementation scheduling; empty unless approved."
+        },
+        "allowedWriteRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The approved plan's own declared file scope, for a caller to restrict implementation subtasks to; empty unless approved."
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Backend session id of the last plan-authoring session, usable as a resume id."
+        },
+        "costUsd": {
+          "type": "number",
+          "description": "USD cost of the last plan-authoring session."
+        },
+        "tokenUsed": {
+          "type": "integer",
+          "description": "Tokens consumed by the last plan-authoring session."
+        },
+        "finalMaxTurns": {
+          "type": "integer",
+          "description": "planMaxTurns, or a human-adjusted value from the last reviewed iteration. A caller that shares one budget/turn pool across multiple phases (e.g. feature_campaign) should carry this forward as its own next-phase starting point."
+        },
+        "finalMaxBudgetUsd": {
+          "type": "number",
+          "description": "planMaxBudgetUsd, or a human-adjusted value from the last reviewed iteration. Same carry-forward use as finalMaxTurns."
+        },
+        "promptTemplate": {
+          "type": "object",
+          "description": "Which plan-authoring prompt template source was requested vs. actually resolved for the last session.",
+          "properties": {
+            "requestedSource": {
+              "type": "string"
+            },
+            "resolvedSource": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "required": [
+        "approved",
+        "stopped",
+        "feedback",
+        "plan",
+        "planLocation",
+        "remainingTaskIds",
+        "allowedWriteRoots",
+        "sessionId",
+        "costUsd",
+        "tokenUsed",
+        "finalMaxTurns",
+        "finalMaxBudgetUsd",
+        "promptTemplate"
+      ]
+    }
+  },
+  "inputTemplate": {
+    "contextPaths": [],
+    "maxTasks": 25,
+    "planAgent": "",
+    "planModel": "",
+    "planPromptTemplate": "",
+    "planPromptTemplateSource": "",
+    "planMaxTurns": 500,
+    "planMaxBudgetUsd": 50,
+    "planMaxIterations": 5,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "variables": {
+    "planApproved": false,
+    "planStopped": false,
+    "planFeedback": "",
+    "plan": {},
+    "planLocation": "",
+    "remainingTaskIds": [],
+    "allowedWriteRoots": [],
+    "lastSessionId": "",
+    "lastCostUsd": 0,
+    "lastTokenUsed": 0,
+    "lastPromptTemplate": {},
+    "currentMaxTurns": 500,
+    "currentMaxBudgetUsd": 50
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "plan_init",
+      "taskReferenceName": "plan_init",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "currentMaxTurns": "${workflow.input.planMaxTurns}",
+        "currentMaxBudgetUsd": "${workflow.input.planMaxBudgetUsd}"
+      }
+    },
+    {
+      "name": "plan_loop",
+      "taskReferenceName": "plan_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ return $.plan_loop['iteration'] < $.max_iterations && !$.approved && !$.stopped; })();",
+      "inputParameters": {
+        "plan_loop": "${plan_loop.output}",
+        "max_iterations": "${workflow.input.planMaxIterations}",
+        "approved": "${workflow.variables.planApproved}",
+        "stopped": "${workflow.variables.planStopped}"
+      },
+      "loopOver": [
+        {
+          "name": "coding_agent",
+          "taskReferenceName": "plan",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "agent": "${workflow.input.planAgent}",
+            "contextPaths": "${workflow.input.contextPaths}",
+            "failSoft": true,
+            "maxBudgetUsd": "${workflow.variables.currentMaxBudgetUsd}",
+            "maxTurns": "${workflow.variables.currentMaxTurns}",
+            "model": "${workflow.input.planModel}",
+            "prompt": "Read the approved design and repository, then produce a dependency DAG for the requested feature. Return JSON tasks with exactly: id, description, dependsOn, files, acceptanceCriteria, checks. Tasks ready in one wave must have disjoint files. At most ${workflow.input.maxTasks} tasks. Instruction: ${workflow.input.instruction}\nCheckpoint feedback: ${workflow.variables.planFeedback}",
+            "promptContext": {
+              "feedback": "${workflow.variables.planFeedback}",
+              "instruction": "${workflow.input.instruction}",
+              "maxSubtasks": "${workflow.input.maxTasks}"
+            },
+            "promptTemplate": "${workflow.input.planPromptTemplate}",
+            "promptTemplateSource": "${workflow.input.planPromptTemplateSource}",
+            "resumeSessionId": "${workflow.variables.lastSessionId}",
+            "schema": {
+              "properties": {
+                "tasks": {
+                  "items": {
+                    "properties": {
+                      "acceptanceCriteria": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "checks": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "dependsOn": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "files": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "description",
+                      "dependsOn",
+                      "files",
+                      "acceptanceCriteria",
+                      "checks"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "tasks"
+              ],
+              "type": "object"
+            },
+            "templateKey": "plan",
+            "tools": [
+              "Read",
+              "Grep",
+              "Glob"
+            ],
+            "worktreePath": "${workflow.input.repoPath}",
+            "modelRole": "plan",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}",
+            "modelResolution": "${model_policy.output}"
+          },
+          "type": "SIMPLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "capture_plan_session",
+          "taskReferenceName": "capture_plan_session",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "lastSessionId": "${plan.output.sessionId}",
+            "lastCostUsd": "${plan.output.costUsd}",
+            "lastTokenUsed": "${plan.output.tokenUsed}",
+            "lastPromptTemplate": "${plan.output.promptTemplate}"
+          }
+        },
+        {
+          "name": "campaign_validate_plan",
+          "taskReferenceName": "validate_plan",
+          "inputParameters": {
+            "maxTasks": "${workflow.input.maxTasks}",
+            "plan": "${plan.output.structured}",
+            "repoPath": "${workflow.input.repoPath}"
+          },
+          "type": "SIMPLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "plan_checkpoint",
+          "taskReferenceName": "plan_checkpoint",
+          "inputParameters": {
+            "workflow": "${workflow.input.callerWorkflow}",
+            "actions": [
+              "continue",
+              "revise",
+              "adopt_edits",
+              "stop"
+            ],
+            "draft": {
+              "errors": "${validate_plan.output.errors}",
+              "plan": "${validate_plan.output.tasks}",
+              "sessionId": "${plan.output.sessionId}",
+              "status": "${plan.output.status}"
+            },
+            "phase": "plan"
+          },
+          "type": "WAIT",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "campaign_checkpoint",
+          "taskReferenceName": "plan_review_checkpoint",
+          "inputParameters": {
+            "decision": "${plan_checkpoint.output}",
+            "maxBudgetUsd": "${workflow.variables.currentMaxBudgetUsd}",
+            "maxTurns": "${workflow.variables.currentMaxTurns}",
+            "phase": "plan",
+            "blockingStatus": "${plan.output.status}",
+            "blockingValid": "${validate_plan.output.valid}"
+          },
+          "type": "SIMPLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "plan_limits",
+          "taskReferenceName": "plan_limits",
+          "inputParameters": {
+            "currentMaxBudgetUsd": "${plan_review_checkpoint.output.maxBudgetUsd}",
+            "currentMaxTurns": "${plan_review_checkpoint.output.maxTurns}"
+          },
+          "type": "SET_VARIABLE",
+          "decisionCases": {},
+          "defaultCase": []
+        },
+        {
+          "name": "plan_action",
+          "taskReferenceName": "plan_action",
+          "inputParameters": {
+            "action": "${plan_review_checkpoint.output.action}"
+          },
+          "type": "SWITCH",
+          "decisionCases": {
+            "continue": [
+              {
+                "name": "plan_approved",
+                "taskReferenceName": "plan_approved",
+                "inputParameters": {
+                  "planFeedback": "",
+                  "plan": "${plan.output.structured}",
+                  "planApproved": true,
+                  "planLocation": "${validate_plan.output.planLocation}",
+                  "remainingTaskIds": "${validate_plan.output.order}",
+                  "allowedWriteRoots": "${validate_plan.output.allowedWriteRoots}"
+                },
+                "type": "SET_VARIABLE",
+                "decisionCases": {},
+                "defaultCase": []
+              }
+            ],
+            "stop": [
+              {
+                "name": "plan_stopped",
+                "taskReferenceName": "plan_stopped",
+                "inputParameters": {
+                  "planFeedback": "${plan_review_checkpoint.output.feedback}",
+                  "planStopped": true
+                },
+                "type": "SET_VARIABLE",
+                "decisionCases": {},
+                "defaultCase": []
+              }
+            ]
+          },
+          "defaultCase": [
+            {
+              "name": "plan_revision",
+              "taskReferenceName": "plan_revision",
+              "inputParameters": {
+                "planFeedback": "${plan_review_checkpoint.output.feedback}"
+              },
+              "type": "SET_VARIABLE",
+              "decisionCases": {},
+              "defaultCase": []
+            }
+          ],
+          "evaluatorType": "value-param",
+          "expression": "action"
+        }
+      ]
+    }
+  ],
+  "outputParameters": {
+    "approved": "${workflow.variables.planApproved}",
+    "stopped": "${workflow.variables.planStopped}",
+    "feedback": "${workflow.variables.planFeedback}",
+    "plan": "${workflow.variables.plan}",
+    "planLocation": "${workflow.variables.planLocation}",
+    "remainingTaskIds": "${workflow.variables.remainingTaskIds}",
+    "allowedWriteRoots": "${workflow.variables.allowedWriteRoots}",
+    "sessionId": "${workflow.variables.lastSessionId}",
+    "costUsd": "${workflow.variables.lastCostUsd}",
+    "tokenUsed": "${workflow.variables.lastTokenUsed}",
+    "finalMaxTurns": "${workflow.variables.currentMaxTurns}",
+    "finalMaxBudgetUsd": "${workflow.variables.currentMaxBudgetUsd}",
+    "promptTemplate": "${workflow.variables.lastPromptTemplate}"
+  },
+  "overwriteTags": false,
+  "enforceSchema": false
+}

@@ -38,16 +38,26 @@ from common import github  # noqa: E402
 DEFAULT_REPO = "conductor-oss/coding-agent-test"
 DEFAULT_SERVER = "http://localhost:8080/api"
 TERMINAL = {"COMPLETED", "FAILED", "TIMED_OUT", "TERMINATED"}
-# Maps each feature_campaign WAIT gate to the SIMPLE task (worker: campaign_checkpoint,
-# see workers/campaign/tasks.py + workers/campaign/model.py::validate_checkpoint) that
-# validates the signaled decision against that phase's own blocking status. That
-# validation -- and the fail-closed revision-limit switches downstream of it -- is the
-# real safety net now; it lives in the workflow, not in this driver. This map exists
-# purely so the driver can look up and log the decision's {valid, action, feedback}
-# after signaling, for evidence -- it is never used to gate whether to signal.
+# Maps each feature_campaign-family WAIT gate to the SIMPLE task (worker:
+# campaign_checkpoint, see workers/campaign/tasks.py + workers/campaign/model.py::
+# validate_checkpoint) that validates the signaled decision against that phase's own
+# blocking status. That validation -- and the fail-closed revision-limit switches
+# downstream of it -- is the real safety net now; it lives in the workflow, not in
+# this driver. This map exists purely so the driver can look up and log the
+# decision's {valid, action, feedback} after signaling, for evidence -- it is never
+# used to gate whether to signal.
+#
+# design_review/plan_checkpoint/wave_checkpoint now live one level down, inside the
+# design_docs/dag_plan_approval/implementation_waves sub-workflows feature_campaign
+# delegates those phases to -- only final_checkpoint remains directly on
+# feature_campaign itself. open_campaign_gate resolves one level of nesting to find
+# whichever of these is currently open. design_review (design_docs' own WAIT,
+# unlike the other three) expects the legacy {approved, feedback} shape or nothing
+# at all -- but design_review_normalize also accepts the same {action: "continue", ...}
+# shape the other three use, so drive_campaign can send one uniform payload to all four.
 CAMPAIGN_CHECKPOINTS = {
-    "design_checkpoint": "design_decision",
-    "plan_checkpoint": "plan_decision",
+    "design_review": "design_review_checkpoint",
+    "plan_checkpoint": "plan_review_checkpoint",
     "wave_checkpoint": "wave_decision",
     "final_checkpoint": "final_decision",
 }
@@ -707,12 +717,33 @@ def latest_task(tasks: list[dict[str, Any]], base_ref: str) -> dict[str, Any] | 
     return matches[-1] if matches else None
 
 
-def open_campaign_gate(execution: dict[str, Any]) -> dict[str, Any] | None:
+def _iter_nested_executions(conductor: Conductor, execution: dict[str, Any]):
+    """Yield (execution, tasks) for this execution and any direct IN_PROGRESS
+    SUB_WORKFLOW children, recursively -- feature_campaign nests
+    design_review/plan_checkpoint/wave_checkpoint exactly one level down (inside
+    design_docs/dag_plan_approval/implementation_waves respectively), but this
+    recurses further in case a future extraction nests deeper."""
     tasks = execution.get("tasks") or []
-    for base_ref in CAMPAIGN_CHECKPOINTS:
-        gate = latest_task(tasks, base_ref)
-        if gate and gate.get("status") == "IN_PROGRESS" and gate.get("taskType") == "WAIT":
-            return gate
+    yield execution, tasks
+    for task in tasks:
+        if task.get("taskType") != "SUB_WORKFLOW" or task.get("status") != "IN_PROGRESS":
+            continue
+        sub_workflow_id = str(task.get("subWorkflowId") or "")
+        if not sub_workflow_id:
+            continue
+        try:
+            sub_execution = conductor.execution(sub_workflow_id)
+        except Exception:
+            continue
+        yield from _iter_nested_executions(conductor, sub_execution)
+
+
+def open_campaign_gate(conductor: Conductor, execution: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    for owning_execution, tasks in _iter_nested_executions(conductor, execution):
+        for base_ref in CAMPAIGN_CHECKPOINTS:
+            gate = latest_task(tasks, base_ref)
+            if gate and gate.get("status") == "IN_PROGRESS" and gate.get("taskType") == "WAIT":
+                return owning_execution, gate
     return None
 
 
@@ -729,15 +760,16 @@ def drive_campaign(scenario: Scenario) -> dict[str, Any]:
             scenario.event("campaign_terminal", workflowId=workflow_id, status=status)
             return execution
 
-        gate = open_campaign_gate(execution)
-        if gate:
+        opened = open_campaign_gate(scenario.conductor, execution)
+        if opened:
+            owning_execution, gate = opened
             gate_id = str(gate.get("taskId") or "")
             if gate_id in signaled_ids:
                 time.sleep(1)
                 continue
             base_ref = task_ref(gate).split("__", 1)[0]
             draft = (gate.get("inputData") or {}).get("draft") or {}
-            owner = str(gate.get("workflowInstanceId") or workflow_id)
+            owner = str(gate.get("workflowInstanceId") or owning_execution.get("workflowId") or workflow_id)
             output = {"action": "continue", "feedback": "", "maxTurns": None, "maxBudgetUsd": None}
             scenario.conductor.signal(owner, task_ref(gate), output)
             signaled_ids.add(gate_id)
@@ -747,9 +779,10 @@ def drive_campaign(scenario: Scenario) -> dict[str, Any]:
             # switches act on its verdict -- this driver no longer duplicates that decision.
             # Best-effort: log the decision task's verdict for evidence if it has already run;
             # a decision that hasn't executed yet by this next fetch just logs as unknown, it
-            # is not treated as a failure.
+            # is not treated as a failure. It lives in the same execution the gate itself
+            # does (owner), not necessarily the top-level workflow_id.
             decision_ref = CAMPAIGN_CHECKPOINTS[base_ref]
-            after = scenario.conductor.execution(workflow_id)
+            after = scenario.conductor.execution(owner)
             decision = latest_task(after.get("tasks") or [], decision_ref)
             verdict = (decision.get("outputData") or {}) if decision else {}
             scenario.event(
@@ -917,10 +950,10 @@ def create_issue_to_pr(args: argparse.Namespace, conductor: Conductor) -> Scenar
     """The lightweight counterpart to ``create_campaign``: no design docs, no
     planning/wave DAG, no pre-made clone -- ``issue_to_pr`` fetches the issue
     and clones the repo itself, builds its own instruction from the issue's
-    title/body, and (its ``approve_gate`` SWITCH hardcodes ``mode: "auto"``,
-    making the "manual"/human-approval WAIT branch unreachable) never opens a
-    checkpoint a driver has to signal -- it always publishes a PR, draft only
-    when the real test_cycle verification didn't pass.
+    title/body. ``approvePr: true`` now genuinely routes into pr_draft_approval
+    (extracted from issue_to_pr's own pr_approval_loop, previously unreachable
+    behind a hardcoded ``mode: "auto"``) -- see drive_issue_to_pr for how this
+    driver signals that nested checkpoint.
     """
     root = Path(args.reports).resolve()
     scenario_id = f"harness-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
@@ -964,11 +997,36 @@ def create_issue_to_pr(args: argparse.Namespace, conductor: Conductor) -> Scenar
     return scenario
 
 
+def open_pr_draft_approval_gate(conductor: Conductor, execution: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """Find pr_draft_approval's pr_gate if it's open, wherever it's nested.
+
+    approvePr:true routes into the pr_draft_approval sub-workflow -- a genuinely
+    separate, independently RUNNING execution linked by subWorkflowId, not a task
+    directly on ``execution``'s own task list (that non-recursive fetch only ever
+    shows the SUB_WORKFLOW task itself, IN_PROGRESS, never its child's tasks).
+    """
+    sub_call = latest_task(execution.get("tasks") or [], "pr_draft_approval")
+    if not sub_call or sub_call.get("status") != "IN_PROGRESS":
+        return None
+    sub_workflow_id = str(sub_call.get("subWorkflowId") or "")
+    if not sub_workflow_id:
+        return None
+    sub_execution = conductor.execution(sub_workflow_id)
+    gate = latest_task(sub_execution.get("tasks") or [], "pr_gate")
+    if gate and gate.get("status") == "IN_PROGRESS" and gate.get("taskType") == "WAIT":
+        return sub_workflow_id, gate
+    return None
+
+
 def drive_issue_to_pr(scenario: Scenario) -> dict[str, Any]:
-    """Poll to a terminal state. No signaling: issue_to_pr's only WAIT task
-    lives behind a hardcoded-unreachable SWITCH case (see create_issue_to_pr),
-    so unlike drive_campaign there is no checkpoint for this driver to open."""
+    """Poll to a terminal state, auto-approving pr_draft_approval's pr_gate
+    if approvePr:true routes into it (see open_pr_draft_approval_gate) --
+    mirrors drive_campaign's always-"continue" philosophy: the real safety
+    net (validate_gate_decision / pr_decision, workers/common/gate_decision.py)
+    runs server-side, this driver only unblocks a checkpoint that would
+    otherwise wait forever with nothing signaling it."""
     workflow_id = str(scenario.state["issueToPrWorkflowId"])
+    signaled_ids = set(scenario.state.setdefault("signaledTaskIds", []))
     while True:
         execution = scenario.conductor.execution(workflow_id)
         scenario.snapshot(execution)
@@ -978,6 +1036,19 @@ def drive_issue_to_pr(scenario: Scenario) -> dict[str, Any]:
         if status in TERMINAL:
             scenario.event("issue_to_pr_terminal", workflowId=workflow_id, status=status)
             return execution
+
+        opened = open_pr_draft_approval_gate(scenario.conductor, execution)
+        if opened:
+            sub_workflow_id, gate = opened
+            gate_id = str(gate.get("taskId") or "")
+            if gate_id not in signaled_ids:
+                scenario.conductor.signal(sub_workflow_id, task_ref(gate), {"approved": True})
+                signaled_ids.add(gate_id)
+                scenario.state["signaledTaskIds"] = sorted(signaled_ids)
+                scenario.event("pr_draft_approval_gate_advanced",
+                              subWorkflowId=sub_workflow_id, gateTaskId=gate_id)
+            time.sleep(1)
+            continue
         time.sleep(2)
 
 

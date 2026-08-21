@@ -102,10 +102,15 @@ REQUIRED_SCOPED_WRITERS = {
     ("code_parallel", "verify_fixup"),
     ("test_cycle", "repair"),
     ("design_docs", "design"),
-    ("feature_campaign", "campaign_design"),
-    ("feature_campaign", "adopt_wave_edits"),
-    ("feature_campaign", "revise_wave_work"),
-    ("feature_campaign", "final_verifier"),
+    # adopt_wave_edits/revise_wave_work/final_verifier used to live directly
+    # in feature_campaign.json; they now live in the standalone
+    # implementation_waves/final_verification sub-workflows it delegates to
+    # (feature_campaign's own "campaign_design" entry became fully redundant
+    # with ("design_docs", "design") once design moved out the same way, and
+    # is dropped rather than relocated).
+    ("implementation_waves", "adopt_wave_edits"),
+    ("implementation_waves", "revise_wave_work"),
+    ("final_verification", "final_verifier"),
     ("openspec_generate_artifact", "write"),
 }
 
@@ -173,6 +178,17 @@ def audit_definitions(definitions: dict[str, dict]) -> list[Finding]:
                     elif sub["version"] != definitions[child].get("version", 1):
                         report("SUBWORKFLOW_VERSION", name, location,
                                f"local sub-workflow {child!r} version does not match source")
+                if child == "test_cycle":
+                    # A caller that omits either flag silently collapses to
+                    # test_cycle's own false/false default -- confirmed live
+                    # (execution eb97ddad-23f1-4b69-9ee0-1d906729293e): the
+                    # agent-assisted fallback never even had a chance to fire
+                    # in every workflow that forgot to forward it.
+                    for flag in ("allowAgentTestPlan", "allowAgentAuthoredTests"):
+                        if flag not in inputs:
+                            report("TEST_CYCLE_FALLBACK_FORWARDING", name, location,
+                                   f"test_cycle sub-workflow call does not forward {flag}; "
+                                   "the caller cannot opt into the agent-assisted fallback tiers")
             if task_name == "git_push":
                 has_push = True
                 if not inputs.get("expectedHead"):
@@ -309,6 +325,29 @@ def audit_definitions(definitions: dict[str, dict]) -> list[Finding]:
                 report("SHELL_COMPOSED_CHECK", name, "workflow",
                        "planner checks are recombined with shell &&")
 
+    # These two checks prove that a real, narrowly-scoped verification
+    # command found by discovery is never dropped by a known heuristic bug
+    # (confirmed live: execution eb97ddad-23f1-4b69-9ee0-1d906729293e). They
+    # do NOT prove no workflow can ever reach command_discovery_blocked: a
+    # repository with genuinely no derivable, discoverable, or authorable
+    # test still can, and that stays a distinct, honestly-reported outcome,
+    # never silently converted into a passing result.
+    verification_source = _module_source("workers/common/verification.py")
+    lightweight_body = _function_body(verification_source, "_is_lightweight")
+    if "_is_target_filter_value" not in lightweight_body:
+        report("HEAVY_MARKER_FALSE_BLOCK", "workers/common/verification.py", "_is_lightweight",
+               "heavy-marker scan does not exempt a single-target test-filter flag's value by "
+               "argv shape/position, so an exact --tests/-Dtest=/--filter target whose class or "
+               "expression happens to contain a heavy substring (e.g. a class literally named "
+               "...E2ETest) is wrongly blocked")
+    shape_body = _function_body(verification_source, "validate_authored_test_shape")
+    if "agent_touched_paths" not in shape_body:
+        report("AUTHORED_TEST_SHAPE_ATTRIBUTION", "workers/common/verification.py",
+               "validate_authored_test_shape",
+               "authored-test shape check does not accept an authoritative before/after "
+               "touched-path set, so pre-existing dirty or build-tool-generated paths in the "
+               "worktree get attributed to the agent's own authoring attempt")
+
     return findings
 
 
@@ -381,6 +420,33 @@ def mutation_probe(definitions: dict[str, dict]) -> list[str]:
                 assert removed is not None, "SCRIPT_INPUT_SCOPE probe lost its target input"
                 return
 
+    def remove_heavy_marker_shape_exemption(values: dict[str, dict]) -> None:
+        source = _module_source("workers/common/verification.py")
+        match = re.search(r"^def _is_lightweight\(.*?(?=^def |\Z)", source, re.M | re.S)
+        assert match, "mutation probe target moved; update remove_heavy_marker_shape_exemption"
+        mutated_body = match.group(0).replace("_is_target_filter_value", "_removed_probe_marker")
+        assert "_is_target_filter_value" not in mutated_body
+        _SOURCE_OVERRIDES["workers/common/verification.py"] = (
+            source[:match.start()] + mutated_body + source[match.end():])
+
+    def remove_authored_test_shape_attribution(values: dict[str, dict]) -> None:
+        source = _module_source("workers/common/verification.py")
+        match = re.search(r"^def validate_authored_test_shape\(.*?(?=^def |\Z)", source, re.M | re.S)
+        assert match, "mutation probe target moved; update remove_authored_test_shape_attribution"
+        mutated_body = match.group(0).replace("agent_touched_paths", "_removed_probe_marker")
+        assert "agent_touched_paths" not in mutated_body
+        _SOURCE_OVERRIDES["workers/common/verification.py"] = (
+            source[:match.start()] + mutated_body + source[match.end():])
+
+    def drop_test_cycle_flag_forwarding(values: dict[str, dict]) -> None:
+        for task, _ in nested_tasks(values["feature_campaign"]["tasks"]):
+            sub = task.get("subWorkflowParam") or {}
+            if sub.get("name") == "test_cycle":
+                removed = task["inputParameters"].pop("allowAgentTestPlan", None)
+                assert removed is not None, \
+                    "TEST_CYCLE_FALLBACK_FORWARDING probe lost its target input"
+                return
+
     probes.extend([
         ("PUSH_EXPECTED_HEAD", "remove verified push SHA", remove_push_head),
         ("LOOP_BOUNDED", "remove loop bound", unbound_loop),
@@ -391,6 +457,12 @@ def mutation_probe(definitions: dict[str, dict]) -> list[str]:
         ("CONDITIONAL_OUTPUT_REFERENCE", "read an unexecuted branch output", expose_conditional_output),
         ("LOCAL_HANDOFF_OUTPUT", "remove local outcome branch", remove_local_branch_output),
         ("SCRIPT_INPUT_SCOPE", "remove a loop script input", break_script_scope),
+        ("HEAVY_MARKER_FALSE_BLOCK", "remove the filter-value heavy-marker exemption",
+         remove_heavy_marker_shape_exemption),
+        ("AUTHORED_TEST_SHAPE_ATTRIBUTION", "remove the authoritative touched-path parameter",
+         remove_authored_test_shape_attribution),
+        ("TEST_CYCLE_FALLBACK_FORWARDING", "stop forwarding an agent-fallback flag",
+         drop_test_cycle_flag_forwarding),
     ])
 
     failures: list[str] = []

@@ -23,6 +23,25 @@ NESTED_BRANCH_CONSUMERS = {
     # property: it commits an authored test to test_cycle's own branch, never
     # creates or pushes one of its own.
     "test_cycle", "test_agent_fallback",
+    # pr_draft_approval owns no branch either: a requested revision's
+    # code_parallel call is pinned to the caller's already-existing candidate
+    # branch (changeBranch), the same pre-publish local branch issue_to_pr
+    # (or feature_campaign) already produced -- there is no PR yet to update,
+    # unlike address_pr_approval's already-published EXISTING_PR_BRANCH_UPDATERS case.
+    "pr_draft_approval",
+    # dag_plan_approval owns no branch either: it only authors a plan
+    # document and commits nothing itself -- the caller's own workspace
+    # (already on its own branch) is used purely as a read/write scratch
+    # area for the plan-authoring agent.
+    "dag_plan_approval",
+    # implementation_waves owns no branch either: every wave/revision/adopt
+    # commit lands on the caller's already-existing candidate branch
+    # (repoPath), exactly like the loop it replaces.
+    "implementation_waves",
+    # final_verification owns no branch either: the verified/adopted commit
+    # lands on the caller's already-existing candidate branch (repoPath),
+    # exactly like the final_loop it replaces.
+    "final_verification",
 }
 
 
@@ -85,9 +104,23 @@ def test_every_new_publication_branch_is_bound_to_a_run_identity():
     issue_builders = [node for node in _walk(issue)
                       if node.get("type") == "SUB_WORKFLOW"
                       and node.get("subWorkflowParam", {}).get("name") == "code_parallel"]
-    assert len(issue_builders) == 2
-    assert all(node["inputParameters"]["branchRunId"] == "${workflow.workflowId}"
-               for node in issue_builders)
+    # Only the initial implementation call remains directly in issue_to_pr.json;
+    # the revision call now lives in pr_draft_approval.json (extracted from
+    # issue_to_pr's own pr_approval_loop so feature_campaign can reuse it too).
+    assert len(issue_builders) == 1
+    assert issue_builders[0]["inputParameters"]["branchRunId"] == "${workflow.workflowId}"
+
+    draft_approval = _load("pr_draft_approval")
+    revise_builders = [node for node in _walk(draft_approval)
+                       if node.get("type") == "SUB_WORKFLOW"
+                       and node.get("subWorkflowParam", {}).get("name") == "code_parallel"]
+    assert len(revise_builders) == 1
+    # No branchRunId: changeBranch is always the caller's already-existing
+    # candidate branch here (never blank), so there's no fresh name to
+    # disambiguate -- matches address_pr_approval's own revise call.
+    assert "branchRunId" not in revise_builders[0]["inputParameters"]
+    assert revise_builders[0]["inputParameters"]["changeBranch"] == \
+        "${workflow.variables.currentBranch}"
 
     demo_branch = next(node for node in _walk(_load("github_demo"))
                        if node.get("name") == "create_branch")
