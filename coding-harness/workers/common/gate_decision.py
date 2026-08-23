@@ -28,6 +28,24 @@ def _listed(value: object) -> list:
     return value if isinstance(value, list) else []
 
 
+def usable_review(value: object) -> dict | None:
+    """A gate-carried review is only usable when it actually carries a review.
+
+    A WAIT draft assembled from an unresolvable workflow reference arrives as a
+    dict of ``None`` values (``{"summary": None, "verdict": None, "comments":
+    None}``).  That is truthy, so a plain ``or`` chain would let it shadow the
+    stored review and publish a GitHub review with zero inline comments.  Treat
+    an all-empty payload as absent so the caller falls through to its fallback.
+    """
+    review = _mapping(value)
+    if not review:
+        return None
+    if review.get("verdict") is None and review.get("comments") is None \
+            and _blank(review.get("summary")):
+        return None
+    return review
+
+
 def resolve_gate_decision(gate: object, *, can_investigate: bool = False) -> dict:
     """Reduce a WAIT gate's payload to one action, independent of its shape.
 

@@ -546,3 +546,38 @@ def test_parallel_address_verifies_and_publishes_from_the_handoff_workspace():
     revision = _task(_load("address_pr_approval"), "revise_address_candidate")["inputParameters"]
     assert revision["repoPath"] == "${workflow.input.repoPath}"
     assert revision["workspacePath"] == "${workflow.input.workspacePath}"
+
+
+def test_review_decision_ignores_an_all_null_draft_and_falls_back_to_the_stored_review(fake_task_input):
+    """A gate draft of nulls must not shadow the workflow's stored review.
+
+    This is the second half of the ``normalize_review.output.result`` defect:
+    the unresolvable reference made the WAIT draft ``{summary: null, verdict:
+    null, comments: null}``, the TUI echoed that dict straight back as the
+    gate's ``review``, and a truthy-dict ``or`` chain then published an
+    approval with every blocking comment dropped.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from gitops.tasks import review_decision
+
+    stored = {"summary": "Changes requested.", "verdict": "request_changes",
+              "comments": [{"severity": "blocking", "path": "a.py", "line": 1, "body": "fix"}]}
+
+    empty_draft = review_decision(fake_task_input(
+        gate={"approved": True, "action": "approve",
+              "review": {"summary": None, "verdict": None, "comments": None}},
+        fallbackReview=stored))
+    assert empty_draft.output_data["review"] == stored
+
+    real_draft = review_decision(fake_task_input(
+        gate={"approved": True, "action": "approve", "review": stored},
+        fallbackReview={"summary": "stale", "verdict": "approve", "comments": []}))
+    assert real_draft.output_data["review"] == stored
+
+    # A genuine LGTM carries no comments and must still win over the fallback.
+    lgtm = {"summary": "LGTM", "verdict": "approve", "comments": []}
+    clean = review_decision(fake_task_input(
+        gate={"approved": True, "action": "approve", "review": lgtm}, fallbackReview=stored))
+    assert clean.output_data["review"] == lgtm

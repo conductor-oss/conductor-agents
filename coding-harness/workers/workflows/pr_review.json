@@ -216,7 +216,7 @@
       "taskReferenceName": "capture_initial_review",
       "type": "SET_VARIABLE",
       "inputParameters": {
-        "currentReview": "${normalize_review.output.result}",
+        "currentReview": "${normalize_review.output}",
         "reviewSessionId": "${review.output.sessionId}",
         "tokenUsed": "${review.output.tokenUsed}",
         "costUsd": "${review.output.costUsd}"

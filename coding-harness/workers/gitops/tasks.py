@@ -1141,7 +1141,9 @@ def review_decision(task):
     i = task.input_data or {}
     decision = gate_decision.resolve_gate_decision(i.get("gate"), can_investigate=i.get("canInvestigate") is True)
     gate = decision["gate"]
-    review = gate.get("review") or gate.get("artifact") or i.get("fallbackReview")
+    review = (gate_decision.usable_review(gate.get("review"))
+              or gate_decision.usable_review(gate.get("artifact"))
+              or i.get("fallbackReview"))
     out = {"action": decision["action"], "feedback": decision["feedback"], "review": review}
     return ok(task, out, [f"[review_decision] action={out['action']}"])
 
