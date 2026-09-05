@@ -75,6 +75,10 @@
           ],
           "description": "Resolved gate action after validating approval/feedback requirements."
         },
+        "requested": {
+          "type": "string",
+          "description": "The action the gate payload actually carried, before normalization ('unknown' when it carried none). The approval workflow records it when it re-opens the gate after an unrecognized decision, so the re-opened draft can say what arrived."
+        },
         "feedback": {
           "type": "string",
           "description": "Reviewer feedback text (empty string when none was supplied)."
@@ -89,6 +93,7 @@
       },
       "required": [
         "action",
+        "requested",
         "feedback",
         "body"
       ]

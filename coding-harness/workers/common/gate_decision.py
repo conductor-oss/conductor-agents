@@ -53,6 +53,9 @@ def resolve_gate_decision(gate: object, *, can_investigate: bool = False) -> dic
     rationale is treated as though nothing had been requested, so a caller
     cannot silently trigger a repair loop with no instruction to act on.
     ``investigate`` is only legal when the caller says the budget is not spent.
+    ``requested`` echoes the action the caller actually sent (``unknown`` when it
+    sent none), so a workflow that re-opens its gate after an unrecognised
+    decision can record what arrived instead of ending the run as blocked.
     """
     gate = _mapping(gate)
     feedback = str(gate.get("feedback") or "")
@@ -70,7 +73,7 @@ def resolve_gate_decision(gate: object, *, can_investigate: bool = False) -> dic
         action = "stop"
     else:
         action = "unknown"
-    return {"action": action, "feedback": feedback, "gate": gate}
+    return {"action": action, "requested": requested, "feedback": feedback, "gate": gate}
 
 
 def _is_blocking(comment: object) -> bool:

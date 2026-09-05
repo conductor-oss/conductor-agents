@@ -342,10 +342,7 @@ class LauncherForm(Screen):
 
     @work(exclusive=True, group="start")
     async def start_run(self) -> None:
-        ok = await self.query_one(Preflight).check(self.spec.name)
-        if not ok:
-            self._error("Preflight failed — see above.")
-            return
+        await self.query_one(Preflight).check(self.spec.name)  # refresh the advisory badge; never blocks
         try:
             values, missing = self._collect()
         except ValueError as e:

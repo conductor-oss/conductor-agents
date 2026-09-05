@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from .. import catalog, format as fmt, gh, templates
+from ..gates import gate_contract
 from ..model_profiles import ProfileError, apply_profile_snapshot, snapshot_summary
 from ..api import ConductorClient, ConductorError
 
@@ -178,7 +179,7 @@ TOOLS = [
     },
     {
         "name": "decide_approval",
-        "description": "Approve, privately investigate, request changes, or stop a pending WAIT checkpoint. For PR reviews, investigate refreshes the private draft and revise posts only the supplied feedback without approval. Requires confirmation.",
+        "description": "Approve, privately investigate, request changes, or stop a pending WAIT checkpoint. For PR reviews, investigate refreshes the private draft and revise posts only the supplied feedback without approval. On a feature-campaign design/plan/wave/final checkpoint, approve advances to the next phase (the checkpoint's own continue action). Requires confirmation.",
         "input_schema": {"type": "object", "properties": {
             "task_id": {"type": "string"},
             "action": {"type": "string", "enum": ["approve", "investigate", "revise", "stop"]},
@@ -351,11 +352,6 @@ async def _start(i: dict, ctx: ToolContext) -> str:
         parts = list(missing)
         parts.extend(f"one of {{{', '.join(group)}}}" for group in missing_groups)
         return f"missing required inputs for {wf}: {', '.join(parts)} — ask the user for them."
-    if not await ctx.client.workflow_registered(wf):
-        return (
-            f"error: {wf} is missing or stale on the selected Conductor server. "
-            "Run /register, then start it again. No workflow was started."
-        )
     # Gate by default when launched interactively (chat), matching the form launcher.
     # The caller can still opt out by passing approve/approvePr explicitly.
     if wf == "pr_review" and "approve" not in inputs:
@@ -491,10 +487,22 @@ async def _get_approval(i: dict, ctx: ToolContext) -> str:
         "taskId": item.task_id,
         "workflowId": item.workflow_id,
         "workflow": item.workflow,
+        "phase": item.input.get("phase"),
+        "contract": _contract(item),
         "taskRef": item.task_ref,
         "availableActions": item.input.get("availableActions") or [],
         "draft": item.draft,
     }, indent=2, default=str)
+
+
+def _contract(item) -> str:
+    """The decision contract a pending gate accepts (see ``tui.gates``).
+
+    The gate reports its *caller*; the payload belongs to the sub-workflow that
+    owns it.  Copying the gate's ``phase`` onto the draft mirrors what the run
+    screen does before opening the modal.
+    """
+    return gate_contract(item.workflow, dict(item.draft, phase=item.input.get("phase")))
 
 
 async def _decide_approval(i: dict, ctx: ToolContext) -> str:
@@ -509,42 +517,56 @@ async def _decide_approval(i: dict, ctx: ToolContext) -> str:
     if action in ("revise", "investigate") and not feedback:
         noun = "private investigation" if action == "investigate" else "request changes"
         return f"error: {noun} requires actionable feedback."
+    contract = _contract(item)
     can_investigate = item.draft.get("canInvestigate")
     if action == "investigate" and (
-        item.workflow != "pr_review" or not (can_investigate is True or str(can_investigate).lower() == "true")
+        contract != "pr_review" or not (can_investigate is True or str(can_investigate).lower() == "true")
     ):
         return "error: this checkpoint has no private investigation pass available."
     confirmed = await ctx.confirm("Decide approval", f"{action} {item.workflow} checkpoint {item.task_ref}?")
     if not confirmed:
         return "user declined the approval decision."
     draft = item.draft
-    if action == "approve":
-        output = {"approved": True, "action": "approve"}
-        if item.workflow in ("design_docs", "openspec_plan"):
-            output["feedback"] = ""
-        elif item.workflow == "pr_review": output["review"] = draft
-        elif item.workflow == "issue_to_pr": output.update({"title": draft.get("title", ""), "body": draft.get("body", "")})
-        elif item.workflow == "address_pr":
-            output.update({"artifact": draft, "body": draft.get("body", "")})
-        else: output["artifact"] = draft
+    if contract == "feature_campaign":
+        # A campaign checkpoint (design/plan/wave/final) is validated by the
+        # campaign_checkpoint worker, whose actions are continue/revise/
+        # adopt_edits/run_checks/set_profiles/stop. Anything else -- "approve"
+        # included -- fails validation and the checkpoint SWITCH's default sends
+        # the run into its revision branch, so approve must arrive as the
+        # checkpoint's own "continue". Every one of these actions is a graceful
+        # decisionCase, so the task always completes rather than fails.
+        output = {"action": "continue" if action == "approve" else action, "feedback": feedback}
+        status = "COMPLETED"
     else:
-        output = {"approved": False, "action": action, "feedback": feedback,
-                  "suppressed": action == "stop"}
-    revision_capable = item.workflow in (
-        "design_docs", "openspec_plan", "pr_review", "address_pr", "issue_to_pr",
-    )
-    resumable_action = action == "revise" and revision_capable
-    # design_docs now has a real graceful-stop decisionCase (like feature_campaign's),
-    # instead of always hard-failing the whole design_docs sub-workflow.
-    suppressible_action = action == "stop" and item.workflow in (
-        "pr_review", "address_pr", "issue_to_pr", "design_docs",
-    )
-    investigable_action = action == "investigate" and item.workflow == "pr_review"
-    status = "COMPLETED" if action == "approve" or resumable_action or suppressible_action or investigable_action \
-        else "FAILED_WITH_TERMINAL_ERROR"
+        if action == "approve":
+            output = {"approved": True, "action": "approve"}
+            if contract in ("design_docs", "openspec_plan"):
+                output["feedback"] = ""
+            elif contract == "pr_review": output["review"] = draft
+            elif contract == "issue_to_pr": output.update({"title": draft.get("title", ""), "body": draft.get("body", "")})
+            elif contract == "address_pr":
+                output.update({"artifact": draft, "body": draft.get("body", "")})
+            else: output["artifact"] = draft
+        else:
+            output = {"approved": False, "action": action, "feedback": feedback,
+                      "suppressed": action == "stop"}
+        revision_capable = contract in (
+            "design_docs", "openspec_plan", "pr_review", "address_pr", "issue_to_pr",
+        )
+        resumable_action = action == "revise" and revision_capable
+        # design_docs now has a real graceful-stop decisionCase (like feature_campaign's),
+        # instead of always hard-failing the whole design_docs sub-workflow.
+        suppressible_action = action == "stop" and contract in (
+            "pr_review", "address_pr", "issue_to_pr", "design_docs",
+        )
+        investigable_action = action == "investigate" and contract == "pr_review"
+        status = "COMPLETED" if action == "approve" or resumable_action or suppressible_action or investigable_action \
+            else "FAILED_WITH_TERMINAL_ERROR"
     await ctx.client.signal_task(item.workflow_id, item.task_ref, status, output,
                                  task_type=item.task_type)
-    return f"{action} recorded for {item.task_id}."
+    sent = f" (sent as the campaign checkpoint's {output['action']!r})" \
+        if contract == "feature_campaign" and action == "approve" else ""
+    return f"{action} recorded for {item.task_id}.{sent}"
 
 
 async def _list_schedules(ctx: ToolContext) -> str:

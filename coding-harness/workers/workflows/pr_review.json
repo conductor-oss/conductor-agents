@@ -63,7 +63,8 @@
     "event": "",
     "inlineCount": 0,
     "postedInline": false,
-    "reviewUrl": ""
+    "reviewUrl": "",
+    "unrecognizedDecision": ""
   },
   "tasks": [
     {
@@ -292,7 +293,8 @@
                     "investigationCount": "${workflow.variables.investigationCount}",
                     "maxInvestigationPasses": "${bound_investigation_limit.output.limit}",
                     "lastInvestigationAnswer": "${workflow.variables.lastInvestigationAnswer}",
-                    "canInvestigate": "${investigation_availability.output.canInvestigate}"
+                    "canInvestigate": "${investigation_availability.output.canInvestigate}",
+                    "unrecognizedDecision": "${workflow.variables.unrecognizedDecision}"
                   }
                 }
               },
@@ -505,18 +507,42 @@
                 },
                 "defaultCase": [
                   {
-                    "name": "block_unknown_review_action",
-                    "taskReferenceName": "block_unknown_review_action",
+                    "name": "reopen_gate_after_unrecognized_decision",
+                    "taskReferenceName": "reopen_gate_after_unrecognized_decision",
                     "type": "SET_VARIABLE",
                     "inputParameters": {
-                      "approvalState": "blocked",
-                      "reviewDecision": "blocked",
-                      "publishReview": "false"
+                      "reviewDecision": "pending",
+                      "unrecognizedDecision": "${normalize_review_decision.output.requested}"
                     }
                   }
                 ]
               }
             ]
+          },
+          {
+            "name": "undecided_review_outcome",
+            "taskReferenceName": "undecided_review_outcome",
+            "type": "SWITCH",
+            "evaluatorType": "value-param",
+            "expression": "decision",
+            "inputParameters": {
+              "decision": "${workflow.variables.reviewDecision}"
+            },
+            "decisionCases": {
+              "pending": [
+                {
+                  "name": "block_undecided_review",
+                  "taskReferenceName": "block_undecided_review",
+                  "type": "SET_VARIABLE",
+                  "inputParameters": {
+                    "approvalState": "blocked",
+                    "reviewDecision": "blocked",
+                    "publishReview": "false"
+                  }
+                }
+              ]
+            },
+            "defaultCase": []
           }
         ]
       },

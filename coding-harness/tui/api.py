@@ -22,22 +22,6 @@ TERMINAL = {"COMPLETED", "FAILED", "TERMINATED", "TIMED_OUT", "FAILED_WITH_TERMI
 CODING_AGENT = "coding_agent"
 _WORKER_TASKS = {"coding_agent": "coding_agent", "gitops": "commit"}  # a representative task per module
 
-# These checkpoints are advanced through the task-by-reference endpoint.  Merely
-# checking that a workflow name exists is not enough: an older registered revision
-# may still contain HUMAN tasks with incompatible completion semantics.
-_SIGNAL_CHECKPOINTS = {
-    "pr_review": {"review_gate"},
-    "issue_to_pr": {"pr_gate"},
-    "address_pr": {"address_gate"},
-    "design_docs": {"design_review"},
-    "feature_campaign": {
-        "design_checkpoint",
-        "plan_checkpoint",
-        "wave_checkpoint",
-        "final_checkpoint",
-    },
-}
-
 
 class ConductorError(RuntimeError):
     """Any non-2xx or transport failure talking to Conductor."""
@@ -64,60 +48,6 @@ def _to_ms(v) -> int | None:
 
 def _now_ms() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1000)
-
-
-def _registered_task_types(value) -> dict[str, str]:
-    """Collect task-reference/type pairs from all nested workflow constructs."""
-    found: dict[str, str] = {}
-
-    def visit(node) -> None:
-        if isinstance(node, dict):
-            ref = node.get("taskReferenceName")
-            task_type = node.get("type")
-            if isinstance(ref, str) and isinstance(task_type, str):
-                found[ref] = task_type
-            for child in node.values():
-                visit(child)
-        elif isinstance(node, list):
-            for child in node:
-                visit(child)
-
-    visit(value)
-    return found
-
-
-def _workflow_contract_current(name: str, definition) -> bool:
-    """Reject registered interactive workflows whose signal gates are stale."""
-    expected = _SIGNAL_CHECKPOINTS.get(name)
-    if not expected:
-        return True
-    task_types = _registered_task_types(definition)
-    return all(task_types.get(ref) == "WAIT" for ref in expected)
-
-
-def _referenced_sub_workflow_names(value) -> set[str]:
-    """Collect every subWorkflowParam.name reachable in a workflow definition.
-
-    A signal checkpoint can move into a nested sub-workflow during a refactor
-    (e.g. address_pr's address_gate now lives in address_pr_approval) --
-    _workflow_contract_current only sees the definition it's handed, so
-    workflow_registered resolves one level of these before concluding stale.
-    """
-    names: set[str] = set()
-
-    def visit(node) -> None:
-        if isinstance(node, dict):
-            sub = node.get("subWorkflowParam")
-            if isinstance(sub, dict) and isinstance(sub.get("name"), str):
-                names.add(sub["name"])
-            for child in node.values():
-                visit(child)
-        elif isinstance(node, list):
-            for child in node:
-                visit(child)
-
-    visit(value)
-    return names
 
 
 def coerce_map(v) -> dict:
@@ -573,23 +503,12 @@ class ConductorClient:
         return out
 
     async def workflow_registered(self, name: str) -> bool:
+        """True if a workflow definition by this name exists on the server."""
         try:
-            definition = (await self._get(f"/metadata/workflow/{name}")).json()
+            await self._get(f"/metadata/workflow/{name}")
+            return True
         except ConductorError:
             return False
-        if _workflow_contract_current(name, definition):
-            return True
-        # The expected WAIT checkpoint isn't in this definition directly --
-        # it may have moved into a nested sub-workflow. Resolve one level of
-        # SUB_WORKFLOW references before concluding the contract is stale.
-        for sub_name in _referenced_sub_workflow_names(definition):
-            try:
-                sub_definition = (await self._get(f"/metadata/workflow/{sub_name}")).json()
-            except ConductorError:
-                continue
-            if _workflow_contract_current(name, sub_definition):
-                return True
-        return False
 
     async def list_schedules(self) -> list[Schedule]:
         r = await self._get("/scheduler/schedules")

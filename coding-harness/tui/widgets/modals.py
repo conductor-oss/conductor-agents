@@ -13,6 +13,9 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, RichLog, Static, Switch, TextArea
 
+from ..gates import gate_contract
+
+
 
 class LogsModal(ModalScreen):
     BINDINGS = [Binding("escape,q,l", "dismiss", "close")]
@@ -407,8 +410,8 @@ class ApprovalModal(ModalScreen):
     def __init__(self, gate_workflow: str, draft: dict, *, pr_number=None,
                  issue_number=None, workspace_path: str | None = None, on_decision=None):
         super().__init__()
-        self._workflow = gate_workflow
         self._draft = dict(draft or {})
+        self._workflow = gate_contract(gate_workflow, self._draft)
         self._pr_number = pr_number
         self._issue_number = issue_number
         self._workspace_path = workspace_path
@@ -531,6 +534,13 @@ class ApprovalModal(ModalScreen):
     def _draft_text(self) -> Text:
         d = self._draft
         t = Text()
+        if d.get("unrecognizedDecision"):
+            # The approval workflow re-opened this gate because the previous
+            # decision was not one of its actions; say so, or the reviewer sees
+            # the same draft twice with no explanation.
+            t.append("Re-opened: ", style="bold yellow")
+            t.append(f"the previous decision {str(d['unrecognizedDecision'])!r} was not one of "
+                     "this checkpoint's actions, so it was not applied.\n\n")
         if self._workflow == "feature_campaign":
             for label, key in (("Phase", "phase"), ("Wave", "wave"), ("Branch", "branch"),
                                ("Status", "status"), ("Session", "sessionId")):

@@ -1119,8 +1119,9 @@ def pr_decision(task):
     artifact = gate.get("artifact") if isinstance(gate.get("artifact"), dict) else {}
     title = gate.get("title") or artifact.get("title") or i.get("fallbackTitle")
     body = gate.get("body") or artifact.get("body") or i.get("fallbackBody")
-    out = {"action": decision["action"], "feedback": decision["feedback"], "title": title, "body": body}
-    return ok(task, out, [f"[pr_decision] action={out['action']}"])
+    out = {"action": decision["action"], "requested": decision["requested"],
+           "feedback": decision["feedback"], "title": title, "body": body}
+    return ok(task, out, [f"[pr_decision] action={out['action']} requested={out['requested']}"])
 
 
 @worker_task(task_definition_name="address_decision")
@@ -1131,8 +1132,9 @@ def address_decision(task):
     gate = decision["gate"]
     artifact = gate.get("artifact") if isinstance(gate.get("artifact"), dict) else {}
     body = gate.get("body") or artifact.get("body") or i.get("fallbackBody")
-    out = {"action": decision["action"], "feedback": decision["feedback"], "body": body}
-    return ok(task, out, [f"[address_decision] action={out['action']}"])
+    out = {"action": decision["action"], "requested": decision["requested"],
+           "feedback": decision["feedback"], "body": body}
+    return ok(task, out, [f"[address_decision] action={out['action']} requested={out['requested']}"])
 
 
 @worker_task(task_definition_name="review_decision")
@@ -1144,8 +1146,9 @@ def review_decision(task):
     review = (gate_decision.usable_review(gate.get("review"))
               or gate_decision.usable_review(gate.get("artifact"))
               or i.get("fallbackReview"))
-    out = {"action": decision["action"], "feedback": decision["feedback"], "review": review}
-    return ok(task, out, [f"[review_decision] action={out['action']}"])
+    out = {"action": decision["action"], "requested": decision["requested"],
+           "feedback": decision["feedback"], "review": review}
+    return ok(task, out, [f"[review_decision] action={out['action']} requested={out['requested']}"])
 
 
 # --- pr_review ---------------------------------------------------------------

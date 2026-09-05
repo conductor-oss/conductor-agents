@@ -1,7 +1,7 @@
 """Launcher preflight: server reachable · workflow registered · workers polling.
 
-Mirrors SKILL.md's preflight — each ✗ carries its one-line fix. Server/def failures
-block Start; stale workers warn (the run would hang) but don't hard-block.
+Mirrors SKILL.md's preflight — each ✗ carries its one-line fix. Advisory only:
+it never blocks Start; the actual start call surfaces any real error.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class Preflight(Static):
             t.append("\n  server unreachable — is Conductor running / --server correct?", style="red")
         elif not def_ok:
             t.append(
-                f"\n  {workflow_name} is missing or stale — use /register in chat or g on the dashboard",
+                f"\n  {workflow_name} is not registered — use /register in chat or g on the dashboard",
                 style="red",
             )
         elif not workers_ok:
@@ -50,5 +50,5 @@ class Preflight(Static):
         self.update(t)
         self.set_class(server_ok and def_ok, "-ok")
         self.set_class(not (server_ok and def_ok), "-bad")
-        self.ok_to_start = server_ok and def_ok       # workers stale only warns
+        self.ok_to_start = True                        # advisory badge only — never blocks Start
         return self.ok_to_start

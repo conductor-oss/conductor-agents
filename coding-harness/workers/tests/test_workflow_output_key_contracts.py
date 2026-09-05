@@ -44,9 +44,9 @@ def _output_keys() -> dict[str, set[str]]:
     """
     return {
         "pr_review_summary": set(gate_decision.summarize_review(_REVIEW)),
-        "review_decision": {"action", "feedback", "review"},
-        "pr_decision": {"action", "feedback", "title", "body"},
-        "address_decision": {"action", "feedback", "body"},
+        "review_decision": {"action", "requested", "feedback", "review"},
+        "pr_decision": {"action", "requested", "feedback", "title", "body"},
+        "address_decision": {"action", "requested", "feedback", "body"},
         "pr_review_investigation": set(pr_review.normalize_investigation(
             structured={"answer": "a", "review": _REVIEW}, status="COMPLETED", error="",
             session_id="s", prior_session_id="s", question="q", prior_review=_REVIEW,

@@ -335,7 +335,8 @@
     "currentMerged": [],
     "currentConflicts": [],
     "currentTotalTokens": 0,
-    "currentTotalCostUsd": 0
+    "currentTotalCostUsd": 0,
+    "unrecognizedDecision": ""
   },
   "tasks": [
     {
@@ -372,7 +373,8 @@
         "currentMerged": "${workflow.input.merged}",
         "currentConflicts": "${workflow.input.conflicts}",
         "currentTotalTokens": "${workflow.input.totalTokens}",
-        "currentTotalCostUsd": "${workflow.input.totalCostUsd}"
+        "currentTotalCostUsd": "${workflow.input.totalCostUsd}",
+        "unrecognizedDecision": ""
       }
     },
     {
@@ -408,7 +410,8 @@
               "title": "${workflow.variables.currentTitle}",
               "body": "${workflow.variables.currentBody}",
               "base": "${workflow.input.base}",
-              "head": "${workflow.variables.currentBranch}"
+              "head": "${workflow.variables.currentBranch}",
+              "unrecognizedDecision": "${workflow.variables.unrecognizedDecision}"
             }
           }
         },
@@ -541,11 +544,12 @@
           },
           "defaultCase": [
             {
-              "name": "block_unknown_approval",
-              "taskReferenceName": "block_unknown_approval",
+              "name": "reopen_gate_after_unrecognized_decision",
+              "taskReferenceName": "reopen_gate_after_unrecognized_decision",
               "type": "SET_VARIABLE",
               "inputParameters": {
-                "approvalState": "blocked"
+                "approvalState": "pending",
+                "unrecognizedDecision": "${normalize_pr_decision.output.requested}"
               }
             }
           ]

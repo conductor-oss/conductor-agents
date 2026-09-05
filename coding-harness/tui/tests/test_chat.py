@@ -220,25 +220,6 @@ async def test_start_workflow_declined():
 
 
 @pytest.mark.asyncio
-async def test_start_workflow_blocks_stale_registered_definition():
-    fc = FakeClient()
-
-    async def stale(_name):
-        return False
-
-    fc.workflow_registered = stale
-    ctx, _ = _ctx(fc)
-    out = await tools.dispatch(
-        "start_workflow",
-        {"workflow": "pr_review", "inputs": {"repo": "acme/app", "prNumber": 7}},
-        ctx,
-    )
-    assert "missing or stale" in out
-    assert "Run /register" in out
-    assert not fc.started
-
-
-@pytest.mark.asyncio
 async def test_start_workflow_allows_only_one_per_user_turn():
     fc = FakeClient()
     ctx, started = _ctx(fc)
@@ -623,3 +604,83 @@ async def test_llm_loop_rejects_ambiguous_multi_start_batch():
     results = messages[2]["content"]
     assert len(results) == 2
     assert all("no workflow was started" in result["content"] for result in results)
+
+
+def _campaign_wave_client():
+    class ApprovalClient(FakeClient):
+        async def pending_approvals(self):
+            return [api.PendingApproval(
+                task_id="task-1", task_ref="wave_checkpoint", task_type="WAIT",
+                workflow_id="wf-waves", workflow="feature_campaign",
+                input={"workflow": "feature_campaign", "phase": "wave", "wave": 2,
+                       "draft": {"readyTasks": ["api"], "checks": {"blockingPassed": True}}},
+                scheduled_ms=1)]
+    return ApprovalClient()
+
+
+def _campaign_pr_draft_client():
+    # pr_draft_approval's pr_gate reports the calling campaign, but pr_decision reads it.
+    class ApprovalClient(FakeClient):
+        async def pending_approvals(self):
+            return [api.PendingApproval(
+                task_id="task-1", task_ref="pr_gate__1", task_type="WAIT",
+                workflow_id="wf-approval", workflow="feature_campaign",
+                input={"workflow": "feature_campaign", "phase": "pr_draft",
+                       "availableActions": ["approve", "revise", "stop", "later"],
+                       "draft": {"kind": "pr_draft", "title": "Replace queues",
+                                 "body": "Closes #3993", "base": "main", "head": "feature-x"}},
+                scheduled_ms=1)]
+    return ApprovalClient()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("action", "expected"), [("approve", "continue"), ("revise", "revise"), ("stop", "stop")])
+async def test_chat_campaign_checkpoint_speaks_the_checkpoint_contract(action, expected):
+    # campaign_checkpoint validates continue/revise/adopt_edits/run_checks/set_profiles/
+    # stop; anything else -- "approve" included -- fails validation and the checkpoint
+    # SWITCH default routes the run into its revision branch. The tool used to send
+    # "approve" here, and to fail the task outright for revise/stop.
+    fc = _campaign_wave_client()
+    ctx, _ = _ctx(fc)
+    payload = {"task_id": "task-1", "action": action}
+    if action == "revise":
+        payload["feedback"] = "Split the migration."
+    out = await tools.dispatch("decide_approval", payload, ctx)
+    assert f"{action} recorded" in out
+    wid, ref, status, output = fc.signals[-1]
+    assert (wid, ref, status) == ("wf-waves", "wave_checkpoint", "COMPLETED")
+    assert output == {"action": expected, "feedback": payload.get("feedback", "")}
+
+
+@pytest.mark.asyncio
+async def test_chat_campaign_checkpoint_has_no_private_investigation():
+    fc = _campaign_wave_client()
+    ctx, _ = _ctx(fc)
+    out = await tools.dispatch("decide_approval",
+                               {"task_id": "task-1", "action": "investigate", "feedback": "why?"}, ctx)
+    assert out.startswith("error:") and "investigation" in out
+    assert not fc.signals
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["approve", "revise", "stop"])
+async def test_chat_campaign_pr_draft_gate_speaks_the_pr_contract(action):
+    fc = _campaign_pr_draft_client()
+    ctx, _ = _ctx(fc)
+    shown = await tools.dispatch("get_approval", {"task_id": "task-1"}, ctx)
+    assert '"contract": "issue_to_pr"' in shown and '"phase": "pr_draft"' in shown
+    payload = {"task_id": "task-1", "action": action}
+    if action == "revise":
+        payload["feedback"] = "Drop the leftover tests."
+    out = await tools.dispatch("decide_approval", payload, ctx)
+    assert f"{action} recorded" in out
+    wid, ref, status, output = fc.signals[-1]
+    # revise/stop used to be signalled FAILED_WITH_TERMINAL_ERROR because
+    # "feature_campaign" was not in the revision-capable/suppressible lists.
+    assert (wid, ref, status) == ("wf-approval", "pr_gate__1", "COMPLETED")
+    if action == "approve":
+        assert output == {"approved": True, "action": "approve",
+                          "title": "Replace queues", "body": "Closes #3993"}
+    else:
+        assert output["action"] == action and output["suppressed"] is (action == "stop")
+        assert output["approved"] is False

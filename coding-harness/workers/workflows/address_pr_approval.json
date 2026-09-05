@@ -248,7 +248,8 @@
     "currentReplyBody": "",
     "currentAgentResult": "",
     "currentSubtasks": [],
-    "currentTotalTokens": 0
+    "currentTotalTokens": 0,
+    "unrecognizedDecision": ""
   },
   "tasks": [
     {
@@ -279,7 +280,8 @@
         "currentReplyBody": "${workflow.input.replyBody}",
         "currentAgentResult": "${workflow.input.agentResult}",
         "currentSubtasks": "${workflow.input.subtasks}",
-        "currentTotalTokens": "${workflow.input.totalTokens}"
+        "currentTotalTokens": "${workflow.input.totalTokens}",
+        "unrecognizedDecision": ""
       }
     },
     {
@@ -314,7 +316,8 @@
             "verification": "${workflow.variables.currentVerification}",
             "draft": {
               "title": "Address PR #${workflow.input.prNumber} feedback",
-              "body": "${workflow.variables.currentReplyBody}"
+              "body": "${workflow.variables.currentReplyBody}",
+              "unrecognizedDecision": "${workflow.variables.unrecognizedDecision}"
             }
           }
         },
@@ -446,11 +449,12 @@
           },
           "defaultCase": [
             {
-              "name": "block_unknown_action",
-              "taskReferenceName": "block_unknown_action",
+              "name": "reopen_gate_after_unrecognized_decision",
+              "taskReferenceName": "reopen_gate_after_unrecognized_decision",
               "type": "SET_VARIABLE",
               "inputParameters": {
-                "approvalState": "blocked"
+                "approvalState": "pending",
+                "unrecognizedDecision": "${normalize_address_decision.output.requested}"
               }
             }
           ]

@@ -670,6 +670,22 @@ def _campaign_gate_execution() -> dict:
                                                "profiles": {"wave": "fast", "final": "full"}}}}]}
 
 
+def _campaign_pr_draft_gate_execution() -> dict:
+    # Mirrors a live run (execution ca41a263): the campaign calls pr_draft_approval, so its
+    # pr_gate reports workflow=feature_campaign, yet it accepts approve/revise/stop.
+    return {"workflowId": "wf-campaign-pr", "workflowType": "feature_campaign", "status": "RUNNING",
+            "startTime": 1000, "input": {"repoPath": "/tmp/app", "issueNumber": 3993},
+            "tasks": [{"referenceTaskName": "pr_gate__1", "taskType": "WAIT",
+                       "status": "IN_PROGRESS", "taskId": "campaign-pr-gate-1",
+                       "inputData": {"workflow": "feature_campaign", "phase": "pr_draft",
+                                     "availableActions": ["approve", "revise", "stop", "later"],
+                                     "issueNumber": 3993, "repoPath": "/tmp/app",
+                                     "draft": {"kind": "pr_draft",
+                                               "title": "Replace queues with orkes-queues",
+                                               "body": "Swap the local module for the library.\n\nCloses #3993",
+                                               "base": "main", "head": "feature-campaign-0d595169"}}}]}
+
+
 def test_openspec_plan_draft_renders_embedded_proposal_text():
     from tui.widgets.modals import ApprovalModal
     modal = ApprovalModal("openspec_plan", {
@@ -997,3 +1013,81 @@ async def test_campaign_gate_edits_feedback_and_requests_revision():
         wid, ref, status, output = fc.signals[-1]
         assert (wid, ref, status) == ("wf-campaign", "wave_checkpoint", "COMPLETED")
         assert output["action"] == "revise" and output["feedback"] == "split the migration"
+
+
+def test_campaign_pr_draft_gate_uses_the_pr_contract_and_other_checkpoints_do_not():
+    from tui.widgets.modals import ApprovalModal, gate_contract
+    draft = {"kind": "pr_draft", "title": "t", "body": "b", "base": "main", "head": "feature"}
+    assert gate_contract("feature_campaign", draft) == "issue_to_pr"
+    # run_detail stamps the gate's phase onto the draft; either marker is enough.
+    assert gate_contract("feature_campaign", {"phase": "pr_draft"}) == "issue_to_pr"
+    # Every other campaign checkpoint keeps speaking continue/revise/adopt_edits/stop.
+    assert gate_contract("feature_campaign", {"phase": "wave", "readyTasks": []}) == "feature_campaign"
+    assert gate_contract("feature_campaign", {"phase": "design"}) == "feature_campaign"
+    assert gate_contract("issue_to_pr", draft) == "issue_to_pr"
+    modal = ApprovalModal("feature_campaign", dict(draft, phase="pr_draft"), issue_number=3993)
+    assert "pull request" in modal._heading() and "#3993" in modal._heading()
+    assert "Title: t" in modal._draft_text().plain
+
+
+@pytest.mark.asyncio
+async def test_campaign_pr_draft_gate_approve_sends_approve_with_title_and_body():
+    # Regression: this gate used to receive the campaign checkpoint's {"action": "continue"},
+    # which pr_decision maps to "unknown"; the workflow then set approvalState=blocked and
+    # the campaign pushed the branch but never opened the PR.
+    fc = FakeClient(execution=_campaign_pr_draft_gate_execution())
+    app = _app(fc)
+    async with app.run_test(size=(140, 45)) as pilot:
+        from textual.widgets import Button, Static
+        from tui.screens.run_detail import RunDetail
+        from tui.widgets.modals import ApprovalModal
+        await pilot.pause(0.2)
+        app.push_screen(RunDetail("wf-campaign-pr"))
+        await pilot.pause(0.6)
+        assert isinstance(app.screen, ApprovalModal)
+        assert str(app.screen.query_one("#approve", Button).label) == "Approve ✓"
+        assert "opens the PR" in app.screen.query_one("#approval_hint", Static).render().plain
+        assert not app.screen.query("#campaign_revise")
+        await pilot.click("#approve")
+        await pilot.pause(0.5)
+        wid, ref, status, output = fc.signals[-1]
+        assert (wid, ref, status) == ("wf-campaign-pr", "pr_gate__1", "COMPLETED")
+        assert output == {"approved": True, "action": "approve",
+                          "title": "Replace queues with orkes-queues",
+                          "body": "Swap the local module for the library.\n\nCloses #3993"}
+
+
+@pytest.mark.asyncio
+async def test_campaign_pr_draft_gate_revise_keeps_the_approval_loop_alive():
+    fc = FakeClient(execution=_campaign_pr_draft_gate_execution())
+    app = _app(fc)
+    async with app.run_test(size=(140, 45)) as pilot:
+        from textual.widgets import TextArea
+        from tui.screens.run_detail import RunDetail
+        from tui.widgets.modals import ApprovalModal
+        await pilot.pause(0.2)
+        app.push_screen(RunDetail("wf-campaign-pr"))
+        await pilot.pause(0.6)
+        assert isinstance(app.screen, ApprovalModal)
+        app.screen.query_one("#approval_feedback", TextArea).text = "Drop the leftover queues/ tests."
+        await pilot.click("#reject")
+        await pilot.pause(0.5)
+        _, ref, status, output = fc.signals[-1]
+        assert (ref, status) == ("pr_gate__1", "COMPLETED")
+        assert output == {"approved": False, "action": "revise",
+                          "feedback": "Drop the leftover queues/ tests."}
+
+
+
+def test_reopened_gate_explains_the_unrecognized_previous_decision():
+    # pr_draft_approval / address_pr_approval / pr_review re-open their gate after an
+    # unrecognized decision and carry what arrived in draft.unrecognizedDecision.
+    from tui.widgets.modals import ApprovalModal
+    reopened = ApprovalModal("feature_campaign", {"kind": "pr_draft", "title": "t", "body": "b",
+                                                  "base": "main", "head": "feature",
+                                                  "unrecognizedDecision": "continue"})
+    text = reopened._draft_text().plain
+    assert "Re-opened" in text and "'continue'" in text and "Title: t" in text
+    first = ApprovalModal("feature_campaign", {"kind": "pr_draft", "title": "t", "body": "b",
+                                               "unrecognizedDecision": ""})
+    assert "Re-opened" not in first._draft_text().plain

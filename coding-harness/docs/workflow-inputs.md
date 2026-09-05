@@ -49,7 +49,7 @@ Required: `repo`, `prNumber`, `repoPath`, `workspacePath`, `branch`, `candidateC
 
 Optional: `feedback` = `""`; `verificationState` = `"passed"`; `verification` = `{}`; `replyBody` = `""`; `agentResult` = `""`; `subtasks` = `[]`; `totalTokens` = `0`; `maxApprovalRevisions` = `2`; `agent` = `""`; `maxTurns` = `250`; `maxBudgetUsd` = `50`; `maxSubtasks` = `4`.
 
-`address_pr`'s human-approval gate for one already-verified candidate, extracted to its own sub-workflow to keep `address_pr`'s own graph small. A verified candidate is never auto-published: the `address_gate` `WAIT` task always pauses for an explicit human `approve`/`revise`/`stop` decision, offering up to `maxApprovalRevisions` bounded, independently re-verified revision rounds first (each `revise` reruns `code_parallel`, marked `optional: true` so an infra failure there degrades to `verification_blocked` rather than failing the whole `address_pr` run). Resolves `approvalState` to exactly one of: `approved`, `suppressed`, `blocked`, `verification_blocked`, `revision_exhausted` (a still-`pending` state when `maxApprovalRevisions` is exhausted). `address_pr`'s `publication_gate` only publishes when this resolves to `approved`.
+`address_pr`'s human-approval gate for one already-verified candidate, extracted to its own sub-workflow to keep `address_pr`'s own graph small. A verified candidate is never auto-published: the `address_gate` `WAIT` task always pauses for an explicit human `approve`/`revise`/`stop` decision, offering up to `maxApprovalRevisions` bounded, independently re-verified revision rounds first (each `revise` reruns `code_parallel`, marked `optional: true` so an infra failure there degrades to `verification_blocked` rather than failing the whole `address_pr` run). Resolves `approvalState` to exactly one of: `approved`, `suppressed`, `verification_blocked`, `revision_exhausted` (a still-`pending` state when `maxApprovalRevisions` is exhausted). A decision the gate does not recognise (anything but `approve`/`revise`/`stop`, or a `revise` with no feedback) never ends the run: the state stays `pending`, the loop re-opens `address_gate` with `draft.unrecognizedDecision` naming what arrived, and that round counts against `maxApprovalRevisions`. `address_pr`'s `publication_gate` only publishes when this resolves to `approved`.
 
 ## `test_agent_fallback` (internal)
 
@@ -318,7 +318,10 @@ first and only wants to publish once a human is satisfied can reuse it (`feature
 uses it, via its own `requirePrApproval` flag -- see below). A human must explicitly approve the
 draft via the `pr_gate` WAIT task, optionally requesting up to `maxApprovalRevisions` bounded,
 independently re-verified revisions (via `code_parallel`) first, resolving to exactly one of:
-`approved`, `suppressed`, `blocked`, `verification_blocked`, `revision_exhausted`.
+`approved`, `suppressed`, `verification_blocked`, `revision_exhausted`. A decision the gate does not
+recognise (anything but `approve`/`revise`/`stop`, or a `revise` with no feedback) never ends the run:
+the state stays `pending`, the loop re-opens `pr_gate` with `draft.unrecognizedDecision` naming what
+arrived, and that round counts against `maxApprovalRevisions`.
 `callerWorkflow` must be the caller's own top-level workflow name (e.g. `"issue_to_pr"`,
 `"feature_campaign"`) -- the TUI's approval dispatch branches on it, and without it a gate living
 in this sub-workflow would report its own name instead of the caller's.

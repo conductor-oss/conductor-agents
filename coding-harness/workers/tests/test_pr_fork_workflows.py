@@ -581,3 +581,71 @@ def test_review_decision_ignores_an_all_null_draft_and_falls_back_to_the_stored_
     clean = review_decision(fake_task_input(
         gate={"approved": True, "action": "approve", "review": lgtm}, fallbackReview=stored))
     assert clean.output_data["review"] == lgtm
+
+
+def test_approval_gates_reopen_after_an_unrecognized_decision_instead_of_blocking():
+    # Confirmed live (feature_campaign 0d595169 -> pr_draft_approval ca41a263): a
+    # client completed pr_gate with {"action": "continue"}, pr_decision reduced it
+    # to "unknown", the SWITCH default set approvalState=blocked, and the campaign
+    # ended COMPLETED with the branch pushed but no PR -- one wrong click ended the
+    # run silently. An unrecognized decision now leaves the state pending, so the
+    # bounded loop re-opens the gate (spending one iteration) and records what
+    # arrived, both in a variable and in the re-opened draft.
+    from common import gate_decision
+    decision = gate_decision.resolve_gate_decision({"action": "continue", "feedback": ""})
+    assert decision["action"] == "unknown" and decision["requested"] == "continue"
+    assert gate_decision.resolve_gate_decision({})["requested"] == "unknown"
+    assert gate_decision.resolve_gate_decision({"approved": True})["requested"] == "approve"
+
+    cases = (
+        ("pr_draft_approval", "pr_approval_action", "normalize_pr_decision", "pr_gate",
+         "approvalState", "draft_approval_init"),
+        ("address_pr_approval", "address_action_gate", "normalize_address_decision",
+         "address_gate", "approvalState", "approval_init"),
+        ("pr_review", "review_approval_action", "normalize_review_decision", "review_gate",
+         "reviewDecision", None),
+    )
+    for name, switch_ref, decision_ref, gate_ref, state_key, init_ref in cases:
+        workflow = _load(name)
+        default = _task(workflow, switch_ref)["defaultCase"]
+        assert [t["taskReferenceName"] for t in default] == \
+            ["reopen_gate_after_unrecognized_decision"], name
+        reopen = default[0]["inputParameters"]
+        assert reopen[state_key] == "pending", name
+        assert reopen["unrecognizedDecision"] == "${" + decision_ref + ".output.requested}", name
+        assert "blocked" not in json.dumps(default), name
+        gate = _task(workflow, gate_ref)
+        assert gate["inputParameters"]["draft"]["unrecognizedDecision"] == \
+            "${workflow.variables.unrecognizedDecision}", name
+        initial = _task(workflow, init_ref)["inputParameters"] if init_ref else workflow["variables"]
+        assert initial["unrecognizedDecision"] == "", name
+        # The loop itself keeps its explicit iteration bound (audit invariant), so
+        # a client that only ever sends garbage still ends the run.
+        loop = next(t for t in _walk(workflow) if t.get("type") == "DO_WHILE"
+                    and any(x["taskReferenceName"] == gate_ref for x in t["loopOver"]))
+        assert "['iteration'] <=" in loop["loopCondition"], name
+
+    # pr_draft_approval / address_pr_approval already relabel a still-pending
+    # state as revision_exhausted after the loop. pr_review had no such step, so
+    # a decision still pending once the investigation budget is spent must land
+    # on the same terminal state the old default produced, not leak "pending"
+    # into publicationState.
+    review = _load("pr_review")
+    outcome = _task(review, "undecided_review_outcome")
+    assert outcome["type"] == "SWITCH" and outcome["expression"] == "decision"
+    assert outcome["inputParameters"] == {"decision": "${workflow.variables.reviewDecision}"}
+    assert list(outcome["decisionCases"]) == ["pending"] and outcome["defaultCase"] == []
+    assert _task(review, "block_undecided_review")["inputParameters"] == \
+        {"approvalState": "blocked", "reviewDecision": "blocked", "publishReview": "false"}
+    true_case = [t["taskReferenceName"] for t in _task(review, "approve_gate")["decisionCases"]["true"]]
+    assert true_case.index("review_investigation_loop") < true_case.index("undecided_review_outcome")
+
+    # The decision workers surface the raw action so the workflow can record it.
+    from conductor.client.http.models.task import Task
+    from gitops.tasks import address_decision, pr_decision, review_decision
+    for label, worker in (("pr_decision", pr_decision), ("address_decision", address_decision),
+                          ("review_decision", review_decision)):
+        task = Task(); task.task_id = "t"; task.workflow_instance_id = "w"
+        task.input_data = {"gate": {"action": "continue", "feedback": "", "maxTurns": None}}
+        out = worker(task).output_data
+        assert out["action"] == "unknown" and out["requested"] == "continue", label

@@ -81,6 +81,10 @@
           ],
           "description": "Reduced gate decision: 'approve' only when gate.action is 'approve' (or approved=true), 'revise'/'stop' when requested with non-blank feedback where required, else 'unknown'."
         },
+        "requested": {
+          "type": "string",
+          "description": "The action the gate payload actually carried, before normalization ('unknown' when it carried none). The approval workflow records it when it re-opens the gate after an unrecognized decision, so the re-opened draft can say what arrived."
+        },
         "feedback": {
           "type": "string",
           "description": "Feedback text taken from gate.feedback, empty string if absent."
@@ -102,6 +106,7 @@
       },
       "required": [
         "action",
+        "requested",
         "feedback",
         "title",
         "body"
