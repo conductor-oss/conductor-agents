@@ -22,10 +22,43 @@ def is_implementation_done(*, outcome: object, remaining: object) -> bool:
     return isinstance(outcome, str) and bool(outcome) and outcome != "running"
 
 
+def _first_line(value: object, limit: int = 120) -> str:
+    """The first non-empty, non-heading line of a block of prose."""
+    for raw in _text(value).splitlines():
+        line = raw.strip().lstrip("#").strip()
+        if line:
+            return line if len(line) <= limit else line[:limit - 1].rsplit(" ", 1)[0] + "\u2026"
+    return ""
+
+
+def resolve_campaign_pr_description(*, requested_title: object, requested_body: object,
+                                    issue_title: object, instruction: object,
+                                    authored_note: object = "") -> dict:
+    """Compose the PR title and body a campaign publishes.
+
+    ``prTitle``/``prBody`` are optional inputs, and a campaign driven by an issue
+    or a bare instruction supplies neither.  Without a fallback the draft carried
+    no prose at all, so the published description compacted down to whatever the
+    auto-appended issue link happened to be -- the ``falls back to instruction
+    when blank`` behaviour the input schema documents was never implemented.
+
+    The issue link is deliberately *not* concatenated here: ``pr_description``
+    keeps only the first prose block, so a trailing ``Closes #n`` added upstream
+    is dropped.  ``pr_create`` appends it from ``issueNumber`` instead.
+    """
+    title = _text(requested_title).strip() or _first_line(issue_title) or _first_line(instruction)
+    body = _text(requested_body).strip() or _text(instruction).strip()
+    return {"prTitle": title, "prBody": f"{body}{_text(authored_note)}", "prSummary": body}
+
+
 def resolve_campaign_publication_plan(*, outcome: object, requested_draft: object,
                                       test_state: object, tests_passed: object,
                                       tested: object, committed: object,
-                                      agent_authored_test: object = False) -> dict:
+                                      agent_authored_test: object = False,
+                                      requested_title: object = "",
+                                      requested_body: object = "",
+                                      issue_title: object = "",
+                                      instruction: object = "") -> dict:
     """Decide the publish head and draft state after the final test cycle.
 
     ``agent_authored_test`` forces draft even when tests passed: a red/green
@@ -39,7 +72,11 @@ def resolve_campaign_publication_plan(*, outcome: object, requested_draft: objec
     note = ("\n\n> This PR includes a test file authored by a coding agent (no pre-existing "
             "test covered these changes); it was verified with a red/green check before "
             "being accepted." if authored else "")
+    description = resolve_campaign_pr_description(
+        requested_title=requested_title, requested_body=requested_body,
+        issue_title=issue_title, instruction=instruction, authored_note=note)
     return {
+        **description,
         "draft": outcome != "verified" or requested_draft is True or tests_passed is not True or authored,
         "outcome": outcome if isinstance(outcome, str) and outcome else "incomplete",
         "head": head,

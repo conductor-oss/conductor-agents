@@ -416,11 +416,11 @@ def commit_checks(repo_or_url: str, sha: str) -> dict:
 def pr_create(repo: str, *, title: str, body: str = "", summary: str = "",
               issue_body: str = "", base: str | None = None,
               head_branch: str | None = None, draft: bool = False,
-              fill: bool = False) -> dict:
+              fill: bool = False, closes: object = 0) -> dict:
     """Open a PR with the canonical Summary-only description."""
     ensure_git_auth()
     description = pr_description.format_summary(
-        repo, summary or body or title, issue_body=issue_body,
+        repo, summary or body or title, issue_body=issue_body, closes=closes,
     )
     resolved_title = (title or description["summary"] or "Automated change").strip()
     if len(resolved_title) > 120:

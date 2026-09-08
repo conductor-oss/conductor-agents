@@ -144,8 +144,8 @@ For larger work, `feature_campaign` adds durable WAIT checkpoints after design, 
 each integrated wave, and final verification. Its agents resume by session ID, DAG tasks
 run only when dependencies are complete and their planned files are disjoint, and checks
 come from `.conductor-code/checks.json` version 2. A campaign reports cumulative usage but
-does not impose a campaign-wide spend cap. It keeps the verified branch local by default;
-`createPr:true` explicitly enables push and PR creation.
+does not impose a campaign-wide spend cap. Every run then pauses on a PR draft: the branch
+is pushed and a PR opened only when a human approves that draft, and stays local otherwise.
 
 `openspec_development` accepts an OpenSpec project/change from the target repo, another local
 checkout, a Git remote, or a public HTTPS zip/tar bundle. It validates the change with the pinned

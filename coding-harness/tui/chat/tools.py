@@ -98,14 +98,15 @@ TOOLS = [
             "-- repoPath is a local directory the user names, repo is a GitHub URL/owner-name slug "
             "to clone fresh; never put one under the other's key, "
             "openspec_development{specSource, changeId, repoPath?}; useSpecSourceWorkspace:true selects a local "
-            "checked-out spec repository as the implementation worktree and publishes a draft PR. feature_campaign is checkpoint-first, "
-            "keeps its verified branch local by default, and pushes/opens a PR only with explicit createPr:true. "
+            "checked-out spec repository as the implementation worktree and publishes a draft PR. feature_campaign is checkpoint-first "
+            "and always pauses at a pr_draft checkpoint to ask whether to open a PR, pushing and opening one only on approval. "
             "openspec_development accepts local paths, Git remotes, or public HTTPS archives, "
             "routes automatically unless executionMode is set, and may pause when it selects a campaign. "
             "Every coding workflow accepts keepWorktree (default true). GitHub workflows also "
             "accept optional repoPath for a local source checkout; the run uses an isolated worktree. "
             "For direct local implementation use code_parallel{repoPath,inPlace:true,contextPaths?} "
-            "or feature_campaign{repoPath,inPlace:true,contextPaths?}; inPlace never pushes or creates a PR. "
+            "or feature_campaign{repoPath,inPlace:true,contextPaths?}; code_parallel inPlace never pushes, "
+            "while feature_campaign still asks at its pr_draft checkpoint before pushing. "
             "Planning uses OpenSpec only when repoPath already contains openspec/; otherwise "
             "contextPaths may point to Markdown, text, or document folders and are used directly. "
             "For issue_to_pr, design must be an explicit boolean supplied by the user; never infer it. "
@@ -344,8 +345,6 @@ async def _start(i: dict, ctx: ToolContext) -> str:
         inputs = _apply_model_choice(wf, inputs)
     except ProfileError as exc:
         return f"error: {exc} No workflow was started."
-    if inputs.get("inPlace") and inputs.get("createPr"):
-        return "inPlace execution is local-only: set createPr:false. No workflow was started."
     missing = [k for k in _required_inputs(wf) if k not in inputs or inputs.get(k) in (None, "")]
     missing_groups = _missing_at_least_one_groups(wf, inputs)
     if missing or missing_groups:

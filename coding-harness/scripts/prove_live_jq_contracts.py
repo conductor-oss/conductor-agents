@@ -201,7 +201,7 @@ def main() -> int:
     delete_proof_definition()
     request("POST", "/metadata/workflow/validate", definition)
     request("POST", "/metadata/workflow", definition)
-    started = request("POST", f"/workflow/{PROOF_NAME}", {})
+    started = request("POST", f"/workflow/{PROOF_NAME}?version=1", {})
     workflow_id = started.get("workflowId") if isinstance(started, dict) else str(started)
     while True:
         execution = request("GET", f"/workflow/{workflow_id}?includeTasks=true")

@@ -316,6 +316,140 @@ def test_gradle_adapter_applies_root_child_project_renames(tmp_path: Path):
     assert found["candidates"][0]["argv"] == ["./gradlew", ":conductor-agentspan:test"]
 
 
+def test_gradle_root_child_rename_resolves_the_root_project_name(tmp_path: Path):
+    # "${rootProject.name}-${it.name}" is the standard multi-module rename
+    # idiom. The prefix is itself an interpolation, so treating it as a literal
+    # produced the unrunnable task path ":${rootProject.name}-core:test".
+    (tmp_path / "gradlew").write_text("#!/bin/sh\n")
+    (tmp_path / "settings.gradle").write_text(
+        "rootProject.name = 'orkes-conductor'\n"
+        "include 'core'\n"
+        'rootProject.children.each { it.name = "${rootProject.name}-${it.name}" }\n'
+    )
+    source = tmp_path / "core/src/main/java/io/orkes/Introspection.java"
+    source.parent.mkdir(parents=True)
+    (tmp_path / "core/build.gradle").write_text("")
+    source.write_text("class Introspection {}\n")
+    git.ensure_ready(str(tmp_path))
+    source.write_text("class Introspection { int changed; }\n")
+    candidate = _commit(tmp_path, "change renamed module")
+
+    assert verification._gradle_project_directories(tmp_path) == {"core": ":orkes-conductor-core"}
+    found = verification.discover_commands(str(tmp_path), candidate)
+    assert found["candidates"][0]["argv"] == ["./gradlew", ":orkes-conductor-core:test"]
+
+
+def test_gradle_root_child_rename_is_dropped_when_interpolation_is_unresolved(tmp_path: Path):
+    # Never invent a project name: an unresolvable interpolation must leave the
+    # module unmapped so discovery falls back, not emit a literal "${...}".
+    (tmp_path / "gradlew").write_text("#!/bin/sh\n")
+    (tmp_path / "settings.gradle").write_text(
+        "include 'core'\n"
+        'rootProject.children.each { it.name = "${someOther.property}-${it.name}" }\n'
+    )
+    (tmp_path / "core/build.gradle").parent.mkdir(parents=True)
+    (tmp_path / "core/build.gradle").write_text("")
+
+    assert verification._gradle_project_directories(tmp_path) == {}
+
+
+def test_gradle_project_dir_flag_carries_a_value_not_a_second_goal():
+    # `-p <dir>` is Gradle's project-directory option. Counting its value as a
+    # goal rejected every nested-project command this module infers.
+    assert verification.validate_argv(["gradle", "-p", "core", "test"]) == [
+        "gradle", "-p", "core", "test",
+    ]
+    assert verification.validate_argv(["gradle", "--project-dir", "core", "test"]) == [
+        "gradle", "--project-dir", "core", "test",
+    ]
+    # The goal itself is still checked, and still required.
+    with pytest.raises(verification.VerificationBlocked):
+        verification.validate_argv(["gradle", "-p", "core", "publish"])
+    with pytest.raises(verification.VerificationBlocked):
+        verification.validate_argv(["gradle", "-p", "core"])
+
+
+def test_inferred_candidates_drop_one_bad_module_instead_of_the_whole_repository(tmp_path: Path):
+    # Independent nested Gradle projects, one of which trips the heavy-marker
+    # filter: the heavy one must be rejected on its own and reported, while the
+    # other -- and the repository-root wrapper command -- survives. Raising
+    # instead turned a fully testable repository into a whole-run
+    # "configuration_blocked".
+    (tmp_path / "gradlew").write_text("#!/bin/sh\n")
+    for nested in ("features/widget", "features/e2e-suite"):
+        (tmp_path / nested).mkdir(parents=True)
+        (tmp_path / nested / "build.gradle").write_text("")
+
+    rejected: list[dict] = []
+    candidates = verification._inferred_candidates(tmp_path, rejected)
+    argvs = [candidate["argv"] for candidate in candidates]
+
+    assert ["./gradlew", "test"] in argvs
+    assert ["gradle", "-p", "features/widget", "test"] in argvs
+    assert ["gradle", "-p", "features/e2e-suite", "test"] not in argvs
+    assert [item["argv"] for item in rejected] == [["gradle", "-p", "features/e2e-suite", "test"]]
+
+    # ...and the run as a whole is discovered, not blocked.
+    git.ensure_ready(str(tmp_path))
+    found = verification.discover_commands(str(tmp_path))
+    assert found["executionOutcome"] == "discovered"
+    assert ["./gradlew", "test"] in [candidate["argv"] for candidate in found["candidates"]]
+
+
+def test_inferred_candidates_do_not_duplicate_root_build_subprojects(tmp_path: Path):
+    # The root wrapper's own `test` task already schedules :<module>:test for
+    # every included module, and execution stops at the first command that
+    # cannot start -- so a redundant per-module `gradle -p <dir> test` (bare
+    # `gradle` need not exist on a host that has the repository's wrapper)
+    # would turn a passing run into a blocked one.
+    (tmp_path / "gradlew").write_text("#!/bin/sh\n")
+    (tmp_path / "build.gradle").write_text("")
+    (tmp_path / "settings.gradle").write_text("include 'core'\ninclude 'common'\n")
+    for module in ("core", "common"):
+        (tmp_path / module).mkdir()
+        (tmp_path / module / "build.gradle").write_text("")
+
+    candidates = verification._inferred_candidates(tmp_path)
+
+    assert [candidate["argv"] for candidate in candidates] == [["./gradlew", "test"]]
+
+
+def test_inferred_candidates_still_scope_an_independent_nested_gradle_project(tmp_path: Path):
+    # A nested project the root build does not include is genuinely separate
+    # and still earns its own command -- this is the accumulating
+    # multi-project test repository the fan-out exists for.
+    (tmp_path / "gradlew").write_text("#!/bin/sh\n")
+    (tmp_path / "settings.gradle").write_text("include 'core'\n")
+    (tmp_path / "core").mkdir()
+    (tmp_path / "core" / "build.gradle").write_text("")
+    standalone = tmp_path / "features" / "widget"
+    standalone.mkdir(parents=True)
+    (standalone / "build.gradle").write_text("")
+
+    argvs = [candidate["argv"] for candidate in verification._inferred_candidates(tmp_path)]
+
+    assert ["./gradlew", "test"] in argvs
+    assert ["gradle", "-p", "features/widget", "test"] in argvs
+    assert ["gradle", "-p", "core", "test"] not in argvs
+
+
+def test_discovery_block_reason_names_the_rejected_inferred_commands(tmp_path: Path):
+    # When nothing survives, the reason must distinguish "no build system" from
+    # "every candidate was filtered out".
+    # Only a nested heavy module, and no root build file, so nothing else can
+    # stand in for it.
+    (tmp_path / "e2e").mkdir()
+    (tmp_path / "e2e" / "build.gradle").write_text("")
+    git.ensure_ready(str(tmp_path))
+
+    with pytest.raises(verification.VerificationBlocked) as excinfo:
+        verification.discover_commands(str(tmp_path))
+
+    message = str(excinfo.value)
+    assert "rejected inferred commands" in message
+    assert "gradle -p e2e test" in message
+
+
 def test_maven_maps_changed_module_and_exact_test(tmp_path: Path):
     (tmp_path / "pom.xml").write_text("<project><modules><module>service</module></modules></project>")
     (tmp_path / "mvnw").write_text("#!/bin/sh\n")
@@ -2382,3 +2516,53 @@ def test_commit_and_verify_authored_test_handles_a_noop_commit(tmp_git_repo: Pat
     assert result["accepted"] is False
     assert "no committable change" in result["reason"]
     assert result["commit"] == pre_candidate
+
+
+# --------------------------------------------------------- this repository's own guide
+def test_this_repositorys_guide_documents_exactly_one_verification_command():
+    """AGENTS.md must name this repository's own repository-wide test command.
+
+    Not a style rule. feature_campaign runs its final test_cycle in full mode,
+    where discovery prefers a command documented in the agent guide and falls
+    back to build-system inference otherwise. This guide documented none, so
+    inference handed the test loop a bare root `pytest`, which fails in
+    collection here, so testsPassed stayed false and
+    resolve_campaign_publication_plan forced draft:true on every PR the campaign
+    opened. Asserting it with the real extractor -- not a substring match -- is
+    what keeps a silently unrunnable guide from costing every PR its non-draft
+    status again.
+
+    Exactly one, because _candidate_from_guide collects every backticked
+    snippet that validates as a supported argv and the plan runs all of them: a
+    second one is a second full-suite run on every candidate.
+    """
+    root = Path(__file__).resolve().parents[2]
+    guide = root / "AGENTS.md"
+    candidates = verification._candidate_from_guide(
+        guide.read_text(encoding="utf-8"), "AGENTS.md", root=root)
+
+    assert [candidate["argv"] for candidate in candidates] == [["make", "test"]]
+
+    # And discovery itself must actually select it over inference.
+    discovered = verification.discover_commands(str(root), None, mode="full")
+    assert discovered["selection"] == "documented-guide"
+    assert [candidate["argv"] for candidate in discovered["candidates"]] == [["make", "test"]]
+
+
+def test_the_inference_fallback_command_is_runnable_in_this_repository():
+    """A bare root `pytest` must work, because discovery can still reach it.
+
+    A candidate commit that edits AGENTS.md excludes it from that run's own
+    discovery by design -- candidate-authored instructions must not grant
+    command-execution authority -- and inference is then all that is left. That
+    fallback used to die in collection with "No module named 'common'":
+    tui/tests imports common.model_policy, which needs the sys.path entry
+    workers/tests/conftest.py adds, and given no arguments pytest reaches that
+    conftest only after collecting tui/tests. Naming both roots as testpaths
+    makes them initial arguments, so both conftests load before any import.
+    """
+    root = Path(__file__).resolve().parents[2]
+    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "[tool.pytest.ini_options]" in pyproject
+    assert 'testpaths = ["tui/tests", "workers/tests"]' in pyproject

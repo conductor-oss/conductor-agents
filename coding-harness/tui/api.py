@@ -639,8 +639,13 @@ class ConductorClient:
         return approvals
 
     # -- mutations -----------------------------------------------------------
-    async def start(self, name: str, payload: dict) -> str:
-        r = await self._request("POST", f"/workflow/{name}", json=payload)
+    async def start(self, name: str, payload: dict, version: int = 1) -> str:
+        # Always pin the version. Unversioned, Conductor starts the HIGHEST
+        # registered version, so one obsolete definition left on the server
+        # shadows the local one for every launch -- see docs/workflow-versioning.md,
+        # which fixes this harness at exactly one registered version: v1.
+        r = await self._request("POST", f"/workflow/{name}",
+                                params={"version": version}, json=payload)
         if r.status_code >= 400:
             raise ConductorError(f"start {name}: HTTP {r.status_code} {r.text[:200]}")
         return r.text.strip().strip('"')
@@ -664,7 +669,8 @@ class ConductorClient:
     async def run_schedule_now(self, schedule: Schedule) -> str:
         request = schedule.raw.get("startWorkflowRequest") or {}
         return await self.start(str(request.get("name") or schedule.workflow),
-                                coerce_map(request.get("input")))
+                                coerce_map(request.get("input")),
+                                version=int(request.get("version") or 1))
 
     async def terminate(self, workflow_id: str, reason: str = "") -> None:
         r = await self._request("DELETE", f"/workflow/{workflow_id}",

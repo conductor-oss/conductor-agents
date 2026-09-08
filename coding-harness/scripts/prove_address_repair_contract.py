@@ -154,7 +154,7 @@ def main() -> int:
     delete_definition()
     request("POST", "/metadata/workflow/validate", definition)
     request("POST", "/metadata/workflow", definition)
-    started = request("POST", f"/workflow/{PROOF_NAME}", {
+    started = request("POST", f"/workflow/{PROOF_NAME}?version=1", {
         "repoPath": str(ROOT),
         "candidateCommit": head,
     })

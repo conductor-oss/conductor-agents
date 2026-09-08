@@ -18,12 +18,7 @@
         "inPlace": {
           "type": "boolean",
           "default": false,
-          "description": "If true, create/switch to a run-owned branch inside repoPath itself and commit its Git-visible changes as the baseline. Mutually exclusive with createPr=true."
-        },
-        "createPr": {
-          "type": "boolean",
-          "default": false,
-          "description": "Must be false when inPlace is true; inPlace execution is local-only."
+          "description": "If true, create/switch to a run-owned branch inside repoPath itself and commit its Git-visible changes as the baseline."
         },
         "branchRunId": {
           "type": "string",

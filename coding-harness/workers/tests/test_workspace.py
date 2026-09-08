@@ -211,3 +211,20 @@ def test_address_pr_initial_and_revision_runs_keep_the_checked_out_pr_branch(
     assert revision["worktreePath"] == repo
     assert revision["branch"] == "feature/pr-head"
     assert revision["owned"] is False
+
+
+def test_inplace_execution_prepares_the_checkout_in_place(
+        tmp_git_repo, fake_task_input):
+    # inPlace no longer implies local-only. feature_campaign asks a human at
+    # pr_draft_approval's pr_gate on every run, including an in-place one, and
+    # an approved draft pushes the run-owned branch from this very checkout --
+    # so this worker takes no publication input and refuses nothing.
+    result = workspace_prepare(fake_task_input(
+        repoPath=str(tmp_git_repo), inPlace=True,
+        workflowId="wf-inplace", branch="feature/inplace"))
+    out = result.output_data
+
+    assert result.status.name == "COMPLETED", out
+    assert out["inPlace"] is True
+    assert Path(out["worktreePath"]) == Path(out["sourceRepoPath"]) == tmp_git_repo
+    assert out["owned"] is False

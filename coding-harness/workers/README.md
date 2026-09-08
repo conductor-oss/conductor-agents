@@ -173,8 +173,8 @@ Agents resume the same session/worktree after feedback or budget exhaustion.
 | `designMaxRevisions` / `planMaxRevisions` | `5` / `5` | Review-loop bounds. |
 Checkpoint actions are Continue, Revise, Adopt edits, Stop, and Later.
 Integration conflicts fail soft and return to the checkpoint. Stop retains
-the branch with an incomplete outcome. Campaigns retain the verified branch locally by default;
-set `createPr:true` explicitly to push it and open a PR.
+the branch with an incomplete outcome. Every campaign ends on a fifth checkpoint -- the PR
+draft -- and pushes the branch and opens the PR only if a human approves it there.
 
 Campaign checks and exact-SHA verification use the same command runner. Each gets the worker's
 real environment (whatever the deployment provides -- Docker env, local shell/config files like
@@ -206,6 +206,17 @@ spawn failure, or explicit cancellation returns a blocked infrastructure outcome
 conductor workflow start --workflow feature_campaign -i '{
   "repoPath": "/path/to/repo",
   "instruction": "Add a durable event subsystem with migrations and tests"
+}'
+```
+
+Supply `repo` (a URL or `owner/name`) in place of `repoPath` to clone the repository instead of
+reusing a local checkout, and `issueNumber` in place of `instruction` to drive the campaign from a
+GitHub issue:
+
+```bash
+conductor workflow start --workflow feature_campaign -i '{
+  "repo": "acme/app",
+  "issueNumber": 3997
 }'
 ```
 

@@ -245,8 +245,6 @@ def workspace_prepare(task):
     i = task.input_data or {}
     try:
         if _bool(i.get("inPlace"), False):
-            if _bool(i.get("createPr"), False):
-                raise ValueError("inPlace execution is local-only; createPr must be false")
             run_id = str(i.get("branchRunId") or i.get("workflowId")
                          or getattr(task, "workflow_instance_id", "")
                          or getattr(task, "task_id", "workspace"))
@@ -881,13 +879,15 @@ def pr_create(task):
         i["repoPath"],
         i.get("summary") or i.get("summaryFallback") or i.get("body") or i.get("title") or "",
         issue_body=i.get("issueBody") or "",
+        closes=i.get("issueNumber") or 0,
     )
     try:
         out = github.pr_create(i["repoPath"], title=i.get("title") or "",
                                body=description["body"], base=i.get("base") or None,
                                summary=description["summary"],
                                head_branch=i.get("head") or None,
-                               draft=_bool(i.get("draft")), fill=_bool(i.get("fill")))
+                               draft=_bool(i.get("draft")), fill=_bool(i.get("fill")),
+                               closes=i.get("issueNumber") or 0)
         out["publicationState"] = "published"
         return ok(task, out, [f"[pr_create] #{out['number']} {out['url']}"])
     except Exception as e:  # noqa: BLE001

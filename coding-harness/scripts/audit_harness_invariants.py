@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -21,6 +24,8 @@ from typing import Any, Iterable
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = ROOT / "workers" / "workflows"
 TASKDEF_DIR = WORKFLOW_DIR / "taskdefs"
+SERVER = os.environ.get("CONDUCTOR_SERVER_URL", "http://localhost:8080/api").rstrip("/")
+SERVER_TOKEN = os.environ.get("CONDUCTOR_AUTH_TOKEN", "")
 
 # Some invariants used to be checkable purely from workflow JSON because the
 # logic lived in a JSON_JQ_TRANSFORM expression. Moving that logic into a
@@ -477,9 +482,63 @@ def mutation_probe(definitions: dict[str, dict]) -> list[str]:
     return failures
 
 
+def registered_versions(name: str) -> list[int] | None:
+    """Versions the server holds for one workflow, or None when unreachable."""
+    request = urllib.request.Request(f"{SERVER}/metadata/workflow/{name}/versions")
+    if SERVER_TOKEN:
+        request.add_header("X-Authorization", SERVER_TOKEN)
+    # No timeout, per AGENTS.md's Timeout Policy: a request runs until it
+    # completes or the operator cancels it. An absent server refuses the
+    # connection immediately (OSError), which is what the skip path below reads.
+    try:
+        with urllib.request.urlopen(request) as response:  # noqa: S310
+            body = json.loads(response.read())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(body, list):
+        return None
+    return sorted(int(row["version"]) for row in body
+                  if isinstance(row, dict) and row.get("version") is not None)
+
+
+def audit_registered_versions(definitions: dict[str, dict]) -> tuple[list[Finding], str]:
+    """Prove the server registers exactly the local version of each workflow.
+
+    docs/workflow-versioning.md fixes this harness at one registered version per
+    workflow -- v1 -- but nothing checked the server side, and register.sh's bulk
+    upsert cannot remove a version it no longer writes. An unversioned
+    ``POST /workflow/{name}`` starts the HIGHEST registered version, so one
+    obsolete definition shadows the local one for every launch: a stale
+    feature_campaign v2 whose campaign_workspace never wired ``repoUrl`` failed
+    every clone-from-GitHub campaign at workspace_prepare while the current v1
+    sat unused on the same server. Static-only when no server is reachable.
+    """
+    findings: list[Finding] = []
+    probe = registered_versions("feature_campaign")
+    if probe is None:
+        return findings, "skipped (no reachable Conductor server)"
+    checked = 0
+    for name, definition in sorted(definitions.items()):
+        local = int(definition.get("version", 1))
+        versions = registered_versions(name)
+        if versions is None or not versions:
+            continue  # not registered here; register.sh is the deploy gate
+        checked += 1
+        obsolete = [version for version in versions if version != local]
+        if obsolete:
+            findings.append(Finding(
+                "REGISTERED_VERSION", name, "server",
+                f"registered versions {versions} include {obsolete} besides the local "
+                f"v{local}; an unversioned start resolves to v{max(versions)}, "
+                f"shadowing the local definition. Run workers/register.sh to prune."))
+    return findings, f"checked {checked} registered workflows"
+
+
 def main() -> int:
     definitions = load_definitions()
     findings = audit_definitions(definitions)
+    version_findings, version_status = audit_registered_versions(definitions)
+    findings.extend(version_findings)
     mutation_failures = mutation_probe(definitions)
     task_count = sum(1 for definition in definitions.values()
                      for _ in nested_tasks(definition.get("tasks") or []))
@@ -487,6 +546,7 @@ def main() -> int:
                      for task, _ in nested_tasks(definition.get("tasks") or [])
                      if task.get("type") == "DO_WHILE")
     print(f"audited {len(definitions)} workflows, {task_count} nested tasks, {loop_count} loops")
+    print(f"registered versions: {version_status}")
     print("mutation probes: " + ("passed" if not mutation_failures else "FAILED"))
     for finding in findings:
         print(f"ERROR {finding.code} {finding.workflow}:{finding.location}: {finding.message}")

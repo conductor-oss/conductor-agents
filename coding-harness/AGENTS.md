@@ -9,11 +9,36 @@
 
 # Conductor Workflow Version Policy
 
+This repository does not use workflow versioning. There is exactly one version of every
+workflow -- version 1 -- on disk and on the server.
+
 - Every workflow definition in this repository must use `"version": 1`.
-- Update workflow version 1 in place. Do not create, register, or recommend a new workflow version.
+- Update workflow version 1 in place. Do not create, register, or recommend a new workflow version. "Bump the version" is never the answer to a definition change, a breaking change, or a migration.
 - Every `SUB_WORKFLOW` reference, including dynamically generated task definitions, must pin version 1.
-- Keep exactly one registered definition per workflow name: version 1. Remove any accidentally registered higher version.
+- Keep exactly one registered definition per workflow name: version 1. A registered v2 or higher is a defect to delete, not a definition to maintain.
+- Every start must pin the version (`POST /workflow/{name}?version=1`, or `"version": 1` in a `startWorkflowRequest`). Never start a workflow unversioned.
 - Before registering workflows, verify the local definitions and all sub-workflow references comply with this policy.
+
+Why this is strict rather than stylistic: an unversioned `POST /workflow/{name}` starts the
+**highest** registered version, so a single obsolete definition left on the server silently
+replaces the local one for every launch, and the run's input is merged with the obsolete
+`inputTemplate`. A stale `feature_campaign` v2 whose `campaign_workspace` never wired `repoUrl`
+shadowed the current v1 for weeks and failed every clone-from-GitHub campaign at
+`workspace_prepare` with "requires repoPath or repoUrl", while the definition on disk was
+correct the whole time (execution `f69afa80-6c1b-48c3-a116-cffb688cfb4e`).
+
+Enforcement, so the rule cannot rot back into advice:
+
+- `workers/register.sh` refuses any local workflow that is not version 1, any `SUB_WORKFLOW`
+  reference that does not pin the current version, and any workflow file missing from
+  `WORKFLOW_ORDER`. After registering it deletes every registered version other than 1,
+  refusing if one has a `RUNNING`/`PAUSED` execution.
+- `scripts/audit_harness_invariants.py` fails with `REGISTERED_VERSION` when the server holds
+  any version besides the local one. It is skipped, not passed, when no server is reachable.
+- `scripts/validate_live_paths.py` and the e2e scripts execute a definition by explicit
+  version, never "latest".
+
+See `docs/workflow-versioning.md` for the deployment procedure.
 
 # Conductor Timeout Policy
 
@@ -64,6 +89,35 @@
 - Name the concrete failure instead: invalid task wiring, mismatched input/output shape, incorrect repair scope, incorrect control flow, lost output, or another precise mechanism supported by execution evidence.
 - Reports must identify the producer, consumer, actual value or state, expected value or state, and resulting workflow behavior. Do not hide the mechanism behind generic terminology.
 - This applies everywhere: agent responses, workflow output, task output, TUI text, logs, code comments, documentation, and review summaries.
+
+# Repository Verification Command
+
+- The repository-wide verification command for this repository is `make test`. It is recorded here,
+  in the agent guide, because that is where the harness looks: `test_cycle`'s full-mode
+  `test_discover` reads `AGENTS.md` -> `AGENT.md` -> `CLAUDE.md` -> `CONTRIBUTING.md` -> `README.md`
+  and prefers a command documented there (`selection: documented-guide`) over build-system
+  inference. A guide that documents no command is not a neutral omission -- it silently hands the
+  test loop whatever inference guesses.
+- Keep exactly one extractable command in the guide. Discovery collects every backticked snippet
+  that validates as a supported argv and runs all of them, so a second one is a second full-suite
+  run on every candidate. Other targets (make ci, make lint, make validate) are deliberately not
+  written as runnable snippets here.
+- This is what kept feature_campaign's PRs permanently in draft. With no documented command,
+  inference fell back to a bare root pytest run, which died in collection with
+  "No module named 'common'" (`tui/tests` needs the `sys.path` entry that
+  `workers/tests/conftest.py` adds, and given no arguments pytest reaches that conftest only after
+  collecting `tui/tests`). A failed test cycle leaves `testsPassed` false, and
+  `resolve_campaign_publication_plan` forces `draft: true` whenever tests did not pass -- so every
+  campaign published a draft PR while the suite itself was fine.
+- `pyproject.toml`'s `testpaths` keeps that inference fallback honest rather than relying on this
+  guide alone: a candidate commit that edits `AGENTS.md` excludes it from its own run's discovery
+  by design (candidate-authored instructions must not grant command-execution authority), and the
+  fallback must still be a command that actually runs.
+
+Enforcement, so the rule cannot rot back into advice: `workers/tests/test_verification.py` runs
+the real extractor (`_candidate_from_guide`) and the real `discover_commands` against this file
+and fails when the guide stops yielding exactly one command, or when discovery stops selecting it
+over inference. A second check holds `testpaths` to both test roots.
 
 # Test Execution Policy
 

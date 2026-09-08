@@ -162,7 +162,6 @@ def create_petstore_campaign(args: argparse.Namespace, conductor: "base.Conducto
         "workspacePath": "",
         "instruction": body,
         "changeBranch": f"harness/petstore/{scenario_id}",
-        "createPr": True,
         "prBase": "main",
         "prTitle": f"{title} ({scenario_id})",
         "prBody": f"## Summary\n\n{summary}",

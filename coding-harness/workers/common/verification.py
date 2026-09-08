@@ -77,6 +77,7 @@ _SAFE_ENV_KEYS = (
 _GRADLE_PROJECT_DIR = re.compile(
     r"project\(\s*['\"]:(?P<name>[^'\"]+)['\"]\s*\)\s*\.projectDir\s*=\s*file\(\s*['\"](?P<directory>[^'\"]+)['\"]\s*\)"
 )
+_GRADLE_ROOT_NAME = re.compile(r"rootProject\.name\s*=\s*['\"](?P<value>[^'\"]+)['\"]")
 _GRADLE_ROOT_CHILD_RENAME = re.compile(
     r"rootProject\.children\.each\s*\{[^\n]*?\.name\s*=\s*['\"](?P<prefix>[^'\"]*)\$\{[^}]*\.name\}(?P<suffix>[^'\"]*)['\"]"
 )
@@ -286,7 +287,13 @@ def validate_argv(argv: object, *, allow_heavy: bool = False, root: Path | None 
         if not after_goal_flag or after_goal_flag[0] not in {"test", "build", "check", "vet"}:
             raise VerificationBlocked(f"unsupported {command} verification invocation")
     if command in _JAVA_ENTRYPOINTS:
-        options_with_values = {"--tests", "-pl", "--projects", "-f", "--file"}
+        # Options whose NEXT argv slot holds a value rather than a goal.
+        # Gradle's -p/--project-dir names a project directory: without it
+        # listed here that directory was counted as a second "goal", so every
+        # nested-project `gradle -p <dir> test` candidate this module infers
+        # was rejected as having no single explicit goal.
+        options_with_values = {"--tests", "-pl", "--projects", "-f", "--file",
+                               "-p", "--project-dir"}
         goals: list[str] = []
         skip = False
         for value in values[1:]:
@@ -845,7 +852,7 @@ def _python_test_files(root: Path) -> list[Path]:
            and not any(part.startswith(".") for part in path.relative_to(root).parts)]
 
 
-def _inferred_candidates(root: Path) -> list[dict]:
+def _inferred_candidates(root: Path, rejected: list[dict] | None = None) -> list[dict]:
     """Fallback only when CI does not expose a simple safe command.
 
     Every manifest location for every recognized build system contributes its
@@ -877,8 +884,20 @@ def _inferred_candidates(root: Path) -> list[dict]:
     wrapper_dirs = {directory for _, directory in scoped("gradlew") if directory == "."}
     if wrapper_dirs:
         choices.append((["./gradlew", "test"], "build-system:gradle-wrapper:."))
+    # A module a root settings file `include`s is a SUBPROJECT of one build,
+    # not an independent nested project: the root build's own `test` task
+    # already schedules `:<module>:test` for every one of them (verified
+    # against a 25-module build). Emitting a second standalone command per
+    # module re-runs exactly the same tests, and because execution stops at
+    # the first command that cannot start, each redundant command is another
+    # chance to convert a passing run into a blocked one -- a bare `gradle`
+    # is not installed on every host that has the repository's own wrapper.
+    # Only a genuinely independent nested project (not part of the root
+    # build) still earns its own command, which is the accumulating
+    # multi-project test repository this fan-out exists for.
+    subproject_dirs = set(_gradle_project_directories(root))
     gradle_dirs = sorted({directory for name in ("build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts")
-                          for _, directory in scoped(name)} - wrapper_dirs)
+                          for _, directory in scoped(name)} - wrapper_dirs - subproject_dirs)
     for directory in gradle_dirs:
         choices.append((["gradle", "-p", directory, "test"], f"build-system:gradle:{directory}"))
 
@@ -927,8 +946,26 @@ def _inferred_candidates(root: Path) -> list[dict]:
             continue
         choices.append((["dotnet", "test", _relative(root, manifest)], f"build-system:dotnet:{directory}"))
 
-    return [{"argv": validate_argv(argv), "source": source, "kind": "inferred"}
-            for argv, source in choices]
+    candidates: list[dict] = []
+    for argv, source in choices:
+        # One unrepresentable inferred candidate must not abort the whole
+        # inference -- the same rule _changed_scope_candidates already
+        # applies to its planners. These argvs are synthesized here from
+        # build files rather than chosen by a caller, so a single nested
+        # project this module cannot yet express (or one that trips the
+        # heavy-marker filter) has to be dropped, leaving the rest --
+        # including the repository-root wrapper command -- to carry the run.
+        # Raising instead let one nested module turn a fully testable
+        # repository into a whole-run "configuration_blocked".
+        try:
+            validated = validate_argv(argv)
+        except VerificationBlocked as exc:
+            if rejected is not None:
+                rejected.append({"argv": [str(value) for value in argv],
+                                 "source": source, "reason": str(exc)})
+            continue
+        candidates.append({"argv": validated, "source": source, "kind": "inferred"})
+    return candidates
 
 
 def _changed_paths(root: Path, candidate_commit: str | None) -> list[str]:
@@ -962,11 +999,25 @@ def _changed_paths(root: Path, candidate_commit: str | None) -> list[str]:
     return [path[len(prefix):] for path in paths if path.startswith(prefix)]
 
 
+def _resolve_gradle_name(text: str, root_name: str | None) -> str | None:
+    """Substitute ${rootProject.name} in a settings-file string literal.
+
+    Returns None when any interpolation survives, so the caller drops the
+    mapping instead of emitting a Gradle task path containing a literal
+    "${...}" that Gradle cannot resolve.
+    """
+    if root_name:
+        for form in ("${rootProject.name}", "$rootProject.name"):
+            text = text.replace(form, root_name)
+    return None if "$" in text else text
+
+
 def _gradle_project_directories(root: Path) -> dict[str, str]:
     """Map project directories to Gradle project paths from settings files."""
     mapping: dict[str, str] = {}
     includes: set[str] = set()
     root_child_rename: tuple[str, str] | None = None
+    root_name: str | None = None
     for name in ("settings.gradle", "settings.gradle.kts"):
         path = root / name
         if not path.is_file():
@@ -980,6 +1031,9 @@ def _gradle_project_directories(root: Path) -> dict[str, str]:
         rename = _GRADLE_ROOT_CHILD_RENAME.search(text)
         if rename:
             root_child_rename = (rename.group("prefix"), rename.group("suffix"))
+        declared = _GRADLE_ROOT_NAME.search(text)
+        if declared:
+            root_name = declared.group("value").strip()
         for line in text.splitlines():
             if not _GRADLE_INCLUDE_LINE.search(line) or "includeBuild" in line:
                 continue
@@ -992,8 +1046,17 @@ def _gradle_project_directories(root: Path) -> dict[str, str]:
         if any((root / directory / build).is_file() for build in ("build.gradle", "build.gradle.kts")):
             project_parts = name.split(":")
             if root_child_rename:
-                prefix, suffix = root_child_rename
-                project_parts[0] = prefix + project_parts[0] + suffix
+                # A rename prefix/suffix may itself interpolate
+                # ${rootProject.name} ("${rootProject.name}-${it.name}" is the
+                # common multi-module idiom). Substituting it is what makes the
+                # resulting project path real; leaving it literal produced task
+                # paths like ":${rootProject.name}-common:test" that Gradle
+                # rejects. If any interpolation is still unresolved, drop the
+                # mapping rather than invent a project name.
+                resolved = [_resolve_gradle_name(part, root_name) for part in root_child_rename]
+                if any(part is None for part in resolved):
+                    continue
+                project_parts[0] = resolved[0] + project_parts[0] + resolved[1]
             mapping.setdefault(directory, ":" + ":".join(project_parts))
     return mapping
 
@@ -2304,12 +2367,22 @@ def discover_commands(repo_path: str, candidate_commit: str | None = None, *,
             unique.append(candidate)
     documented = bool(unique)
     if not unique:
-        unique = _inferred_candidates(root)
+        unique = _inferred_candidates(root, rejected)
     if not unique:
+        # Name what was actually inspected and why each inferred command was
+        # dropped. A bare "no supported command found" gave no way to tell a
+        # repository with no build system from one whose every candidate was
+        # rejected by a filter, which is the difference between "document a
+        # command" and "this is a harness bug".
+        detail = ""
+        if sources:
+            detail += f" (guides inspected: {', '.join(sources)})"
+        if rejected:
+            detail += "; rejected inferred commands: " + ", ".join(
+                f"{' '.join(item['argv'])} [{item['reason']}]" for item in rejected[:10])
         raise VerificationBlocked(
             "no supported repository-wide verification command found; document one in "
-            "AGENTS.md/README or use a supported build file"
-            + (f" (guides inspected: {', '.join(sources)})" if sources else "")
+            "AGENTS.md/README or use a supported build file" + detail
         )
     # A full run still needs a write scope for any repair the caller performs.
     # _changed_paths returns nothing without a commit, so derive the scope from

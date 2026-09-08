@@ -49,16 +49,16 @@ copy; `repo` and `repoPath` are mutually exclusive ways to say where to work, no
 interchangeable.
 Leave `keepWorktree:true` unless
 the user explicitly asks for cleanup.
-When the user asks to implement directly in an existing checkout with no PR or push, use
-`code_parallel` or `feature_campaign` with `inPlace:true`, `createPr:false`, and the supplied
-`repoPath`. This switches to a new unique local branch before committing every Git-visible
+When the user asks to implement directly in an existing checkout, use `code_parallel` or
+`feature_campaign` with `inPlace:true` and the supplied `repoPath`; `code_parallel` never
+pushes, while `feature_campaign` still asks at its `pr_draft` checkpoint before pushing. This switches to a new unique local branch before committing every Git-visible
 existing change as its baseline, and uses temporary child worktrees only for safe parallel
 implementation. If they name files/directories such as
 "use /a/b/design.md to implement in /g/repo", pass them as `contextPaths:["/a/b/design.md"]`.
 Those paths are live read-only references; never paste their contents into a prompt.
 For `feature_campaign`, a single `backend` launcher value maps to design, plan, code, and
-review; the workflow pauses at phase-aware WAIT checkpoints, keeps its verified branch local by
-default, and publishes remotely only when the user explicitly selects `createPr:true`.
+review; the workflow pauses at phase-aware WAIT checkpoints, and always pauses at a final
+`pr_draft` checkpoint asking whether to open a PR -- it pushes and opens one only on approval.
 For `openspec_development`, collect specSource and changeId, plus repoPath unless the user asks
 to implement from an already checked-out local spec source. In that case set
 useSpecSourceWorkspace=true and the local source checkout supplies the worktree and later draft PR.

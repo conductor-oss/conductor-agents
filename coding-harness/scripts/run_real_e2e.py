@@ -60,6 +60,21 @@ CAMPAIGN_CHECKPOINTS = {
     "plan_checkpoint": "plan_review_checkpoint",
     "wave_checkpoint": "wave_decision",
     "final_checkpoint": "final_decision",
+    # feature_campaign now always routes through pr_draft_approval, so its
+    # pr_gate is a mandatory stop on every campaign, not an opt-in one -- a
+    # driver that ignored it would leave every run parked here forever. It is
+    # the one gate in this map that speaks the PR contract (approve/revise/stop
+    # against a pr_draft artifact) rather than the checkpoint contract, so
+    # CAMPAIGN_GATE_DECISIONS supplies its payload separately; its decision task
+    # is pr_draft_approval's own normalize_pr_decision.
+    "pr_gate": "normalize_pr_decision",
+}
+# The decision payload each gate is signaled with. The four checkpoints share
+# the checkpoint-decision shape; pr_gate takes the PR contract's approval shape
+# (resolve_gate_decision requires approved:true alongside action:"approve").
+CHECKPOINT_DECISION = {"action": "continue", "feedback": "", "maxTurns": None, "maxBudgetUsd": None}
+CAMPAIGN_GATE_DECISIONS = {
+    "pr_gate": {"action": "approve", "approved": True, "feedback": ""},
 }
 
 
@@ -304,8 +319,12 @@ class Conductor:
         except json.JSONDecodeError:
             return raw
 
-    def start(self, workflow: str, payload: dict[str, Any]) -> str:
-        result = self.request("POST", f"/workflow/{workflow}", payload)
+    def start(self, workflow: str, payload: dict[str, Any], version: int = 1) -> str:
+        # Pin the version: unversioned, Conductor starts the HIGHEST registered
+        # version, so an obsolete definition left on the server would silently
+        # replace the one under test. docs/workflow-versioning.md fixes this
+        # harness at exactly one registered version: v1.
+        result = self.request("POST", f"/workflow/{workflow}?version={version}", payload)
         workflow_id = result.get("workflowId") if isinstance(result, dict) else result
         value = str(workflow_id or "").strip().strip('"')
         if not value:
@@ -770,7 +789,7 @@ def drive_campaign(scenario: Scenario) -> dict[str, Any]:
             base_ref = task_ref(gate).split("__", 1)[0]
             draft = (gate.get("inputData") or {}).get("draft") or {}
             owner = str(gate.get("workflowInstanceId") or owning_execution.get("workflowId") or workflow_id)
-            output = {"action": "continue", "feedback": "", "maxTurns": None, "maxBudgetUsd": None}
+            output = CAMPAIGN_GATE_DECISIONS.get(base_ref, CHECKPOINT_DECISION)
             scenario.conductor.signal(owner, task_ref(gate), output)
             signaled_ids.add(gate_id)
             scenario.state["signaledTaskIds"] = sorted(signaled_ids)
@@ -923,7 +942,6 @@ def create_campaign(args: argparse.Namespace, conductor: Conductor) -> Scenario:
         "instruction": "",
         "issueNumber": issue["number"],
         "changeBranch": f"harness/{case['language']}/{scenario_id}",
-        "createPr": True,
         "prBase": "main",
         "prTitle": f"{case['title']} ({scenario_id})",
         "prBody": f"## Summary\n\n{summary}",

@@ -135,11 +135,95 @@ workflow_files=()
 for wf in "${WORKFLOW_ORDER[@]}"; do
   workflow_files+=("workflows/$wf.json")
 done
+# A workflow file missing from WORKFLOW_ORDER is never registered AND never
+# pruned, so it is the one way a stray v2 could survive this script. Refuse
+# instead, per AGENTS.md's Workflow Version Policy.
+unlisted=""
+for f in workflows/*.json; do
+  name=$(basename "$f" .json)
+  listed=false
+  for wf in "${WORKFLOW_ORDER[@]}"; do
+    if [ "$wf" = "$name" ]; then
+      listed=true
+      break
+    fi
+  done
+  [ "$listed" = true ] || unlisted="$unlisted $name"
+done
+if [ -n "$unlisted" ]; then
+  echo "[register] ERROR: workflow file(s) missing from WORKFLOW_ORDER:$unlisted" >&2
+  echo "[register]   add each one (after any workflow it is a sub-workflow of) so it is" >&2
+  echo "[register]   registered and version-pruned." >&2
+  exit 1
+fi
+
 jq -s '.' "${workflow_files[@]}" | api PUT /metadata/workflow
 for wf in "${WORKFLOW_ORDER[@]}"; do
   version=$(jq -r '.version' "workflows/$wf.json")
   echo "  $wf v$version"
 done
+
+# api_read METHOD /path -- bodyless GET/DELETE that echoes the response body and
+# fails loudly like api() does. api() cannot serve these: it always reads a
+# request body from stdin.
+api_read() {
+  local method="$1" path="$2"
+  local -a headers=(-H "Accept: application/json")
+  [ -n "$AUTH_TOKEN" ] && headers+=(-H "X-Authorization: $AUTH_TOKEN")
+  local response status body
+  response=$(curl -s -w '\n%{http_code}' -X "$method" "${headers[@]}" \
+    "$CONDUCTOR_SERVER_URL$path")
+  status="${response##*$'\n'}"
+  body="${response%$'\n'"$status"}"
+  if [ "$status" -ge 400 ]; then
+    echo "[register] ERROR: $method $path -> HTTP $status" >&2
+    echo "$body" >&2
+    exit 1
+  fi
+  printf '%s' "$body"
+}
+
+# live_executions NAME VERSION -- count of executions that must keep running on
+# an obsolete definition.
+live_executions() {
+  local name="$1" version="$2"
+  local -a headers=(-H "Accept: application/json")
+  [ -n "$AUTH_TOKEN" ] && headers+=(-H "X-Authorization: $AUTH_TOKEN")
+  curl -s -G "${headers[@]}" "$CONDUCTOR_SERVER_URL/workflow/search" \
+    --data "start=0&size=1000&freeText=*" \
+    --data-urlencode "query=workflowType='$name' AND status IN (RUNNING,PAUSED)" \
+    | jq --argjson v "$version" '[.results[]? | select(.version == $v)] | length'
+}
+
+echo "[register] pruning superseded workflow versions…"
+# docs/workflow-versioning.md: exactly one registered version -- v1 -- per
+# workflow. The bulk PUT above upserts v1 but cannot remove a v2+ left behind by
+# an older definition, and Conductor resolves an unversioned
+# `POST /workflow/{name}` to the HIGHEST registered version. An orphan therefore
+# silently shadows every local change: a stale feature_campaign v2 whose
+# campaign_workspace never wired `repoUrl` won over the current v1 and failed
+# every clone-from-GitHub campaign at workspace_prepare. Pruning here is what
+# keeps the local definition the one that actually runs.
+pruned=0
+for wf in "${WORKFLOW_ORDER[@]}"; do
+  obsolete=$(api_read GET "/metadata/workflow/$wf/versions" \
+    | jq -r '.[]? | select(.version != 1) | .version')
+  for version in $obsolete; do
+    live=$(live_executions "$wf" "$version")
+    if [ "$live" != "0" ]; then
+      echo "[register] ERROR: $wf v$version has $live RUNNING/PAUSED execution(s);" >&2
+      echo "[register]   terminate or let them finish, then rerun. Until v$version is" >&2
+      echo "[register]   removed it shadows the local v1 for every unversioned start." >&2
+      exit 1
+    fi
+    api_read DELETE "/metadata/workflow/$wf/$version" >/dev/null
+    echo "  removed $wf v$version (superseded by v1)"
+    pruned=$((pruned + 1))
+  done
+done
+if [ "$pruned" -eq 0 ]; then
+  echo "  none (every workflow has only v1 registered)"
+fi
 
 echo "[register] worker gate…"
 get_status() {

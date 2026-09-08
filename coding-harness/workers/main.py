@@ -10,6 +10,12 @@ separately deployed read-only ``verification`` worker must run with
 
     CONDUCTOR_SERVER_URL=http://localhost:8080/api python main.py
 
+A running fleet keeps whatever code it imported at startup, so ``common.source_watch``
+recycles the generation when ``workers/**`` changes underneath it (the supervisor
+relaunches it). It waits until no poller has child work in flight. Set
+``WORKER_RELOAD_ON_CHANGE=false`` to only log the drift, or
+``WORKER_SOURCE_CHECK_SECONDS`` to change the 60s poll.
+
 ``coding_agent`` drives the Claude Agent SDK / OpenAI Codex / Google Gemini sessions
 (CPU/RAM-heavy); ``gitops`` holds the lightweight git + GitHub (gh) tasks;
 ``openspec``/``openspecops`` shell out to the `openspec` CLI (must be installed on
@@ -22,12 +28,14 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import signal
 from pathlib import Path
 
 from conductor.client.automator.task_handler import TaskHandler
 from common import check_execution
 from common.conductor_config import configuration_from_env
 from common.polling import configure_registered_workers, configure_sdk_polling, poll_interval_ms, poll_timeout_ms
+from common import source_watch
 from common.worker_lock import DuplicateWorkerError, singleton_worker
 
 DEFAULT_MODULES = "coding_agent,gitops,campaign,openspec,openspecops,automation,model_policy,revision,planning"
@@ -82,6 +90,11 @@ def main() -> None:
             log.info("acquired worker deployment lock: %s", lock_path)
             with TaskHandler(configuration=config, scan_for_annotated_workers=True) as handler:
                 handler.start_processes()
+                # A fleet outlives the source it loaded. Without this, an edit
+                # reaches nothing until someone restarts the generation by
+                # hand, and the stale answer is indistinguishable from a wrong
+                # fix. The supervisor relaunches whatever this leader leaves.
+                source_watch.watch(on_reload=lambda: os.kill(os.getpid(), signal.SIGTERM))
                 handler.join_processes()
     except DuplicateWorkerError as exc:
         log.error("%s", exc)

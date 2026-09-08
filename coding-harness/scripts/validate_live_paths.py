@@ -1025,6 +1025,448 @@ def scenario_verification_preserves_required_commands() -> None:
     require_output(execution, verificationState="passed")
 
 
+CAMPAIGN_REPO_URL = "https://github.com/acme/app"
+CAMPAIGN_SOURCE = "/tmp/live-contract-campaign"
+CAMPAIGN_WORKTREE = "/tmp/live-contract-campaign/.worktrees/run-live"
+# workspace_prepare run-scopes the requested branch (git.allocate_outcome_branch),
+# so the branch that exists is never the one campaign_defaults asked for.
+CAMPAIGN_BRANCH = "feature-campaign/run-live"
+CAMPAIGN_COMMIT = "9" * 40
+
+
+def campaign_workspace_output(in_place: bool = False) -> dict:
+    path = CAMPAIGN_SOURCE if in_place else CAMPAIGN_WORKTREE
+    return {
+        "sourceRepoPath": CAMPAIGN_SOURCE, "worktreePath": path,
+        "branch": CAMPAIGN_BRANCH, "baseCommit": "a" * 40,
+        "originalBranch": "main", "originalHead": "b" * 40, "sourceHead": "b" * 40,
+        "baselineCommit": "c" * 40, "baselineCreated": True, "baselineIncludedPaths": [],
+        "ignoredSourceChanges": 0, "ignoredSourcePaths": [], "materializedSourcePaths": [],
+        "owned": not in_place, "resumed": False, "sourceCloned": not in_place,
+        "inPlace": in_place,
+    }
+
+
+def campaign_phase_budget() -> dict:
+    """Every campaign phase hands the next one its remaining turn/budget ceiling."""
+    return {"finalMaxTurns": 500, "finalMaxBudgetUsd": 50}
+
+
+def campaign_mocks(*, in_place: bool = False, design_approved: bool = True,
+                   design_stopped: bool = False, plan_approved: bool = True,
+                   plan_stopped: bool = False, implementation_outcome: str = "running",
+                   implementation_remaining: list | None = None,
+                   implementation_done: bool = True, final_outcome: str = "verified",
+                   tests_passed: bool = True) -> dict[str, list[dict]]:
+    """Happy-path mocks for feature_campaign; each scenario overrides what it drives.
+
+    Keys are task reference names. The six SUB_WORKFLOW children are flattened to
+    SIMPLE by execute(), so each is mocked at its own reference rather than being
+    run -- these scenarios prove the campaign's own 16 gates, not its children's.
+    """
+    remaining = [] if implementation_remaining is None else implementation_remaining
+    test_state = "passed" if tests_passed else "failed"
+    return {
+        "model_policy": mock({}),
+        "campaign_issue": mock({"number": 17, "title": "Fix the edge",
+                                "body": "Handle the edge.",
+                                "url": "https://example.invalid/issues/17"}),
+        "campaign_workspace": mock(campaign_workspace_output(in_place)),
+        "validate_imported_plan": mock({"plan": {"tasks": [{"id": "t1"}]},
+                                        "remainingTaskIds": ["t1"],
+                                        "allowedWriteRoots": ["src"],
+                                        "planLocation": ".conductor-code/openspec-plan.json"}),
+        "campaign_design_docs": mock({
+            "approved": design_approved, "stopped": design_stopped,
+            "designLocation": "docs/design/widget.md", "sessionId": "design-1",
+            "promptTemplate": {}, "feedback": "", **campaign_phase_budget()}),
+        "campaign_design_commit": mock({"commit": "d" * 40, "committed": True}),
+        "campaign_plan_approval": mock({
+            "approved": plan_approved, "stopped": plan_stopped,
+            "plan": {"tasks": [{"id": "t1"}]}, "planLocation": "plan.json",
+            "remainingTaskIds": ["t1"], "allowedWriteRoots": ["src"],
+            "sessionId": "plan-1", "promptTemplate": {}, "feedback": "",
+            **campaign_phase_budget()}),
+        "campaign_plan_edits_commit": mock({"commit": "e" * 40, "committed": True}),
+        "campaign_inplace_checkpoint": mock({"commit": "1" * 40, "committed": True}),
+        "campaign_implementation_waves": mock({
+            "outcome": implementation_outcome, "completedTaskIds": ["t1"],
+            "completedWaves": [1], "remainingTaskIds": remaining, "blockedTaskIds": [],
+            "sessions": {}, "reviewSession": "", "reconcileSession": "",
+            "lastReviewFindings": "", "feedback": "", **campaign_phase_budget()}),
+        "implementation_done": mock({"done": implementation_done}),
+        "campaign_final_verification": mock({
+            "outcome": final_outcome, "feedback": "", "reviewFindings": "",
+            "sessionId": "final-1", "promptTemplate": {}, "commit": CAMPAIGN_COMMIT,
+            **campaign_phase_budget()}),
+        "campaign_commit": mock({"commit": CAMPAIGN_COMMIT, "committed": True}),
+        "campaign_tests": mock({"testsPassed": tests_passed, "testCycleState": test_state,
+                                "testReport": {}, "candidateCommit": CAMPAIGN_COMMIT,
+                                "agentAuthoredTest": False}),
+        "campaign_publication_plan": mock({
+            "draft": final_outcome != "verified" or not tests_passed,
+            "outcome": final_outcome, "head": CAMPAIGN_COMMIT,
+            "testCycleState": test_state, "testsPassed": tests_passed,
+            "agentAuthoredTest": False, "agentAuthoredTestNote": ""}),
+        "campaign_pr_approval": mock({
+            "approvalState": "approved", "branch": CAMPAIGN_BRANCH,
+            "workspacePath": CAMPAIGN_WORKTREE, "candidateCommit": CAMPAIGN_COMMIT,
+            "title": "Add a widget", "body": "Adds the widget."}),
+        "campaign_push": mock({"pushed": True, "head": CAMPAIGN_COMMIT}),
+        "campaign_pr": mock({"number": 42, "url": "https://example.invalid/pr/42",
+                             "publicationState": "published"}),
+        "campaign_summary": mock({
+            "branch": CAMPAIGN_BRANCH, "changedFiles": ["src/widget.py"],
+            "candidateCommit": CAMPAIGN_COMMIT, "repoPath": CAMPAIGN_WORKTREE,
+            "sourceRepoPath": CAMPAIGN_SOURCE, "sessions": {}, "totalCostUsd": 0.1,
+            "totalTokens": 100, "verifiedBranch": CAMPAIGN_BRANCH,
+            "uncommittedFiles": []}),
+        "campaign_workspace_cleanup": mock({"removed": False, "retained": True,
+                                            "reason": "keepWorktree"}),
+    }
+
+
+def campaign_input(**overrides) -> dict:
+    inputs = {"repo": CAMPAIGN_REPO_URL, "instruction": "Add a widget",
+              "issueNumber": 0}
+    inputs.update(overrides)
+    return inputs
+
+
+def campaign(inputs: dict, mocks: dict[str, list[dict]]) -> dict:
+    return execute("feature_campaign", 1, inputs, mocks)
+
+
+# -- workspace source resolution -------------------------------------------
+def scenario_campaign_clone_from_repo_url() -> None:
+    """Regression test for the reported break.
+
+    A campaign given only `repo` (no local checkout) must forward it to
+    workspace_prepare as `repoUrl`. An obsolete registered definition that wired
+    only `repoPath` dropped it, and every clone-from-GitHub campaign died with
+    "workspace_prepare requires repoPath or repoUrl" -- see execution
+    f69afa80-6c1b-48c3-a116-cffb688cfb4e.
+    """
+    execution = campaign(campaign_input(), campaign_mocks())
+    require_status(execution, "COMPLETED")
+    require_task_input(execution, "campaign_workspace",
+                       repoUrl=CAMPAIGN_REPO_URL, repoPath="", workspacePath="")
+
+
+def scenario_campaign_local_repo_path() -> None:
+    execution = campaign(campaign_input(repo="", repoPath=CAMPAIGN_SOURCE),
+                         campaign_mocks())
+    require_status(execution, "COMPLETED")
+    require_task_input(execution, "campaign_workspace",
+                       repoPath=CAMPAIGN_SOURCE, repoUrl="", workspacePath="")
+
+
+def scenario_campaign_inherited_workspace() -> None:
+    """The openspec_development route hands the campaign an existing worktree."""
+    execution = campaign(
+        campaign_input(repo="", repoPath=CAMPAIGN_WORKTREE,
+                       workspacePath=CAMPAIGN_WORKTREE),
+        campaign_mocks())
+    require_status(execution, "COMPLETED")
+    require_task_input(execution, "campaign_workspace",
+                       workspacePath=CAMPAIGN_WORKTREE, repoPath=CAMPAIGN_WORKTREE)
+
+
+# -- instruction source ----------------------------------------------------
+def scenario_campaign_issue_driven() -> None:
+    execution = campaign(campaign_input(instruction="", issueNumber=17),
+                         campaign_mocks())
+    require_status(execution, "COMPLETED")
+    require_output(execution, issueNumber=17, issueTitle="Fix the edge",
+                   issueUrl="https://example.invalid/issues/17")
+    if "campaign_issue_instruction" not in refs(execution):
+        raise AssertionError("issue-driven campaign did not set the issue instruction")
+
+
+def scenario_campaign_instruction_driven() -> None:
+    execution = campaign(campaign_input(), campaign_mocks())
+    require_status(execution, "COMPLETED")
+    require_absent(execution, "campaign_issue", "campaign_issue_instruction")
+    if "campaign_local_instruction" not in refs(execution):
+        raise AssertionError("instruction-driven campaign did not set the local instruction")
+
+
+def scenario_campaign_rejects_neither_instruction_nor_issue() -> None:
+    """campaign_defaults is the only guard: neither key is schema-required."""
+    execution = campaign(campaign_input(instruction="", issueNumber=0),
+                         campaign_mocks())
+    require_status(execution, "FAILED")
+    require_absent(execution, "campaign_workspace")
+
+
+def scenario_campaign_imported_plan_adopted() -> None:
+    """An imported plan skips both authoring phases without tripping their limits."""
+    execution = campaign(
+        campaign_input(useImportedPlan=True,
+                       importedPlan={"tasks": [{"id": "t1"}]}),
+        campaign_mocks())
+    require_status(execution, "COMPLETED")
+    reached = refs(execution)
+    for expected in ("validate_imported_plan", "adopt_imported_plan"):
+        if expected not in reached:
+            raise AssertionError(f"imported-plan campaign never reached {expected}")
+    require_absent(execution, "campaign_design_docs", "campaign_plan_approval")
+
+
+# -- design phase ----------------------------------------------------------
+def scenario_campaign_design_stop() -> None:
+    """A stopped design must not fall through into the plan phase.
+
+    plan_needed_gate used to branch on planApproved alone -- the only phase gate
+    that ignored `outcome` -- so a campaign already given up on still paid for a
+    full dag_plan_approval sub-workflow.
+    """
+    execution = campaign(campaign_input(),
+                         campaign_mocks(design_approved=False, design_stopped=True))
+    require_status(execution, "COMPLETED")
+    require_output(execution, outcome="incomplete")
+    require_absent(execution, "campaign_plan_approval", "campaign_implementation_waves",
+                   "campaign_final_verification")
+
+
+def scenario_campaign_design_limit_reached() -> None:
+    execution = campaign(campaign_input(designMaxRevisions=1),
+                         campaign_mocks(design_approved=False))
+    require_status(execution, "COMPLETED")
+    require_output(execution, outcome="incomplete")
+    if "design_limit_reached" not in refs(execution):
+        raise AssertionError("unapproved design did not reach design_limit_reached")
+    require_absent(execution, "campaign_plan_approval", "campaign_implementation_waves")
+
+
+# -- plan phase ------------------------------------------------------------
+def scenario_campaign_plan_stop() -> None:
+    execution = campaign(campaign_input(),
+                         campaign_mocks(plan_approved=False, plan_stopped=True))
+    require_status(execution, "COMPLETED")
+    require_output(execution, outcome="incomplete", completedDagTasks=[])
+    require_absent(execution, "campaign_implementation_waves", "campaign_final_verification")
+
+
+def scenario_campaign_plan_limit_reached() -> None:
+    execution = campaign(campaign_input(planMaxRevisions=1),
+                         campaign_mocks(plan_approved=False))
+    require_status(execution, "COMPLETED")
+    require_output(execution, outcome="incomplete")
+    if "plan_limit_reached" not in refs(execution):
+        raise AssertionError("unapproved plan did not reach plan_limit_reached")
+    require_absent(execution, "campaign_implementation_waves", "campaign_final_verification")
+
+
+# -- implementation and final phases ---------------------------------------
+def scenario_campaign_implementation_incomplete() -> None:
+    """Waves that end with DAG tasks left must stop the campaign, not verify it."""
+    execution = campaign(
+        campaign_input(),
+        campaign_mocks(implementation_remaining=["t2"], implementation_done=False))
+    require_status(execution, "COMPLETED")
+    require_output(execution, outcome="incomplete")
+    if "implementation_limit_reached" not in refs(execution):
+        raise AssertionError("unfinished implementation did not reach the limit branch")
+    require_absent(execution, "campaign_final_verification")
+
+
+def scenario_campaign_final_verified() -> None:
+    """The whole happy path: verified, tests green, non-draft PR opened."""
+    execution = campaign(campaign_input(), campaign_mocks())
+    require_status(execution, "COMPLETED")
+    require_output(execution, outcome="verified", publicationState="published",
+                   pushed=True, prNumber=42, testsPassed=True,
+                   prApprovalState="approved")
+    require_task_input(execution, "campaign_publication_plan", requestedDraft=False,
+                       outcome="verified", testsPassed=True)
+    # The branch handed to final_verification must be the one workspace_prepare
+    # actually created, not campaign_defaults' pre-run-scoped request: it is shown
+    # on final_verification's approval card, so a stale value asks an operator to
+    # sign off against a branch that does not exist.
+    require_task_input(execution, "campaign_final_verification",
+                       branch=CAMPAIGN_BRANCH, repoPath=CAMPAIGN_WORKTREE)
+    if "final_verified" not in refs(execution):
+        raise AssertionError("verified campaign did not reach final_verified")
+
+
+def scenario_campaign_final_limit_reached() -> None:
+    """final_limit_gate's default catches any outcome that is neither terminal state."""
+    execution = campaign(campaign_input(), campaign_mocks(final_outcome="running"))
+    require_status(execution, "COMPLETED")
+    require_output(execution, outcome="incomplete")
+    if "final_limit_reached" not in refs(execution):
+        raise AssertionError("unterminated final outcome did not reach final_limit_reached")
+
+
+# -- test cycle ------------------------------------------------------------
+def scenario_campaign_tests_failed() -> None:
+    """Failed tests downgrade the campaign but still deliver -- as a draft PR."""
+    execution = campaign(campaign_input(), campaign_mocks(tests_passed=False))
+    require_status(execution, "COMPLETED")
+    require_output(execution, outcome="incomplete", testsPassed=False,
+                   publicationState="published")
+    if "tests_not_passed" not in refs(execution):
+        raise AssertionError("failing tests did not reach tests_not_passed")
+
+
+def scenario_campaign_tests_subworkflow_failed() -> None:
+    """campaign_tests is optional: a failed test_cycle must not fail the campaign.
+
+    tests_outcome_gate then reads an absent testsPassed, takes its default branch
+    and downgrades the campaign to incomplete -- a real test failure and a broken
+    test_cycle are deliberately indistinguishable here, both fail soft.
+
+    Four mocked attempts, not one: flatten_subworkflows() turns campaign_tests
+    into a SIMPLE task, and `test_cycle` has no taskdef (it is a workflow), so the
+    server applies its default retry policy of 3 retries. Supplying one failure
+    would leave the retry SCHEDULED forever and the run RUNNING.
+    """
+    mocks = campaign_mocks()
+    mocks["campaign_tests"] = [{"status": "FAILED", "output": {}} for _ in range(4)]
+    execution = campaign(campaign_input(), mocks)
+    require_status(execution, "COMPLETED")
+    require_output(execution, outcome="incomplete")
+    require_absent(execution, "tests_outcome_passed")
+
+
+# -- PR approval and publication ------------------------------------------
+def scenario_campaign_pr_approval_asked_on_every_run() -> None:
+    """pr_draft_approval is unconditional: no input can route around it.
+
+    campaign_input() carries no publication flag at all -- the human's answer at
+    the gate is the whole publication decision -- so an approved draft is what
+    pushes the branch and opens the PR.
+    """
+    execution = campaign(campaign_input(), campaign_mocks())
+    require_status(execution, "COMPLETED")
+    require_output(execution, prApprovalState="approved", publicationState="published",
+                   prNumber=42)
+    if "campaign_pr_approval" not in refs(execution):
+        raise AssertionError("the campaign did not reach its PR draft approval gate")
+
+
+def scenario_campaign_pr_approval_rejected() -> None:
+    """A draft a human did not approve must push nothing and open nothing.
+
+    This is also the only way a campaign now retains its branch locally, so the
+    reported publicationState is the approval state itself rather than a generic
+    label -- the reason the branch stayed local is the human's own decision.
+    """
+    mocks = campaign_mocks()
+    mocks["campaign_pr_approval"] = mock({
+        "approvalState": "suppressed", "branch": CAMPAIGN_BRANCH,
+        "workspacePath": CAMPAIGN_WORKTREE, "candidateCommit": CAMPAIGN_COMMIT,
+        "title": "", "body": ""})
+    execution = campaign(campaign_input(), mocks)
+    require_status(execution, "COMPLETED")
+    require_output(execution, prApprovalState="suppressed", publicationState="suppressed",
+                   pushed=False, outcome="verified")
+    require_absent(execution, "campaign_push", "campaign_pr")
+
+
+def scenario_campaign_push_blocked() -> None:
+    """A blocked push must not be reported as a publication."""
+    mocks = campaign_mocks()
+    mocks["campaign_push"] = mock({"pushed": False, "head": CAMPAIGN_COMMIT})
+    execution = campaign(campaign_input(), mocks)
+    require_status(execution, "COMPLETED")
+    require_absent(execution, "campaign_pr")
+    if "campaign_capture_push_blocked" not in refs(execution):
+        raise AssertionError("blocked push did not reach campaign_capture_push_blocked")
+
+
+# -- in-place mode and cleanup --------------------------------------------
+def scenario_campaign_inplace_checkpoint() -> None:
+    """In-place runs commit a checkpoint in the operator's own checkout."""
+    execution = campaign(campaign_input(inPlace=True), campaign_mocks(in_place=True))
+    require_status(execution, "COMPLETED")
+    require_output(execution, inPlace=True, publicationState="published")
+    require_task_input(execution, "campaign_workspace", inPlace=True)
+    if "campaign_inplace_checkpoint" not in refs(execution):
+        raise AssertionError("in-place campaign did not reach the checkpoint commit")
+
+
+def scenario_campaign_worktree_cleanup() -> None:
+    execution = campaign(campaign_input(keepWorktree=False), campaign_mocks())
+    require_status(execution, "COMPLETED")
+    require_task_input(execution, "campaign_workspace_cleanup", keepWorktree=False,
+                       outcome="verified")
+
+
+def campaign_switch_branches() -> dict[str, set[str]]:
+    """Every declared branch of every SWITCH in feature_campaign, default included."""
+    branches: dict[str, set[str]] = {}
+
+    def walk(tasks) -> None:
+        for task in tasks:
+            if task.get("type") == "SWITCH":
+                branches[task["taskReferenceName"]] = (
+                    set((task.get("decisionCases") or {}).keys()) | {DEFAULT_BRANCH})
+            for key in ("decisionCases", "defaultCase", "forkTasks", "loopOver", "defaultTask"):
+                value = task.get(key)
+                if isinstance(value, dict):
+                    for nested in value.values():
+                        walk(nested)
+                elif isinstance(value, list):
+                    for item in value:
+                        walk(item if isinstance(item, list) else [item])
+
+    walk(definition("feature_campaign", 1).get("tasks") or [])
+    return branches
+
+
+DEFAULT_BRANCH = "<default>"
+
+
+def scenario_campaign_every_gate_branch_is_covered() -> None:
+    """Hold the campaign_* scenarios to complete branch coverage of every gate.
+
+    feature_campaign routes entirely through SWITCH tasks -- no forks, no loops
+    at this level -- so "every path works" means every branch of every gate is
+    taken by some scenario. Asserting that here is what keeps the claim true as
+    the definition grows: a new gate, or a new case on an existing one, fails
+    this until a scenario drives it.
+
+    A SWITCH reports the value it evaluated in `selectedCase`, so a value that
+    matches no declared case is how the server says it took the default.
+    """
+    declared = campaign_switch_branches()
+    taken: dict[str, set[str]] = {}
+    scenarios = [value for name, value in sorted(globals().items())
+                 if name.startswith("scenario_campaign_")
+                 and name != "scenario_campaign_every_gate_branch_is_covered"]
+
+    real_execute = globals()["execute"]
+
+    def recording(name, version, inputs, mocks):
+        result = real_execute(name, version, inputs, mocks)
+        if name == "feature_campaign":
+            for task in result.get("tasks") or []:
+                if task.get("taskType") != "SWITCH":
+                    continue
+                ref = task["referenceTaskName"]
+                selected = (task.get("outputData") or {}).get("selectedCase") or ""
+                branch = selected if selected in declared.get(ref, set()) else DEFAULT_BRANCH
+                taken.setdefault(ref, set()).add(branch)
+        return result
+
+    globals()["execute"] = recording
+    try:
+        for scenario in scenarios:
+            scenario()
+    finally:
+        globals()["execute"] = real_execute
+
+    uncovered = {gate: sorted(cases - taken.get(gate, set()))
+                 for gate, cases in declared.items()
+                 if cases - taken.get(gate, set())}
+    if uncovered:
+        raise AssertionError(
+            f"{sum(len(v) for v in uncovered.values())} SWITCH branch(es) of "
+            f"feature_campaign are never taken by any scenario: {uncovered}")
+
+
 SCENARIOS = (
     scenario_review_auto_publish,
     scenario_review_auto_request_changes,
@@ -1065,6 +1507,28 @@ SCENARIOS = (
     scenario_code_parallel_candidate_after_repeated_fixups,
     scenario_code_parallel_partial_merge_cannot_present,
     scenario_verification_preserves_required_commands,
+    scenario_campaign_clone_from_repo_url,
+    scenario_campaign_local_repo_path,
+    scenario_campaign_inherited_workspace,
+    scenario_campaign_issue_driven,
+    scenario_campaign_instruction_driven,
+    scenario_campaign_rejects_neither_instruction_nor_issue,
+    scenario_campaign_imported_plan_adopted,
+    scenario_campaign_design_stop,
+    scenario_campaign_design_limit_reached,
+    scenario_campaign_plan_stop,
+    scenario_campaign_plan_limit_reached,
+    scenario_campaign_implementation_incomplete,
+    scenario_campaign_final_verified,
+    scenario_campaign_final_limit_reached,
+    scenario_campaign_tests_failed,
+    scenario_campaign_tests_subworkflow_failed,
+    scenario_campaign_pr_approval_asked_on_every_run,
+    scenario_campaign_pr_approval_rejected,
+    scenario_campaign_push_blocked,
+    scenario_campaign_inplace_checkpoint,
+    scenario_campaign_worktree_cleanup,
+    scenario_campaign_every_gate_branch_is_covered,
 )
 
 

@@ -199,7 +199,7 @@ Optional: `feedback` = `""`; `model` = `""`; `maxTurns` = `500`; `maxBudgetUsd` 
 
 Required: none.
 
-Optional: `repo` = `""`; `repoPath` = `""`; `workspacePath` = `""`; `instruction` = `""`; `issueNumber` = `0`; `keepWorktree` = `true`; `changeBranch` = `""`; `inPlace` = `false`; `contextPaths` = `[]`; `createPr` = `false`; `requirePrApproval` = `false`; `maxApprovalRevisions` = `2`; `prBase` = `"main"`; `prTitle` = `""`; `prBody` = `""`; `prDraft` = `false`; `designDir` = `"docs/design"`; `designAgent` = `"claude"`; `designHumanApproval` = `true`; `designModel` = `""`; `planAgent` = `"claude"`; `planModel` = `""`; `codeAgent` = `"claude"`; `codeModel` = `""`; `reviewAgent` = `"claude"`; `reviewModel` = `""`; `maxTurns` = `500`; `maxBudgetUsd` = `50`; `maxFixAttempts` = `4`; `maxTasks` = `25`; `maxParallelism` = `6`; `maxWaves` = `20`; `designMaxRevisions` = `5`; `planMaxRevisions` = `5`; `finalMaxRevisions` = `3`; `useImportedPlan` = `false`; `importedPlan` = `{}`; `importedDesignLocation` = `""`; `specContextPath` = `""`; `designPromptTemplate` = `""`; `designPromptTemplateSource` = `""`; `planPromptTemplate` = `""`; `planPromptTemplateSource` = `""`; `codePromptTemplate` = `""`; `codePromptTemplateSource` = `""`; `reviewPromptTemplate` = `""`; `reviewPromptTemplateSource` = `""`; `revisionPromptTemplate` = `""`; `revisionPromptTemplateSource` = `""`; `allowAgentTestPlan` = `true`; `allowAgentAuthoredTests` = `true`.
+Optional: `repo` = `""`; `repoPath` = `""`; `workspacePath` = `""`; `instruction` = `""`; `issueNumber` = `0`; `keepWorktree` = `true`; `changeBranch` = `""`; `inPlace` = `false`; `contextPaths` = `[]`; `maxApprovalRevisions` = `2`; `prBase` = `"main"`; `prTitle` = `""`; `prBody` = `""`; `prDraft` = `false`; `designDir` = `"docs/design"`; `designAgent` = `"claude"`; `designHumanApproval` = `true`; `designModel` = `""`; `planAgent` = `"claude"`; `planModel` = `""`; `codeAgent` = `"claude"`; `codeModel` = `""`; `reviewAgent` = `"claude"`; `reviewModel` = `""`; `maxTurns` = `500`; `maxBudgetUsd` = `50`; `maxFixAttempts` = `4`; `maxTasks` = `25`; `maxParallelism` = `6`; `maxWaves` = `20`; `designMaxRevisions` = `5`; `planMaxRevisions` = `5`; `finalMaxRevisions` = `3`; `useImportedPlan` = `false`; `importedPlan` = `{}`; `importedDesignLocation` = `""`; `specContextPath` = `""`; `designPromptTemplate` = `""`; `designPromptTemplateSource` = `""`; `planPromptTemplate` = `""`; `planPromptTemplateSource` = `""`; `codePromptTemplate` = `""`; `codePromptTemplateSource` = `""`; `reviewPromptTemplate` = `""`; `reviewPromptTemplateSource` = `""`; `revisionPromptTemplate` = `""`; `revisionPromptTemplateSource` = `""`; `allowAgentTestPlan` = `true`; `allowAgentAuthoredTests` = `true`.
 
 `allowAgentTestPlan`/`allowAgentAuthoredTests` (both default `true`, unlike `test_cycle`/`test_agent_fallback`'s own default of `false`) are forwarded to the final full-suite `test_cycle` sub-workflow, same rationale as `code_parallel`/`address_pr` above.
 
@@ -216,12 +216,20 @@ by the time the final phase is reached -- an earlier phase's explicit stop is ne
 overridden. `finalMaxRevisions` (default `3`, matching prior behavior) bounds its review/checkpoint
 rounds before an unresolved run resolves `incomplete`.
 
-`requirePrApproval` (only meaningful when `createPr` is also true) gates the verified candidate's
-PR draft behind `pr_draft_approval` -- the same human-approval-with-bounded-revisions sub-workflow
-`issue_to_pr`'s `approvePr` uses -- before it's ever pushed. `false` (the default) publishes
-automatically, matching prior behavior. `maxApprovalRevisions` (default `2`, only meaningful
-alongside `requirePrApproval`) bounds how many human-requested revision rounds `pr_draft_approval`
-will run before a still-pending approval is relabeled `revision_exhausted`.
+Publication is a human decision on every run, not an input. There is no `createPr` or
+`requirePrApproval` flag: the verified candidate's PR draft always goes to `pr_draft_approval` --
+the same human-approval-with-bounded-revisions sub-workflow `issue_to_pr`'s `approvePr` uses --
+and only an explicit approval there pushes the branch and opens the PR. Anything else
+(`suppressed`, `blocked`, `verification_blocked`, `revision_exhausted`) pushes nothing at all and
+leaves the branch local, with `publicationState` reporting that approval state as the reason.
+This holds for `inPlace` runs too: an approved draft pushes the run-owned branch from the
+operator's own checkout. `maxApprovalRevisions` (default `2`) bounds how many human-requested
+revision rounds `pr_draft_approval` will run before a still-pending approval is relabeled
+`revision_exhausted`.
+
+Because the gate is unconditional, every campaign parks at `pr_gate` until a human answers it.
+An unattended driver must signal that gate -- `scripts/run_real_e2e.py`'s `drive_campaign` does,
+alongside the four phase checkpoints.
 
 Two independent choices, each "at least one of," both runtime-enforced by `campaign_defaults`/
 `campaign_workspace` (`workspace_prepare`) rejecting the run at start if unmet -- neither is
@@ -231,8 +239,8 @@ schema-required because either alone is legitimate:
   `repo`). When `issueNumber` is set, the campaign fetches that issue's title/body -- plus any
   issue/PR/doc/CI links the body itself references, resolved the same untrusted-evidence way
   `pr_review` resolves links in PR feedback -- and uses that as the effective instruction instead.
-  The originating issue is surfaced in output (`issueNumber`/`issueTitle`/`issueUrl`), and when
-  `createPr` is also true the PR body gets a trailing `Closes #<n>`.
+  The originating issue is surfaced in output (`issueNumber`/`issueTitle`/`issueUrl`), and an
+  approved PR body gets a trailing `Closes #<n>`.
 - **Where to work:** `repo` (a git URL or `owner/name` slug, resolved the same way
   `pr_review`/`address_pr`/`issue_to_pr` resolve it) clones into a fresh temp workspace and works
   from there; `repoPath` uses an existing local checkout directly; `workspacePath` inherits an
@@ -314,8 +322,8 @@ Optional: `summary` = `""`; `base` = `"main"`; `issueNumber` = `0`; `subtasks` =
 
 `issue_to_pr`'s human-approval gate for a not-yet-published PR draft (title/body/base/head,
 no PR number yet), extracted to its own sub-workflow so any workflow that verifies a candidate
-first and only wants to publish once a human is satisfied can reuse it (`feature_campaign` also
-uses it, via its own `requirePrApproval` flag -- see below). A human must explicitly approve the
+first and only wants to publish once a human is satisfied can reuse it (`feature_campaign` calls
+it unconditionally on every run -- see above). A human must explicitly approve the
 draft via the `pr_gate` WAIT task, optionally requesting up to `maxApprovalRevisions` bounded,
 independently re-verified revisions (via `code_parallel`) first, resolving to exactly one of:
 `approved`, `suppressed`, `verification_blocked`, `revision_exhausted`. A decision the gate does not
