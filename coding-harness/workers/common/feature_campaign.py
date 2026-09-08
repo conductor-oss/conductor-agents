@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 
 def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
@@ -20,6 +22,26 @@ def is_implementation_done(*, outcome: object, remaining: object) -> bool:
     if isinstance(remaining, list) and not remaining:
         return True
     return isinstance(outcome, str) and bool(outcome) and outcome != "running"
+
+
+_ISSUE_PREAMBLE = re.compile(r"^\s*Resolve GitHub issue #\d+:.*$")
+
+
+def _without_issue_preamble(value: object) -> str:
+    """Drop the synthetic ``Resolve GitHub issue #n: <title>`` opening line.
+
+    An issue-driven campaign's effective instruction is that preamble followed
+    by the issue's real content. The description policy keeps only the first
+    prose block, so leaving the preamble in place makes the published summary a
+    restatement of the PR title and discards everything the issue actually
+    said.
+    """
+    text = _text(value)
+    lines = text.splitlines()
+    if not lines or not _ISSUE_PREAMBLE.match(lines[0]):
+        return text.strip()
+    remainder = "\n".join(lines[1:]).strip()
+    return remainder or text.strip()
 
 
 def _first_line(value: object, limit: int = 120) -> str:
@@ -47,7 +69,7 @@ def resolve_campaign_pr_description(*, requested_title: object, requested_body: 
     is dropped.  ``pr_create`` appends it from ``issueNumber`` instead.
     """
     title = _text(requested_title).strip() or _first_line(issue_title) or _first_line(instruction)
-    body = _text(requested_body).strip() or _text(instruction).strip()
+    body = _text(requested_body).strip() or _without_issue_preamble(instruction)
     return {"prTitle": title, "prBody": f"{body}{_text(authored_note)}", "prSummary": body}
 
 

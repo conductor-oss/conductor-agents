@@ -158,7 +158,7 @@ def test_campaign_pr_draft_carries_composed_prose_not_a_bare_issue_link():
         requested_title="", requested_body="", issue_title="Remove workflow introspection",
         instruction="Resolve GitHub issue #4001: Remove workflow introspection\n\nDrop it.")
     assert composed["prTitle"] == "Remove workflow introspection"
-    assert composed["prBody"].startswith("Resolve GitHub issue #4001")
+    assert composed["prBody"] == "Drop it."
     assert composed["prSummary"] == composed["prBody"]
     # Explicit inputs always win.
     explicit = logic.resolve_campaign_pr_description(
@@ -166,6 +166,26 @@ def test_campaign_pr_draft_carries_composed_prose_not_a_bare_issue_link():
         issue_title="Issue", instruction="Instruction")
     assert explicit["prTitle"] == "Given title"
     assert explicit["prBody"] == "Given body"
+    # The synthetic issue preamble is not the summary: keeping it would make
+    # the published description a restatement of the PR title and throw away
+    # everything the issue actually asked for.
+    from_issue = logic.resolve_campaign_pr_description(
+        requested_title="", requested_body="", issue_title="Remove WorkflowIntrospection",
+        instruction=("Resolve GitHub issue #4001: Remove WorkflowIntrospection\n\n"
+                     "- Remove the class\n- Remove its usages"))
+    assert from_issue["prTitle"] == "Remove WorkflowIntrospection"
+    assert from_issue["prBody"] == "- Remove the class\n- Remove its usages"
+    # A preamble with nothing after it still yields a body rather than nothing.
+    bare = logic.resolve_campaign_pr_description(
+        requested_title="", requested_body="", issue_title="T",
+        instruction="Resolve GitHub issue #7: T")
+    assert bare["prBody"] == "Resolve GitHub issue #7: T"
+    # A line that merely mentions an issue is not a preamble.
+    mention = logic.resolve_campaign_pr_description(
+        requested_title="", requested_body="", issue_title="",
+        instruction="Fix the flake seen in issue #12\n\nDetails.")
+    assert mention["prBody"].startswith("Fix the flake seen in issue #12")
+
     # A local instruction-only run still gets a title and a body.
     local = logic.resolve_campaign_pr_description(
         requested_title="", requested_body="", issue_title="",
