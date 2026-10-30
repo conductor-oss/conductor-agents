@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import os
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
@@ -105,6 +106,286 @@ def test_claude_sandbox_allows_binding_a_local_test_server(monkeypatch, tmp_path
     network = captured["options"].sandbox["network"]
     assert network["allowLocalBinding"] is True
     assert network["allowedDomains"] == []
+
+
+def test_hol_guard_hook_allows_only_explicit_native_policy(monkeypatch):
+    import json
+
+    monkeypatch.setattr(coding_agent_module.shutil, "which", lambda _: "/usr/bin/hol-guard")
+
+    def fake_run(*args, **kwargs):
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "policy_action": "allow",
+                "reason_code": "native_policy_allow",
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                },
+            }),
+        )
+
+    monkeypatch.setattr(coding_agent_module.subprocess, "run", fake_run)
+    result = asyncio.run(
+        coding_agent_module._hol_guard_pretool(
+            {"cwd": os.getcwd(), "tool_input": {"command": "git status"}}, None, None
+        )
+    )
+    assert result == {}
+
+
+@pytest.mark.parametrize(
+    ("reason_code", "expected_allow"),
+    [
+        ("native_exact_safe_command", True),
+        ("native_exact_introspection_command", True),
+        ("native_exact_risk_requires_review", False),
+        ("native_exact_worker_unavailable", False),
+        ("native_exact_unrecognized", False),
+    ],
+)
+def test_hol_guard_native_reason_must_prove_allow(monkeypatch, reason_code, expected_allow):
+    """An allow-shaped envelope must not override contradictory native-exact evidence."""
+    import json
+
+    monkeypatch.setattr(coding_agent_module.shutil, "which", lambda _: "/usr/bin/hol-guard")
+    verdict = {
+        "policy_action": "allow",
+        "reason_code": reason_code,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+        },
+    }
+    monkeypatch.setattr(
+        coding_agent_module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout=json.dumps(verdict)
+        ),
+    )
+    result = asyncio.run(
+        coding_agent_module._hol_guard_pretool(
+            {"cwd": os.getcwd(), "tool_input": {"command": "git status"}}, None, None
+        )
+    )
+    if expected_allow:
+        assert result == {}
+    else:
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        '{"policy_action":"deny","policy_action":"allow","reason_code":"native_policy_allow","hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}',
+        '{"policy_action":"allow","reason_code":"native_policy_allow","hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecision":"allow"}}',
+        '{"policy_action":"allow","reason_code":"native_policy_allow","continue":false,"continue":true,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}',
+        "[" * 20000 + "]" * 20000,
+    ],
+)
+def test_hol_guard_rejects_duplicate_verdict_fields(monkeypatch, stdout):
+    """Conflicting or malformed verdicts must never approve a protected Bash call."""
+    monkeypatch.setattr(coding_agent_module.shutil, "which", lambda _: "/usr/bin/hol-guard")
+    monkeypatch.setattr(
+        coding_agent_module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=stdout),
+    )
+    result = asyncio.run(
+        coding_agent_module._hol_guard_pretool(
+            {"cwd": os.getcwd(), "tool_input": {"command": "git status"}}, None, None
+        )
+    )
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_hol_guard_nonserializable_tool_input_denies_before_launch(monkeypatch):
+    """Invalid nested tool input is a denied event, not an uncaught hook failure."""
+    seen = []
+    monkeypatch.setattr(coding_agent_module.shutil, "which", lambda _: "/usr/bin/hol-guard")
+    monkeypatch.setattr(
+        coding_agent_module.subprocess,
+        "run",
+        lambda *args, **kwargs: seen.append(args),
+    )
+    result = asyncio.run(
+        coding_agent_module._hol_guard_pretool(
+            {"cwd": os.getcwd(), "tool_input": {
+                "command": "git status", "unexpected": object(),
+            }},
+            None,
+            None,
+        )
+    )
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert seen == []
+
+
+def test_hol_guard_hook_fails_closed(monkeypatch):
+    import json
+
+    monkeypatch.setattr(coding_agent_module.shutil, "which", lambda _: "/usr/bin/hol-guard")
+
+    for verdict in (
+        {
+            "policy_action": "warn",
+            "reason_code": "native_pre_tool_unavailable",
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+            },
+        },
+        {
+            "policy_action": "review",
+            "reason_code": "native_pre_tool_review",
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "ask",
+            },
+        },
+        {
+            "minimum_action": "allow",
+            "classification": {"explicitly_benign": True},
+            "policy_evaluation": "not_run",
+        },
+    ):
+        monkeypatch.setattr(
+            coding_agent_module.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0, stdout=json.dumps(verdict)
+            ),
+        )
+        result = asyncio.run(
+            coding_agent_module._hol_guard_pretool(
+                {"cwd": os.getcwd(), "tool_input": {"command": "git status"}}, None, None
+            )
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    monkeypatch.setattr(coding_agent_module.shutil, "which", lambda _: None)
+    missing = asyncio.run(
+        coding_agent_module._hol_guard_pretool(
+            {"cwd": os.getcwd(), "tool_input": {"command": "git status"}}, None, None
+        )
+    )
+    assert missing["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_hol_guard_executor_scheduling_failure_denies(monkeypatch):
+    """Executor shutdown must deny Bash instead of escaping the hook."""
+    monkeypatch.setattr(coding_agent_module.shutil, "which", lambda _: "/usr/bin/hol-guard")
+
+    async def unavailable(*_args, **_kwargs):
+        raise RuntimeError("cannot schedule new futures after shutdown")
+
+    monkeypatch.setattr(coding_agent_module.asyncio, "to_thread", unavailable)
+    result = asyncio.run(
+        coding_agent_module._hol_guard_pretool(
+            {"cwd": os.getcwd(), "tool_input": {"command": "git status"}}, None, None
+        )
+    )
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_hol_guard_explicit_stop_overrides_allow(monkeypatch):
+    import json
+
+    monkeypatch.setattr(coding_agent_module.shutil, "which", lambda _: "/usr/bin/hol-guard")
+    for stop in (
+        {"continue": False},
+        {"continue": "false"},
+        {"continue": 0},
+        {"decision": "deny"},
+        {"decision": "review"},
+        {"decision": None},
+        {"decision": []},
+        {"policy_action": "block"},
+        {"reason_code": "native_hook_worker_unavailable"},
+        {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+        }},
+        {"hookSpecificOutput": "malformed"},
+        {"hookSpecificOutput": {
+            "hookEventName": "PostToolUse", "permissionDecision": "allow",
+        }},
+    ):
+        verdict = {
+            "policy_action": "allow",
+            "reason_code": "native_policy_allow",
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+            },
+            **stop,
+        }
+        monkeypatch.setattr(
+            coding_agent_module.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0, stdout=json.dumps(verdict)
+            ),
+        )
+        result = asyncio.run(
+            coding_agent_module._hol_guard_pretool(
+                {"cwd": os.getcwd(), "tool_input": {"command": "git status"}}, None, None
+            )
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize("bad_cwd", [None, "", "./relative", 17])
+def test_hol_guard_invalid_cwd_fails_closed(monkeypatch, bad_cwd):
+    """A missing or unusable hook directory must not authorize Bash."""
+    def no_guard(*args, **kwargs):
+        raise AssertionError("Guard must not run with an invalid cwd")
+
+    monkeypatch.setattr(coding_agent_module.subprocess, "run", no_guard)
+    input_data = {"tool_input": {"command": "git status"}}
+    if bad_cwd is not None:
+        input_data["cwd"] = bad_cwd
+    decision = asyncio.run(coding_agent_module._hol_guard_pretool(input_data, None, None))
+    assert decision["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+
+def test_hol_guard_hook_is_opt_in(monkeypatch, tmp_path):
+    captured = []
+
+    async def fake_drive(_prompt, options, on_turn=None):
+        captured.append(options)
+        return {"result": "ok"}
+
+    monkeypatch.setattr(coding_agent_module, "_drive", fake_drive)
+    asyncio.run(coding_agent_module.run_coding_agent("do it", worktree=str(tmp_path)))
+    asyncio.run(
+        coding_agent_module.run_coding_agent(
+            "do it", worktree=str(tmp_path), hol_guard_enabled=True
+        )
+    )
+
+    default_matchers = captured[0].hooks["PreToolUse"]
+    guarded_matchers = captured[1].hooks["PreToolUse"]
+    assert [matcher.matcher for matcher in default_matchers] == ["Write|Edit|NotebookEdit"]
+    assert [matcher.matcher for matcher in guarded_matchers] == [
+        "Write|Edit|NotebookEdit",
+        "Bash",
+    ]
+
+
+def test_hol_guard_rejects_backends_without_pretool_hooks(tmp_path):
+    result = asyncio.run(
+        coding_agent_module.run_coding_agent(
+            "do it",
+            worktree=str(tmp_path),
+            backend="codex",
+            hol_guard_enabled=True,
+            include_file_tree=False,
+        )
+    )
+    assert result["status"] == "unsupported_hol_guard_backend"
 
 
 def test_campaign_write_roots_only_tighten_the_worktree():

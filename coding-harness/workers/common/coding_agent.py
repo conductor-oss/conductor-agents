@@ -28,8 +28,11 @@ UNATTENDED worker:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import shutil
+import subprocess
 from typing import Any
 
 from common.tool_policy import DEFAULT_ALLOWED_TOOLS, DEFAULT_DISALLOWED_TOOLS
@@ -226,6 +229,170 @@ def _worktree_guard(worktree_abs: str, write_roots: list[str] | None = None) -> 
     return sdk.HookMatcher(matcher="Write|Edit|NotebookEdit", hooks=[guard])
 
 
+def _deny_hol_guard(reason: str) -> dict[str, Any]:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": f"HOL Guard: {reason}",
+        }
+    }
+
+
+def _reject_duplicate_guard_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject conflicting hook verdict members before they can authorize Bash."""
+    obj: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError("duplicate key in Guard hook verdict")
+        obj[key] = value
+    return obj
+
+
+def _guard_worktree_root(cwd: str) -> str:
+    """Find the outermost Git workspace root without executing project tools."""
+    start = os.path.realpath(cwd)
+    current = start
+    root = start
+    while True:
+        # A nested .git file may be project-controlled. Prefer outer markers.
+        # Real Git linked worktrees can also use a .git file.
+        if os.path.lexists(os.path.join(current, ".git")):
+            root = current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return root
+        current = parent
+
+
+async def _hol_guard_pretool(input_data, tool_use_id, context):  # noqa: ANN001
+    """Authorize Bash at Claude's native HOL Guard PreToolUse policy boundary."""
+    del tool_use_id, context
+    if not isinstance(input_data, dict):
+        return _deny_hol_guard("malformed hook event")
+    tool_input = input_data.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return _deny_hol_guard("malformed Bash tool input")
+    command = tool_input.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return _deny_hol_guard("missing Bash command")
+
+    # Use the actual Bash working directory for the managed hook policy.
+    cwd = input_data.get("cwd")
+    if not isinstance(cwd, str) or not os.path.isabs(cwd) or not os.path.isdir(cwd):
+        return _deny_hol_guard("missing or invalid Bash working directory")
+
+    executable = shutil.which("hol-guard")
+    if not executable:
+        return _deny_hol_guard("hol-guard is not installed")
+    # A relative PATH entry (such as ./bin) must not be reinterpreted
+    # after subprocess changes into the tool's working directory.
+    selected_executable = os.path.abspath(executable)
+    executable = os.path.realpath(selected_executable)
+    # Reject project-owned paths even if a symlink currently resolves outside
+    # the checkout. The symlink itself may be replaced by project content.
+    # PATH lookup happens in the worker launch directory, which need not be
+    # Bash's effective cwd. Both checkouts are untrusted executable sources;
+    # otherwise a launch-checkout shim can forge a native policy allow even
+    # when the Bash tool executes in an unrelated repository.
+    trusted_roots = {_guard_worktree_root(os.getcwd()), _guard_worktree_root(cwd)}
+    try:
+        if any(
+            os.path.commonpath((candidate, trusted_root)) == trusted_root
+            for trusted_root in trusted_roots
+            for candidate in (selected_executable, executable)
+        ):
+            return _deny_hol_guard("Guard executable is inside the untrusted worktree")
+    except ValueError:
+        return _deny_hol_guard("Guard executable location could not be verified")
+
+    # The command travels in a private stdin envelope, never in process argv.
+    # Unlike 'command test', the managed native hook evaluates effective policy.
+    try:
+        payload = json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": tool_input,
+                "cwd": cwd,
+            }
+        )
+        # Capture the exact JSON tool inputs actually sent to Guard. The
+        # SDK hook is suspended while the native subprocess runs; an async
+        # caller must not substitute a different command or argument.
+        inspected_tool_input = json.loads(payload)["tool_input"]
+        completed = await asyncio.to_thread(
+            subprocess.run,
+            [executable, "hook", "--harness", "claude-code", "--json"],
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            cwd=cwd,
+        )
+        if completed.returncode != 0:
+            return _deny_hol_guard("native policy evaluation failed")
+        verdict = json.loads(
+            completed.stdout, object_pairs_hook=_reject_duplicate_guard_keys
+        )
+    except (
+        OSError,
+        subprocess.TimeoutExpired,
+        ValueError,
+        TypeError,
+        UnicodeError,
+        RecursionError,
+        RuntimeError,  # asyncio.to_thread can fail to schedule after shutdown
+    ):
+        return _deny_hol_guard("native policy evaluation failed")
+
+    if not isinstance(verdict, dict):
+        return _deny_hol_guard("malformed native hook verdict")
+    hook_output = verdict.get("hookSpecificOutput")
+    if not isinstance(hook_output, dict) or hook_output.get("hookEventName") != "PreToolUse":
+        return _deny_hol_guard("missing or mismatched native hook event")
+
+    decision = verdict.get("decision")
+    if ("continue" in verdict and verdict["continue"] is not True) or (
+        "decision" in verdict
+        and (not isinstance(decision, str) or decision.strip().lower() != "allow")
+    ):
+        return _deny_hol_guard("command explicitly stopped by Guard")
+
+    reason_code = verdict.get("reason_code")
+    authoritative_allow = (
+        isinstance(reason_code, str)
+        and (
+            reason_code.startswith("native_exact_safe_")
+            or reason_code in {
+                "native_exact_introspection_command",
+                "native_policy_allow",
+                "native_custom_mcp_tool_allow",
+            }
+        )
+    )
+    if (
+        verdict.get("policy_action") == "allow"
+        and hook_output.get("permissionDecision") == "allow"
+        and authoritative_allow
+    ):
+        try:
+            if (
+                input_data.get("cwd") != cwd
+                or input_data.get("tool_input") != inspected_tool_input
+            ):
+                return _deny_hol_guard("Bash inputs changed during native policy evaluation")
+        except Exception:
+            return _deny_hol_guard("Bash inputs changed during native policy evaluation")
+        return {}
+    return _deny_hol_guard("Guard requires review or did not authorize this Bash call")
+
+
+def _hol_guard() -> sdk.HookMatcher:
+    return sdk.HookMatcher(matcher="Bash", hooks=[_hol_guard_pretool])
+
+
 def _summarize_tool(block: sdk.ToolUseBlock) -> str:
     """Human-readable one-liner for a single tool call, surfacing the salient arg.
 
@@ -369,6 +536,7 @@ async def run_coding_agent(
     backend: str | None = None,
     write_roots: list[str] | None = None,
     context_paths: list[str] | None = None,
+    hol_guard_enabled: bool = False,
 ) -> dict[str, Any]:
     """Run one locked-down autonomous coding session to completion (async).
 
@@ -411,6 +579,10 @@ async def run_coding_agent(
     directory to the prompt so the agent skips the reflexive first-turn `ls`/`Glob`
     — saving a model round-trip and its tokens. Skipped on resume (the session
     already has the tree).
+
+    ``hol_guard_enabled`` adds an opt-in Bash PreToolUse gate backed by the installed
+    ``hol-guard`` CLI. Once enabled, missing Guard, evaluation errors, review/deny
+    verdicts, and anything short of an explicit benign allow fail closed.
     """
     import collections
     # realpath canonicalizes symlinks (on macOS /tmp -> /private/tmp) so the guard
@@ -444,6 +616,13 @@ async def run_coding_agent(
     # Both are blocking subprocess drivers (can run for minutes) — a worker thread,
     # not the shared event loop. Conductor task definitions own runtime limits.
     be = _infer_backend(backend, model)
+    if hol_guard_enabled and be != "claude":
+        return {
+            "ok": False, "status": "unsupported_hol_guard_backend", "result": "",
+            "structured": None, "session_id": None, "num_turns": 0, "tokens": 0,
+            "cost_usd": 0.0, "denials": [], "turn_log": [],
+            "error": "HOL Guard PreToolUse integration currently requires the Claude backend",
+        }
     external_context_paths = _external_context_paths(worktree_abs, context_paths)
     if external_context_paths and be != "claude":
         # Codex/Gemini's current SDK/CLI sandboxes expose no equivalent to
@@ -530,7 +709,12 @@ async def run_coding_agent(
         "tools": tools if tools is not None else DEFAULT_TOOLS,
         "allowed_tools": allowed_tools if allowed_tools is not None else DEFAULT_ALLOWED_TOOLS,
         "disallowed_tools": disallowed_tools if disallowed_tools is not None else DEFAULT_DISALLOWED_TOOLS,
-        "hooks": {"PreToolUse": [_worktree_guard(worktree_abs, write_roots)]},
+        "hooks": {
+            "PreToolUse": [
+                _worktree_guard(worktree_abs, write_roots),
+                *([_hol_guard()] if hol_guard_enabled else []),
+            ]
+        },
         "max_turns": max_turns,
         "stderr": stderr_lines.append,
     }
