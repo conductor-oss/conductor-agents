@@ -41,15 +41,16 @@ def _api(path):
         return None
 
 
-def run_one(target: str, width: int, rounds: int, budget: int, capability: int = 2) -> dict:
+def run_one(target: str, width: int, rounds: int, budget: int, capability: int = 3) -> dict:
     """Start one campaign at a given width, wait for it to finish, return {width, confirmed, cost}.
 
     Robust against the launcher's own lifetime: ./swarm's output goes to a FILE (never a captured pipe,
     which would deadlock on a daemon child's inherited fd), we poll that file for the campaign id, then
     poll the SERVER by API for completion — independent of whether ./swarm has exited yet.
 
-    capability defaults to 2 (synthetic state-changing): code_exec — the agent's active probing that
-    plants the confirming oracle — needs level 2, so a cap-1 (read-only) sweep confirms NOTHING."""
+    capability defaults to 3: code_exec needs level 2, and sensitive proofs (secret reads, sensitive
+    writes) need level 3; a cap-1 (read-only) sweep confirms NOTHING. Level 4 adds nothing via the
+    number (destructive/availability is the separate allowed_classes=["resilience"] opt-in)."""
     argv = ["./swarm", target, "--authorized", "--capability", str(capability),
             "--width", str(width), "--rounds", str(rounds), "--budget", str(budget), "--no-wait"]
     print(f"\n=== width {width}: {' '.join(argv)} ===", flush=True)
@@ -112,8 +113,8 @@ def main():
     ap.add_argument("--widths", default="8,16,24,48,96")
     ap.add_argument("--rounds", type=int, default=4)
     ap.add_argument("--budget", type=int, default=8000)
-    ap.add_argument("--capability", type=int, default=2,
-                    help="capability ceiling (default 2 = active exploitation; 1 = read-only confirms nothing)")
+    ap.add_argument("--capability", type=int, default=3,
+                    help="capability ceiling (default 3 = active + sensitive proofs; 1 = read-only confirms nothing; 4 is a no-op vs 3 unless allowed_classes=resilience)")
     a = ap.parse_args()
     widths = [int(x) for x in a.widths.split(",") if x.strip()]
     runs = [run_one(a.target, w, a.rounds, a.budget, a.capability) for w in widths]
