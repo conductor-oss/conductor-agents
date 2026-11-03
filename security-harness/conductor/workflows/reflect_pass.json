@@ -55,7 +55,7 @@
         "llmProvider": "${workflow.input.llm_provider}",
         "model": "${workflow.input.model}",
         "temperature": "${workflow.input.analysis_temp}",
-        "maxTokens": 8000,
+        "maxTokens": 24000,
         "thinkingTokenLimit": "${workflow.input.think_analysis}",
         "reasoningSummary": "detailed",
         "jsonOutput": false,

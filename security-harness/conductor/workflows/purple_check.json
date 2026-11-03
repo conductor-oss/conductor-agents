@@ -47,7 +47,7 @@
         "model": "${workflow.input.model}",
         "temperature": 1,
         "thinkingTokenLimit": 6000,
-        "maxTokens": 8000,
+        "maxTokens": 22000,
         "jsonOutput": false,
         "messages": [
           {

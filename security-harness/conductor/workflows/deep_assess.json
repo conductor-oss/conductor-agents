@@ -1,7 +1,7 @@
 {
   "name": "deep_assess",
   "version": 1,
-  "description": "Deep Application Pentest v2 \u2014 docs-driven, multi-pass, hardened-app testing. INGEST docs (intended workflows + documented invariants, indexed for on-demand retrieval). UNDERSTAND once (surface -> app_model, with extended thinking). Then a MULTI-PASS loop: each assess_pass explores deeper (focus-directed), hypothesizes (invariant/race/chaining aware, deduped vs already-tried), exploits (multi-identity, full-send, concurrent-burst), and adversarially verifies; a reflect critic decides whether to go deeper and where (loop-until-dry, capped). REPORT once over the accumulated findings. LLM prompts injected by register.sh.",
+  "description": "Deep Application Pentest v2 — docs-driven, multi-pass, hardened-app testing. INGEST docs (intended workflows + documented invariants, indexed for on-demand retrieval). UNDERSTAND once (surface -> app_model, with extended thinking). Then a MULTI-PASS loop: each assess_pass explores deeper (focus-directed), hypothesizes (invariant/race/chaining aware, deduped vs already-tried), exploits (multi-identity, full-send, concurrent-burst), and adversarially verifies; a reflect critic decides whether to go deeper and where (loop-until-dry, capped). REPORT once over the accumulated findings. LLM prompts injected by register.sh.",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
   "inputParameters": [
@@ -252,7 +252,7 @@
         "llmProvider": "${caps.output.result.analysis_provider}",
         "model": "${caps.output.result.model}",
         "temperature": "${caps.output.result.analysis_temp}",
-        "maxTokens": 16000,
+        "maxTokens": 24000,
         "thinkingTokenLimit": "${caps.output.result.think_analysis}",
         "reasoningSummary": "detailed",
         "jsonOutput": false,
@@ -900,7 +900,7 @@
         "llmProvider": "${caps.output.result.analysis_provider}",
         "model": "${caps.output.result.model}",
         "temperature": "${caps.output.result.analysis_temp}",
-        "maxTokens": 18000,
+        "maxTokens": 24000,
         "thinkingTokenLimit": "${caps.output.result.think_analysis}",
         "reasoningSummary": "detailed",
         "jsonOutput": false,
@@ -982,7 +982,7 @@
         "llmProvider": "${caps.output.result.analysis_provider}",
         "model": "${caps.output.result.model}",
         "temperature": 0.2,
-        "maxTokens": 14000,
+        "maxTokens": 16000,
         "messages": [
           {
             "role": "system",

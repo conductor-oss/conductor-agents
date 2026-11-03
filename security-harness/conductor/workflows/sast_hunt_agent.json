@@ -75,7 +75,7 @@
             "model": "claude-opus-4-8",
             "temperature": 1,
             "thinkingTokenLimit": 4000,
-            "maxTokens": 8000,
+            "maxTokens": 20000,
             "jsonOutput": false,
             "messages": "${workflow.variables.messages}"
           }
@@ -279,7 +279,7 @@
               "llmProvider": "anthropic",
               "model": "claude-opus-4-8",
               "temperature": 0,
-              "maxTokens": 6000,
+              "maxTokens": 8000,
               "jsonOutput": false,
               "messages": "${build_force.output.result.messages}"
             }

@@ -126,7 +126,7 @@
         "llmProvider": "${workflow.input.provider}",
         "model": "${workflow.input.model}",
         "temperature": 1,
-        "maxTokens": 12000,
+        "maxTokens": 20000,
         "thinkingTokenLimit": 4000,
         "reasoningSummary": "detailed",
         "jsonOutput": false,

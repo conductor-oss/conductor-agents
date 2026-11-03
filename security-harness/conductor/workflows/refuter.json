@@ -1,7 +1,7 @@
 {
   "name": "refuter",
   "version": 1,
-  "description": "Swarm REFUTER (adversarial peer review): a different model/identity tries to BREAK a candidate finding \u2014 argue it is benign, unreachable, misattributed, or a false positive. Posts a critique fact {survived, reason} to the board. A candidate survives only if the refuter fails AND a deterministic oracle fired; this is the filter that keeps massive breadth trustworthy.",
+  "description": "Swarm REFUTER (adversarial peer review): a different model/identity tries to BREAK a candidate finding — argue it is benign, unreachable, misattributed, or a false positive. Posts a critique fact {survived, reason} to the board. A candidate survives only if the refuter fails AND a deterministic oracle fired; this is the filter that keeps massive breadth trustworthy.",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
   "inputParameters": [
@@ -53,7 +53,7 @@
         "llmProvider": "${workflow.input.llm_provider}",
         "model": "${workflow.input.model}",
         "temperature": 1,
-        "maxTokens": 2000,
+        "maxTokens": 8000,
         "jsonOutput": false,
         "messages": "${workflow.variables.messages}"
       }

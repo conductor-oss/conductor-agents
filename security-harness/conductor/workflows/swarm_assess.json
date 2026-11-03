@@ -232,7 +232,7 @@
         "llmProvider": "${caps.output.result.analysis_provider}",
         "model": "${caps.output.result.model}",
         "temperature": "${caps.output.result.analysis_temp}",
-        "maxTokens": 16000,
+        "maxTokens": 24000,
         "thinkingTokenLimit": "${caps.output.result.think_analysis}",
         "reasoningSummary": "detailed",
         "jsonOutput": false,
@@ -552,7 +552,7 @@
         "llmProvider": "${caps.output.result.analysis_provider}",
         "model": "${caps.output.result.model}",
         "temperature": 0.2,
-        "maxTokens": 14000,
+        "maxTokens": 16000,
         "messages": [
           {
             "role": "system",

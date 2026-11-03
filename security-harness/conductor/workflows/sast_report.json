@@ -39,7 +39,7 @@
         "llmProvider": "anthropic",
         "model": "claude-opus-4-8",
         "temperature": 0,
-        "maxTokens": 12000,
+        "maxTokens": 16000,
         "jsonOutput": true,
         "messages": [
           {
@@ -72,7 +72,7 @@
         "llmProvider": "anthropic",
         "model": "claude-opus-4-8",
         "temperature": 0.2,
-        "maxTokens": 12000,
+        "maxTokens": 16000,
         "messages": [
           {
             "role": "system",

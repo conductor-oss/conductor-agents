@@ -86,7 +86,7 @@
             "llmProvider": "${workflow.input.llm_provider}",
             "model": "${workflow.input.model}",
             "temperature": 0.2,
-            "maxTokens": 1200,
+            "maxTokens": 16000,
             "jsonOutput": true,
             "messages": "${workflow.variables.messages}"
           }
