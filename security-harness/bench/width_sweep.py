@@ -41,14 +41,17 @@ def _api(path):
         return None
 
 
-def run_one(target: str, width: int, rounds: int, budget: int) -> dict:
+def run_one(target: str, width: int, rounds: int, budget: int, capability: int = 2) -> dict:
     """Start one campaign at a given width, wait for it to finish, return {width, confirmed, cost}.
 
     Robust against the launcher's own lifetime: ./swarm's output goes to a FILE (never a captured pipe,
     which would deadlock on a daemon child's inherited fd), we poll that file for the campaign id, then
-    poll the SERVER by API for completion — independent of whether ./swarm has exited yet."""
-    argv = ["./swarm", target, "--authorized", "--width", str(width), "--rounds", str(rounds),
-            "--budget", str(budget), "--no-wait"]
+    poll the SERVER by API for completion — independent of whether ./swarm has exited yet.
+
+    capability defaults to 2 (synthetic state-changing): code_exec — the agent's active probing that
+    plants the confirming oracle — needs level 2, so a cap-1 (read-only) sweep confirms NOTHING."""
+    argv = ["./swarm", target, "--authorized", "--capability", str(capability),
+            "--width", str(width), "--rounds", str(rounds), "--budget", str(budget), "--no-wait"]
     print(f"\n=== width {width}: {' '.join(argv)} ===", flush=True)
     logf = tempfile.NamedTemporaryFile("w+", prefix=f"sweep_w{width}_", suffix=".log", delete=False)
     proc = subprocess.Popen(argv, cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT,
@@ -109,9 +112,11 @@ def main():
     ap.add_argument("--widths", default="8,16,24,48,96")
     ap.add_argument("--rounds", type=int, default=4)
     ap.add_argument("--budget", type=int, default=8000)
+    ap.add_argument("--capability", type=int, default=2,
+                    help="capability ceiling (default 2 = active exploitation; 1 = read-only confirms nothing)")
     a = ap.parse_args()
     widths = [int(x) for x in a.widths.split(",") if x.strip()]
-    runs = [run_one(a.target, w, a.rounds, a.budget) for w in widths]
+    runs = [run_one(a.target, w, a.rounds, a.budget, a.capability) for w in widths]
     curve = swarm_eval.width_yield_curve([r for r in runs if "error" not in r])
     best = max(curve, key=lambda p: swarm_eval.confirmed_per_dollar(p["confirmed"], p["cost"])) if curve else None
 

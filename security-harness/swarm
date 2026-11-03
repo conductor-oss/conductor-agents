@@ -123,6 +123,11 @@ elif $AUTH; then
     { approvers: ["local-operator"], in_scope_hosts: $hosts, window: {start: $start, expiry: $exp},
       capability_max: $cap, rate: {burst_max: 20}, note: "synthesized by ./swarm --authorized" }')
   echo "ℹ  synthesized capability-$cap manifest (24h window)."
+  if [ "$cap" -lt 2 ] 2>/dev/null; then
+    echo "⚠  capability $cap is READ-ONLY: code_exec (the agent's active probing that plants the" >&2
+    echo "⚠  confirming oracle) needs level 2, so this run will scout/hypothesize but CONFIRM NOTHING." >&2
+    echo "⚠  Pass --capability 2 for active (synthetic state-changing) exploitation." >&2
+  fi
 fi
 
 DIVERSITY_JSON="{}"
