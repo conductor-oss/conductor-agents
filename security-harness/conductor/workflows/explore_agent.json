@@ -4,10 +4,34 @@
   "description": "Understanding agent: an LLM probes the live app one request at a time (http_request, multi-identity) to deepen the application model. Returns the observations/facts it learned (features, roles, sensitive ops, credentials, attack surface). System prompt injected from prompts/explore.md.",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
-  "timeoutSeconds": 0,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["base_url", "scope", "identities", "app_model", "surface", "max_steps", "docs_namespace", "docs_index", "docs_available", "focus_directive", "prior_confirmed", "manifest", "capability_max", "personas", "embed_provider", "embed_model", "run_id"],
-  "variables": { "messages": [], "done": "", "notes": [], "browser_url": "", "browser_state": null },
+  "inputParameters": [
+    "base_url",
+    "scope",
+    "identities",
+    "app_model",
+    "surface",
+    "max_steps",
+    "docs_namespace",
+    "docs_index",
+    "docs_available",
+    "focus_directive",
+    "prior_confirmed",
+    "manifest",
+    "capability_max",
+    "personas",
+    "embed_provider",
+    "embed_model",
+    "run_id",
+    "correlation_id",
+    "role"
+  ],
+  "variables": {
+    "messages": [],
+    "done": "",
+    "notes": [],
+    "browser_url": "",
+    "browser_state": null
+  },
   "tasks": [
     {
       "name": "build_init",
@@ -30,8 +54,14 @@
       "type": "SET_VARIABLE",
       "inputParameters": {
         "messages": [
-          { "role": "system", "message": "SYSTEM_PROMPT_EXPLORE" },
-          { "role": "user", "message": "${build_init.output.result.msg}" }
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_EXPLORE"
+          },
+          {
+            "role": "user",
+            "message": "${build_init.output.result.msg}"
+          }
         ],
         "done": "",
         "notes": []
@@ -49,6 +79,35 @@
         "done": "${workflow.variables.done}"
       },
       "loopOver": [
+        {
+          "name": "swarm_inbox",
+          "taskReferenceName": "peer_sync",
+          "type": "SIMPLE",
+          "optional": true,
+          "inputParameters": {
+            "correlation_id": "${workflow.input.correlation_id}",
+            "me": "${workflow.workflowId}",
+            "role": "${workflow.input.role}"
+          }
+        },
+        {
+          "name": "inject_peer",
+          "taskReferenceName": "inject_peer",
+          "type": "JSON_JQ_TRANSFORM",
+          "inputParameters": {
+            "messages": "${workflow.variables.messages}",
+            "digest": "${peer_sync.output.digest}",
+            "queryExpression": "if ((.digest // \"\") | length) > 0 then {messages: (.messages + [ {role:\"user\", message:(\"TEAM UPDATE from your teammates working this target concurrently (shared blackboard). Build on this; do NOT duplicate their claimed areas or re-find their verified primitives -- CHAIN off them instead:\\n\" + .digest)} ])} else {messages: .messages} end"
+          }
+        },
+        {
+          "name": "set_peer_msgs",
+          "taskReferenceName": "set_peer_msgs",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "messages": "${inject_peer.output.result.messages}"
+          }
+        },
         {
           "name": "decide",
           "taskReferenceName": "decide",
@@ -80,15 +139,58 @@
           "taskReferenceName": "route",
           "type": "SWITCH",
           "evaluatorType": "graaljs",
-          "expression": "$.atype === 'done' ? 'done' : ($.atype === 'search_docs' ? 'search' : ($.atype === 'browse' ? 'browse' : 'act'))",
-          "inputParameters": { "atype": "${parse_decide.output.result.action.type}" },
+          "expression": "$.atype === 'done' ? 'done' : ($.atype === 'message' ? 'message' : ($.atype === 'search_docs' ? 'search' : ($.atype === 'browse' ? 'browse' : 'act')))",
+          "inputParameters": {
+            "atype": "${parse_decide.output.result.action.type}"
+          },
           "decisionCases": {
             "done": [
               {
                 "name": "mark_done",
                 "taskReferenceName": "mark_done",
                 "type": "SET_VARIABLE",
-                "inputParameters": { "done": "done" }
+                "inputParameters": {
+                  "done": "done"
+                }
+              }
+            ],
+            "message": [
+              {
+                "name": "swarm_send",
+                "taskReferenceName": "send_msg",
+                "type": "SIMPLE",
+                "optional": true,
+                "inputParameters": {
+                  "correlation_id": "${workflow.input.correlation_id}",
+                  "from": "${workflow.workflowId}",
+                  "from_role": "${workflow.input.role}",
+                  "to": "${parse_decide.output.result.action.to}",
+                  "intent": "${parse_decide.output.result.action.intent}",
+                  "body": "${parse_decide.output.result.action.body}",
+                  "thread": "${parse_decide.output.result.action.thread}",
+                  "reply_to": "${parse_decide.output.result.action.reply_to}"
+                }
+              },
+              {
+                "name": "build_turn_msg",
+                "taskReferenceName": "build_turn_msg",
+                "type": "JSON_JQ_TRANSFORM",
+                "inputParameters": {
+                  "messages": "${workflow.variables.messages}",
+                  "notes": "${workflow.variables.notes}",
+                  "action": "${parse_decide.output.result.action}",
+                  "sent": "${send_msg.output.summary}",
+                  "queryExpression": "{ messages: (.messages + [ {role:\"assistant\", message:(.action | tojson)}, {role:\"user\", message:(\"Message sent (\" + (.sent // \"\") + \"). Teammates addressed will see it in their inbox; watch YOUR inbox for a reply next step. Decide the next action.\")} ]), notes: (.notes // []) }"
+                }
+              },
+              {
+                "name": "update_state_msg",
+                "taskReferenceName": "update_state_msg",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "messages": "${build_turn_msg.output.result.messages}",
+                  "notes": "${build_turn_msg.output.result.notes}"
+                }
               }
             ],
             "browse": [
@@ -144,14 +246,11 @@
               {
                 "name": "docs_search",
                 "taskReferenceName": "docs_search",
-                "type": "LLM_SEARCH_INDEX",
+                "type": "SIMPLE",
                 "optional": true,
                 "inputParameters": {
-                  "vectorDB": "pgvector",
-                  "namespace": "${workflow.input.docs_namespace}",
-                  "index": "${workflow.input.docs_index}",
-                  "embeddingModelProvider": "${workflow.input.embed_provider}",
-                  "embeddingModel": "${workflow.input.embed_model}",
+                  "run_id": "${workflow.input.run_id}",
+                  "correlation_id": "${workflow.input.correlation_id}",
                   "query": "${parse_decide.output.result.action.query}",
                   "maxResults": 4
                 }
@@ -207,6 +306,21 @@
                   "action": "${parse_decide.output.result.action}",
                   "result": "${act.output}",
                   "queryExpression": "{ messages: (.messages + [ {role:\"assistant\", message:(.action | tojson)}, {role:\"user\", message:(\"Result: \" + (.result.summary // \"\") + \"\\nResponse body (excerpt):\\n\" + (.result.response.body_excerpt // .result.error // \"\") + \"\\n\\nDecide the next action, or {\\\"action\\\":{\\\"type\\\":\\\"done\\\"}} when you understand the app.\")} ]), notes: ((.notes // []) + ([.learned] | map(select(. != null and . != \"\"))) + [(\"observed: \" + (.result.summary // \"\"))]) }"
+                }
+              },
+              {
+                "name": "swarm_post_fact",
+                "taskReferenceName": "post_obs_live",
+                "type": "SIMPLE",
+                "optional": true,
+                "inputParameters": {
+                  "correlation_id": "${workflow.input.correlation_id}",
+                  "author": "${workflow.workflowId}",
+                  "kind": "observation",
+                  "data": {
+                    "note": "${parse_decide.output.result.learned}",
+                    "summary": "${act.output.summary}"
+                  }
                 }
               },
               {

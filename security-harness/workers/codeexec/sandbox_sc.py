@@ -31,7 +31,20 @@ import os
 import re
 import time
 import uuid
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
+
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
+def _reachable(url: str) -> str:
+    """The sandbox runs INSIDE a container, so a localhost target actually lives on the Docker
+    HOST. Rewrite localhost/127.0.0.1 -> host.docker.internal for the actual request (scope is still
+    enforced on the ORIGINAL url, mirroring the http_request worker's reachable_url)."""
+    p = urlsplit(url if "://" in url else f"//{url}", scheme="http")
+    if (p.hostname or "").lower() in _LOCAL_HOSTS:
+        port = f":{p.port}" if p.port else ""
+        return urlunsplit((p.scheme or "http", f"host.docker.internal{port}", p.path, p.query, p.fragment))
+    return url
 
 import requests
 import urllib3
@@ -128,7 +141,8 @@ class _ScopedSession(requests.Session):
         kw.setdefault("timeout", 30)
         kw.setdefault("verify", False)
         kw.setdefault("allow_redirects", False)
-        r = super().request(method, url, **kw)
+        # Scope was checked on the original url; send to the container-reachable host.
+        r = super().request(method, _reachable(url), **kw)
         # Record product operations at the SESSION layer so the campaign operation_ledger
         # captures every workflow define/start/write -- regardless of whether the agent used
         # sc.api() or a raw sc.session() request. (Previously recording lived only in sc.api(),
@@ -203,13 +217,58 @@ def oob(label: str = "probe") -> str:
 
 def inband_probe(oracle: str, **spec):
     """Record an IN-BAND oracle PLAN for the trusted verifier to RE-ISSUE independently (it never
-    trusts this sandbox's own responses -- only a verifier receipt can confirm). ``oracle`` is
-    'ssrf_differential' or 'rce_arithmetic'; ``spec`` carries the request spec(s) + markers/operands:
+    trusts this sandbox's own responses -- only a verifier receipt can confirm). ``spec`` carries the
+    request spec(s) + markers/operands; the verifier re-sends and grades. Supported oracles:
       inband_probe('ssrf_differential', control={req}, test={req}, markers=[...])
       inband_probe('rce_arithmetic', request={req}, operand_a=1337, operand_b=7919)
-    where each ``req`` is {method, path|url, headers, body, identity}."""
-    _state["inband"].append({"oracle": str(oracle), **spec})
+      inband_probe('time_blind_sql', test={req}, control={req}, injected_delay_ms=5000)
+      inband_probe('sql_error_differential', control={req_benign}, test={req_injection})
+      inband_probe('boolean_sqli', baseline={req}, true={req_AND_1=1}, false={req_AND_1=2})
+      inband_probe('cross_identity_access', victim={req}, attacker={req}, victim_marker='...', control={req})
+      inband_probe('path_traversal_canary', test={req}, control={req}, canary='root:x:0:0')
+      inband_probe('race_invariant', boundary_request={req}, allowed_successes=1, burst=10)
+      inband_probe('auth_state_illegal_transition', control={req}, test={req}, readback={req},
+                   persisted_marker='refunded', from_state='shipped', to_state='refunded')
+      inband_probe('stored_xss_victim_context', store={req}, view={req}, marker='<unique>',
+                   author_identity='userA', victim_identity='admin',
+                   executed_in_victim_context=<True only with an OOB/browser exec signal>)
+      inband_probe('cross_tenant_write_persist', write={req_as_A}, victim_read={req_as_B}, control={req_before},
+                   injected_marker='https://attacker.example/v1')
+                   # SHARED-RESOURCE / CROSS-TENANT POISONING: tenant A WRITEs a marker into a GLOBAL
+                   # shared resource (a shared integration-provider definition, a global registry/config
+                   # entry) that has no ownership check; tenant B READs the same resource and sees A's
+                   # marker. Use for "any tenant can overwrite a shared provider endpoint / registry
+                   # entry visible to everyone". write/victim_read carry different `identity`s.
+      inband_probe('auth_bypass', escalated={req}, control={req}, privilege_marker='admin@juice-sh.op')
+                   # AUTH/AUTHZ BYPASS: escalated = the illegitimate path that grants access (an
+                   # injected login, a forged-JWT request, a registration carrying role=admin);
+                   # control = the legitimate path that must NOT grant it (wrong password -> 401,
+                   # a normal-role request -> 403, a normal registration). privilege_marker = the
+                   # distinctive proof of elevation present ONLY on escalated (admin email/id, an
+                   # admin-only field, "role":"admin"). Use for login SQLi, JWT forgery, mass-assignment.
+      inband_probe('behavioral_differential', control={req}, test={req}, marker='<leaked-str>',
+                   min_delta=32)   # class-AGNOSTIC: prove a reproducible control-vs-test divergence
+                   # (a leaked marker, or a body-length delta >= min_delta) when no named oracle fits.
+      inband_probe('single_use', action={req}, control={req_that_should_be_blocked},
+                   allowed_uses=1, attempts=3)   # coupon reuse / one-time-token replay
+      inband_probe('value_floor', mutate={req}, readback={req}, value_path='data.0.quantity', floor=0)
+                   # negative quantity/price/balance: verifier reads value_path out of the readback
+      inband_probe('monotonic_state', before={req}, transition={req}, after={req}, control={req},
+                   state_path='data.status', state_order=['in_cart','paid','shipped','delivered'])
+    where each ``req`` is {method, path|url, headers, body, identity}.
+
+    RETURNS an acknowledgement dict (NOT a confirmation): the plan is now queued for the trusted
+    verifier, which RE-ISSUES the requests itself and grades them — confirmation arrives as a verifier
+    receipt in your next status brief, never as this return value. A non-None ack means "planted OK";
+    do NOT re-plant the same probe because this returned no verdict. That is by design."""
+    rec = {"oracle": str(oracle), **spec}
+    _state["inband"].append(rec)
     flush()
+    return {"planted": str(oracle), "status": "recorded",
+            "fields": sorted(k for k in spec.keys()),
+            "note": "Verifier will RE-ISSUE this independently; the verdict appears in your next status "
+                    "brief as a verifier receipt, not here. Do NOT re-plant — move to the next rung or "
+                    "conclude. A missing field would show here as an absent key."}
 
 
 def created(method: str, url: str, identity: str | None = None):

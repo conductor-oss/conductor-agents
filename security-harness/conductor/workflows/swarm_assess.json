@@ -1,0 +1,651 @@
+{
+  "name": "swarm_assess",
+  "version": 1,
+  "description": "Swarm ROOT (swarm_assess) (design/SWARM.md): understand once (normalize -> authorize -> surface -> app_model -> catalog), seed the blackboard, run a bounded round loop of swarm_round (standup -> wave -> reconcile) with a safety gate that terminates the root on breach, then scribe the rollup. The campaign workflowId is the correlation_id stamped down every child, so the whole swarm tree is one query and terminating this root cascades to every agent (the kill switch).",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "inputParameters": [
+    "target",
+    "authorized",
+    "manifest",
+    "kill_switch",
+    "scope",
+    "identities",
+    "source_path",
+    "auth_token",
+    "auth_key",
+    "auth_secret",
+    "token_url",
+    "auth_header",
+    "auth_scheme",
+    "auth_probe_paths",
+    "token_exchange",
+    "target_profile",
+    "login_url",
+    "username",
+    "password",
+    "max_pages",
+    "max_depth",
+    "agent",
+    "agent_steps",
+    "width_ceiling",
+    "max_rounds",
+    "budget",
+    "diversity",
+    "oob_base",
+    "run_id",
+    "reasoning",
+    "model",
+    "llm_provider",
+    "loop_model",
+    "loop_provider",
+    "embed_provider",
+    "embed_model",
+    "max_steps",
+    "docs",
+    "hunt"
+  ],
+  "variables": {
+    "credits": {},
+    "areas": [],
+    "keep_going": true
+  },
+  "tasks": [
+    {
+      "name": "normalize_target",
+      "taskReferenceName": "normalize_target",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "target": "${workflow.input.target}",
+        "scope": "${workflow.input.scope}",
+        "authorized": "${workflow.input.authorized}",
+        "manifest": "${workflow.input.manifest}",
+        "source_path": "${workflow.input.source_path}",
+        "identities": "${workflow.input.identities}",
+        "auth_token": "${workflow.input.auth_token}",
+        "auth_key": "${workflow.input.auth_key}",
+        "auth_secret": "${workflow.input.auth_secret}",
+        "token_url": "${workflow.input.token_url}",
+        "auth_header": "${workflow.input.auth_header}",
+        "auth_scheme": "${workflow.input.auth_scheme}",
+        "auth_probe_paths": "${workflow.input.auth_probe_paths}",
+        "token_exchange": "${workflow.input.token_exchange}",
+        "target_profile": "${workflow.input.target_profile}"
+      }
+    },
+    {
+      "name": "authorization_gate",
+      "taskReferenceName": "authorization_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "authorized_str",
+      "inputParameters": {
+        "authorized_str": "${normalize_target.output.authorized_str}"
+      },
+      "decisionCases": {
+        "true": [
+          {
+            "name": "authorized_noop",
+            "taskReferenceName": "authorized_noop",
+            "type": "NOOP"
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "refuse_unauthorized",
+          "taskReferenceName": "refuse_unauthorized",
+          "type": "TERMINATE",
+          "inputParameters": {
+            "terminationStatus": "FAILED",
+            "terminationReason": "Refused: authorization not granted. Re-run with authorized=true against only systems you are explicitly permitted to test.",
+            "workflowOutput": {
+              "refused": true,
+              "reason": "authorization_required"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "caps",
+      "taskReferenceName": "caps",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "rs": "${workflow.input.reasoning}",
+        "md": "${workflow.input.model}",
+        "lmd": "${workflow.input.loop_model}",
+        "prov": "${workflow.input.llm_provider}",
+        "lprov": "${workflow.input.loop_provider}",
+        "eprov": "${workflow.input.embed_provider}",
+        "emodel": "${workflow.input.embed_model}",
+        "wc": "${workflow.input.width_ceiling}",
+        "mr": "${workflow.input.max_rounds}",
+        "bg": "${workflow.input.budget}",
+        "ms": "${workflow.input.max_steps}",
+        "queryExpression": ". as $in | (if ($in.rs|tostring)==\"\" or $in.rs==null then \"high\" else ($in.rs|tostring) end) as $r | (if ($in.md|tostring)==\"\" or $in.md==null then \"claude-opus-4-8\" else ($in.md|tostring) end) as $am | (if ($in.prov|tostring)==\"\" or $in.prov==null then \"anthropic\" else ($in.prov|tostring) end) as $ap | (if ($in.eprov|tostring)==\"\" or $in.eprov==null then \"openai\" else ($in.eprov|tostring) end) as $ep | (if ($in.emodel|tostring)==\"\" or $in.emodel==null then \"text-embedding-3-small\" else ($in.emodel|tostring) end) as $em | { model: $am, analysis_provider: $ap, embed_provider: $ep, embed_model: $em, loop_model: (if ($in.lmd|tostring)==\"\" or $in.lmd==null then $am else ($in.lmd|tostring) end), loop_provider: (if ($in.lprov|tostring)==\"\" or $in.lprov==null then $ap else ($in.lprov|tostring) end), reasoning: $r, think_analysis: (if $r==\"off\" then 0 elif $r==\"med\" then 3000 else 6000 end), analysis_temp: (if $r==\"off\" then 0 else 1 end), width_ceiling: ($in.wc as $v | if ($v|tostring)==\"\" or $v==null then 24 else ($v|tostring|tonumber) end), max_rounds: ($in.mr as $v | if ($v|tostring)==\"\" or $v==null then 8 else ($v|tostring|tonumber) end), budget: ($in.bg as $v | if ($v|tostring)==\"\" or $v==null then 5000 else ($v|tostring|tonumber) end), max_steps: ($in.ms as $v | if ($v|tostring)==\"\" or $v==null then 18 else ($v|tostring|tonumber) end) }"
+      }
+    },
+    {
+      "name": "memory_recall",
+      "taskReferenceName": "memory_recall",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "host": "${normalize_target.output.host}",
+        "app_version": "${parse_app_model.output.result.target_profile_name}"
+      }
+    },
+    {
+      "name": "docs_gate",
+      "taskReferenceName": "docs_gate",
+      "type": "SWITCH",
+      "inputParameters": {
+        "d": "${workflow.input.docs}"
+      },
+      "evaluatorType": "graaljs",
+      "expression": "($.d && $.d !== '') ? 'go' : 'skip'",
+      "decisionCases": {
+        "go": [
+          {
+            "name": "docs_ingest",
+            "taskReferenceName": "docs_sub",
+            "type": "SUB_WORKFLOW",
+            "inputParameters": {
+              "docs": "${workflow.input.docs}",
+              "auth": "${normalize_target.output.auth}",
+              "scope": "${normalize_target.output.scope}",
+              "run_id": "${workflow.workflowId}",
+              "model": "${caps.output.result.model}",
+              "provider": "${caps.output.result.analysis_provider}",
+              "embed_provider": "${caps.output.result.embed_provider}",
+              "embed_model": "${caps.output.result.embed_model}",
+              "index_docs": false
+            },
+            "optional": true,
+            "subWorkflowParam": {
+              "name": "docs_ingest",
+              "version": 1
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "surface",
+      "taskReferenceName": "surface_sub",
+      "type": "SUB_WORKFLOW",
+      "subWorkflowParam": {
+        "name": "surface",
+        "version": 1
+      },
+      "inputParameters": {
+        "base_url": "${normalize_target.output.base_url}",
+        "scope": "${normalize_target.output.scope}",
+        "source_path": "${normalize_target.output.source_path}",
+        "login_url": "${workflow.input.login_url}",
+        "username": "${workflow.input.username}",
+        "password": "${workflow.input.password}",
+        "max_pages": "${workflow.input.max_pages}",
+        "max_depth": "${workflow.input.max_depth}",
+        "agent": "${workflow.input.agent}",
+        "agent_steps": "${workflow.input.agent_steps}",
+        "auth": "${normalize_target.output.auth}",
+        "llm_provider": "${caps.output.result.loop_provider}",
+        "model": "${caps.output.result.loop_model}"
+      }
+    },
+    {
+      "name": "reverify_identities",
+      "taskReferenceName": "reverify_identities",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "identities": "${normalize_target.output.identities}",
+        "surface": "${surface_sub.output.surface}",
+        "base_url": "${normalize_target.output.base_url}",
+        "scope": "${normalize_target.output.scope}",
+        "auth_probe_paths": "${workflow.input.auth_probe_paths}",
+        "auth_verified": "${normalize_target.output.auth_verified}",
+        "auth_note": "${normalize_target.output.auth_note}"
+      }
+    },
+    {
+      "name": "prep_appmodel",
+      "taskReferenceName": "prep_appmodel",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "target": "${normalize_target.output.target}",
+        "surface": "${surface_sub.output.surface}",
+        "findings": "${surface_sub.output.findings}",
+        "queryExpression": "{ target: .target, surface: .surface, docs_digest: {}, source_and_passive_findings: ([ (.findings // [])[] | {title, evidence: ((.evidence // \"\")[0:300]), source_tool} ]) } | tojson",
+        "docs_digest": "${docs_sub.output.digest}"
+      }
+    },
+    {
+      "name": "app_model",
+      "taskReferenceName": "app_model",
+      "type": "LLM_CHAT_COMPLETE",
+      "retryCount": 2,
+      "retryDelaySeconds": 10,
+      "inputParameters": {
+        "llmProvider": "${caps.output.result.analysis_provider}",
+        "model": "${caps.output.result.model}",
+        "temperature": "${caps.output.result.analysis_temp}",
+        "maxTokens": 16000,
+        "thinkingTokenLimit": "${caps.output.result.think_analysis}",
+        "reasoningSummary": "detailed",
+        "jsonOutput": false,
+        "messages": [
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_APP_MODEL"
+          },
+          {
+            "role": "user",
+            "message": "Reconnaissance surface + docs digest (JSON):\n${prep_appmodel.output.result}"
+          }
+        ]
+      }
+    },
+    {
+      "name": "parse_app_model",
+      "taskReferenceName": "parse_app_model",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "raw": "${app_model.output.result}",
+        "profile": "${normalize_target.output.target_profile}",
+        "queryExpression": ".raw as $r | (if ($r|type) == \"object\" then $r else (try ($r[ ($r|index(\"{\")) : (($r|rindex(\"}\"))+1) ] | fromjson) catch {}) end) as $m | $m + (if (.profile|type)==\"object\" and (.profile|length)>0 then {target_profile_name:(.profile.name // \"\"), archetype:(.profile.archetype // \"\"), feature_exploitation_playbook:(.profile.feature_exploitation_playbook // {})} else {} end)"
+      }
+    },
+    {
+      "name": "catalog_context",
+      "taskReferenceName": "catalog_context",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "app_model": "${parse_app_model.output.result}",
+        "identities": "${reverify_identities.output.identities}",
+        "auth_verified": "${reverify_identities.output.auth_verified}",
+        "has_source": "${normalize_target.output.source_path}"
+      }
+    },
+    {
+      "name": "derive_profile",
+      "taskReferenceName": "derive_profile",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "host": "${normalize_target.output.host}",
+        "app_model": "${parse_app_model.output.result}",
+        "identities": "${reverify_identities.output.identities}",
+        "derived_probe_paths": "${reverify_identities.output.derived_probe_paths}",
+        "run_id": "${workflow.workflowId}"
+      },
+      "optional": true
+    },
+    {
+      "name": "dep_cve_scan",
+      "taskReferenceName": "dep_cve_scan",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "source_path": "${normalize_target.output.source_path}",
+        "app_model": "${parse_app_model.output.result}",
+        "recon_meta": "${surface_sub.output.surface.meta}"
+      },
+      "optional": true
+    },
+    {
+      "name": "build_feature_inventory",
+      "taskReferenceName": "build_feature_inventory",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "app_model": "${parse_app_model.output.result}",
+        "surface": "${surface_sub.output.surface}",
+        "docs_digest": "${docs_sub.output.digest}",
+        "playbook": "${parse_app_model.output.result.feature_exploitation_playbook}"
+      },
+      "optional": true
+    },
+    {
+      "name": "build_personas",
+      "taskReferenceName": "build_personas",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "identities": "${reverify_identities.output.identities}",
+        "app_model": "${parse_app_model.output.result}",
+        "manifest": "${normalize_target.output.manifest}"
+      },
+      "optional": true
+    },
+    {
+      "name": "hunt_gate",
+      "taskReferenceName": "hunt_gate",
+      "type": "SWITCH",
+      "inputParameters": {
+        "source_path": "${workflow.input.source_path}",
+        "hunt": "${workflow.input.hunt}"
+      },
+      "evaluatorType": "graaljs",
+      "expression": "($.source_path && $.source_path !== '' && ($.hunt === true || $.hunt === 'true')) ? 'go' : 'skip'",
+      "decisionCases": {
+        "go": [
+          {
+            "name": "hunt_core",
+            "taskReferenceName": "hunt_core",
+            "type": "SUB_WORKFLOW",
+            "inputParameters": {
+              "source_path": "${workflow.input.source_path}",
+              "routes": "${surface_sub.output.surface.endpoints}",
+              "cve_leads": "${dep_cve_scan.output.cve_leads}",
+              "catalog_objectives": "${catalog_context.output.applicable}",
+              "identities": "${reverify_identities.output.identities}",
+              "max_steps": "${workflow.input.max_steps}",
+              "max_leads": 40,
+              "oob_available": false
+            },
+            "optional": true,
+            "subWorkflowParam": {
+              "name": "sast_hunt_core",
+              "version": 1
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "swarm_seed",
+      "taskReferenceName": "seed",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlation_id": "${workflow.workflowId}",
+        "catalog_objectives": "${catalog_context.output.applicable}",
+        "identities": "${reverify_identities.output.identities}",
+        "hypotheses": "${hunt_core.output.hypotheses}",
+        "cve_leads": "${dep_cve_scan.output.cve_leads}",
+        "feature_inventory": "${build_feature_inventory.output.inventory}",
+        "personas": "${build_personas.output.personas}",
+        "docs_digest": "${docs_sub.output.digest}",
+        "feature_playbook": "${parse_app_model.output.result.feature_exploitation_playbook}",
+        "prior_confirmed": "${memory_recall.output.prior_confirmed}",
+        "prior_tried": "${memory_recall.output.tried_signatures}"
+      }
+    },
+    {
+      "name": "seed_vars",
+      "taskReferenceName": "seed_vars",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "areas": "${seed.output.areas}",
+        "credits": "${seed.output.credits}",
+        "keep_going": true
+      }
+    },
+    {
+      "name": "round_loop",
+      "taskReferenceName": "round_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ return $.round_loop['iteration'] < $.max_rounds && $.keep_going === true; })();",
+      "inputParameters": {
+        "round_loop": "${round_loop.output}",
+        "max_rounds": "${caps.output.result.max_rounds}",
+        "keep_going": "${workflow.variables.keep_going}"
+      },
+      "loopOver": [
+        {
+          "name": "safety_check",
+          "taskReferenceName": "safety_check",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "manifest": "${normalize_target.output.manifest}",
+            "target": "${normalize_target.output.target}",
+            "kill_switch": "${workflow.input.kill_switch}",
+            "prior_halt": ""
+          }
+        },
+        {
+          "name": "safety_gate",
+          "taskReferenceName": "safety_gate",
+          "type": "SWITCH",
+          "evaluatorType": "graaljs",
+          "expression": "$.proceed === true ? 'go' : 'halt'",
+          "inputParameters": {
+            "proceed": "${safety_check.output.proceed}"
+          },
+          "decisionCases": {
+            "go": [
+              {
+                "name": "safety_ok",
+                "taskReferenceName": "safety_ok",
+                "type": "NOOP"
+              }
+            ]
+          },
+          "defaultCase": [
+            {
+              "name": "halt_campaign",
+              "taskReferenceName": "halt_campaign",
+              "type": "TERMINATE",
+              "inputParameters": {
+                "terminationStatus": "FAILED",
+                "terminationReason": "Safety governor halted the swarm campaign: ${safety_check.output.reason}",
+                "workflowOutput": {
+                  "halted": true,
+                  "reason": "${safety_check.output.reason}"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "swarm_round",
+          "taskReferenceName": "round",
+          "type": "SUB_WORKFLOW",
+          "subWorkflowParam": {
+            "name": "swarm_round",
+            "version": 1
+          },
+          "inputParameters": {
+            "correlation_id": "${workflow.workflowId}",
+            "areas": "${workflow.variables.areas}",
+            "credits": "${workflow.variables.credits}",
+            "round_idx": "${round_loop.output.iteration}",
+            "max_rounds": "${caps.output.result.max_rounds}",
+            "width_ceiling": "${caps.output.result.width_ceiling}",
+            "budget_left": "${caps.output.result.budget}",
+            "diversity": "${workflow.input.diversity}",
+            "base_url": "${normalize_target.output.base_url}",
+            "scope": "${normalize_target.output.scope}",
+            "identities": "${reverify_identities.output.identities}",
+            "app_model": "${parse_app_model.output.result}",
+            "surface": "${surface_sub.output.surface}",
+            "manifest": "${normalize_target.output.manifest}",
+            "capability_max": "${normalize_target.output.capability_max}",
+            "oob_base": "${workflow.input.oob_base}",
+            "run_id": "${workflow.workflowId}",
+            "docs_namespace": "",
+            "docs_index": "",
+            "docs_available": "${docs_sub.output.docs_available}",
+            "model": "${caps.output.result.loop_model}",
+            "llm_provider": "${caps.output.result.loop_provider}",
+            "embed_provider": "${caps.output.result.embed_provider}",
+            "embed_model": "${caps.output.result.embed_model}",
+            "max_steps": "${caps.output.result.max_steps}",
+            "sast_findings": "${surface_sub.output.findings}",
+            "feature_playbook": "${parse_app_model.output.result.feature_exploitation_playbook}",
+            "personas": "${build_personas.output.personas}",
+            "feature_inventory": "${build_feature_inventory.output.inventory}",
+            "docs_digest": "${docs_sub.output.digest}",
+            "recalled_confirmed": "${memory_recall.output.prior_confirmed}",
+            "recalled_recipes": "${memory_recall.output.recipes}",
+            "recalled_tried": "${memory_recall.output.tried_signatures}"
+          }
+        },
+        {
+          "name": "update_round_vars",
+          "taskReferenceName": "update_round_vars",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "credits": "${round.output.credits}",
+            "keep_going": "${round.output.keep_going}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "sweep_resources",
+      "taskReferenceName": "sweep",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "base_url": "${normalize_target.output.base_url}",
+        "target": "${normalize_target.output.target}",
+        "identities": "${reverify_identities.output.identities}",
+        "scope": "${normalize_target.output.scope}",
+        "manifest": "${normalize_target.output.manifest}",
+        "cleanup_families": "${normalize_target.output.target_profile.cleanup_families}"
+      }
+    },
+    {
+      "name": "scribe_rollup",
+      "taskReferenceName": "scribe",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlation_id": "${workflow.workflowId}"
+      }
+    },
+    {
+      "name": "access_posture",
+      "taskReferenceName": "access_posture",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "correlation_id": "${workflow.workflowId}",
+        "base_url": "${normalize_target.output.target}",
+        "identities": "${reverify_identities.output.identities}"
+      }
+    },
+    {
+      "name": "prep_report",
+      "taskReferenceName": "prep_report",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "target": "${normalize_target.output.target}",
+        "rollup": "${scribe.output.rollup}",
+        "confirmed": "${scribe.output.confirmed_findings}",
+        "primitives": "${scribe.output.verified_primitives}",
+        "reproduction": "${scribe.output.reproduction}",
+        "rounds": "${round_loop.output.iteration}",
+        "queryExpression": "{ mode: \"swarm\", target: .target, rounds_run: .rounds, risk_rating: ((.rollup.confirmed_by_severity // {}) as $s | if ($s.Critical // 0) > 0 then \"Critical\" elif ($s.High // 0) > 0 then \"High\" elif ($s.Medium // 0) > 0 then \"Medium\" elif (.rollup.confirmed_count // 0) > 0 then \"Low\" else \"None\" end), confirmed_findings: (.confirmed // []), verified_primitives: (.primitives // []), coverage_areas: (.rollup.coverage_areas // 0), spend: (.rollup.spend // {}), summary: ((.rollup.confirmed_count // 0 | tostring) + \" confirmed finding(s) across \" + ((.rollup.coverage_areas // 0) | tostring) + \" objective areas over \" + ((.rounds // 0) | tostring) + \" swarm round(s); \" + ((.rollup.spend.requests // 0) | tostring) + \" requests.\"), access_posture: (.access_posture // {}) } | tojson",
+        "access_posture": "${access_posture.output}"
+      }
+    },
+    {
+      "name": "report_md",
+      "taskReferenceName": "report_md",
+      "type": "LLM_CHAT_COMPLETE",
+      "retryCount": 2,
+      "retryDelaySeconds": 10,
+      "inputParameters": {
+        "llmProvider": "${caps.output.result.analysis_provider}",
+        "model": "${caps.output.result.model}",
+        "temperature": 0.2,
+        "maxTokens": 14000,
+        "messages": [
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_REPORT"
+          },
+          {
+            "role": "user",
+            "message": "Report data (JSON):\n${prep_report.output.result}"
+          }
+        ]
+      },
+      "optional": true
+    },
+    {
+      "name": "compose_report",
+      "taskReferenceName": "compose_report",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "llm_md": "${report_md.output.result}",
+        "data": "${prep_report.output.result}",
+        "queryExpression": "(.data | if type==\"string\" then fromjson else . end) as $d | (.llm_md) as $m | if (($m|type)==\"string\") and (($m|gsub(\"\\\\s\";\"\"))|length > 60) then $m else ( ($d.confirmed_findings // []) as $f | \"# Security Assessment Report\\n\\n\" + \"- Target: \" + (($d.target // \"\")|tostring) + \"\\n\" + \"- Mode: Swarm (deep)\\n\" + \"- Swarm rounds: \" + (($d.rounds_run // 0)|tostring) + \"\\n\" + \"- Total requests: \" + (($d.spend.requests // 0)|tostring) + \"\\n\" + \"- Coverage areas: \" + (($d.coverage_areas // 0)|tostring) + \"\\n\\n\" + \"Risk: \" + (($d.risk_rating // \"None\")|tostring) + \"\\n\\n\" + (if (($d.access_posture.needs_credentials) == true) then (\"> **Access posture:** \" + (($d.access_posture.note) // \"target is auth-gated; this anonymous run did not reach the authenticated surface \u2014 0 confirmed means NOT REACHED, not secure.\") + \"\\n\\n\") else (if (($d.access_posture.posture) != null and ($d.access_posture.posture) != \"unknown\") then (\"> **Access posture:** \" + (($d.access_posture.posture)|tostring) + \" (\" + (($d.access_posture.auth_required)|tostring) + \"/\" + (($d.access_posture.sampled)|tostring) + \" sampled endpoints require auth).\\n\\n\") else \"\" end) end) + \"Finding counts by severity:\\n\\n| Severity | Count |\\n| --- | --- |\\n\" + \"| Critical | \" + (([$f[]|select(.severity==\"Critical\")]|length)|tostring) + \" |\\n\" + \"| High | \" + (([$f[]|select(.severity==\"High\")]|length)|tostring) + \" |\\n\" + \"| Medium | \" + (([$f[]|select(.severity==\"Medium\")]|length)|tostring) + \" |\\n\" + \"| Low | \" + (([$f[]|select(.severity==\"Low\")]|length)|tostring) + \" |\\n\" + \"| Info | \" + (([$f[]|select(.severity==\"Info\")]|length)|tostring) + \" |\\n\\n\" + \"## Executive Summary\\n\\n\" + (($d.summary // \"\")|tostring) + \"\\n\\n\" + \"## Confirmed Findings\\n\\n\" + (if ($f|length)==0 then \"No findings were confirmed against the live target in this run.\\n\\n\" else ($f | to_entries | map( \"### \" + ((.key+1)|tostring) + \". \" + ((.value.title // \"untitled\")|tostring) + \"  [\" + ((.value.severity // \"Info\")|tostring) + \"]\\n\\n\" + \"- Area: \" + ((.value.area // \"\")|tostring) + \"\\n\" + \"- OWASP: \" + ((.value.owasp // \"\")|tostring) + \"\\n\" + \"- Signature: \" + ((.value.signature // \"\")|tostring) + \"\\n\" + \"- Evidence: \" + ((.value.evidence // \"\")|tostring) + \"\\n\\n\" ) | join(\"\")) end) + \"## Verified Primitives\\n\\n\" + (($d.verified_primitives // []) as $p | if ($p|length)==0 then \"None recorded.\\n\" else ($p | map(\"- \" + (if type==\"object\" then ((.title // .kind // tojson)|tostring) else tostring end)) | join(\"\\n\")) + \"\\n\" end) + \"\\n_Deterministic report (LLM narrative unavailable this run); all findings are oracle-verified against the live target._\\n\" ) end"
+      }
+    },
+    {
+      "name": "sanitize_md",
+      "taskReferenceName": "sanitize_md",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "md": "${compose_report.output.result}",
+        "queryExpression": ".md | gsub(\"\\u2192\";\"->\") | gsub(\"\\u21d2\";\"=>\") | gsub(\"\\u2190\";\"<-\") | gsub(\"\\u2014\";\" -- \") | gsub(\"\\u2013\";\"-\") | gsub(\"\\u2026\";\"...\") | gsub(\"[^\\u0009\\u000a\\u000d\\u0020-\\u00ff]\";\"\")"
+      }
+    },
+    {
+      "name": "report_pdf",
+      "taskReferenceName": "report_pdf",
+      "type": "GENERATE_PDF",
+      "inputParameters": {
+        "markdown": "${sanitize_md.output.result}",
+        "pageSize": "A4",
+        "theme": "default",
+        "baseFontSize": 10,
+        "marginTop": 54,
+        "marginBottom": 54,
+        "marginLeft": 54,
+        "marginRight": 54,
+        "pdfMetadata": {
+          "title": "Swarm Pentest Campaign Report",
+          "author": "security-conductor",
+          "subject": "${normalize_target.output.target}"
+        }
+      }
+    },
+    {
+      "name": "persist",
+      "taskReferenceName": "persist",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "scan_id": "${workflow.workflowId}",
+        "target": "${normalize_target.output.target}",
+        "findings": {
+          "findings": "${scribe.output.confirmed_findings}"
+        },
+        "report_md": "${sanitize_md.output.result}",
+        "pdf_location": "${report_pdf.output.result.location}",
+        "dossier": {
+          "rollup": "${scribe.output.rollup}",
+          "reproduction": "${scribe.output.reproduction}",
+          "verified_primitives": "${scribe.output.verified_primitives}"
+        }
+      }
+    },
+    {
+      "name": "memory_save",
+      "taskReferenceName": "memory_save",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "fingerprint": "${normalize_target.output.fingerprint}",
+        "host": "${normalize_target.output.host}",
+        "run_id": "${workflow.workflowId}",
+        "all_confirmed": "${scribe.output.confirmed_findings}",
+        "tried_signatures": "${scribe.output.tried_signatures}",
+        "oob_base": "${workflow.input.oob_base}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "correlation_id": "${workflow.workflowId}",
+    "rollup": "${scribe.output.rollup}",
+    "confirmed_findings": "${scribe.output.confirmed_findings}",
+    "reproduction": "${scribe.output.reproduction}",
+    "rounds_run": "${round_loop.output.iteration}",
+    "report_dir": "${persist.output.report_dir}",
+    "pdf": "${report_pdf.output.result.location}",
+    "cleanup": "${sweep.output}"
+  }
+}

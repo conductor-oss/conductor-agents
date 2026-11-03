@@ -4,10 +4,19 @@
   "description": "Optional form login, then a scoped headless-browser crawl. Returns the attack surface (urls/forms/params/endpoints), passive DOM findings, and crawl metadata.",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
-  "timeoutSeconds": 1500,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["base_url", "scope", "login_url", "username", "password", "max_pages", "max_depth", "auth"],
-  "variables": { "storage_state": null },
+  "inputParameters": [
+    "base_url",
+    "scope",
+    "login_url",
+    "username",
+    "password",
+    "max_pages",
+    "max_depth",
+    "auth"
+  ],
+  "variables": {
+    "storage_state": null
+  },
   "tasks": [
     {
       "name": "decide_login",
@@ -42,7 +51,11 @@
           }
         ],
         "no": [
-          { "name": "no_login", "taskReferenceName": "no_login", "type": "NOOP" }
+          {
+            "name": "no_login",
+            "taskReferenceName": "no_login",
+            "type": "NOOP"
+          }
         ]
       },
       "defaultCase": []

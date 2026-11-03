@@ -140,3 +140,87 @@ def attach(graph: dict, finding: dict) -> dict:
             graph["edges"].append({"from": earlier["id"], "to": node["id"], "via": "chaining"})
     graph["nodes"].append(node)
     return graph
+
+
+# Cross-primitive compositions: TWO confirmed primitives together unlock a deeper play that neither
+# reaches alone. This is the synthesis the swarm standup performs over the board's verified-primitive
+# pool (design/SWARM.md section 4) — the step that produces the deep, chained, hidden bugs.
+_COMBO_PLAYS = {
+    frozenset({"internal_reach", "credential_held"}): ("INFRA-RCE-INJECTION",
+        "Combine the internal reach ({a}) with the held credential ({b}): authenticate to the internal "
+        "service the SSRF exposed and drive its privileged API toward code/secret exfiltration."),
+    frozenset({"internal_reach", "internal_detail"}): ("INFRA-SECRET-SURFACE",
+        "Use the internal detail ({b}) to target the specific internal secret/admin endpoint reachable "
+        "via the confirmed internal reach ({a})."),
+    frozenset({"credential_held", "other_object_ref"}): ("INTEG-CROSS-WRITE",
+        "Use the held credential ({a}) to WRITE/mutate the cross-user object referenced by ({b})."),
+    frozenset({"credential_held", "other_tenant_ref"}): ("CONF-CROSS-TENANT-READ",
+        "Use the held credential ({a}) to read/act across the tenant boundary referenced by ({b})."),
+    frozenset({"privileged_access", "internal_reach"}): ("INFRA-RCE-INJECTION",
+        "Combine privilege ({a}) with internal reach ({b}): register+run an engine task that performs "
+        "SSRF/code-exec against the internal surface and read what it returns."),
+}
+
+
+def _chain_signature(objective_id: str, target: str, labels: list) -> str:
+    """Match the loop's dedupe signature (category|target|identities) for a chaining hypothesis."""
+    return ("chaining|" + str(target).lower().replace(" ", "") + "|" + ",".join(sorted(labels)))
+
+
+def emergent_chains(primitives: list, identity_labels: list | None = None,
+                    tried_signatures: list | None = None) -> list:
+    """Board-driven chaining: compose the verified-primitive POOL into deeper chain-hypotheses,
+    INCLUDING cross-primitive combinations, deduped against what has already been tried.
+
+    Unlike ``chained_hypotheses`` (fixed per-finding map), this reads the live pool a swarm wave
+    deposited on the blackboard — each primitive a dict with at least ``kind`` (e.g. ``internal_reach``,
+    ``credential_held``) and an optional ``source``/``title``. Single-primitive plays reuse the
+    ``_CHAIN_PLAYS`` seeds; combinations use ``_COMBO_PLAYS``. Pure (no IO)."""
+    labels = [str(x) for x in (identity_labels or []) if x][:2] or ["anon"]
+    tried = {str(s) for s in (tried_signatures or [])}
+    by_kind: dict[str, dict] = {}
+    for p in primitives or []:
+        if isinstance(p, dict) and p.get("kind"):
+            by_kind.setdefault(str(p["kind"]), p)  # first of each kind
+
+    out, seen = [], set()
+
+    def _emit(objective_id, target, instruction, provenance):
+        sig = _chain_signature(objective_id, target, labels)
+        if sig in tried or sig in seen:
+            return
+        seen.add(sig)
+        out.append({
+            "id": f"EMERGENT-{objective_id}-{len(out)}",
+            "title": f"Emergent chain -> {objective_id}",
+            "objective_id": objective_id,
+            "category": "chaining",
+            "target": target,
+            "rationale": "Synthesized at the standup from the verified-primitive pool; combines "
+                         "independent findings into a deeper chain no single agent reached.",
+            "identities": labels,
+            "test_plan": [instruction, "Confirm with a decisive impact oracle (cross-tenant/secret/"
+                          "privileged data or an OOB hit), never a 200."],
+            "expected_evidence": "Escalated, chained impact proven by an oracle.",
+            "blind": False, "mandatory": True, "mandatory_kind": "emergent_chain",
+            "chained_from": provenance,
+        })
+
+    # Single-primitive plays (the pool equivalent of chained_hypotheses).
+    for kind, p in by_kind.items():
+        play = _CHAIN_PLAYS.get(kind)
+        if not play:
+            continue
+        objective_id, instruction = play
+        src = str(p.get("source") or p.get("title") or kind)[:90]
+        _emit(objective_id, src, instruction.format(src=src), src)
+
+    # Cross-primitive combinations (the emergent synthesis).
+    for combo, (objective_id, instruction) in _COMBO_PLAYS.items():
+        if combo.issubset(by_kind.keys()):
+            ka, kb = sorted(combo)
+            a = str(by_kind[ka].get("source") or by_kind[ka].get("title") or ka)[:60]
+            b = str(by_kind[kb].get("source") or by_kind[kb].get("title") or kb)[:60]
+            _emit(objective_id, f"{a} + {b}", instruction.format(a=a, b=b), f"{a} + {b}")
+
+    return out

@@ -45,7 +45,7 @@ workers: venv ## Run workers on the host (recon + browser; foreground, ctrl-c to
 		cd "$(ROOT)/workers"; REPORTS_DIR="$(REPORTS_DIR)" WORKER_MODULES="$(WORKER_MODULES)" \
 		exec "$(PY)" main.py'
 
-WORKER_MODULES ?= recon,browser,dast,sast,codenav,api,rag,httptool,codeexec,oob,safety,hc
+WORKER_MODULES ?= recon,browser,dast,sast,codenav,api,rag,httptool,codeexec,oob,safety,hc,swarm
 
 codeexec-image: ## Build the code_exec sandbox image (deep-pentest agent's Docker hands)
 	@docker compose --profile codeexec build code-exec-image

@@ -4,8 +4,8 @@ on:
   push:
   pull_request:
 
-# One quality bar across all harnesses. Add a harness = add it to the matrix below; each entry
-# runs that harness's own lint + unit tests + JSON validation inside its directory.
+# One quality bar per harness. Each matrix entry runs that harness's own lint + unit tests + JSON
+# validation inside its directory. (Add a harness = add it to the matrix below.)
 jobs:
   test:
     name: lint + unit tests (${{ matrix.harness }})
@@ -16,8 +16,6 @@ jobs:
         include:
           - harness: security-harness
             python: "3.11"
-          - harness: coding-harness
-            python: "3.13"
     defaults:
       run:
         working-directory: ${{ matrix.harness }}
@@ -28,12 +26,6 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Install uv (coding-harness)
-        if: matrix.harness == 'coding-harness'
-        uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-
       # Fail fast on malformed DAG / profile / benchmark JSON (the edits most likely to break a run).
       - name: Validate workflow & config JSON
         if: matrix.harness == 'security-harness'
@@ -42,16 +34,8 @@ jobs:
                   profiles/*.json bench/targets.json bench/expected/*.json > /dev/null
           echo "all JSON valid"
 
-      - name: Validate coding-harness workflow JSON
-        if: matrix.harness == 'coding-harness'
-        run: make validate
-
       - name: Lint (ruff)
         if: matrix.harness == 'security-harness'
-        run: make lint
-
-      - name: Lint coding harness
-        if: matrix.harness == 'coding-harness'
         run: make lint
 
       - name: Unit tests

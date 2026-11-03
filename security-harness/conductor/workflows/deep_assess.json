@@ -1,12 +1,48 @@
 {
   "name": "deep_assess",
   "version": 1,
-  "description": "Deep Application Pentest v2 — docs-driven, multi-pass, hardened-app testing. INGEST docs (intended workflows + documented invariants, indexed for on-demand retrieval). UNDERSTAND once (surface -> app_model, with extended thinking). Then a MULTI-PASS loop: each assess_pass explores deeper (focus-directed), hypothesizes (invariant/race/chaining aware, deduped vs already-tried), exploits (multi-identity, full-send, concurrent-burst), and adversarially verifies; a reflect critic decides whether to go deeper and where (loop-until-dry, capped). REPORT once over the accumulated findings. LLM prompts injected by register.sh.",
+  "description": "Deep Application Pentest v2 \u2014 docs-driven, multi-pass, hardened-app testing. INGEST docs (intended workflows + documented invariants, indexed for on-demand retrieval). UNDERSTAND once (surface -> app_model, with extended thinking). Then a MULTI-PASS loop: each assess_pass explores deeper (focus-directed), hypothesizes (invariant/race/chaining aware, deduped vs already-tried), exploits (multi-identity, full-send, concurrent-burst), and adversarially verifies; a reflect critic decides whether to go deeper and where (loop-until-dry, capped). REPORT once over the accumulated findings. LLM prompts injected by register.sh.",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
-  "timeoutSeconds": 0,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["target", "scope", "authorized", "manifest", "kill_switch", "purple", "source_path", "docs", "identities", "login_url", "username", "password", "max_pages", "max_depth", "agent", "agent_steps", "max_explore_steps", "max_hypotheses", "max_exploit_steps", "max_passes", "reasoning", "model", "oob_base", "auth_token", "auth_key", "auth_secret", "token_url", "auth_header", "auth_scheme", "auth_probe_paths", "token_exchange", "cleanup_families", "target_profile", "leave_evidence", "objective_focus", "initial_focus", "hunt"],
+  "inputParameters": [
+    "target",
+    "scope",
+    "authorized",
+    "manifest",
+    "kill_switch",
+    "purple",
+    "source_path",
+    "docs",
+    "identities",
+    "login_url",
+    "username",
+    "password",
+    "max_pages",
+    "max_depth",
+    "agent",
+    "agent_steps",
+    "max_explore_steps",
+    "max_hypotheses",
+    "max_exploit_steps",
+    "max_passes",
+    "reasoning",
+    "model",
+    "oob_base",
+    "auth_token",
+    "auth_key",
+    "auth_secret",
+    "token_url",
+    "auth_header",
+    "auth_scheme",
+    "auth_probe_paths",
+    "token_exchange",
+    "cleanup_families",
+    "target_profile",
+    "leave_evidence",
+    "objective_focus",
+    "initial_focus",
+    "hunt"
+  ],
   "variables": {
     "hunt_hypotheses": [],
     "all_confirmed": [],
@@ -19,9 +55,18 @@
     "cleanup_ledger": [],
     "operation_ledger": [],
     "deepen_states": [],
-    "attack_graph": {"nodes": [], "edges": []},
-    "chaining_context": {"preconditions": [], "unlocked_objectives": []},
-    "feature_exercise": {"complete": false, "pending": []},
+    "attack_graph": {
+      "nodes": [],
+      "edges": []
+    },
+    "chaining_context": {
+      "preconditions": [],
+      "unlocked_objectives": []
+    },
+    "feature_exercise": {
+      "complete": false,
+      "pending": []
+    },
     "halt": ""
   },
   "tasks": [
@@ -53,9 +98,17 @@
       "type": "SWITCH",
       "evaluatorType": "value-param",
       "expression": "authorized_str",
-      "inputParameters": { "authorized_str": "${normalize_target.output.authorized_str}" },
+      "inputParameters": {
+        "authorized_str": "${normalize_target.output.authorized_str}"
+      },
       "decisionCases": {
-        "true": [ { "name": "authorized_noop", "taskReferenceName": "authorized_noop", "type": "NOOP" } ]
+        "true": [
+          {
+            "name": "authorized_noop",
+            "taskReferenceName": "authorized_noop",
+            "type": "NOOP"
+          }
+        ]
       },
       "defaultCase": [
         {
@@ -65,7 +118,10 @@
           "inputParameters": {
             "terminationStatus": "FAILED",
             "terminationReason": "Refused: authorization not granted. Re-run with authorized=true and only against systems you are explicitly permitted to test.",
-            "workflowOutput": { "refused": true, "reason": "authorization_required" }
+            "workflowOutput": {
+              "refused": true,
+              "reason": "authorization_required"
+            }
           }
         }
       ]
@@ -99,7 +155,9 @@
       "type": "SWITCH",
       "evaluatorType": "graaljs",
       "expression": "$.h === true ? 'go' : 'skip'",
-      "inputParameters": { "h": "${caps.output.result.has_docs}" },
+      "inputParameters": {
+        "h": "${caps.output.result.has_docs}"
+      },
       "decisionCases": {
         "go": [
           {
@@ -107,7 +165,10 @@
             "taskReferenceName": "docs_sub",
             "type": "SUB_WORKFLOW",
             "optional": true,
-            "subWorkflowParam": { "name": "docs_ingest", "version": 1 },
+            "subWorkflowParam": {
+              "name": "docs_ingest",
+              "version": 1
+            },
             "inputParameters": {
               "docs": "${workflow.input.docs}",
               "auth": "${normalize_target.output.auth}",
@@ -123,13 +184,22 @@
           }
         ]
       },
-      "defaultCase": [ { "name": "no_docs", "taskReferenceName": "no_docs", "type": "NOOP" } ]
+      "defaultCase": [
+        {
+          "name": "no_docs",
+          "taskReferenceName": "no_docs",
+          "type": "NOOP"
+        }
+      ]
     },
     {
       "name": "surface",
       "taskReferenceName": "surface_sub",
       "type": "SUB_WORKFLOW",
-      "subWorkflowParam": { "name": "surface", "version": 1 },
+      "subWorkflowParam": {
+        "name": "surface",
+        "version": 1
+      },
       "inputParameters": {
         "base_url": "${normalize_target.output.base_url}",
         "scope": "${normalize_target.output.scope}",
@@ -187,8 +257,14 @@
         "reasoningSummary": "detailed",
         "jsonOutput": false,
         "messages": [
-          { "role": "system", "message": "SYSTEM_PROMPT_APP_MODEL" },
-          { "role": "user", "message": "Reconnaissance surface + docs digest (JSON):\n${prep_appmodel.output.result}" }
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_APP_MODEL"
+          },
+          {
+            "role": "user",
+            "message": "Reconnaissance surface + docs digest (JSON):\n${prep_appmodel.output.result}"
+          }
         ]
       }
     },
@@ -300,7 +376,10 @@
             "taskReferenceName": "hunt_core",
             "type": "SUB_WORKFLOW",
             "optional": true,
-            "subWorkflowParam": { "name": "sast_hunt_core", "version": 1 },
+            "subWorkflowParam": {
+              "name": "sast_hunt_core",
+              "version": 1
+            },
             "inputParameters": {
               "source_path": "${workflow.input.source_path}",
               "routes": "${surface_sub.output.surface.endpoints}",
@@ -316,7 +395,9 @@
             "name": "set_hunt",
             "taskReferenceName": "set_hunt",
             "type": "SET_VARIABLE",
-            "inputParameters": { "hunt_hypotheses": "${hunt_core.output.hypotheses}" }
+            "inputParameters": {
+              "hunt_hypotheses": "${hunt_core.output.hypotheses}"
+            }
           }
         ]
       },
@@ -351,9 +432,17 @@
           "type": "SWITCH",
           "evaluatorType": "graaljs",
           "expression": "$.proceed === true ? 'go' : 'halt'",
-          "inputParameters": { "proceed": "${safety_check.output.proceed}" },
+          "inputParameters": {
+            "proceed": "${safety_check.output.proceed}"
+          },
           "decisionCases": {
-            "go": [ { "name": "safety_ok", "taskReferenceName": "safety_ok", "type": "NOOP" } ]
+            "go": [
+              {
+                "name": "safety_ok",
+                "taskReferenceName": "safety_ok",
+                "type": "NOOP"
+              }
+            ]
           },
           "defaultCase": [
             {
@@ -363,7 +452,10 @@
               "inputParameters": {
                 "terminationStatus": "FAILED",
                 "terminationReason": "Safety governor halted the campaign: ${safety_check.output.reason}",
-                "workflowOutput": { "halted": true, "reason": "${safety_check.output.reason}" }
+                "workflowOutput": {
+                  "halted": true,
+                  "reason": "${safety_check.output.reason}"
+                }
               }
             }
           ]
@@ -411,7 +503,10 @@
           "name": "assess_pass",
           "taskReferenceName": "assess_pass",
           "type": "SUB_WORKFLOW",
-          "subWorkflowParam": { "name": "assess_pass", "version": 1 },
+          "subWorkflowParam": {
+            "name": "assess_pass",
+            "version": 1
+          },
           "inputParameters": {
             "base_url": "${normalize_target.output.base_url}",
             "scope": "${normalize_target.output.scope}",
@@ -592,7 +687,10 @@
           "name": "reflect_pass",
           "taskReferenceName": "reflect_sub",
           "type": "SUB_WORKFLOW",
-          "subWorkflowParam": { "name": "reflect_pass", "version": 1 },
+          "subWorkflowParam": {
+            "name": "reflect_pass",
+            "version": 1
+          },
           "inputParameters": {
             "app_model": "${parse_app_model.output.result}",
             "all_confirmed": "${accumulate.output.result.all_confirmed}",
@@ -807,8 +905,14 @@
         "reasoningSummary": "detailed",
         "jsonOutput": false,
         "messages": [
-          { "role": "system", "message": "SYSTEM_PROMPT_TRIAGE" },
-          { "role": "user", "message": "Scan data (JSON):\n${prep_triage.output.result}" }
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_TRIAGE"
+          },
+          {
+            "role": "user",
+            "message": "Scan data (JSON):\n${prep_triage.output.result}"
+          }
         ]
       }
     },
@@ -880,8 +984,14 @@
         "temperature": 0.2,
         "maxTokens": 14000,
         "messages": [
-          { "role": "system", "message": "SYSTEM_PROMPT_REPORT" },
-          { "role": "user", "message": "Report data (JSON):\n${prep_report.output.result}" }
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_REPORT"
+          },
+          {
+            "role": "user",
+            "message": "Report data (JSON):\n${prep_report.output.result}"
+          }
         ]
       }
     },

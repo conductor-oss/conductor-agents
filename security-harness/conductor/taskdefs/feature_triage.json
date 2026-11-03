@@ -3,9 +3,8 @@
   "description": "Cheap polyglot-canary reflection probe across every input-bearing feature; classifies which injection class (XSS/SQLi/SSTI/traversal/open-redirect) each surfaces, so only flagged features get the deep ladder walk (triage-then-deepen).",
   "ownerEmail": "security-conductor@local",
   "retryCount": 0,
-  "timeoutSeconds": 600,
-  "responseTimeoutSeconds": 570,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "pollTimeoutSeconds": 60,
-  "timeoutPolicy": "ALERT_ONLY",
   "concurrentExecLimit": 0
 }

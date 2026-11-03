@@ -127,7 +127,44 @@ def _issue(req: dict, identities: dict, base_url: str) -> dict:
     elif body is not None:
         kwargs["data"] = body
     r = requests.request(method, reachable_url(url), **kwargs)
-    return {"status": r.status_code, "body": r.text[:20000]}
+    return {"status": r.status_code, "body": r.text[:20000],
+            "elapsed_ms": int(r.elapsed.total_seconds() * 1000)}
+
+
+def _issue_burst(req: dict, identities: dict, base_url: str, n: int) -> list:
+    """Fire ``n`` concurrent identical requests (bounded) and return their status codes — used by the
+    race-condition verifier to re-measure the concurrency boundary itself."""
+    from concurrent.futures import ThreadPoolExecutor
+    n = max(1, min(int(n or 1), 20))
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        results = list(pool.map(lambda _: _issue(req, identities, base_url), range(n)))
+    return [r.get("status") for r in results]
+
+
+_BLOCKED = (401, 403, 404, 405, 409, 423)
+
+
+def _dig(body, path):
+    """Walk a dotted path (``a.b.0.c``) into a JSON response body; returns None if absent/unparseable.
+    Used by the value-floor / monotonic-state verifiers to read a numeric or state field out of a
+    re-issued response ITSELF, so confirmation never trusts an agent-supplied value."""
+    if not path:
+        return None
+    try:
+        obj = json.loads(body) if isinstance(body, str) else body
+    except (ValueError, TypeError):
+        return None
+    for part in str(path).split("."):
+        if isinstance(obj, dict):
+            obj = obj.get(part)
+        elif isinstance(obj, list):
+            try:
+                obj = obj[int(part)]
+            except (ValueError, IndexError):
+                return None
+        else:
+            return None
+    return obj
 
 
 @worker_task(task_definition_name="inband_check", thread_count=2)
@@ -156,6 +193,134 @@ def inband_check(task):
         elif oracle == "rce_arithmetic":
             resp = _issue(probe.get("request") or {}, identities, base)
             res = inband_oracle.rce_arithmetic(resp.get("body"), probe.get("operand_a"), probe.get("operand_b"))
+        elif oracle == "time_blind_sql":
+            # Re-measure the conditional-delay differential ourselves (test vs control).
+            tst = _issue(probe.get("test") or {}, identities, base)
+            ctl = _issue(probe.get("control") or {}, identities, base)
+            res = inband_oracle.time_blind_sql(tst.get("elapsed_ms"), ctl.get("elapsed_ms"),
+                                               probe.get("injected_delay_ms"))
+        elif oracle == "path_traversal_canary":
+            tst = _issue(probe.get("test") or {}, identities, base)
+            ctl = _issue(probe.get("control") or {}, identities, base)
+            res = inband_oracle.path_traversal_canary(tst.get("body"), probe.get("canary"),
+                                                      ctl.get("body"))
+        elif oracle == "race_invariant":
+            # Establish the rule sequentially (one success, then a reject), then re-run the burst.
+            boundary = probe.get("boundary_request") or probe.get("test") or {}
+            first = _issue(boundary, identities, base)
+            second = _issue(boundary, identities, base)
+            control_enforced = (first.get("status") in range(200, 300)
+                                and second.get("status") in _BLOCKED)
+            statuses = _issue_burst(boundary, identities, base, probe.get("burst") or 10)
+            observed = sum(1 for s in statuses if s and 200 <= s < 300)
+            res = inband_oracle.race_invariant(probe.get("allowed_successes", 1), observed,
+                                               control_enforced,
+                                               status_distribution={str(s): statuses.count(s) for s in set(statuses)})
+        elif oracle == "auth_state_illegal_transition":
+            # The legal guard must be enforced (control blocked), the illegal transition issued, and
+            # a read-back must show it persisted.
+            ctl = _issue(probe.get("control") or {}, identities, base)
+            control_enforced = ctl.get("status") in _BLOCKED
+            _issue(probe.get("test") or {}, identities, base)
+            readback = _issue(probe.get("readback") or {}, identities, base)
+            marker = probe.get("persisted_marker") or ""
+            illegal_persisted = bool(marker) and str(marker) in str(readback.get("body") or "")
+            res = inband_oracle.auth_state_illegal_transition(
+                illegal_persisted, control_enforced,
+                from_state=probe.get("from_state", ""), to_state=probe.get("to_state", ""))
+        elif oracle == "stored_xss_victim_context":
+            # Re-verify DELIVERY to the victim in-band (marker persisted + visible cross-identity);
+            # EXECUTION proof is the OOB/browser signal the caller supplies (sound: in-band alone
+            # cannot prove script execution).
+            author_id = probe.get("author_identity")
+            victim_id = probe.get("victim_identity")
+            if probe.get("store"):
+                _issue(probe.get("store"), identities, base)
+            view = _issue(probe.get("view") or {}, identities, base)
+            marker = str(probe.get("marker") or "")
+            delivered = bool(marker) and marker in str(view.get("body") or "")
+            executed = bool(probe.get("executed_in_victim_context")) and delivered
+            res = inband_oracle.stored_xss_victim_context(author_id, victim_id, executed, marker)
+        elif oracle == "sql_error_differential":
+            ctl = _issue(probe.get("control") or {}, identities, base)
+            tst = _issue(probe.get("test") or {}, identities, base)
+            res = inband_oracle.sql_error_differential(ctl, tst, probe.get("markers"))
+        elif oracle == "boolean_sqli":
+            baseline = _issue(probe.get("baseline") or {}, identities, base)
+            tr = _issue(probe.get("true") or probe.get("true_req") or {}, identities, base)
+            fa = _issue(probe.get("false") or probe.get("false_req") or {}, identities, base)
+            res = inband_oracle.boolean_sqli(baseline, tr, fa)
+        elif oracle == "cross_identity_access":
+            victim = _issue(probe.get("victim") or {}, identities, base)
+            attacker = _issue(probe.get("attacker") or {}, identities, base)
+            control = _issue(probe.get("control"), identities, base) if probe.get("control") else None
+            res = inband_oracle.cross_identity_access(victim, attacker, probe.get("victim_marker"), control)
+        elif oracle == "cross_tenant_write_persist":
+            # Attacker (tenant A) writes a marker into a SHARED resource; victim (tenant B) reads the
+            # same resource and must see A's marker. control = the resource before/without the write.
+            control = _issue(probe.get("control"), identities, base) if probe.get("control") else None
+            attacker_write = _issue(probe.get("write") or probe.get("attacker") or {}, identities, base)
+            victim_read = _issue(probe.get("victim_read") or probe.get("victim") or {}, identities, base)
+            res = inband_oracle.cross_tenant_write_persist(
+                attacker_write, victim_read, probe.get("injected_marker") or probe.get("marker"), control)
+        elif oracle == "auth_bypass":
+            # Re-issue the escalated path (e.g. the injected login) and the legitimate control (wrong
+            # creds / normal role), then confirm the privilege marker appears only on the escalated one.
+            escalated = _issue(probe.get("escalated") or probe.get("test") or {}, identities, base)
+            control = _issue(probe.get("control"), identities, base) if probe.get("control") else None
+            res = inband_oracle.auth_bypass(escalated, control, probe.get("privilege_marker") or probe.get("marker"))
+        elif oracle == "behavioral_differential":
+            # Measure the control-vs-test divergence TWICE ourselves; `replayed` iff it reproduces.
+            t1 = _issue(probe.get("test") or {}, identities, base)
+            c1 = _issue(probe.get("control") or {}, identities, base)
+            t2 = _issue(probe.get("test") or {}, identities, base)
+            c2 = _issue(probe.get("control") or {}, identities, base)
+            marker = probe.get("marker")
+            min_delta = probe.get("min_delta")
+            if min_delta is None:
+                min_delta = 32  # default: a 32+ char body-length divergence
+            def _mk(resp):
+                return bool(marker) and str(marker) in str(resp.get("body") or "")
+            def _delta(a, b):
+                return abs(len(str(a.get("body") or "")) - len(str(b.get("body") or "")))
+            marker_rep = _mk(t1) and _mk(t2) and not _mk(c1) and not _mk(c2)
+            metric_rep = _delta(t1, c1) >= float(min_delta) and _delta(t2, c2) >= float(min_delta)
+            res = inband_oracle.behavioral_differential(
+                c1, t1, marker=marker, control_metric=len(str(c1.get("body") or "")),
+                test_metric=len(str(t1.get("body") or "")), min_delta=min_delta,
+                replayed=bool(marker_rep or metric_rep))
+        elif oracle == "single_use":
+            # Issue the one-time action sequentially and count successes; a provided control that is
+            # BLOCKED establishes the limit genuinely exists.
+            action = probe.get("action") or probe.get("test") or {}
+            attempts = max(1, min(int(probe.get("attempts") or 2), 10))
+            statuses = [_issue(action, identities, base).get("status") for _ in range(attempts)]
+            observed = sum(1 for s in statuses if s and 200 <= s < 300)
+            ctl = _issue(probe.get("control"), identities, base) if probe.get("control") else None
+            control_enforced = bool(ctl and ctl.get("status") in _BLOCKED)
+            res = inband_oracle.single_use(probe.get("allowed_uses", 1), observed, control_enforced)
+        elif oracle == "value_floor":
+            # Apply the mutation, read back, and parse the value from the response OURSELVES.
+            if probe.get("mutate"):
+                _issue(probe.get("mutate"), identities, base)
+            readback = _issue(probe.get("readback") or probe.get("test") or {}, identities, base)
+            observed_value = _dig(readback.get("body"), probe.get("value_path"))
+            persisted = observed_value is not None and readback.get("status") not in _BLOCKED
+            res = inband_oracle.value_floor(observed_value, probe.get("floor", 0), persisted)
+        elif oracle == "monotonic_state":
+            # Read the state before and after the illegal transition; map states to ranks ourselves.
+            order = probe.get("state_order") or []
+            rank = {str(s): i for i, s in enumerate(order)}
+            before = _issue(probe.get("before") or {}, identities, base)
+            if probe.get("transition"):
+                _issue(probe.get("transition"), identities, base)
+            after = _issue(probe.get("after") or probe.get("readback") or {}, identities, base)
+            from_state = str(_dig(before.get("body"), probe.get("state_path")) or "")
+            to_state = str(_dig(after.get("body"), probe.get("state_path")) or "")
+            ctl = _issue(probe.get("control"), identities, base) if probe.get("control") else None
+            control_enforced = bool(ctl and ctl.get("status") in _BLOCKED)
+            res = inband_oracle.monotonic_state(rank.get(from_state, -1), rank.get(to_state, -1),
+                                                control_enforced, from_state=from_state, to_state=to_state)
         else:
             return {**unavailable, "note": f"unknown oracle '{oracle}'"}
         return {"verification": evidence_mod.INBAND_VERIFIER, "available": True, **res}

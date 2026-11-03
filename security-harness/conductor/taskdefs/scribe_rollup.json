@@ -1,0 +1,10 @@
+{
+  "name": "scribe_rollup",
+  "description": "Scribe: roll the campaign blackboard up by correlation_id into the dossier view (coverage, confirmed findings, spend, reproduction handles).",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 60,
+  "concurrentExecLimit": 0
+}

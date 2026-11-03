@@ -4,9 +4,16 @@
   "description": "Reusable source-code hunt: seed focused leads (entry points / dependency CVEs / objective sweeps), fan out one sast_hunt_agent per lead, and collect + dedupe the emitted attack hypotheses. Output is a hypotheses[] list in the standard hypothesis schema (usable for source-only reporting AND as live exploit-loop fuel).",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
-  "timeoutSeconds": 3600,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["source_path", "routes", "cve_leads", "catalog_objectives", "identities", "max_steps", "max_leads", "oob_available"],
+  "inputParameters": [
+    "source_path",
+    "routes",
+    "cve_leads",
+    "catalog_objectives",
+    "identities",
+    "max_steps",
+    "max_leads",
+    "oob_available"
+  ],
   "tasks": [
     {
       "name": "build_hunt_leads",

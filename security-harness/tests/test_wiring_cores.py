@@ -48,6 +48,51 @@ def test_sitemap_extracts_and_filters_security_pages():
     assert not any("marketing" in u for u in rel)                        # noise filtered out
 
 
+def test_sitemap_covers_feature_families_and_drops_noise():
+    # Regression for the run-05b95dd9 audit: whole feature families (MCP/A2A/audit) had no keyword
+    # so were never ingested → never hypothesized. Selection must include them and drop noise.
+    xml = """<urlset>
+      <url><loc>https://x/content/category/event-driven-orchestration/api-reference</loc></url>
+      <url><loc>https://x/content/reference-docs/api/secrets/get-secret-value</loc></url>
+      <url><loc>https://x/content/developer-guides/mcp-gateway</loc></url>
+      <url><loc>https://x/content/devguide/ai/a2a-integration</loc></url>
+      <url><loc>https://x/content/access-control-and-security/audit-logs</loc></url>
+      <url><loc>https://x/content/remote-services</loc></url>
+      <url><loc>https://x/content/developer-guides/api-gateway</loc></url>
+      <url><loc>https://x/content/about-us</loc></url>
+    </urlset>"""
+    rel = sitemap.security_relevant(xml)
+    # concept/invariant pages rank ahead of the category/overview index
+    cat = next((i for i, u in enumerate(rel) if "/category/" in u), len(rel))
+    concept = next(i for i, u in enumerate(rel) if "audit-logs" in u)
+    assert concept < cat, "invariant concept page must rank above category overview"
+    # previously-blind feature families are now selected, and a reference leaf is still included
+    for fam in ("mcp-gateway", "a2a-integration", "audit-logs", "remote-services", "api-gateway"):
+        assert any(fam in u for u in rel), f"{fam} missing from ranked selection"
+    assert any("/reference-docs/api/" in u for u in rel)                 # endpoint breadth retained
+    assert not any("about-us" in u for u in rel)                         # zero-keyword page dropped
+
+
+def test_sitemap_blend_caps_reference_stubs_per_group_and_keeps_concept_pages():
+    # Reference stubs must not monopolize the budget: one API group with many endpoints is capped,
+    # leaving room for the invariant-bearing concept pages and the guaranteed critical pages.
+    refs = "".join(
+        f"<url><loc>https://x/content/reference-docs/api/gateway/op-{i}</loc></url>" for i in range(20))
+    xml = f"""<urlset>
+      {refs}
+      <url><loc>https://x/content/access-control-and-security/audit-logs</loc></url>
+      <url><loc>https://x/content/access-control-and-security/tags</loc></url>
+      <url><loc>https://x/content/developer-guides/secrets-in-conductor</loc></url>
+    </urlset>"""
+    rel = sitemap.security_relevant(xml, limit=12)
+    gw = [u for u in rel if "/reference-docs/api/gateway/" in u]
+    assert len(gw) <= 3, f"gateway stubs not capped: {len(gw)}"          # per-group diversity cap
+    # guaranteed concept/invariant pages survive the stub flood
+    for must in ("audit-logs", "tags", "secrets-in-conductor"):
+        assert any(must in u for u in rel), f"{must} crowded out by reference stubs"
+    assert not any("about-us" in u for u in rel)                         # zero-keyword page dropped
+
+
 # ── P2-1: incremental attack-graph chaining (§5/§8) ──────────────────────────────────
 def test_chaining_unlocks_deeper_objectives_and_builds_graph_edges():
     # a confirmed secret leak unlocks "credential_held" -> deeper authz/cross-tenant objectives

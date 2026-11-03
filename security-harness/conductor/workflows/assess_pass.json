@@ -4,8 +4,6 @@
   "description": "One focused pass of the deep pentest: explore (deeper, focus-directed, docs-aware) -> hypothesize (docs-invariant + race + chaining aware, deduped against already-tried) -> exploit fan-out -> adversarial verify. Returns new confirmed/rejected/blind findings + the hypothesis signatures attempted this pass, for the multi-pass loop in deep_assess. LLM prompts injected by register.sh.",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
-  "timeoutSeconds": 0,
-  "timeoutPolicy": "TIME_OUT_WF",
   "inputParameters": [
     "base_url",
     "scope",

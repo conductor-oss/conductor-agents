@@ -4,9 +4,27 @@
   "description": "All-in-one web security scan: authorize -> passive recon -> browser crawl (+optional ReAct agent) -> optional SAST on source + API discovery -> merge attack surface -> LLM attack plan -> active DAST fan-out (FORK_JOIN_DYNAMIC, intrusive-gated) -> LLM triage (KB-grounded) -> markdown+PDF report -> persist + dashboard. LLM system prompts injected from prompts/ by register.sh.",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
-  "timeoutSeconds": 5400,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["target", "scope", "authorized", "manifest", "source_path", "intrusive", "login_url", "username", "password", "max_pages", "max_depth", "agent", "agent_steps", "auth_token", "auth_key", "auth_secret", "token_url", "auth_header", "auth_scheme"],
+  "inputParameters": [
+    "target",
+    "scope",
+    "authorized",
+    "manifest",
+    "source_path",
+    "intrusive",
+    "login_url",
+    "username",
+    "password",
+    "max_pages",
+    "max_depth",
+    "agent",
+    "agent_steps",
+    "auth_token",
+    "auth_key",
+    "auth_secret",
+    "token_url",
+    "auth_header",
+    "auth_scheme"
+  ],
   "tasks": [
     {
       "name": "normalize_target",
@@ -38,7 +56,11 @@
       },
       "decisionCases": {
         "true": [
-          { "name": "authorized_noop", "taskReferenceName": "authorized_noop", "type": "NOOP" }
+          {
+            "name": "authorized_noop",
+            "taskReferenceName": "authorized_noop",
+            "type": "NOOP"
+          }
         ]
       },
       "defaultCase": [
@@ -49,7 +71,10 @@
           "inputParameters": {
             "terminationStatus": "FAILED",
             "terminationReason": "Refused: authorization not granted. Re-run with authorized=true and only against systems you are explicitly permitted to test.",
-            "workflowOutput": { "refused": true, "reason": "authorization_required" }
+            "workflowOutput": {
+              "refused": true,
+              "reason": "authorization_required"
+            }
           }
         }
       ]
@@ -76,7 +101,10 @@
             "name": "web_crawl",
             "taskReferenceName": "crawl_sub",
             "type": "SUB_WORKFLOW",
-            "subWorkflowParam": { "name": "web_crawl", "version": 1 },
+            "subWorkflowParam": {
+              "name": "web_crawl",
+              "version": 1
+            },
             "inputParameters": {
               "base_url": "${normalize_target.output.base_url}",
               "scope": "${normalize_target.output.scope}",
@@ -108,8 +136,13 @@
             "taskReferenceName": "sast_sub",
             "type": "SUB_WORKFLOW",
             "optional": true,
-            "subWorkflowParam": { "name": "sast_scan", "version": 1 },
-            "inputParameters": { "source_path": "${normalize_target.output.source_path}" }
+            "subWorkflowParam": {
+              "name": "sast_scan",
+              "version": 1
+            },
+            "inputParameters": {
+              "source_path": "${normalize_target.output.source_path}"
+            }
           }
         ]
       ]
@@ -118,7 +151,12 @@
       "name": "surface_join",
       "taskReferenceName": "surface_join",
       "type": "JOIN",
-      "joinOn": ["recon", "crawl_sub", "api_discover", "sast_sub"]
+      "joinOn": [
+        "recon",
+        "crawl_sub",
+        "api_discover",
+        "sast_sub"
+      ]
     },
     {
       "name": "agent_gate",
@@ -126,7 +164,9 @@
       "type": "SWITCH",
       "evaluatorType": "graaljs",
       "expression": "($.agent === true || $.agent === 'true') ? 'yes' : 'no'",
-      "inputParameters": { "agent": "${workflow.input.agent}" },
+      "inputParameters": {
+        "agent": "${workflow.input.agent}"
+      },
       "decisionCases": {
         "yes": [
           {
@@ -134,7 +174,10 @@
             "taskReferenceName": "agent_sub",
             "type": "SUB_WORKFLOW",
             "optional": true,
-            "subWorkflowParam": { "name": "browser_agent", "version": 1 },
+            "subWorkflowParam": {
+              "name": "browser_agent",
+              "version": 1
+            },
             "inputParameters": {
               "base_url": "${normalize_target.output.base_url}",
               "scope": "${normalize_target.output.scope}",
@@ -147,7 +190,11 @@
         ]
       },
       "defaultCase": [
-        { "name": "no_agent", "taskReferenceName": "no_agent", "type": "NOOP" }
+        {
+          "name": "no_agent",
+          "taskReferenceName": "no_agent",
+          "type": "NOOP"
+        }
       ]
     },
     {
@@ -185,8 +232,14 @@
         "maxTokens": 8000,
         "jsonOutput": true,
         "messages": [
-          { "role": "system", "message": "SYSTEM_PROMPT_PLAN" },
-          { "role": "user", "message": "Attack surface (JSON):\n${prep_plan.output.result}" }
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_PLAN"
+          },
+          {
+            "role": "user",
+            "message": "Attack surface (JSON):\n${prep_plan.output.result}"
+          }
         ]
       }
     },
@@ -276,8 +329,14 @@
         "maxTokens": 12000,
         "jsonOutput": true,
         "messages": [
-          { "role": "system", "message": "SYSTEM_PROMPT_TRIAGE" },
-          { "role": "user", "message": "Scan data (JSON):\n${prep_triage.output.result}" }
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_TRIAGE"
+          },
+          {
+            "role": "user",
+            "message": "Scan data (JSON):\n${prep_triage.output.result}"
+          }
         ]
       }
     },
@@ -304,8 +363,14 @@
         "temperature": 0.2,
         "maxTokens": 12000,
         "messages": [
-          { "role": "system", "message": "SYSTEM_PROMPT_REPORT" },
-          { "role": "user", "message": "Report data (JSON):\n${prep_report.output.result}" }
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_REPORT"
+          },
+          {
+            "role": "user",
+            "message": "Report data (JSON):\n${prep_report.output.result}"
+          }
         ]
       }
     },

@@ -3,9 +3,8 @@
   "description": "PLAN_V3 5.4: stamp each triage finding with its evidence-state rung (source_only/source_attested/runtime_reproduced/runtime_oob_confirmed) and split the single risk rating into a live-confirmed rating and a source-candidate rating. Deterministic; never raises.",
   "ownerEmail": "security-conductor@local",
   "retryCount": 0,
-  "timeoutSeconds": 60,
-  "responseTimeoutSeconds": 30,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "pollTimeoutSeconds": 60,
-  "timeoutPolicy": "ALERT_ONLY",
   "concurrentExecLimit": 0
 }

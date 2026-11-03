@@ -1,0 +1,10 @@
+{
+  "name": "swarm_send",
+  "description": "Send a direct agent-to-agent message addressed to a teammate workflowId, a role (role:exploiter), or all. Used by an agent's message action to ask, hand off a lead, alert, or answer.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 60,
+  "concurrentExecLimit": 0
+}

@@ -15,7 +15,7 @@ to host.docker.internal (findings keep the original URL).
 import logging
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import requests
 import urllib3
@@ -38,7 +38,17 @@ USER_AGENT = "security-conductor/0.1 (+authorized-pentest)"
 TIMEOUT = 20
 BODY_LIMIT = 4000
 BURST_MAX = 20  # cap concurrent requests so race testing can't become a flood/DoS
-_SENSITIVE = {"authorization", "cookie", "set-cookie", "x-api-key", "x-auth-token", "token"}
+MAX_REDIRECTS = 5  # bounded manual redirect follow (scope re-checked on every hop)
+_SENSITIVE = {"authorization", "x-authorization", "cookie", "set-cookie", "x-api-key",
+              "x-auth-token", "token"}
+# Credential-bearing request headers stripped on any CROSS-HOST redirect hop so a target that
+# bounces us to another host can never harvest our auth. (requests itself only strips the standard
+# "authorization" header; it forwards X-Authorization/Cookie/X-API-Key, so we strip them ourselves.)
+_CRED_HEADERS = {"authorization", "x-authorization", "cookie", "x-api-key", "x-auth-token", "token"}
+
+
+def _strip_creds(headers):
+    return {k: v for k, v in (headers or {}).items() if k.lower() not in _CRED_HEADERS}
 
 
 def _redact(headers):
@@ -59,14 +69,48 @@ def _operation(method, url, identity):
     }
 
 
-def _fire(method, target, kwargs):
-    """Issue one request; return a (status, body, size, elapsed_ms, final_url, error) tuple."""
+def _fire(method, target, kwargs, scope=None):
+    """Issue one request, manually following redirects so scope is re-enforced on EVERY hop and
+    credentials are never forwarded to another host.
+
+    Returns a ``(status, body, size, elapsed_ms, final_url, headers, error)`` tuple. ``requests``'
+    own auto-follow is disabled; we loop on 3xx ourselves because its redirect resolution bypasses
+    any per-request scope check and forwards non-standard auth headers across hosts. ``follow`` is
+    read from ``kwargs['allow_redirects']`` (default False). When ``scope`` is given, a redirect to
+    an out-of-scope host is refused (no request is sent to it)."""
+    follow = bool(kwargs.get("allow_redirects", False))
+    kw = dict(kwargs)
+    kw["allow_redirects"] = False  # we follow manually
+    cur_method, cur_url = method, target
+    total_ms, hops = 0, 0
     try:
-        r = requests.request(method, target, **kwargs)
-        return (r.status_code, r.text or "", len(r.content),
-                int(r.elapsed.total_seconds() * 1000), r.url, dict(r.headers), None)
+        while True:
+            r = requests.request(cur_method, cur_url, **kw)
+            total_ms += int(r.elapsed.total_seconds() * 1000)
+            loc = r.headers.get("Location")
+            is_redir = r.status_code in (301, 302, 303, 307, 308) and bool(loc)
+            if not follow or not is_redir or hops >= MAX_REDIRECTS:
+                return (r.status_code, r.text or "", len(r.content), total_ms, r.url,
+                        dict(r.headers), None)
+            nxt = urljoin(r.url, loc)
+            # Scope is re-checked on the redirect TARGET — the original URL was already checked by
+            # the caller. A hop out of the authorized scope is refused, not followed.
+            if scope is not None and not scope_mod.in_scope(nxt, scope):
+                return (None, "", 0, total_ms, nxt, {},
+                        f"refused: redirect to out-of-scope host {_host_of(nxt)!r}")
+            # Strip credentials when the host changes so they never reach the redirect target.
+            if _host_of(nxt) != _host_of(r.url):
+                kw["headers"] = _strip_creds(kw.get("headers"))
+            # 301/302/303 downgrade a non-HEAD request to GET and drop the body (requests/browser
+            # semantics); 307/308 preserve method + body.
+            if r.status_code in (301, 302, 303) and cur_method not in ("GET", "HEAD"):
+                cur_method = "GET"
+                kw.pop("json", None)
+                kw.pop("data", None)
+            cur_url = reachable_url(nxt)
+            hops += 1
     except requests.RequestException as exc:
-        return (None, "", 0, 0, "", {}, f"request error: {exc}")
+        return (None, "", 0, total_ms, "", {}, f"request error: {exc}")
 
 
 @worker_task(task_definition_name="http_request", thread_count=8)
@@ -160,7 +204,7 @@ def http_request(task):
 
     if burst > 1:
         with ThreadPoolExecutor(max_workers=burst) as pool:
-            fires = list(pool.map(lambda _: _fire(method, target, kwargs), range(burst)))
+            fires = list(pool.map(lambda _: _fire(method, target, kwargs, scope), range(burst)))
         statuses = [f[0] for f in fires]
         dist = {str(k): v for k, v in Counter("ERR" if s is None else s for s in statuses).items()}
         rep = next((f for f in fires if f[0] and 200 <= f[0] < 300), fires[0])
@@ -191,7 +235,7 @@ def http_request(task):
                     run_id, req_count=burst, byte_count=sum(f[2] for f in fires))
         return result
 
-    status, body, size, elapsed, final_url, rhdrs, err = _fire(method, target, kwargs)
+    status, body, size, elapsed, final_url, rhdrs, err = _fire(method, target, kwargs, scope)
     if err:
         result["error"] = err
         result["operation"]["blocked_reason"] = "request error"
@@ -338,6 +382,7 @@ def cleanup_resources(task):
     ledger = inp.get("ledger") if isinstance(inp.get("ledger"), list) else []
     identities = inp.get("identities") if isinstance(inp.get("identities"), dict) else {}
     scope = inp.get("scope") if isinstance(inp.get("scope"), dict) else None
+    manifest = inp.get("manifest") if isinstance(inp.get("manifest"), dict) else {}
     base = str(inp.get("base_url") or inp.get("target") or "").rstrip("/")
     # a sensible default identity for deletes: the first non-anon credential
     default_ident = next((k for k, v in identities.items() if isinstance(v, dict) and v.get("value")), "anon")
@@ -360,6 +405,9 @@ def cleanup_resources(task):
         seen.add(key)
         if scope and not scope_mod.in_scope(url, scope):
             residue.append({"url": url, "reason": "out of scope"})
+            continue
+        if authz.forbids(method, url, manifest):
+            residue.append({"url": url, "reason": "forbidden/protected"})
             continue
         headers = {"User-Agent": USER_AGENT}
         headers.update(auth_headers(identities.get(ident)))
@@ -420,6 +468,7 @@ def sweep_resources(task):
     base = str(inp.get("base_url") or inp.get("target") or "").rstrip("/")
     identities = inp.get("identities") if isinstance(inp.get("identities"), dict) else {}
     scope = inp.get("scope") if isinstance(inp.get("scope"), dict) else None
+    manifest = inp.get("manifest") if isinstance(inp.get("manifest"), dict) else {}
     prefix = str(inp.get("prefix") or "sc-pentest-")
     families = inp.get("cleanup_families") if isinstance(inp.get("cleanup_families"), list) else []
     ident = inp.get("identity") or next(
@@ -462,6 +511,9 @@ def sweep_resources(task):
             del_url = base + _fam_delete_path(o, name, fam)
             if scope and not scope_mod.in_scope(del_url, scope):
                 residue.append({"type": fam.get("type"), "name": name, "reason": "out of scope"})
+                continue
+            if authz.forbids("DELETE", del_url, manifest):
+                residue.append({"type": fam.get("type"), "name": name, "reason": "forbidden/protected"})
                 continue
             try:
                 dr = requests.delete(reachable_url(del_url), headers=headers, timeout=TIMEOUT,

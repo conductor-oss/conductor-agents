@@ -37,3 +37,31 @@ def test_mandatory_hypotheses_appends_chained_from_prior_confirmed():
                                    prior_confirmed=prior)
     chain = [h for h in hyps if h.get("mandatory_kind") == "chain"]
     assert chain and any(h["id"] == "MAND-CHAIN-internal_reach" for h in chain)
+
+
+# --- emergent (board-driven) chaining ---
+from common import chaining as _ch  # noqa: E402
+
+
+def test_emergent_single_primitive_play():
+    chains = _ch.emergent_chains([{"kind": "internal_reach", "source": "SSRF task"}],
+                                 identity_labels=["userA"])
+    assert any(c["objective_id"] == "INFRA-SECRET-SURFACE" for c in chains)
+    assert all(c["mandatory_kind"] == "emergent_chain" for c in chains)
+
+
+def test_emergent_combination_play():
+    chains = _ch.emergent_chains([
+        {"kind": "credential_held", "source": "leaked key"},
+        {"kind": "other_tenant_ref", "source": "orgB id"},
+    ])
+    assert any(c["objective_id"] == "CONF-CROSS-TENANT-READ" for c in chains)
+
+
+def test_emergent_dedupes_against_tried():
+    prims = [{"kind": "internal_reach", "source": "s"}]
+    first = _ch.emergent_chains(prims)
+    tried = [_ch._chain_signature(first[0]["objective_id"], first[0]["target"], ["anon"])]
+    again = _ch.emergent_chains(prims, tried_signatures=tried)
+    assert all(c["objective_id"] != first[0]["objective_id"] or c["target"] != first[0]["target"]
+               for c in again)

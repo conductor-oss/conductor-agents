@@ -80,6 +80,23 @@ def _session() -> requests.Session:
     return s
 
 
+def _fetch_in_scope(sess, url, scope, timeout, max_hops=5):
+    """GET ``url`` following redirects ONLY while each hop stays in scope. A redirect whose target
+    is out of scope is NOT followed — the redirect response itself is returned — so a target can
+    never bounce recon off the authorized host (credentials never leave on the session either)."""
+    cur = url
+    r = sess.get(cur, timeout=timeout, allow_redirects=False)
+    for _ in range(max_hops):
+        loc = r.headers.get("Location")
+        if r.status_code not in (301, 302, 303, 307, 308) or not loc:
+            return r
+        nxt = urljoin(r.url, loc)
+        if scope is not None and not scope_mod.in_scope(nxt, scope):
+            return r  # stop at the redirect; do not follow off-scope
+        r = sess.get(nxt, timeout=timeout, allow_redirects=False)
+    return r
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 def _generated_profile_path(host: str) -> str:
     return os.path.join(memory.state_dir(), "profiles", memory._safe(host) + ".json")
@@ -311,7 +328,7 @@ def recon(task):
     sess.headers.update(auth_headers(inp.get("auth")))
 
     try:
-        resp = sess.get(base_url, timeout=TIMEOUT, allow_redirects=True)
+        resp = _fetch_in_scope(sess, base_url, scope, TIMEOUT)
     except requests.RequestException as exc:
         return {"findings": [finding(
             title="Target unreachable during recon", source_tool="recon",
@@ -1047,10 +1064,33 @@ def deepen_observe(task):
         accepted = bool(last_obs.get("accepted"))
         genuine = last_obs.get("classification") == "genuine"
         op = deepen_mod.attempt_op(new, family, lesson, confirmed=bool(new.get("confirmed"))) if (accepted and genuine) else {}
+        # Gap 3 (per-attempt lessons on the board): the moment a GENUINE attempt teaches us something,
+        # share it on the shared blackboard as an `attempt` fact carrying the lesson text — so a peer's
+        # next inbox/peer-sync (same round) and every later retry (next round) learn from THIS probe,
+        # not just from the final finding. Best-effort: a board write never breaks the deepen loop.
+        posted = ""
+        cid = str(inp.get("correlation_id") or "")
+        if cid and accepted and genuine and lesson:
+            try:
+                from common import blackboard as bb
+                from common import allocator as al
+                hyp = inp.get("hypothesis") if isinstance(inp.get("hypothesis"), dict) else {}
+                sig = str(inp.get("signature") or (al.signature(hyp) if hyp else "")) or family
+                author = str(inp.get("author") or getattr(task, "workflow_instance_id", "") or "deepen")
+                # kind is attempt_LESSON, NOT attempt: attempt facts are the per-dispatch retry counter
+                # (RETRY_MAX); a per-turn lesson must not inflate it and prematurely close a hypothesis.
+                posted = bb.post_fact(cid, author, "attempt_lesson", {
+                    "signature": sig, "objective_id": hyp.get("objective_id", ""),
+                    "area": hyp.get("area", "") or hyp.get("title", ""), "family": family,
+                    "confirming_oracle": hyp.get("confirming_oracle", ""),
+                    "confirmed": bool(new.get("confirmed")),
+                    "lesson": f"[{family}] {lesson}"[:400]})
+            except Exception:  # noqa: BLE001 - sharing is best-effort, never fatal
+                posted = ""
         return {"state": new, "brief": deepen_mod.focus_brief(new),
                 "next_family": deepen_mod.next_family(new), "operation": op,
                 "confirmed": bool(new.get("confirmed")), "accepted_family": accepted,
-                "exhausted": deepen_mod.exhausted(new)}
+                "posted_lesson": posted, "exhausted": deepen_mod.exhausted(new)}
     except Exception as exc:
         return {"state": state, "brief": "", "confirmed": False, "error": str(exc)}
 
@@ -1348,3 +1388,163 @@ def _save_pdf(location: str, dest: str) -> str | None:
     except Exception:
         return None
     return None
+
+
+# ── Access-posture detector (swarm-novel-discovery harness adjustment) ──────────
+_AUTH_MARKERS = ("invalid_token", "token cannot be null", "unauthorized",
+                 "authentication required", "access denied", "missing authorization",
+                 "not authenticated", "jwt", "forbidden")
+
+
+def _posture_classify(status, body):
+    b = str(body or "").lower()
+    if status in (401, 403):
+        return "auth_required"
+    if status is not None and 200 <= status < 300:
+        return "ok"
+    # Some gateways return 400/200 with an auth error in the body.
+    if any(m in b for m in _AUTH_MARKERS):
+        return "auth_required"
+    return "other"
+
+
+@worker_task(task_definition_name="access_posture", thread_count=2)
+def access_posture(task):
+    """Deterministically classify the target's ACCESS POSTURE so an auth-walled API is never
+    silently reported as '0 findings = secure'. Samples the campaign's OWN discovered endpoints
+    (from the hypothesis targets on the blackboard) anonymously, and — when identities are supplied —
+    re-issues a few WITH auth to prove the wall is just authentication. Returns a posture verdict and
+    a needs_credentials flag the report surfaces. Never raises (absence is 'unknown', not an error)."""
+    from common import blackboard as bb  # local import: recon doesn't otherwise depend on it
+    import re as _re
+    inp = task.input_data or {}
+    base = str(inp.get("base_url") or inp.get("target") or "").rstrip("/")
+    cid = str(inp.get("correlation_id") or "")
+    identities = inp.get("identities")
+    # identities may be a RESOLVED dict{label:{header,value,...}} (which always includes an empty
+    # "anon") or a list[{auth_token,label}]. Pick the first identity that actually carries a
+    # credential — skip "anon"/empty, or we'd mislabel an authenticated run as anonymous.
+    first_auth = None
+    if isinstance(identities, dict):
+        for lbl, v in identities.items():
+            if lbl == "anon":
+                continue
+            if isinstance(v, dict) and (v.get("value") or v.get("auth_token")):
+                first_auth = v
+                break
+    elif isinstance(identities, list):
+        for v in identities:
+            if isinstance(v, dict) and (v.get("auth_token") or (v.get("header") and v.get("value"))):
+                first_auth = v
+                break
+    have_ids = bool(first_auth)
+
+    # Pull GET paths out of the hypothesis target strings the swarm already discovered.
+    paths = []
+    try:
+        for f in bb.read_facts(cid):
+            if f.get("kind") != "hypothesis":
+                continue
+            tgt = str((f.get("data") or {}).get("target") or "")
+            for m in _re.finditer(r'(GET)\s+(/[^\s,]+)', tgt):
+                p = m.group(2).split("?")[0]
+                if "{" in p or "}" in p or ":" in p.split("/")[-1]:
+                    continue  # skip templated paths (need a real id)
+                if p not in paths:
+                    paths.append(p)
+    except Exception:
+        paths = []
+    if not paths:
+        paths = ["/api/secrets", "/api/environment", "/api/applications", "/api/users",
+                 "/api/metadata/workflow", "/api/workflow/search", "/health"]
+    paths = paths[:15]
+    if not base:
+        return {"posture": "unknown", "needs_credentials": False, "note": "no base_url"}
+
+    from common.net import reachable_url
+    from common.auth import auth_headers
+    counts = {"auth_required": 0, "ok": 0, "other": 0}
+    sample = []
+    unlocked = 0
+    for p in paths:
+        url = reachable_url(base + p)
+        try:
+            r = requests.get(url, timeout=12, allow_redirects=False, verify=False)
+            cls = _posture_classify(r.status_code, r.text[:500])
+        except requests.RequestException:
+            cls = "other"; r = None
+        counts[cls] += 1
+        st = r.status_code if r is not None else None
+        if len(sample) < 10:
+            sample.append({"path": p, "status": st, "class": cls})
+        # If auth-gated anon AND we hold a credential, see whether auth unlocks it.
+        if cls == "auth_required" and have_ids:
+            try:
+                ra = requests.get(url, headers=auth_headers(first_auth), timeout=12,
+                                  allow_redirects=False, verify=False)
+                if 200 <= ra.status_code < 300:
+                    unlocked += 1
+            except requests.RequestException:
+                pass
+    total = sum(counts.values()) or 1
+    gated_ratio = counts["auth_required"] / total
+    posture = "auth_gated" if gated_ratio >= 0.5 else ("mixed" if counts["auth_required"] else "open")
+    needs_credentials = bool(posture in ("auth_gated", "mixed") and not have_ids)
+    note = ""
+    if posture == "auth_gated" and not have_ids:
+        note = (f"{counts['auth_required']}/{total} sampled endpoints require authentication. This was an "
+                "ANONYMOUS run: the authenticated API surface was NOT assessed. Provide an API key/secret "
+                "or token to test it — '0 confirmed' here means 'not reached', not 'secure'.")
+    elif have_ids and unlocked:
+        note = f"auth unlocks the surface: {unlocked} anon-gated endpoint(s) returned 2xx with credentials."
+    return {"posture": posture, "needs_credentials": needs_credentials,
+            "auth_required": counts["auth_required"], "ok": counts["ok"], "other": counts["other"],
+            "sampled": total, "gated_ratio": round(gated_ratio, 2), "unlocked_with_creds": unlocked,
+            "had_identities": have_ids, "sample": sample, "note": note}
+
+
+@worker_task(task_definition_name="memory_recall")
+def memory_recall(task):
+    """Cross-run self-learning: load prior-campaign knowledge for THIS target (by deployment
+    fingerprint) at the start of a run, so the swarm begins warm — re-verifying known-confirmed
+    findings, skipping exhausted signatures, and seeding re-hypothesis with what worked before.
+    Symmetric to ``memory_save``. Never raises (absence = cold start)."""
+    from common import memory as memory_mod
+    inp = task.input_data or {}
+    host = str(inp.get("host") or "").strip()
+    app_version = str(inp.get("app_version") or "")
+    if not host:
+        return {"available": False, "fingerprint": "", "prior_confirmed": [],
+                "tried_signatures": [], "recipes": [], "runs": 0, "summary": "no host; cold start"}
+    try:
+        fp = memory_mod.fingerprint(host, app_version or None)
+        st = memory_mod.load(fp)
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "fingerprint": "", "prior_confirmed": [],
+                "tried_signatures": [], "recipes": [], "runs": 0, "error": str(exc)}
+    prior_confirmed = []
+    for f in (st.get("all_confirmed") or []):
+        if f.get("lifecycle") == "inconclusive" or f.get("tampered"):
+            continue  # quarantined / release-invalidated -> re-verify, don't trust
+        prior_confirmed.append({
+            "title": f.get("title"),
+            "signature": f.get("signature") or memory_mod.signature(f),
+            "objective_id": f.get("objective_id"), "owasp": f.get("owasp"),
+            "severity": f.get("severity"), "target": f.get("target") or f.get("area"),
+            "prior_confirmed": True})
+    tried = [s for s in (st.get("tried_signatures") or []) if s]
+    recipes = []
+    try:
+        from common import trace as trace_mod
+        for r in (trace_mod.load(memory_mod.traces_path(fp)) or [])[-60:]:
+            les = r.get("lesson") or r.get("evidence") or r.get("note")
+            if les:
+                recipes.append(str(les)[:180])
+    except Exception:  # noqa: BLE001
+        pass
+    runs = int(st.get("runs") or 0)
+    return {"available": bool(prior_confirmed or tried or runs), "fingerprint": fp,
+            "prior_confirmed": prior_confirmed, "tried_signatures": tried,
+            "recipes": recipes[-24:], "runs": runs,
+            "summary": f"recalled {len(prior_confirmed)} prior-confirmed + {len(tried)} tried signatures "
+                       f"+ {len(recipes)} lessons from {runs} prior run(s)"}

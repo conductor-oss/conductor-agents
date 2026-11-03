@@ -5,9 +5,8 @@
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 15,
-  "timeoutSeconds": 900,
-  "responseTimeoutSeconds": 600,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "pollTimeoutSeconds": 60,
-  "timeoutPolicy": "TIME_OUT_WF",
   "concurrentExecLimit": 0
 }

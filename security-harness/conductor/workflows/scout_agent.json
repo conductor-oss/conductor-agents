@@ -1,0 +1,122 @@
+{
+  "name": "scout_agent",
+  "version": 1,
+  "description": "Swarm SCOUT (breadth): runs the explore engine with a diverse (model/persona/focus) assignment to probe one surface region, then posts what it learned to the campaign blackboard as observation/claim facts. One of the many agents a wave fans out; independent in-wave, shares only at the board.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "inputParameters": [
+    "correlation_id",
+    "base_url",
+    "scope",
+    "identities",
+    "app_model",
+    "surface",
+    "manifest",
+    "capability_max",
+    "oob_base",
+    "run_id",
+    "docs_namespace",
+    "docs_index",
+    "model",
+    "llm_provider",
+    "embed_provider",
+    "embed_model",
+    "max_steps",
+    "role",
+    "area",
+    "objective_id",
+    "focus_directive",
+    "identity_focus",
+    "docs_available"
+  ],
+  "tasks": [
+    {
+      "name": "scout_explore",
+      "taskReferenceName": "scout_explore",
+      "type": "SUB_WORKFLOW",
+      "subWorkflowParam": {
+        "name": "explore_agent",
+        "version": 1
+      },
+      "inputParameters": {
+        "base_url": "${workflow.input.base_url}",
+        "scope": "${workflow.input.scope}",
+        "identities": "${workflow.input.identities}",
+        "app_model": "${workflow.input.app_model}",
+        "surface": "${workflow.input.surface}",
+        "max_steps": "${workflow.input.max_steps}",
+        "docs_namespace": "${workflow.input.docs_namespace}",
+        "docs_index": "${workflow.input.docs_index}",
+        "docs_available": "${workflow.input.docs_available}",
+        "focus_directive": "${workflow.input.focus_directive}",
+        "prior_confirmed": [],
+        "manifest": "${workflow.input.manifest}",
+        "capability_max": "${workflow.input.capability_max}",
+        "personas": [],
+        "embed_provider": "${workflow.input.embed_provider}",
+        "embed_model": "${workflow.input.embed_model}",
+        "run_id": "${workflow.input.run_id}",
+        "llm_provider": "${workflow.input.llm_provider}",
+        "model": "${workflow.input.model}",
+        "correlation_id": "${workflow.input.correlation_id}",
+        "role": "${workflow.input.role}"
+      }
+    },
+    {
+      "name": "shape_facts",
+      "taskReferenceName": "shape_facts",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "observations": "${scout_explore.output.observations}",
+        "area": "${workflow.input.area}",
+        "objective_id": "${workflow.input.objective_id}",
+        "queryExpression": "{ area: (.area // .objective_id // \"\"), objective_id: (.objective_id // \"\"), observations: (.observations // []), count: ((.observations // []) | length) }"
+      }
+    },
+    {
+      "name": "swarm_post_fact",
+      "taskReferenceName": "post_observation",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlation_id": "${workflow.input.correlation_id}",
+        "author": "${workflow.workflowId}",
+        "kind": "observation",
+        "data": "${shape_facts.output.result}"
+      }
+    },
+    {
+      "name": "swarm_post_fact",
+      "taskReferenceName": "post_claim",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlation_id": "${workflow.input.correlation_id}",
+        "author": "${workflow.workflowId}",
+        "kind": "coverage",
+        "data": {
+          "area": "${workflow.input.area}",
+          "status": "scouted",
+          "untested": false
+        }
+      }
+    },
+    {
+      "name": "swarm_post_fact",
+      "taskReferenceName": "post_budget",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlation_id": "${workflow.input.correlation_id}",
+        "author": "${workflow.workflowId}",
+        "kind": "budget",
+        "data": {
+          "requests": "${scout_explore.output.steps}",
+          "bytes": 0
+        }
+      }
+    }
+  ],
+  "outputParameters": {
+    "area": "${workflow.input.area}",
+    "observations": "${scout_explore.output.observations}",
+    "posted": "${post_observation.output.posted}"
+  }
+}

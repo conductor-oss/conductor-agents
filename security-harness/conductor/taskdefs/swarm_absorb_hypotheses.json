@@ -1,0 +1,10 @@
+{
+  "name": "swarm_absorb_hypotheses",
+  "description": "Post a round's freshly-generated hypotheses to the board as open work, deduped against every hypothesis already seen. Completes the round-over-round learning loop.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 60,
+  "concurrentExecLimit": 0
+}

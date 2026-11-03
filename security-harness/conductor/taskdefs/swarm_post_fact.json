@@ -1,0 +1,10 @@
+{
+  "name": "swarm_post_fact",
+  "description": "Generic blackboard writer an agent sub-workflow calls to publish a fact (hypothesis/observation/attempt/verified_primitive/finding/claim/critique), attributed to the calling workflow id.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 60,
+  "concurrentExecLimit": 0
+}

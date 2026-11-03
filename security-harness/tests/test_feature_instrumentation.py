@@ -4,12 +4,24 @@ import json
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "workers"))
 from codeexec import sandbox_sc as s  # noqa: E402
 from common import feature_exercise as fe  # noqa: E402
 
-_PROFILE = json.load(open(os.path.join(os.path.dirname(__file__), "..", "profiles", "conductor.json")))
-_OPS = _PROFILE["feature_operations"]
+# profiles/conductor.json is intentionally local-only (gitignored; see commit bb3c971), so it is
+# absent in a fresh checkout / CI. Load it defensively and skip only the ops-classification tests
+# that need its `feature_operations` rules — the profile-independent tests still run everywhere.
+_PROFILE_PATH = os.path.join(os.path.dirname(__file__), "..", "profiles", "conductor.json")
+try:
+    with open(_PROFILE_PATH) as _fh:
+        _OPS = json.load(_fh)["feature_operations"]
+except (FileNotFoundError, KeyError, ValueError):
+    _OPS = None
+
+_needs_profile = pytest.mark.skipif(
+    _OPS is None, reason="profiles/conductor.json is local-only (gitignored); run locally for this check")
 
 
 def _classify(method, url, request_body):
@@ -29,6 +41,7 @@ def test_task_types_descends_into_inline_workflowdef():
                                                                   {"type": "INLINE"}]}}) == ["HTTP", "INLINE"]
 
 
+@_needs_profile
 def test_inline_start_records_started_with_task_types():
     ops = _classify("POST", "https://t/api/workflow",
                     {"name": "adhoc", "workflowDef": {"tasks": [{"type": "HTTP"}]}})
@@ -37,6 +50,7 @@ def test_inline_start_records_started_with_task_types():
     assert started[0].get("workflow_name") == "adhoc"
 
 
+@_needs_profile
 def test_put_bulk_register_records_each_definition():
     ops = _classify("PUT", "https://t/api/metadata/workflow",
                     [{"name": "w1", "tasks": [{"type": "HTTP"}]},

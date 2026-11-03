@@ -1,0 +1,135 @@
+{
+  "name": "chain_agent",
+  "version": 1,
+  "description": "Swarm CHAINER (depth): runs the deepening ladder engine on an emergent chain-hypothesis built from the board's verified-primitive pool, then posts the result back \u2014 a finding fact always, and a verified_primitive fact when confirmed so later rounds can chain further. Consumes only verified primitives (passed in the hypothesis); recursive kill chains nest as sub-workflow trees.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "inputParameters": [
+    "correlation_id",
+    "base_url",
+    "scope",
+    "identities",
+    "app_model",
+    "hypothesis",
+    "manifest",
+    "capability_max",
+    "oob_base",
+    "run_id",
+    "docs_namespace",
+    "docs_index",
+    "model",
+    "llm_provider",
+    "max_steps",
+    "role",
+    "area",
+    "objective_id",
+    "focus_directive",
+    "feature_operations"
+  ],
+  "tasks": [
+    {
+      "name": "chain_deepen",
+      "taskReferenceName": "chain_deepen",
+      "type": "SUB_WORKFLOW",
+      "subWorkflowParam": {
+        "name": "exploit_deepen",
+        "version": 1
+      },
+      "inputParameters": {
+        "base_url": "${workflow.input.base_url}",
+        "scope": "${workflow.input.scope}",
+        "identities": "${workflow.input.identities}",
+        "app_model": "${workflow.input.app_model}",
+        "hypothesis": "${workflow.input.hypothesis}",
+        "max_steps": "${workflow.input.max_steps}",
+        "docs_namespace": "${workflow.input.docs_namespace}",
+        "docs_index": "${workflow.input.docs_index}",
+        "docs_available": false,
+        "oob_base": "${workflow.input.oob_base}",
+        "run_id": "${workflow.input.run_id}",
+        "manifest": "${workflow.input.manifest}",
+        "capability_max": "${workflow.input.capability_max}",
+        "personas": [],
+        "llm_provider": "${workflow.input.llm_provider}",
+        "model": "${workflow.input.model}",
+        "feature_operations": "${workflow.input.feature_operations}",
+        "correlation_id": "${workflow.input.correlation_id}",
+        "role": "${workflow.input.role}",
+        "focus_directive": "${workflow.input.focus_directive}"
+      }
+    },
+    {
+      "name": "shape_finding",
+      "taskReferenceName": "shape_finding",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "conclusion": "${chain_deepen.output.conclusion}",
+        "hypothesis": "${workflow.input.hypothesis}",
+        "area": "${workflow.input.area}",
+        "objective_id": "${workflow.input.objective_id}",
+        "evidence": "${chain_deepen.output.evidence}",
+        "queryExpression": "(.conclusion // {}) as $c | { finding: { area: (.area // .objective_id // \"\"), objective_id: (.objective_id // \"\"), title: ($c.title // (.hypothesis.title // \"chain attempt\")), confirmed: (($c.confirmed // false) == true), severity: ($c.severity // \"Info\"), cwe: ($c.cwe // \"\"), owasp: ($c.owasp // \"\"), evidence: ($c.evidence // \"\"), signature: ((.hypothesis.signature) // (\"chaining|\" + ((.objective_id // \"\") | ascii_downcase))), lesson: (($c.evidence // $c.title // \"attempt inconclusive\")[0:400]) }, confirmed: (($c.confirmed // false) == true), primitive_kind: ( ((.objective_id // \"\") | ascii_downcase) as $o | if ($o | test(\"ssrf|internal\")) then \"internal_reach\" elif ($o | test(\"secret|credential|surface\")) then \"credential_held\" elif ($o | test(\"tenant\")) then \"other_tenant_ref\" elif ($o | test(\"bola|idor|object\")) then \"other_object_ref\" elif ($o | test(\"privesc|function-level|privilege\")) then \"privileged_access\" else \"other\" end ) }"
+      }
+    },
+    {
+      "name": "swarm_post_fact",
+      "taskReferenceName": "post_finding",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlation_id": "${workflow.input.correlation_id}",
+        "author": "${workflow.workflowId}",
+        "kind": "finding",
+        "data": "${shape_finding.output.result.finding}"
+      }
+    },
+    {
+      "name": "confirmed_gate",
+      "taskReferenceName": "confirmed_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "$.confirmed === true ? 'yes' : 'no'",
+      "inputParameters": {
+        "confirmed": "${shape_finding.output.result.confirmed}"
+      },
+      "decisionCases": {
+        "yes": [
+          {
+            "name": "swarm_post_fact",
+            "taskReferenceName": "post_primitive",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "correlation_id": "${workflow.input.correlation_id}",
+              "author": "${workflow.workflowId}",
+              "kind": "verified_primitive",
+              "data": {
+                "area": "${workflow.input.area}",
+                "kind": "${shape_finding.output.result.primitive_kind}",
+                "source": "${shape_finding.output.result.finding.title}"
+              }
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "swarm_post_fact",
+      "taskReferenceName": "post_budget",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlation_id": "${workflow.input.correlation_id}",
+        "author": "${workflow.workflowId}",
+        "kind": "budget",
+        "data": {
+          "requests": "${chain_deepen.output.steps}",
+          "bytes": 0
+        }
+      }
+    }
+  ],
+  "outputParameters": {
+    "area": "${workflow.input.area}",
+    "conclusion": "${chain_deepen.output.conclusion}",
+    "confirmed": "${shape_finding.output.result.confirmed}"
+  }
+}

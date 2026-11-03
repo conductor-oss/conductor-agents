@@ -43,6 +43,10 @@ try:
     from playwright.sync_api import sync_playwright
 except Exception:  # pragma: no cover
     sync_playwright = None
+try:
+    from playwright.async_api import async_playwright
+except Exception:  # pragma: no cover
+    async_playwright = None
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 log = logging.getLogger(__name__)
@@ -63,7 +67,7 @@ STORE_CAP = 4000             # hard cap on a stored chunk's text
 RAW_EXCERPT_TOTAL = 28_000   # total chars handed to the digest LLM
 USER_AGENT = "security-conductor/0.1 (+authorized-pentest)"
 TIMEOUT = 20
-MAX_RENDERED_DOCS = 30
+MAX_RENDERED_DOCS = 48  # ranked (see common/sitemap.py): budget lands on surface-bearing leaves first
 
 
 @worker_task(task_definition_name="kb_chunks")
@@ -224,25 +228,145 @@ def _fetch_url(url, auth, scope):
     return r.content, r.headers.get("Content-Type", "")
 
 
+# Resource types that carry no documentation text — blocking them cuts JS-doc render time from
+# ~130s/page (orkes.io: heavy fonts, images, analytics, websockets that never let networkidle
+# settle) to a few seconds. We only need the rendered DOM text.
+_BLOCK_RESOURCE_TYPES = {"image", "media", "font", "stylesheet"}
+_BLOCK_URL_HINTS = ("google-analytics", "googletagmanager", "segment.", "hotjar", "intercom",
+                    "doubleclick", "facebook", "hubspot", "fullstory", "mixpanel", "sentry",
+                    "/gtm.js", "analytics", "cdn.cookie", "optimizely")
+_CONTENT_SELECTORS = ("main", "article", "[role='main']", ".markdown", ".theme-doc-markdown")
+_RENDER_CONCURRENCY = 6         # pages rendered in parallel (async)
+_GOTO_TIMEOUT_MS = 15000
+_SELECTOR_TIMEOUT_MS = 5000
+_HYDRATE_SETTLE_MS = 600
+
+
 def _render_urls(urls, auth, scope):
-    """Render JS documentation pages in one bounded Playwright session."""
+    """Render JS documentation pages concurrently, blocking non-text resources. Falls back to the
+    serial sync renderer if the async API is unavailable."""
+    urls = list(urls)[:MAX_RENDERED_DOCS]
+    if not urls:
+        return {}, []
+    if async_playwright is not None:
+        try:
+            import asyncio
+            return asyncio.run(_render_urls_async(urls, auth, scope))
+        except Exception as exc:  # pragma: no cover - fall back to serial
+            serial, errs = _render_urls_serial(urls, auth, scope)
+            return serial, errs + [f"async render failed, used serial: {exc}"]
+    return _render_urls_serial(urls, auth, scope)
+
+
+async def _render_urls_async(urls, auth, scope):
+    """Concurrent renderer: one browser+context, a bounded pool of pages, heavy resources blocked."""
+    rendered, errors = {}, []
+    headers = auth_headers(auth) or {}
+    sem = __import__("asyncio").Semaphore(_RENDER_CONCURRENCY)
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(ignore_https_errors=True, user_agent=USER_AGENT)
+
+        async def _block(route):
+            req = route.request
+            u = req.url.lower()
+            if req.resource_type in _BLOCK_RESOURCE_TYPES or any(h in u for h in _BLOCK_URL_HINTS):
+                try:
+                    await route.abort()
+                except Exception:
+                    await route.continue_()
+            else:
+                await route.continue_()
+        await context.route("**/*", _block)
+
+        async def _one(url):
+            async with sem:
+                page = await context.new_page()
+                try:
+                    if headers and (scope is None or scope_mod.in_scope(url, scope)):
+                        await page.set_extra_http_headers(headers)
+                    await page.goto(reachable_url(url), wait_until="domcontentloaded",
+                                    timeout=_GOTO_TIMEOUT_MS)
+                    try:
+                        await page.wait_for_selector(", ".join(_CONTENT_SELECTORS),
+                                                     timeout=_SELECTOR_TIMEOUT_MS)
+                    except Exception:
+                        pass
+                    await page.wait_for_timeout(_HYDRATE_SETTLE_MS)
+                    text = ""
+                    for sel in _CONTENT_SELECTORS:
+                        try:
+                            loc = page.locator(sel).first
+                            if await loc.count() > 0:
+                                text = await loc.inner_text(timeout=_SELECTOR_TIMEOUT_MS)
+                                if len((text or "").strip()) > 400:
+                                    break
+                        except Exception:
+                            continue
+                    if len((text or "").strip()) <= 400:
+                        text = await page.locator("body").inner_text(timeout=_SELECTOR_TIMEOUT_MS)
+                    rendered[url] = text
+                except Exception as exc:
+                    errors.append(f"{url}: render failed: {exc}")
+                finally:
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+
+        await __import__("asyncio").gather(*[_one(u) for u in urls])
+        await browser.close()
+    return rendered, errors
+
+
+def _render_urls_serial(urls, auth, scope):
+    """Serial sync renderer (fallback). Blocks heavy resources; bounded waits."""
     if sync_playwright is None or not urls:
         return {}, ["playwright unavailable for JS-rendered docs"]
     rendered, errors = {}, []
+    headers = auth_headers(auth) or {}
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(ignore_https_errors=True, user_agent=USER_AGENT)
-            for url in list(urls)[:MAX_RENDERED_DOCS]:
+
+            def _block(route):
+                req = route.request
+                u = req.url.lower()
+                if req.resource_type in _BLOCK_RESOURCE_TYPES or any(h in u for h in _BLOCK_URL_HINTS):
+                    try:
+                        route.abort()
+                    except Exception:
+                        route.continue_()
+                else:
+                    route.continue_()
+            context.route("**/*", _block)
+
+            for url in urls:
                 try:
                     page = context.new_page()
-                    # Attach credentials only when the docs are on the authorized target.
-                    if scope is None or scope_mod.in_scope(url, scope):
-                        headers = auth_headers(auth)
-                        if headers:
-                            page.set_extra_http_headers(headers)
-                    page.goto(reachable_url(url), wait_until="networkidle", timeout=TIMEOUT * 1000)
-                    rendered[url] = page.locator("body").inner_text(timeout=5000)
+                    if headers and (scope is None or scope_mod.in_scope(url, scope)):
+                        page.set_extra_http_headers(headers)
+                    page.goto(reachable_url(url), wait_until="domcontentloaded", timeout=_GOTO_TIMEOUT_MS)
+                    try:
+                        page.wait_for_selector(", ".join(_CONTENT_SELECTORS), timeout=_SELECTOR_TIMEOUT_MS)
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(_HYDRATE_SETTLE_MS)
+                    text = ""
+                    for sel in _CONTENT_SELECTORS:
+                        try:
+                            loc = page.locator(sel).first
+                            if loc.count() > 0:
+                                text = loc.inner_text(timeout=_SELECTOR_TIMEOUT_MS)
+                                if len((text or "").strip()) > 400:
+                                    break
+                        except Exception:
+                            continue
+                    if len((text or "").strip()) <= 400:
+                        text = page.locator("body").inner_text(timeout=_SELECTOR_TIMEOUT_MS)
+                    rendered[url] = text
                     page.close()
                 except Exception as exc:
                     errors.append(f"{url}: render failed: {exc}")
@@ -256,10 +380,14 @@ def _doc_site_urls(entry, auth, scope):
     """Discover high-value pages from a documentation site's sitemap."""
     parsed = urlsplit(entry)
     origin = f"{parsed.scheme}://{parsed.netloc}"
-    candidates = [
-        urljoin(origin, "/sitemap.xml"),
-        urljoin(entry.rstrip("/") + "/", "sitemap.xml"),
-    ]
+    # Try sitemap.xml at the entry path AND every parent path up to the origin. A docs site often
+    # hosts its sitemap at the docs root (e.g. /content/sitemap.xml), not the domain root — the old
+    # code only tried / and the exact entry, so it missed the real docs sitemap entirely.
+    candidates = [urljoin(entry.rstrip("/") + "/", "sitemap.xml")]
+    segs = [s for s in parsed.path.split("/") if s]
+    for i in range(len(segs), 0, -1):
+        candidates.append(f"{origin}/{'/'.join(segs[:i])}/sitemap.xml")
+    candidates.append(urljoin(origin, "/sitemap.xml"))
     for candidate in dict.fromkeys(candidates):
         try:
             raw, _ = _fetch_url(candidate, auth, scope)
@@ -340,6 +468,16 @@ def ingest_docs(task):
         except Exception as exc:  # never raise out of the worker
             errors.append(f"{entry}: {exc}")
 
+    # Persist the chunks to a per-run docs store so the LEXICAL `docs_search` worker can serve live
+    # per-agent lookups WITHOUT a vector DB (pgvector/embeddings are optional, not required). Keyed by
+    # run_id (= the campaign correlation_id the agents also carry). Best-effort: never fatal.
+    run_id = str(inp.get("run_id") or "").strip()
+    if run_id and chunks:
+        try:
+            _save_docs_store(run_id, chunks)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"docs-store persist: {exc}")
+
     return {
         "chunks": chunks,
         "raw_excerpt": "\n\n".join(excerpts)[:RAW_EXCERPT_TOTAL],
@@ -354,3 +492,149 @@ def ingest_docs(task):
             ),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Lexical docs retrieval (no vector DB required) -- backs the agents' live
+# `search_docs` action so the swarm can look up "how is this feature meant to
+# be used" mid-run even when pgvector/embeddings are not configured.
+# ---------------------------------------------------------------------------
+import json as _json
+import math as _math
+
+try:
+    from common import memory as _memory  # state_dir()
+except Exception:  # noqa: BLE001
+    _memory = None
+
+_WORD_RE = re.compile(r"[a-z0-9_]+")
+
+
+def _docs_store_path(run_id: str) -> str:
+    base = _memory.state_dir() if _memory else os.path.join(os.path.dirname(__file__), "..", "state")
+    d = os.path.join(base, "docs")
+    os.makedirs(d, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(run_id))[:120]
+    return os.path.join(d, f"{safe}.json")
+
+
+def _save_docs_store(run_id: str, chunks: list) -> None:
+    slim = [{"docId": c.get("docId"), "text": c.get("text", ""),
+             "source": (c.get("metadata") or {}).get("source", ""),
+             "section": (c.get("metadata") or {}).get("section", "")}
+            for c in (chunks or []) if (c.get("text") or "").strip()]
+    with open(_docs_store_path(run_id), "w") as fh:
+        _json.dump(slim, fh)
+
+
+def _tokens(s: str) -> list:
+    return _WORD_RE.findall((s or "").lower())
+
+
+def _bm25_rank(chunks: list, query: str, k: int) -> list:
+    """Tiny BM25 over the run's doc chunks. No deps, deterministic. Returns top-k chunks."""
+    q = [t for t in _tokens(query) if len(t) > 2]
+    if not q or not chunks:
+        return []
+    N = len(chunks)
+    docs_tok = [_tokens(c.get("text", "")) for c in chunks]
+    avgdl = (sum(len(d) for d in docs_tok) / N) or 1.0
+    df = {}
+    for t in set(q):
+        df[t] = sum(1 for d in docs_tok if t in d) or 0
+    k1, b = 1.5, 0.75
+    scored = []
+    for c, d in zip(chunks, docs_tok):
+        if not d:
+            continue
+        dl = len(d)
+        score = 0.0
+        for t in q:
+            n = df.get(t, 0)
+            if n == 0:
+                continue
+            idf = _math.log(1 + (N - n + 0.5) / (n + 0.5))
+            tf = d.count(t)
+            score += idf * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avgdl))
+        if score > 0:
+            scored.append((score, c))
+    scored.sort(key=lambda x: -x[0])
+    return [c for _, c in scored[:k]]
+
+
+@worker_task(task_definition_name="docs_search", thread_count=4)
+def docs_search(task):
+    """Lexical (BM25) retrieval over the per-run ingested doc chunks — the no-vector-DB backing for
+    the agents' `search_docs` action. Returns the top matching documentation snippets for a query so
+    an agent can learn how a feature is MEANT to be used mid-exploit. Never raises."""
+    inp = task.input_data or {}
+    run_id = str(inp.get("run_id") or inp.get("correlation_id") or "").strip()
+    query = str(inp.get("query") or "").strip()
+    k = int(inp.get("maxResults") or inp.get("k") or 4)
+    if not run_id or not query:
+        return {"available": False, "results": [], "digest": "", "query": query}
+    try:
+        path = _docs_store_path(run_id)
+        if not os.path.exists(path):
+            return {"available": False, "results": [], "digest": "", "query": query,
+                    "note": "no docs store for this run (docs not ingested)"}
+        with open(path) as fh:
+            chunks = _json.load(fh)
+        top = _bm25_rank(chunks, query, k)
+        results = [{"source": c.get("source", ""), "section": c.get("section", ""),
+                    "text": (c.get("text") or "")[:1200]} for c in top]
+        digest = "\n\n".join(
+            f"[docs: {r['source']}{(' #' + r['section']) if r['section'] else ''}]\n{r['text']}"
+            for r in results)
+        # `result` mirrors `results` so consumers reading `${docs_search.output.result}` (the shape the
+        # old vector task produced) iterate the hits directly.
+        return {"available": bool(results), "result": results, "results": results, "digest": digest,
+                "query": query, "hits": len(results)}
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "result": [], "results": [], "digest": "", "query": query, "error": str(exc)}
+
+
+@worker_task(task_definition_name="enrich_docs_digest", thread_count=2)
+def enrich_docs_digest(task):
+    """Backfill the LLM docs digest with DETERMINISTIC doc-surface extraction so the SYSTEM's
+    documented security model is always available downstream — not just when the LLM happened to
+    populate it. Run 05b95dd9's digest returned 0 `documented_invariants` and recipes for only the
+    core workflow; doc-surface finds the invariants (audit admin-only, tag inheritance, masking…)
+    and every documented endpoint (incl. the /api/a2a and /api/audit surface). Merges, never
+    overwrites non-empty LLM fields. Feeds both the feature-complete sweep (features.build_inventory
+    reads `surface_endpoints`) and the hypothesizer. Never raises."""
+    inp = task.input_data or {}
+    digest = inp.get("digest")
+    if isinstance(digest, str):
+        try:
+            digest = _json.loads(digest)
+        except Exception:
+            digest = {}
+    digest = digest if isinstance(digest, dict) else {}
+    run_id = str(inp.get("run_id") or "").strip()
+    try:
+        from common import doc_surface as _ds
+        surface = _ds.surface_for_run(run_id) if run_id else {"endpoints": [], "invariants": [], "families": [], "seeds": []}
+    except Exception as exc:  # noqa: BLE001
+        return {**digest, "_enrich_error": str(exc)}
+
+    out = dict(digest)
+    # 1) surface_endpoints: always expose the deterministic endpoint list for the feature sweep.
+    out["surface_endpoints"] = [{"method": e.get("method", ""), "path": e.get("path", "")}
+                                for e in (surface.get("endpoints") or [])]
+    # 2) documented_invariants: backfill ONLY when the LLM returned nothing usable.
+    existing_inv = digest.get("documented_invariants") or digest.get("invariants") or []
+    if not existing_inv:
+        out["documented_invariants"] = [
+            {"invariant": iv.get("text", ""), "where": iv.get("source", ""),
+             "how_to_test": "attempt the action as a lower-privileged / different-tenant identity and "
+                            "confirm the documented rule is not enforced",
+             "kinds": iv.get("kinds", [])}
+            for iv in (surface.get("invariants") or [])]
+    # 3) doc_surface_seeds + families: carry the grounded probes for the hypothesizer/report.
+    out["doc_surface_seeds"] = surface.get("seeds") or []
+    out["doc_surface_families"] = surface.get("families") or []
+    out["_enriched"] = {"endpoints": len(out["surface_endpoints"]),
+                        "invariants_backfilled": 0 if existing_inv else len(out.get("documented_invariants") or []),
+                        "seeds": len(out["doc_surface_seeds"])}
+    return out
