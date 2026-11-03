@@ -1,212 +1,158 @@
 # Conductor Security Harness
 
-> Part of **[conductor-agents](../README.md)** — a catalog of production-grade AI agents orchestrated by Conductor.
+> Part of **[conductor-agents](../README.md)** — production-grade AI agents orchestrated by Conductor.
 
-An autonomous web-application & API **penetration-testing agent** orchestrated by **[Conductor](https://conductor-oss.org/)**.
-Point it at a web app; it crawls with a real browser, reasons about the attack surface with an LLM,
-runs a battery of scanners in parallel, **actively exploits** what it finds (multi-identity, out-of-band confirmed),
-triages to cut false positives, and produces a report — all as a durable, observable, retryable Conductor workflow.
-Optionally point it at the **source code** too, and it mines the code (SAST + route extraction) to find more to test.
+An autonomous web-application & API **penetration-testing agent** orchestrated by **[Conductor](https://conductor-oss.org/)**. Point it at a target and it crawls with a real browser, reasons about the attack surface with an LLM, runs scanners in parallel, **actively exploits** what it finds (multi-identity, out-of-band confirmed), triages away false positives, and writes a report — all as a durable, observable, retryable Conductor workflow. Point it at the **source code** or the **product docs** too, and it mines them to find and prove more.
 
-<!-- DEMO: drop a screen recording at docs/demo.gif and uncomment the line below.
-<p align="center"><img src="docs/demo.gif" alt="security-harness demo" width="820"></p>
--->
-
-> **⚠️ Authorized testing only.** Only scan systems you **own or have explicit written permission to test.**
-> Unauthorized scanning may be illegal. You are responsible for use.
-> See [Authorization & capability levels](#authorization--capability-levels) for machine-enforceable controls.
+> **⚠️ Authorized testing only.** Only test systems you **own or have explicit written permission to test**. Unauthorized scanning may be illegal; you are responsible for use. Scope and mutation limits are machine-enforced — see [Authorization & safety](#authorization--safety).
 
 ---
 
-## Documentation
+## Four ways to run it
 
-| Document | Start here when… |
-|---|---|
-| [`SKILL.md`](SKILL.md) | An AI assistant will operate, register, or monitor the harness. |
-| [`docs/quickstart.md`](docs/quickstart.md) | You want the shortest path to a safe local scan. |
-| [`docs/scan-vs-assess.md`](docs/scan-vs-assess.md) | You need to choose source-only SAST, a surface scan, or a deep assessment. |
-| [`docs/authorization.md`](docs/authorization.md) | You are defining scope, capability, manifests, or mutation boundaries. |
-| [`docs/authentication.md`](docs/authentication.md) | The target requires API credentials, bearer tokens, or SSO. |
-| [`docs/deployment.md`](docs/deployment.md) | You are choosing host, Docker, browser, SAST/DAST, or RAG workers. |
+| | `./sast` | `./scan` | `./assess` | `./swarm` |
+|---|---|---|---|---|
+| **Workflow** | `sast_report` | `security_scan` | `deep_assess` | `swarm_assess` |
+| **Needs a live site?** | No — source only | Yes | Yes | Yes |
+| **What it does** | Static analysis (semgrep/gitleaks/trivy) + route extraction → triage | Crawl → plan → active DAST → triage | Agentic pentest: understand → hypothesize → **exploit** → adversarially verify, over deepening passes | A round-based **team** of agents that share a blackboard and compose partial results into chained findings |
+| **Confirms bugs live?** | No (triaged static findings) | Candidates + active DAST hits | **Yes** — re-runs each PoC, confirms blind bugs out-of-band, multi-identity | **Yes** — same oracles, at breadth; synthesizes chains no single agent sees |
+| **Typical time** | 1–2 min | 3–5 min | tens of minutes | tens of minutes → hours (sized by `--rounds`/`--width`) |
+| **Reach for it when** | You only have code | A fast surface pass | A thorough single-agent pentest | The deepest, widest hunt on a whole system |
 
-The README is the complete user overview. The documentation site splits the same operating model
-into task-focused pages; `SKILL.md` is intentionally concise and procedural for AI assistants.
-
-## Prerequisites
-
-- `conductor` CLI, Docker, Python 3.11+, `jq`, `curl`
-- `ANTHROPIC_API_KEY` — export it before your first run; `./scan`/`./assess` auto-start the Conductor server and it picks the key up from the environment
-- Run `make venv` once to build the worker virtualenv (installs Python deps + Playwright Chromium)
+`./run.sh <url> [flags]` is a convenience alias that forwards to `./scan`/`./assess`. Every mode writes the same [report bundle](#outputs) and obeys the same [authorization & capability gates](#authorization--safety).
 
 ---
 
 ## Quickstart
 
-One-time setup:
-
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-make venv                             # build worker venv — do this once
-make up                               # start OWASP Juice Shop (an intentionally vulnerable demo app, safe to scan) on :3001
+make venv          # build the worker virtualenv (Python deps + Playwright Chromium) — once
+make up            # start OWASP Juice Shop (a safe, intentionally-vulnerable target) on :3001
 ```
 
-Then scan it — **`./scan` auto-starts the full Conductor stack for you**:
+Scan it — `./scan` **auto-starts the whole Conductor stack** (server → register → worker fleet):
 
 ```bash
 ./scan http://localhost:3001 --authorized
-#   ℹ  conductor server: starting …        ← auto-started if not already up
-#   ℹ  workflows: registering …            ← auto-registered if missing
-#   ℹ  workers: starting fleet …           ← auto-started if not already polling
-#   → http://localhost:8080/execution/<id>  (watch it live in the Conductor UI)
-#   → reports/<scan-id>/report.pdf + report.md + findings.json + report.sarif
+#  → http://localhost:8080/execution/<id>     watch it live in the Conductor UI
+#  → reports/<scan-id>/report.pdf + report.md + findings.json + report.sarif
 ```
 
-When you're done: `make down` tears everything down.
+`make down` tears it all down. Without `--authorized`, every mode stops at the authorization gate by design.
 
-> **CI / shared server:** pass `--no-bootstrap` (or `SC_NO_BOOTSTRAP=1`) to skip auto-start and manage the stack yourself:
-> `make server && make register && make workers`
-
-For Enterprise/Orkes, export `CONDUCTOR_SERVER_URL`, `CONDUCTOR_AUTH_KEY`, and
-`CONDUCTOR_AUTH_SECRET` (or place them in the gitignored `.env`). All Conductor-facing CLI
-entrypoints, registration, and host workers inherit the same connection settings. Docker workers
-also inherit the credentials; set `CONDUCTOR_SERVER_URL_IN_DOCKER` when the host URL is not
-container-reachable. Explicit process values override `.env`. A reachable 401/403 or an
-unreachable authenticated/Enterprise endpoint is never replaced by local OSS.
-
-Without `--authorized`, the workflow stops at the authorization gate by design — this is intentional:
-
-```bash
-./scan http://localhost:3001          # → TERMINATED at authorization_gate
-./scan http://localhost:3001 --authorized
-```
-
-### Try it on the bundled vulnerable app
-
-A tiny deliberately-vulnerable Express app ships in `examples/vuln-app/` — a quick way to exercise the harness
-end to end. It has **no authentication** and seeds OS command injection (`/ping`), code injection (`/calc`), a
-SQL-injection sink (`/search`), a no-authz `/admin/users` endpoint, and hardcoded secrets.
-
-```bash
-# Terminal 1 — launch the test app (serves on :3000; set PORT to change it)
-cd examples/vuln-app && npm install && node server.js
-
-# Terminal 2 — deep assess WITH --source (recommended for this app):
-./assess http://localhost:3000 --authorized --capability 2 --profile vuln-app --source examples/vuln-app
-```
-
-> **Use `--assess --source`, not `./scan`, for this app.** Its routes aren't linked from `/`, and `./scan` is
-> crawl-driven — it discovers 0 endpoints here and only reports HTTP-header hygiene. `./assess --source` runs
-> route extraction over `server.js` to derive `/ping`, `/calc`, `/search` and then actively tests them, so it
-> catches the command/code injection. SAST findings (the hardcoded secrets, the SQLi sink) additionally require
-> `semgrep`/`gitleaks` on `PATH` (see [Deployment modes](#deployment-modes)); they degrade gracefully if absent.
-
-> ⚠️ It's intentionally insecure — bind it to localhost only and never expose it. The `--profile vuln-app`
-> hints the expected finding classes; the engine works without it.
+**Prerequisites:** `conductor` CLI, Docker, Python 3.11+, `jq`, `curl`. For a shared/CI stack, add `--no-bootstrap` and run `make server && make register && make workers` yourself. For Enterprise/Orkes, set `CONDUCTOR_SERVER_URL` / `CONDUCTOR_AUTH_KEY` / `CONDUCTOR_AUTH_SECRET` (or a gitignored `.env`) — see [docs/deployment.md](docs/deployment.md).
 
 ---
 
-## `./sast` vs `./scan` vs `./assess`
+## Usage
 
-Three entry points for different testing depths. (`./run.sh <url> [flags]` is a convenience alias that forwards to `./scan`/`./assess`.)
+### `./sast` — source only, no live target
 
-| | `./sast` — `sast_report` workflow | `./scan` — `security_scan` workflow | `./assess` — `deep_assess` workflow |
-|---|---|---|---|
-| **Needs a live site?** | **No** — source code only | Yes | Yes |
-| **Purpose** | Source-only static analysis: SAST (semgrep/gitleaks/trivy) + route extraction → triage → report | Fast surface scan: crawl → plan → DAST → triage → report | Deep agentic pentest: understand → hypothesize → **actively exploit** → adversarially verify, over iterative-deepening passes |
-| **Confirms bugs?** | No live target — reports **triaged** static findings (LLM cuts false positives; no active/out-of-band confirmation) | Reports candidates (+ active DAST hits) | **Yes** — re-runs each PoC and confirms blind bugs out-of-band; multi-identity cross-tenant testing |
-| **Typical time** | ~1–2 min | ~3–5 min | Tens of minutes |
-| **Authorization** | None needed (reads local source only; no network requests) | `--authorized` for quick tests; `--manifest` for real engagements | Same; `--manifest` recommended for anything beyond local demo |
-| **Capability** | n/a (no active requests) | read / active DAST (`--intrusive`) | 0–4; product-feature exploitation needs `--capability 2` |
-| **Outputs** | `report.md` + `report.pdf` + `findings.json` + `report.sarif` | same | same + `dossier.json` |
-
-### `./sast` examples
-
-Point it at code on disk — no server, no target, no `--authorized` (it only reads local files):
+Reads local files; no server, no `--authorized` needed.
 
 ```bash
-# Fast single-pass triage (~1-2 min) → reports/<scan-id>/report.{md,pdf} + findings.json + report.sarif
-./sast ./path/to/repo
-
-# --deep: a code-reading agent investigates EACH candidate (reads/greps the source to judge
-# reachability, refute-by-default) — cuts false positives hard. Slower, more LLM calls.
-./sast ./path/to/repo --deep
-
-# Label the run and use an already-running stack:
-./sast ./path/to/repo --target "acme-api @ abcd123" --no-bootstrap
-
-# Or via make:
-make sast-report SRC=./path/to/repo            # add ARGS='--deep' for the verified pass
+./sast ./path/to/repo                       # fast triage (~1–2 min)
+./sast ./path/to/repo --deep                # a code-reading agent judges each finding's reachability (fewer FPs)
+./sast ./path/to/repo --target "acme@abc123" --no-bootstrap
 ```
 
-> **`./sast` is static only.** It runs the analyzers and an LLM triage pass (which cuts false positives), but it does **not** crawl, actively exploit, or confirm anything against a running app — there's no live target. With `--deep`, a per-finding agent reads the code to judge whether each candidate is reachable from untrusted input (dropping dead/test/sanitized findings) — the same "prove it or drop it" discipline as the live scan, applied statically. When you also have the app running, use `./scan --source` or `./assess --source`, which fold the same SAST + route extraction into a live, exploit-and-verify run.
+SAST analyzers (`semgrep`/`gitleaks`/`trivy`) are used when present and degrade gracefully if absent. When the app is also running, prefer `./scan --source` or `./assess --source`, which fold the same static analysis into a live exploit-and-verify run.
 
-### `./scan` examples
+### `./scan` — fast surface scan
 
 ```bash
-# Passive + active surface scan:
-./scan http://localhost:3001 --authorized
-
-# Authenticated scan — tests the API behind auth (IDOR/BOLA/SSRF), not just maps it:
-./scan https://app.example.com --authorized \
-  --auth-key "$KEY" --auth-secret "$SECRET" --token-url https://app.example.com/api/token \
-  --scope app.example.com
-
-# With source code — adds SAST + route extraction to seed the live scan:
-./scan https://app.example.com --authorized --source ./code --intrusive
-
-# Already-running stack (skip auto-start):
-./scan http://localhost:3001 --authorized --no-bootstrap
+./scan http://localhost:3001 --authorized                      # passive + active surface scan
+./scan https://app.example.com --authorized \                  # authenticated (tests behind auth: IDOR/BOLA/SSRF)
+  --auth-key "$KEY" --auth-secret "$SECRET" --token-url https://app.example.com/api/token --scope app.example.com
+./scan https://app.example.com --authorized --source ./code --intrusive   # add SAST + route extraction
 ```
 
-### `./assess` examples
+### `./assess` — deep single-agent pentest
 
 ```bash
 # Two identities unlock BOLA / privilege-escalation / cross-tenant tests:
 ./assess https://app.example.com --authorized \
   --id 'userA=token:eyJ...A' --id 'userB=token:eyJ...B' --scope app.example.com
 
-# Capability-2 deep pentest — docs + source + two tenants + purple team:
-./assess https://your-conductor.example.com --authorized --capability 2 \
-  --profile conductor --docs https://orkes.io/content/ --source /path/to/source \
-  --id 'orgA=key:K1,secret:S1,tokenurl:https://your-conductor.example.com/api/token,tenant:orgA' \
-  --id 'orgB=key:K2,secret:S2,tokenurl:https://your-conductor.example.com/api/token,tenant:orgB' \
-  --purple --resilience --require-tenants 2 --leave-evidence
+# Capability-2, docs + source + two tenants + purple team:
+./assess https://your-system.example.com --authorized --capability 2 \
+  --docs https://your-docs.example.com/ --source /path/to/source \
+  --id 'orgA=key:K1,secret:S1,tokenurl:https://your-system.example.com/api/token,tenant:orgA' \
+  --id 'orgB=key:K2,secret:S2,tokenurl:https://your-system.example.com/api/token,tenant:orgB' \
+  --purple --require-tenants 2
 
-# Pin to a specific objective:
-./assess https://app.example.com --authorized --capability 2 --objective INFRA-SSRF
-
-# Hunt the source for exploitable chains, then DYNAMICALLY CONFIRM them against the live app:
+# Hunt the source for chains, then dynamically confirm them live:
 ./assess https://app.example.com --authorized --capability 2 --source ./code --hunt \
   --id 'userA=token:...' --oob <collaborator>
 ```
 
-> **Capability-2 prerequisites:** build the sandbox image once with `make codeexec-image`. For blind SSRF/RCE/exfil confirmation, start an OOB collaborator with `make oob`. `./assess` preflights and refuses a cap-2 run if the sandbox image is missing.
+A tiny seeded-vuln app ships in `examples/vuln-app/` (command/code/SQL injection, a no-authz endpoint, hardcoded secrets) — its routes aren't linked from `/`, so it's the quickest way to see `--source` route extraction work: `cd examples/vuln-app && npm install && node server.js`, then `./assess http://localhost:3000 --authorized --capability 2 --source examples/vuln-app`.
+
+### `./swarm` — the collaborative deep hunt
+
+The strongest mode. Instead of one agent, a **round-based team** works a shared **blackboard**: each round a standup plans a wave of independent agents — scouts for breadth, exploiters for depth, chainers, and adversarial refuters — then a reconcile step composes their verified primitives into **emergent chains no single agent sees end to end**. The whole swarm is one Conductor execution tree (the campaign `workflowId` is the `correlationId` on every child), so terminating the root is a one-shot kill switch.
+
+It takes the same target/auth/scope/capability flags as `./assess`, plus `--width` (agents per wave, default 24), `--rounds` (default 4), and `--budget` (request budget). It loops until the surface is covered or a cap is hit.
+
+```bash
+# (a) The bundled Juice Shop demo (run `make up` first):
+./swarm http://localhost:3001 --authorized --rounds 4
+
+# (b) Add the target's SOURCE so scouts hunt code paths, not just the URL surface:
+./swarm https://app.example.com --authorized --capability 2 --source ./code \
+  --id 'userA=token:eyJ...A' --id 'userB=token:eyJ...B' --scope app.example.com
+
+# (c) Full authenticated, multi-tenant campaign with DOCS + SOURCE (the strongest setup).
+#     Use key/secret identities so tokens auto-refresh across a long campaign:
+./swarm https://your-system.example.com --authorized --capability 2 \
+  --docs https://your-docs.example.com/ --source /path/to/source \
+  --width 24 --rounds 8 --budget 10000 \
+  --id 'orgA=key:K1,secret:S1,tokenurl:https://your-system.example.com/api/token,tenant:orgA' \
+  --id 'orgB=key:K2,secret:S2,tokenurl:https://your-system.example.com/api/token,tenant:orgB' \
+  --oob <collaborator>
+```
+
+**What the inputs unlock** — this is what makes the swarm pentest a *system*, not a list of URLs:
+
+- **`--docs <url|path>`** (repeatable; also loaded from a `--profile`) — ingests the product documentation and **learns how the system works**: its features, how to operate them, and the security *invariants* the docs claim ("only admins view audit logs", "secrets are masked", "a tag's grant is inherited"). Each documented endpoint and invariant becomes a tested hypothesis — *"prove the system does **not** enforce this"* — so agents weaponize features (define-and-run a workflow that SSRFs, register an integration that exfiltrates) instead of only probing endpoints. Scouts also query the docs live mid-campaign. JS-rendered doc sites are rendered headless.
+- **`--source <path>`** — runs the SAST hunt and seeds code-grounded hypotheses (reachable sinks, weak authz) that agents confirm live; add `--hunt` to drive source-found chains to confirmation.
+- **Two+ `--id` identities with distinct `tenant:` markers** — unlock the cross-identity oracles (BOLA / privilege-escalation / cross-tenant isolation).
+- **`--oob <collaborator>`** (`make oob`) — confirms *blind* SSRF/RCE/exfil. **`--capability 2`** (with `make codeexec-image`) is what lets agents create-and-run workflows/integrations, required for state-changing feature abuse.
+
+**What keeps it safe and trustworthy at breadth:** only a deterministic verifier that re-issues an oracle promotes a finding (oracles span SSRF, arithmetic RCE, time-blind SQLi, stored-XSS-in-victim-context, race invariants, path traversal, auth-state), and every candidate also faces an adversarial refuter. A global throughput ceiling on the `http_request`/`code_exec` task defs bounds live-target load at any tree width, and the root terminates the whole campaign on any policy/budget breach. Cost scales with wave width, so size it deliberately — `bench/swarm_eval.py` measures confirmed-findings-per-dollar vs. width; raise width only while that curve climbs. Design and rationale: [`design/SWARM.md`](design/SWARM.md).
 
 ---
 
-## Authentication & SSO
+## Authentication
 
 The harness carries a credential you supply on every request — it never automates the IdP login itself.
 
 | Target auth | How to supply it |
 |---|---|
-| API key / service account | `--id 'u=key:<K>,secret:<S>,tokenurl:https://app/api/token'` — re-exchanged locally each run (best for long campaigns). `./scan` uses `--auth-key/--auth-secret/--token-url`. |
-| Bearer/JWT you already have | `--id 'u=token:<JWT>'` (or `--auth-token` for `./scan`). Use `header:`/`scheme:` to override `Authorization: Bearer`. |
-| SSO (Google/Okta/SAML) | `./sso-capture` — log in once in a real browser, hand off the result (see below). |
+| API key / service account | `--id 'u=key:<K>,secret:<S>,tokenurl:https://app/api/token'` — re-exchanged locally each run (best for long campaigns; `./scan` uses `--auth-key/--auth-secret/--token-url`) |
+| Bearer / JWT you already have | `--id 'u=token:<JWT>'` (or `--auth-token` for `./scan`); add `header:`/`scheme:` to override `Authorization: Bearer` |
+| SSO (Google/Okta/SAML) | `./sso-capture https://app --label userA` — log in once in a real browser; it writes a credential file you pass as `--id 'userA=session:state/sessions/userA.json'` |
 
-**SSO in one step:** `./sso-capture` opens a real browser; you complete the login; it sniffs the auth header your app sends (scoped to the target domain — IdP cookies are ignored), and writes a credential file:
+SSO access tokens expire — prefer API-key credentials for long runs. More in [docs/authentication.md](docs/authentication.md).
 
-```bash
-./sso-capture https://app.example.com --label userA
-#   ✓ captured bearer-sniffed credential for 'userA' → state/sessions/userA.json
+---
 
-./assess https://app.example.com --authorized --id 'userA=session:state/sessions/userA.json'
-./scan   https://app.example.com --authorized --session state/sessions/userA.json
-```
+## Authorization & safety
 
-It captures the strongest available credential — sniffed bearer token → localStorage JWT → session cookie — and saves the full browser `storage_state`. Note: SSO access tokens expire; prefer API-key credentials for long runs and re-run `./sso-capture` to refresh.
+`--authorized` synthesizes a minimal, capability-bounded manifest for quick tests and CI. For real engagements use `--manifest <file>` (approvers, in-scope hosts, window, capability ceiling, rate/data budgets, allowed techniques, forbidden operations/protected records) — it is validated at startup and **fails closed**.
 
-For interactive UI exploitation with an already-logged-in browser, see `make chrome` + `SC_CDP_URL`.
+**Capability levels gate every action.** The ceiling comes from the manifest (`--capability <0-4>`, default **1**); every worker refuses an action above it, and the harness can never raise its own level.
+
+| Level | Permits | Verbs / actions | Mutates target? |
+|---|---|---|---|
+| **0** | Passive observation | recon only | No |
+| **1** *(default)* | Reversible low-volume probes | `GET`/`HEAD`/`OPTIONS` | **No — writes & `code_exec` refused** |
+| **2** | State-changing tests with synthetic data; feature exploitation | `POST`/`PUT`/`PATCH`/`DELETE`, `code_exec` | Only its own `sc-pentest-<run>-` objects, ledgered + auto-cleaned |
+| **3** | Sensitive / risky proof | as L2, just-in-time approved | As L2 (sensitive scope) |
+| **4** | Destructive / availability / real-data | — | **Prohibited by default; cannot self-escalate** |
+
+For a **guaranteed read-only** run, keep `--capability 1` (writes and `code_exec` are refused at the gate). The availability / denial-of-wallet tier is off unless you pass `--resilience`. An independent safety governor halts the campaign on window expiry, a `--kill-switch` file, or a rate/budget/policy breach, and a tamper-evident audit log records every action. Details: [docs/authorization.md](docs/authorization.md).
 
 ---
 
@@ -217,37 +163,34 @@ Every run writes to `reports/<scan-id>/`:
 | File | Contents |
 |---|---|
 | `report.pdf` / `report.md` | Human-readable findings report |
-| `findings.json` | Structured findings — severity, CWE, OWASP, reproduction steps |
-| `report.sarif` | SARIF 2.1.0 — ingest into GitHub code scanning, DefectDojo, or your SIEM |
-| `dossier.json` | (`./assess` only) Attack graph + confirmed/blind findings + residual-risk statement |
+| `findings.json` | Structured findings — severity, CWE, OWASP, reproduction |
+| `report.sarif` | SARIF 2.1.0 — ingest into GitHub code scanning, DefectDojo, or a SIEM |
+| `dossier.json` | (`./assess` / `./swarm`) attack graph + confirmed/blind findings + residual-risk statement |
 
 ---
 
 ## Architecture
 
 ```
-WORKFLOW security_scan
-  normalize_target → authorization_gate (refuse if not authorized)
-    → [source? → SAST sub-workflow → seed targets]
-    → recon (passive) → web_crawl (Playwright + agent)
-    → plan (LLM) → active_scan (FORK_JOIN_DYNAMIC)
-    → triage (LLM: dedupe, severity, CWE/OWASP, cut FPs)
-    → report_md (LLM) → report_pdf (GENERATE_PDF) → persist
+security_scan        normalize → authorization_gate → [source? → SAST → seed]
+                       → recon + crawl + API discovery (FORK_JOIN)
+                       → plan → active_scan (FORK_JOIN_DYNAMIC) → triage → report → PDF
+
+swarm_assess         authorization_gate → seed blackboard
+                       → understand once (recon → app model → DOCS INGEST → feature inventory → SAST hunt → personas)
+                       → DO_WHILE rounds:  safety_check → standup → wave (FORK_JOIN_DYNAMIC) → reconcile
+                       → scribe rollup (coverage + confirmed findings + spend)
 ```
 
-LLM reasoning runs in native `LLM_CHAT_COMPLETE` tasks (Anthropic). Security tools run in Dockerized workers. Surface gathering (recon, crawl, API discovery, SAST) runs concurrently in a `FORK_JOIN` — the three sequential LLM steps (plan → triage → report) are on a true data dependency and cannot overlap.
+LLM reasoning runs in native `LLM_CHAT_COMPLETE` tasks (Anthropic); security tools run in Dockerized workers; surface-gathering runs concurrently. More in [docs/architecture.md](docs/architecture.md).
 
----
-
-## Deployment modes
-
-| Mode | Command | Notes |
+| Deployment mode | Command | Notes |
 |---|---|---|
-| Host workers | `make workers` | All task types; semgrep via pip; nuclei/sqlmap/dalfox/ffuf/gitleaks/trivy degrade gracefully if absent |
-| Dockerized DAST | `make dast` | nuclei/sqlmap/dalfox/ffuf in a container; run host workers as `recon,browser` to avoid double-polling `active_check` |
-| Dockerized SAST | `make sast SRC_ROOT=<dir>` | semgrep/gitleaks/trivy in a container; source mounted read-only at its real path |
-| Persistent browser | `make chrome` + `SC_CDP_URL=http://127.0.0.1:9222` | Playwright connects over CDP to one live browser, preserving in-page/SPA state across `--agent` steps |
-| Vector-RAG | `make rag` | Starts pgvector, indexes `knowledge/`; triage pulls relevant remediation chunks rather than the full static KB |
+| Host workers | `make workers` | All task types; scanners degrade gracefully if absent |
+| Dockerized DAST | `make dast` | nuclei/sqlmap/dalfox/ffuf in a container |
+| Dockerized SAST | `make sast SRC_ROOT=<dir>` | semgrep/gitleaks/trivy; source mounted read-only |
+| Persistent browser | `make chrome` + `SC_CDP_URL=…` | one live browser, preserves SPA state across agent steps |
+| Vector-RAG | `make rag` | pgvector-backed remediation retrieval for triage |
 
 ---
 
@@ -255,139 +198,18 @@ LLM reasoning runs in native `LLM_CHAT_COMPLETE` tasks (Anthropic). Security too
 
 | Path | Contents |
 |---|---|
-| `conductor/` | Workflow JSON, task definitions, schedules, `register.sh`, `ensure-stack.sh` (auto-bootstrap) |
-| `workers/` | Task workers — `common/` (scope, findings, SARIF, voting), `recon/`, `main.py`, Dockerfiles |
-| `prompts/` | LLM system prompts (triage, report, exploit, verify) — injected at register time |
-| `catalog/` | Security-objective catalog + substrate pack (the data spine) |
+| `conductor/` | Workflow JSON, task defs, `register.sh`, `ensure-stack.sh` (auto-bootstrap) |
+| `workers/` | Task workers — `common/`, `recon/`, `swarm/`, `main.py`, Dockerfiles |
+| `prompts/` | LLM system prompts (injected at register time) |
+| `catalog/` | Security-objective catalog + substrate pack |
 | `bench/` | Benchmark/oracle harness → `reports/BENCH.md` |
-| `sast` | Entry point: source-only static assessment (`sast_report` workflow) — no live site |
-| `scan` | Entry point: fast surface scan (`security_scan` workflow) |
-| `assess` | Entry point: deep agentic pentest (`deep_assess` workflow) |
-| `swarm` | Entry point: round-based swarm of hundreds of collaborating agents (`swarm_assess` workflow) — see [`design/SWARM.md`](design/SWARM.md) |
+| `sast` · `scan` · `assess` · `swarm` | The four run entry points |
 | `sso-capture` | Capture an SSO browser session → an `--id` credential |
 
----
+## Documentation
 
-## Authorization & capability levels
-
-Use `--authorized` for quick tests and CI — it synthesizes a minimal, capability-bounded manifest automatically.
-
-For real engagements, use `--manifest <file>` instead. A manifest specifies: approvers, in-scope hosts, testing window, capability ceiling, rate/data-volume budgets, allowed techniques, and forbidden operations / protected records. It is validated at startup and **fails closed**.
-
-**Capability levels gate every action.** The ceiling comes from the manifest (`--capability <0-4>`, default **1**); every worker refuses an action whose required level exceeds it, and the harness can never raise its own level.
-
-| Level | Permits | HTTP verbs / actions | Mutates the target? |
-|---|---|---|---|
-| **0** | Passive reading / observation | recon only, no active requests | No |
-| **1** *(default)* | Reversible, low-volume active probes | `GET` / `HEAD` / `OPTIONS` | **No — writes & `code_exec` refused at the gate** |
-| **2** | State-changing tests with **synthetic data**; product-feature exploitation | `POST` / `PUT` / `PATCH` / `DELETE`, `code_exec` | Creates only its own `sc-pentest-<run>-` objects, ledgered and auto-cleaned |
-| **3** | Potentially sensitive / operationally risky proof | as L2, just-in-time approved | As L2 (sensitive scope) |
-| **4** | Destructive / availability-impacting / real-data extraction | — | **Prohibited by default; cannot self-escalate** |
-
-The bounded availability / denial-of-wallet tier (load probing) is **off** unless you pass `--resilience`.
-
-### Running without mutating the target
-
-- **Guaranteed read-only:** use `--capability 1` (the default). Writes and `code_exec` are refused by the capability gate in every worker — zero mutations, zero destruction — while you still get the full read-based active surface (GET-param SQLi/XSS/traversal/open-redirect/CORS, recon, crawl, SAST). Trade-off: state-changing classes (e.g. SSRF that requires *creating and running* a workflow) aren't reachable.
-- **Capability 2 without touching existing resources:** level 2 operates only on synthetic, prefixed objects it creates and then cleans up; destructive/availability actions are level 4 (off). To turn that convention into a *hard* fence, add `forbidden_operations` / `protected_records` to a `--manifest` — they are enforced on direct HTTP calls **and inside the `code_exec` sandbox**. (Avoid a blanket `DELETE *`, which would also block cleanup of the synthetic objects.)
-
-An independent safety governor halts the campaign on window expiry, a `--kill-switch` file, a rate/data-volume budget breach, or a policy breach. A tamper-evident audit log records every action.
-
----
-
-## Swarm mode (experimental)
-
-The default `deep_assess` runs one expert agent that doubts itself. **Swarm mode** scales that to a
-round-based *team* of hundreds of agents to discover the deepest, most unobvious, chained
-vulnerabilities — the ones no single agent sees end to end. The design and rationale are in
-[`design/SWARM.md`](design/SWARM.md).
-
-The engine is massive parallelism plus a collaboration loop. Each round: a **standup** (allocator)
-reads the campaign **blackboard** and plans a credit-sized wave; a **wave** of independent agents
-(scouts for breadth, exploiters for depth, chainers, refuters) works in parallel and posts findings
-to the board; a **reconcile/synthesize** step composes verified primitives from different agents into
-emergent chains and decides whether to go another round. The swarm tree is the Conductor execution
-tree: the campaign `workflowId` is the `correlationId` stamped down every child, so the whole swarm
-is one query and terminating the root cascades to every agent (the kill switch).
-
-```
-WORKFLOW swarm_assess
-  authorization_gate → seed blackboard
-    → understand once (recon → app model → DOCS INGEST → feature inventory → SAST hunt → personas)
-    → DO_WHILE round_loop:  safety_check → swarm_round (standup → wave FORK_JOIN_DYNAMIC → reconcile)
-    → scribe rollup (coverage + confirmed findings + spend, by correlationId)
-```
-
-### Running a swarm campaign
-
-`./swarm` takes the same target / auth / scope / capability flags as `./assess`, plus `--width`
-(agents per wave, default 24), `--rounds` (standup rounds, default 4), and `--budget` (request
-budget). It loops until the surface is covered or the budget/round cap is hit.
-
-```bash
-# (a) Against the bundled OWASP Juice Shop demo (run `make up` first):
-./swarm http://localhost:3001 --authorized --rounds 4
-
-# (b) Add the target's SOURCE so scouts hunt real code paths, not just the URL surface
-#     (source enables the SAST hunt that seeds code-grounded hypotheses):
-./swarm https://app.example.com --authorized --capability 2 --source ./code \
-  --id 'userA=token:eyJ...A' --id 'userB=token:eyJ...B' --scope app.example.com
-
-# (c) Full authenticated, multi-tenant campaign with DOCS + SOURCE (the strongest setup) —
-#     prefer key/secret identities so tokens auto-refresh across a long campaign:
-./swarm https://your-system.example.com --authorized --capability 2 \
-  --docs https://your-docs.example.com/ --source /path/to/source \
-  --width 24 --rounds 8 --budget 10000 \
-  --id 'orgA=key:K1,secret:S1,tokenurl:https://your-system.example.com/api/token,tenant:orgA' \
-  --id 'orgB=key:K2,secret:S2,tokenurl:https://your-system.example.com/api/token,tenant:orgB' \
-  --oob <collaborator>
-```
-
-**What `--docs` and `--source` give the swarm** — this is what makes it pentest a *system*, not a
-list of URLs:
-
-- `--docs <url|path>` (repeatable; also auto-loaded from a `--profile`) — the swarm **ingests the
-  product documentation and learns how the system actually works**: its features, the call sequences
-  to operate them, and the security *invariants* the docs claim (e.g. "only admins view audit logs",
-  "secrets are masked in output", "a tag's grant is inherited by tagged resources"). It turns each
-  documented endpoint and invariant into a tested hypothesis — *"prove the system does **not**
-  enforce this rule"* — so agents weaponize features (define-and-run a workflow that SSRFs, register
-  an integration that exfiltrates) instead of only probing endpoints. Scouts also query the docs live
-  (`search_docs`) mid-campaign to learn a feature before attacking it. JS-rendered doc sites are
-  supported (headless render), and the crawler prioritises the concrete reference/how-to pages that
-  state the rules.
-- `--source <path>` — runs the SAST hunt over the code and seeds **code-grounded** hypotheses
-  (reachable sinks, weak authz checks) that agents then confirm live. Combine with `--hunt` to drive
-  source-discovered chains to dynamic confirmation.
-- **Two or more `--id` identities with distinct `tenant:` markers** unlock the cross-identity oracles
-  (BOLA / privilege-escalation / cross-tenant isolation) — the swarm replays an action as one
-  identity and checks it was reachable by another.
-- `--oob <collaborator>` — an out-of-band callback host that confirms *blind* SSRF / RCE / exfil
-  (`make oob` starts a local one). `--capability 2` (with `make codeexec-image`) is what lets agents
-  create-and-run workflows/integrations — required for the state-changing feature-abuse classes.
-
-Watch it live in the Conductor UI at the printed `/execution/<id>` URL; terminating that root
-execution cascades the kill switch to every agent in the tree.
-
-Key properties that keep breadth safe and trustworthy:
-
-- **Trust:** only a deterministic verifier worker that re-issues an oracle promotes a finding; every
-  candidate also faces an adversarial `refuter`. Oracle coverage spans SSRF, arithmetic RCE,
-  time-blind SQLi, stored-XSS-in-victim-context, race invariants, path-traversal, and auth-state.
-- **Shared memory:** an append-only blackboard keyed by `correlationId` (local disk or S3 via
-  external payload storage) — one object per fact, lock-free, so hundreds of writers never collide.
-- **Safety at scale:** a global throughput ceiling on `http_request`/`code_exec` task defs bounds
-  live-target load at any tree width; the root terminates the whole swarm on any breach.
-- **Prove before scaling:** `bench/swarm_eval.py` measures confirmed-findings-per-dollar vs. wave
-  width; raise the width only while that curve climbs.
-
-Like the other entry points, a campaign writes `reports/<campaign-id>/report.pdf` + `report.md` +
-`findings.json` + `report.sarif` + `dossier.json` (the `<campaign-id>` is the correlation id). Swarm
-mode shares the same authorization, capability, and scope gates as the rest of the harness; it never
-raises its own level.
-
----
+`SKILL.md` is a concise procedural guide for AI assistants; the [docs site](docs/index.md) splits the operating model into task pages: [quickstart](docs/quickstart.md) · [scan vs assess](docs/scan-vs-assess.md) · [authorization](docs/authorization.md) · [authentication](docs/authentication.md) · [deployment](docs/deployment.md) · [architecture](docs/architecture.md) · [outputs](docs/outputs.md).
 
 ## Why Conductor
 
-Security scans are long-running, parallel, and failure-prone — exactly the problem Conductor was built to solve. See the [parent README](../README.md#why-conductor) for the full breakdown.
+Security scans are long-running, parallel, and failure-prone — exactly what Conductor was built to orchestrate. See the [parent README](../README.md#why-conductor).
