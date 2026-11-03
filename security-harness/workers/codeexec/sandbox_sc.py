@@ -255,6 +255,21 @@ def inband_probe(oracle: str, **spec):
                    # negative quantity/price/balance: verifier reads value_path out of the readback
       inband_probe('monotonic_state', before={req}, transition={req}, after={req}, control={req},
                    state_path='data.status', state_order=['in_cart','paid','shipped','delivered'])
+
+    LEVEL-4 oracles (destructive / availability / real-data extraction) -- the verifier executes
+    these ONLY when the campaign is authorized to capability 4; plant them only for a cap-4 run:
+      inband_probe('data_exfiltration', extract={req}, record_path='data', min_records=5)
+                   # BULK REAL-DATA EXTRACTION: the one request that dumps a volume of real records
+                   # (SQLi UNION over a user/credential table, mass IDOR enumeration, unauth export).
+                   # record_path = the JSON path to the row list; the verifier re-issues, counts
+                   # DISTINCT rows, and classifies the body for sensitive data (pii/secret/pci/...).
+      inband_probe('destructive_persist', pre_readback={req}, destroy={req}, post_readback={req},
+                   marker='<distinctive-content-of-the-resource>')
+                   # IRREVERSIBLE DESTRUCTION: prove the resource EXISTS (pre 2xx w/ marker), run the
+                   # destroy op (DELETE/corrupt), prove it is GONE (post 404/410 or marker removed).
+      inband_probe('availability_degradation', request={req}, concurrency_ramp=[1,2,4,8])
+                   # AVAILABILITY/DoS: a bounded authorized load ramp; verifier measures the p95/error
+                   # knee. Needs capability 4 AND manifest allowed_classes:[resilience].
     where each ``req`` is {method, path|url, headers, body, identity}.
 
     RETURNS an acknowledgement dict (NOT a confirmation): the plan is now queued for the trusted

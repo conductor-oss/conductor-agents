@@ -451,3 +451,36 @@ def test_inband_confirmation_accepts_direct_reach_reflection():
     # still rejects when backend not reached or no marker
     assert evidence.inband_confirmation({**base,"reached_backend":False,"marker":"x"})[0] is False
     assert evidence.inband_confirmation({**base,"reached_backend":True,"marker":""})[0] is False
+
+
+def test_data_exfiltration_level4():
+    recs = [{"email": f"u{i}@x.op", "pw": "h"} for i in range(10)]
+    assert io.data_exfiltration(recs, 5, ["pii"])["confirmed"] is True
+    # too few records -> not confirmed
+    assert io.data_exfiltration(recs[:3], 5, ["pii"])["confirmed"] is False
+    # enough rows but NO sensitive class (benign public list) -> not confirmed (FP guard)
+    assert io.data_exfiltration(recs, 5, [])["confirmed"] is False
+    # duplicates collapse to distinct
+    assert io.data_exfiltration([{"a": 1}] * 10, 5, ["pii"])["record_count"] == 1
+
+
+def test_destructive_persist_level4():
+    pre = {"status": 200, "body": "order-42 total $9"}
+    assert io.destructive_persist(pre, {"status": 404}, "order-42")["confirmed"] is True
+    # resource never existed (pre absent) -> no-op delete cannot pass
+    assert io.destructive_persist({"status": 404}, {"status": 404}, "order-42")["confirmed"] is False
+    # still present after destroy -> not confirmed
+    assert io.destructive_persist(pre, {"status": 200, "body": "order-42 total $9"}, "order-42")["confirmed"] is False
+
+
+def test_availability_degradation_level4():
+    degraded = [{"concurrency": 1, "p95_ms": 100, "error_rate": 0.0},
+                {"concurrency": 8, "p95_ms": 900, "error_rate": 0.1}]
+    assert io.availability_degradation(degraded)["confirmed"] is True
+    flat = [{"concurrency": c, "p95_ms": 100 + c, "error_rate": 0.0} for c in (1, 2, 4, 8)]
+    assert io.availability_degradation(flat)["confirmed"] is False
+
+
+def test_level4_oracles_registered():
+    for name in ("data_exfiltration", "destructive_persist", "availability_degradation"):
+        assert name in io.LEVEL4_ORACLES

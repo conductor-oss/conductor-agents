@@ -12,8 +12,15 @@ Pure logic, unit-tested (`tests/test_inband_oracle.py`). A verifier worker wraps
 
 from __future__ import annotations
 
+import json
+
 # Statuses a front-end/authz layer returns when it BLOCKS a request (used for the SSRF control).
 DEFAULT_BLOCKED_STATUSES = (401, 403, 407)
+
+# LEVEL-4 (destructive / availability-impacting / real-data extraction) oracles. The verifier only
+# executes these when the campaign is authorized to capability_max>=4 -- re-issuing the proof is
+# itself a level-4 action.
+LEVEL4_ORACLES = ("data_exfiltration", "destructive_persist", "availability_degradation")
 
 
 def _contains(haystack, needle) -> bool:
@@ -414,3 +421,59 @@ def cross_identity_access(victim, attacker, victim_marker, control=None,
     return {"oracle": "cross_identity_access", "confirmed": confirmed,
             "marker_leaked": leaked, "control_clean": control_clean,
             "attacker_status": astatus, "marker": marker if confirmed else ""}
+
+
+# --- LEVEL-4 oracles (destructive / availability / real-data extraction) --------------------------
+
+def data_exfiltration(records, min_records: int = 5, sensitive_classes=None) -> dict:
+    """Confirm LEVEL-4 BULK REAL-DATA EXTRACTION: an attacker pulled a volume of DISTINCT real records
+    carrying sensitive data they must not have (SQLi UNION dump, mass IDOR enumeration, unauth bulk
+    export). ``records`` is the list of records the VERIFIER parsed from the re-issued response;
+    ``sensitive_classes`` is the DLP classification of that body (e.g. ["pii","secret"]). Confirmed
+    iff there are >= ``min_records`` DISTINCT records AND at least one sensitive class is present --
+    so a public list endpoint returning many non-sensitive rows (the classic FP) cannot pass."""
+    recs = records or []
+    seen, distinct = set(), 0
+    for r in recs:
+        k = json.dumps(r, sort_keys=True, default=str) if isinstance(r, (dict, list)) else str(r)
+        if k not in seen:
+            seen.add(k)
+            distinct += 1
+    classes = [str(c) for c in (sensitive_classes or [])]
+    enough = distinct >= max(1, int(min_records))
+    confirmed = bool(enough and classes)
+    return {"oracle": "data_exfiltration", "confirmed": confirmed, "record_count": distinct,
+            "min_records": int(min_records), "sensitive_classes": classes}
+
+
+def destructive_persist(pre_readback, post_readback, marker="",
+                        blocked_statuses=(401, 403, 404, 410)) -> dict:
+    """Confirm LEVEL-4 DESTRUCTIVE IMPACT: a resource that EXISTED was irreversibly destroyed/corrupted
+    by the attacker's operation. ``pre_readback`` must show it present (2xx and, if a marker is given,
+    containing it); ``post_readback`` (AFTER the destroy op) must show it gone (404/410/blocked) or the
+    marker removed. Confirmed iff present-then-gone -- guards the FP where the resource never existed
+    (pre absent) so a no-op 'delete' of a missing id cannot pass."""
+    pre, post = pre_readback or {}, post_readback or {}
+    m = str(marker or "")
+    pre_status = pre.get("status")
+    pre_present = (isinstance(pre_status, int) and 200 <= pre_status < 300
+                   and (not m or m in str(pre.get("body") or "")))
+    post_status = post.get("status")
+    gone = (post_status in (404, 410) or post_status in blocked_statuses
+            or (bool(m) and isinstance(post_status, int) and 200 <= post_status < 300
+                and m not in str(post.get("body") or "")))
+    confirmed = bool(pre_present and gone)
+    return {"oracle": "destructive_persist", "confirmed": confirmed, "pre_present": pre_present,
+            "destroyed": gone, "pre_status": pre_status, "post_status": post_status}
+
+
+def availability_degradation(steps, baseline_ms=None) -> dict:
+    """Confirm LEVEL-4 AVAILABILITY IMPACT: under a bounded, authorized load ramp the service degrades
+    (latency knee / rising error rate). ``steps`` is [{concurrency, p95_ms, error_rate}] measured by
+    the verifier itself. Confirmed iff a degradation knee is detected (delegates to loadknee.analyze,
+    which encodes the baseline-relative inflection guard)."""
+    from common import loadknee
+    a = loadknee.analyze(steps or [])
+    return {"oracle": "availability_degradation", "confirmed": bool(a.get("degraded")),
+            "knee_at": a.get("knee_at"), "baseline_ms": a.get("baseline_ms"),
+            "steps": len(steps or []), "summary": a.get("summary", "")}

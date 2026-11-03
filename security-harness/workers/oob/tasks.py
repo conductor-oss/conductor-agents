@@ -141,6 +141,18 @@ def _issue_burst(req: dict, identities: dict, base_url: str, n: int) -> list:
     return [r.get("status") for r in results]
 
 
+def _issue_burst_timed(req: dict, identities: dict, base_url: str, n: int) -> dict:
+    """Fire ``n`` concurrent identical requests (bounded) and return {statuses, p95_ms} — the
+    availability verifier's per-concurrency-step measurement for the load-knee analyzer."""
+    from concurrent.futures import ThreadPoolExecutor
+    n = max(1, min(int(n or 1), 20))
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        results = list(pool.map(lambda _: _issue(req, identities, base_url), range(n)))
+    lats = sorted(int(r.get("elapsed_ms") or 0) for r in results)
+    p95 = lats[min(len(lats) - 1, int(0.95 * len(lats)))] if lats else 0
+    return {"statuses": [r.get("status") for r in results], "p95_ms": p95}
+
+
 _BLOCKED = (401, 403, 404, 405, 409, 423)
 
 
@@ -178,6 +190,8 @@ _PRIMARY_REQ = {
     "auth_bypass": ["escalated", "test"], "behavioral_differential": ["test"],
     "single_use": ["action", "test"], "value_floor": ["mutate", "readback"],
     "monotonic_state": ["transition"],
+    "data_exfiltration": ["extract", "test"], "destructive_persist": ["destroy", "test"],
+    "availability_degradation": ["request", "test"],
 }
 
 
@@ -209,6 +223,15 @@ def inband_check(task):
     identities = inp.get("identities") if isinstance(inp.get("identities"), dict) else {}
     base = str(inp.get("base_url") or "")
     oracle = probe.get("oracle")
+    # LEVEL-4 gate: re-issuing a destructive / availability / bulk-extraction proof is itself a
+    # level-4 action, so the verifier refuses it unless the campaign is authorized to capability 4.
+    try:
+        cap = int(inp.get("capability_max") or 1)
+    except (TypeError, ValueError):
+        cap = 1
+    if oracle in inband_oracle.LEVEL4_ORACLES and cap < 4:
+        return {**unavailable, "oracle": oracle,
+                "note": f"level-4 oracle '{oracle}' needs capability 4 (authorized to {cap})"}
     try:
         if oracle == "ssrf_differential":
             ctl = _issue(probe.get("control") or {}, identities, base)
@@ -345,6 +368,49 @@ def inband_check(task):
             control_enforced = bool(ctl and ctl.get("status") in _BLOCKED)
             res = inband_oracle.monotonic_state(rank.get(from_state, -1), rank.get(to_state, -1),
                                                 control_enforced, from_state=from_state, to_state=to_state)
+        elif oracle == "data_exfiltration":
+            # LEVEL 4: re-issue the bulk-extraction request, parse the records ourselves, and classify
+            # the body for sensitive data so a benign public list cannot pass.
+            resp = _issue(probe.get("extract") or probe.get("test") or {}, identities, base)
+            body = resp.get("body") or ""
+            records = _dig(body, probe.get("record_path")) if probe.get("record_path") else None
+            if not isinstance(records, list):
+                try:
+                    lists = []
+                    def _walk(o):
+                        if isinstance(o, list):
+                            lists.append(o)
+                        elif isinstance(o, dict):
+                            for v in o.values():
+                                _walk(v)
+                    _walk(json.loads(body))
+                    records = max(lists, key=len) if lists else []
+                except (ValueError, TypeError):
+                    records = [ln for ln in body.splitlines() if ln.strip()]
+            from common import sensitive as _sens
+            classes = list(_sens.classify(body).get("classes", {}).keys())
+            res = inband_oracle.data_exfiltration(records, probe.get("min_records", 5), classes)
+        elif oracle == "destructive_persist":
+            # LEVEL 4: prove a resource existed, run the destroy op, prove it is gone (read-back).
+            pre = _issue(probe.get("pre_readback") or probe.get("readback") or {}, identities, base)
+            _issue(probe.get("destroy") or probe.get("test") or {}, identities, base)
+            post = _issue(probe.get("post_readback") or probe.get("readback") or {}, identities, base)
+            res = inband_oracle.destructive_persist(pre, post, probe.get("marker") or "")
+        elif oracle == "availability_degradation":
+            # LEVEL 4: additionally gated by the resilience allow-list (availability/DoS tier).
+            from common import authz as _authz
+            if not _authz.resilience_allowed({"allowed_classes": inp.get("allowed_classes") or [],
+                                              "capability_max": cap}):
+                return {**unavailable, "oracle": oracle,
+                        "note": "availability oracle needs capability 4 + allowed_classes:[resilience]"}
+            req = probe.get("request") or probe.get("test") or {}
+            steps = []
+            for c in (probe.get("concurrency_ramp") or [1, 2, 4, 8]):
+                lat = _issue_burst_timed(req, identities, base, c)
+                errs = sum(1 for s in lat["statuses"] if not s or s >= 500)
+                steps.append({"concurrency": c, "p95_ms": lat["p95_ms"],
+                              "error_rate": errs / max(1, len(lat["statuses"]))})
+            res = inband_oracle.availability_degradation(steps)
         else:
             return {**unavailable, "note": f"unknown oracle '{oracle}'"}
         receipt = {"verification": evidence_mod.INBAND_VERIFIER, "available": True, **res}
