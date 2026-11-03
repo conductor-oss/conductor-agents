@@ -369,7 +369,11 @@ function cidShort(){return CID?CID.slice(0,8):""}
 function pick(cid){CID=cid;allMsgs=[];msgIds={};$("#sel").textContent="▶ watching "+cid.slice(0,8);
   document.querySelectorAll(".run").forEach(r=>r.classList.toggle("sel",r.dataset.cid===cid));
   renderFeed();showTab("progress");}  // clicking a run selects it AND jumps to its live view
-function msgHTML(m){return `<div class="msg ${m.intent}"><div class="h"><span class="intent ${m.intent}">${m.intent}</span> `+
+function fmtTs(ts){if(!ts)return"";const d=new Date(ts*1000);return d.toLocaleTimeString([], {hour12:false})+"."+String(d.getMilliseconds()).padStart(3,"0").slice(0,2);}
+function fmtTsFull(ts){return ts?new Date(ts*1000).toLocaleString():"";}
+function msgHTML(m){return `<div class="msg ${m.intent}"><div class="h">`+
+  `<span class="mut mono" title="${fmtTsFull(m.ts)}">${fmtTs(m.ts)}</span> `+
+  `<span class="intent ${m.intent}">${m.intent}</span> `+
   `<span class="mono">${m.from}</span><span class="mut">(${m.from_role})</span>→<span class="mono">${m.to}</span>`+
   `${m.thread?` <span class="mut">«${m.thread}»</span>`:""}</div><div class="b">${(m.body||"").replace(/</g,"&lt;")}</div></div>`;}
 function renderFeed(){const feed=$("#feed");if(!feed)return;
