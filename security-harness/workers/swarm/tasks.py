@@ -18,6 +18,7 @@ from common import blackboard as bb
 from common import doc_surface as docsurf
 from common import identity as idmod
 from common import oracle_router as orc
+from common import repro as repro_mod
 
 # Oracles whose proof needs a distinctive datum from ANOTHER identity — hand the agent those markers so
 # it doesn't burn its budget discovering "which resource does the victim own".
@@ -543,6 +544,14 @@ def scribe_rollup(task):
     state = bb.assemble_state(cid)
     rollup = bb.campaign_rollup(cid)
     confirmed = [f for f in state["findings"] if f.get("confirmed") and f.get("refuted") is not True]
+    # Attach analyst-ready reproduction (steps + curl + validate + fix-verify) to every confirmed
+    # finding so the report can render it — findings otherwise carry only a one-line oracle note.
+    for f in confirmed:
+        try:
+            f["reproduction_md"] = repro_mod.markdown(f)
+            f["reproduction"] = repro_mod.build(f)
+        except Exception:
+            f["reproduction_md"] = ""
     return {"rollup": rollup, "confirmed_findings": confirmed,
             "verified_primitives": state["verified_primitives"],
             "tried_signatures": state["tried_signatures"],
