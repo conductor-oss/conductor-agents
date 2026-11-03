@@ -167,6 +167,30 @@ def _dig(body, path):
     return obj
 
 
+# The request key that carries the CONFIRMING (malicious) request per oracle — captured for the
+# reproduction PoC so the report's curl is the exact request the verifier re-issued.
+_PRIMARY_REQ = {
+    "ssrf_differential": ["test"], "rce_arithmetic": ["request"], "time_blind_sql": ["test"],
+    "path_traversal_canary": ["test"], "race_invariant": ["boundary_request", "test"],
+    "auth_state_illegal_transition": ["test"], "stored_xss_victim_context": ["store", "view"],
+    "sql_error_differential": ["test"], "boolean_sqli": ["true", "true_req"],
+    "cross_identity_access": ["attacker"], "cross_tenant_write_persist": ["write", "attacker"],
+    "auth_bypass": ["escalated", "test"], "behavioral_differential": ["test"],
+    "single_use": ["action", "test"], "value_floor": ["mutate", "readback"],
+    "monotonic_state": ["transition"],
+}
+
+
+def _primary_req(probe: dict) -> dict | None:
+    """The confirming request from a probe spec, minus headers (which may carry a raw token)."""
+    for k in _PRIMARY_REQ.get(probe.get("oracle"), ["test", "request", "attacker"]):
+        r = probe.get(k)
+        if isinstance(r, dict) and (r.get("url") or r.get("path")):
+            return {"method": str(r.get("method") or "GET").upper(), "path": r.get("path") or "",
+                    "url": r.get("url") or "", "body": r.get("body"), "identity": r.get("identity") or ""}
+    return None
+
+
 @worker_task(task_definition_name="inband_check", thread_count=2)
 def inband_check(task):
     """Independently RE-ISSUE an in-band exploitation oracle and emit a typed inband_check/v1
@@ -323,6 +347,24 @@ def inband_check(task):
                                                 control_enforced, from_state=from_state, to_state=to_state)
         else:
             return {**unavailable, "note": f"unknown oracle '{oracle}'"}
-        return {"verification": evidence_mod.INBAND_VERIFIER, "available": True, **res}
+        receipt = {"verification": evidence_mod.INBAND_VERIFIER, "available": True, **res}
+        # On confirmation, capture the EXACT confirming request so the report can render a runnable
+        # PoC. Also post it to the blackboard (keyed by endpoint) so scribe_rollup joins it to the
+        # matching finding — the finding fact is assembled downstream and cannot carry it directly.
+        if res.get("confirmed"):
+            rq = _primary_req(probe)
+            if rq:
+                receipt["reproduction_request"] = rq
+                cid = str(inp.get("correlation_id") or "")
+                if cid:
+                    try:
+                        from common import blackboard as _bb
+                        _bb.post_fact(cid, str(inp.get("author") or "inband_check"), "repro",
+                                      {"reproduction_request": rq, "oracle": oracle,
+                                       "objective_id": str(inp.get("objective_id") or ""),
+                                       "endpoint": (rq["method"] + " " + (rq["url"] or rq["path"])).strip()})
+                    except Exception:
+                        pass
+        return receipt
     except Exception as exc:
         return {**unavailable, "error": str(exc)}

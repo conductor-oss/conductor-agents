@@ -29,6 +29,27 @@ def _endpoint(f: dict) -> tuple[str, str]:
     return "", ""
 
 
+def endpoint_key(method, path) -> str:
+    """Normalized 'METHOD /path' key for joining a captured request to a finding — host stripped and
+    id-ish segments collapsed to {id} so '/api/webhook/abc123' and '/api/webhook/{id}' match."""
+    path = str(path or "")
+    m = re.match(r"https?://[^/]+(/.*)", path)
+    if m:
+        path = m.group(1)
+    segs = [s for s in path.split("?")[0].split("/") if s]
+    norm = []
+    for s in segs:
+        # Collapse clear identifiers only (placeholders, pure numbers, UUIDs, long hex) — conservative
+        # so distinct real segments like 'secrets-v2' are never merged.
+        if (re.fullmatch(r"\{[^}]+\}", s) or re.fullmatch(r"\d+", s)
+                or re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F-]{12,}", s) or re.fullmatch(r"[0-9a-fA-F]{16,}", s)):
+            norm.append("{id}")
+        else:
+            norm.append(s.lower())
+    p = "/" + "/".join(norm)
+    return ((str(method or "").upper() + " " + p).strip()) if p != "/" else ""
+
+
 def _identities(f: dict) -> list[str]:
     for part in reversed((f.get("signature", "") or "").split("|")):
         if "," in part and re.fullmatch(r"[A-Za-z0-9_,\-]+", part):
@@ -185,17 +206,56 @@ def _curl(method: str, path: str) -> str:
     return f"curl -sS {head} {base}"
 
 
+def _curl_exact(req: dict) -> str:
+    """Render the exact confirming request the verifier captured into a runnable curl."""
+    import json as _j
+    verb = (req.get("method") or "GET").upper()
+    url = str(req.get("url") or req.get("path") or "")
+    target = url if url.startswith("http") else ('"$TARGET' + url + '"')
+    if not url.startswith("http"):
+        pass  # already quoted above
+    else:
+        target = '"' + url + '"'
+    ident = req.get("identity") or "attacker"
+    head = f'-H "X-Authorization: $JWT_{ident}"'
+    body = req.get("body")
+    if isinstance(body, (dict, list)):
+        body = _j.dumps(body)
+    lines = [f"curl -sS -X {verb} {head}"]
+    if verb in ("POST", "PUT", "PATCH", "DELETE") or body:
+        lines[0] += " -H 'Content-Type: application/json'"
+        if body:
+            lines.append(f"     -d {_shq(str(body))}")
+    lines.append("     " + target)
+    return " \\\n".join(lines)
+
+
+def _shq(s: str) -> str:
+    """Single-quote a string safely for a shell command."""
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
 def build(f: dict) -> dict:
-    """Return a structured reproduction block for a confirmed finding."""
+    """Return a structured reproduction block for a confirmed finding. When the verifier captured the
+    exact confirming request (``reproduction_request``), the curl is that exact request; otherwise a
+    class-correct skeleton keyed on the endpoint."""
     method, path = _endpoint(f)
+    req = f.get("reproduction_request") if isinstance(f.get("reproduction_request"), dict) else None
+    exact = bool(req and (req.get("url") or req.get("path")))
+    if exact:
+        method = (req.get("method") or method or "GET").upper()
+        path = str(req.get("url") or req.get("path") or path)
     disp = (method + " " + path).strip() or "the affected endpoint"
     ids = _identities(f)
+    if exact and req.get("identity"):
+        ids = [req["identity"]] + [i for i in ids if i != req["identity"]]
     atk = ids[0] if ids else "attacker"
     vic = ids[1] if len(ids) > 1 else "victim"
     cls = oracle_class(f)
     rec = _RECIPES.get(cls, _RECIPES["generic"])
     fmt = lambda s: s.format(atk=atk, vic=vic, disp=disp)  # noqa: E731
     steps = [fmt(s) for s in rec["steps"]]
+    curl = _curl_exact(req) if exact else (_curl(method, path) if path and not path.startswith("http") else "")
     return {
         "oracle_class": cls,
         "endpoint": disp,
@@ -204,7 +264,8 @@ def build(f: dict) -> dict:
         "observe": fmt(rec["observe"]),
         "fix": rec["fix"],
         "verify": fmt(rec["verify"]),
-        "curl": _curl(method, path) if path else "",
+        "curl": curl,
+        "exact": exact,
         "technique": (f.get("lesson") or f.get("evidence") or "").strip(),
     }
 
@@ -224,7 +285,10 @@ def markdown(f: dict) -> str:
     if tech and not tech.lower().startswith("verified "):
         out.append(f"> Technique: {tech}")
         out.append("")
-    if r["curl"]:
+    if r["curl"] and r.get("exact"):
+        out += ["Exact confirming request (captured by the verifier — set `$TARGET` and the identity's `$JWT_*` token):",
+                "```bash", r["curl"], "```", ""]
+    elif r["curl"]:
         out += ["Request skeleton (set `$TARGET` and `$ATTACKER_JWT`; fill the body from the technique):",
                 "```bash", r["curl"], "```", ""]
     out.append(f"**Validate:** {r['observe']}")

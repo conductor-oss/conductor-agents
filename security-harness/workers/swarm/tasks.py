@@ -544,10 +544,28 @@ def scribe_rollup(task):
     state = bb.assemble_state(cid)
     rollup = bb.campaign_rollup(cid)
     confirmed = [f for f in state["findings"] if f.get("confirmed") and f.get("refuted") is not True]
+    # Join the EXACT confirming requests the verifier captured (kind "repro" facts, keyed by endpoint)
+    # onto the matching findings — the finding fact is assembled downstream and cannot carry it directly.
+    repro_by_ep, repro_by_obj = {}, {}
+    for fct in bb.read_facts(cid):
+        if (fct or {}).get("kind") == "repro":
+            d = (fct or {}).get("data") or {}
+            rq = d.get("reproduction_request") or {}
+            key = repro_mod.endpoint_key(rq.get("method"), rq.get("url") or rq.get("path"))
+            if key:
+                repro_by_ep[key] = rq  # latest wins
+            if d.get("objective_id"):
+                repro_by_obj[str(d["objective_id"])] = rq
     # Attach analyst-ready reproduction (steps + curl + validate + fix-verify) to every confirmed
     # finding so the report can render it — findings otherwise carry only a one-line oracle note.
     for f in confirmed:
         try:
+            if not f.get("reproduction_request"):
+                m, p = repro_mod._endpoint(f)
+                hit = (repro_by_ep.get(repro_mod.endpoint_key(m, p))
+                       or repro_by_obj.get(str(f.get("objective_id") or "")))
+                if hit:
+                    f["reproduction_request"] = hit
             f["reproduction_md"] = repro_mod.markdown(f)
             f["reproduction"] = repro_mod.build(f)
         except Exception:

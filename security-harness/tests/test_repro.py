@@ -47,3 +47,24 @@ def test_markdown_sections_present():
 def test_no_endpoint_degrades_gracefully():
     r = repro.build({"title": "some finding with no path", "evidence": ""})
     assert r["steps"] and r["curl"] == ""  # no curl when no endpoint, but still steps
+
+
+def test_endpoint_key_normalizes_ids_but_preserves_real_segments():
+    assert repro.endpoint_key("GET", "/api/metadata/webhook/{id}") == repro.endpoint_key("get", "/api/metadata/webhook/7f2a9c1b4e8d4a6f9b2c")
+    assert repro.endpoint_key("GET", "/api/audit/5") == repro.endpoint_key("GET", "/api/audit/{id}")
+    # distinct real segments are NOT merged
+    assert repro.endpoint_key("POST", "/api/secrets-v2") != repro.endpoint_key("POST", "/api/secrets")
+    # full URL host is stripped
+    assert repro.endpoint_key("GET", "https://t.example/api/x/9") == repro.endpoint_key("GET", "/api/x/{id}")
+
+
+def test_exact_request_renders_runnable_curl():
+    f = {"title": "SSRF via POST /api/metadata/workflow", "signature": "ssrf|post/api/metadata/workflow|viren,virenx",
+         "evidence": "verified SSRF differential",
+         "reproduction_request": {"method": "POST", "path": "/api/metadata/workflow", "identity": "viren",
+                                  "body": {"tasks": [{"type": "HTTP", "inputParameters": {"uri": "http://169.254.169.254/"}}]}}}
+    r = repro.build(f)
+    assert r["exact"] is True
+    assert "169.254.169.254" in r["curl"] and "$JWT_viren" in r["curl"] and "-X POST" in r["curl"]
+    md = repro.markdown(f)
+    assert "Exact confirming request" in md
