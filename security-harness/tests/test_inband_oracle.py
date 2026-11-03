@@ -484,3 +484,18 @@ def test_availability_degradation_level4():
 def test_level4_oracles_registered():
     for name in ("data_exfiltration", "destructive_persist", "availability_degradation"):
         assert name in io.LEVEL4_ORACLES
+
+
+def test_gate_forces_level4_escalation_at_cap4():
+    from common import deepen
+    st = {"sink_class": "sqli", "confirmed": True, "ladder": [{"family": "x"}], "ledger": {}}
+    # cap < 4: a confirmed base bug concludes immediately (no escalation)
+    assert deepen.gate_conclude(st, capability_max=2)["allow"] is True
+    # cap 4: must escalate to a level-4 impact proof first
+    g = deepen.gate_conclude(st, capability_max=4)
+    assert g["allow"] is False and g["reason"] == "escalate-to-level4"
+    # once a level-4 oracle has been attempted, it may conclude (bounded: one escalation)
+    st2 = {**st, "level4_attempted": True}
+    assert deepen.gate_conclude(st2, capability_max=4)["allow"] is True
+    # a non-escalatable class concludes immediately even at cap 4
+    assert deepen.gate_conclude({**st, "sink_class": "xss"}, capability_max=4)["allow"] is True

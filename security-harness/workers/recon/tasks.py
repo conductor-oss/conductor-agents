@@ -1121,7 +1121,7 @@ def deepen_gate(task):
     proposed = inp.get("proposed_confirmed")
     proposed = (proposed is True) or (str(proposed).lower() == "true")
     try:
-        g = deepen_mod.gate_conclude(state, proposed)
+        g = deepen_mod.gate_conclude(state, proposed, capability_max=inp.get("capability_max"))
         return g
     except Exception as exc:
         # Fail closed. A broken evidence gate must not turn an LLM conclusion into

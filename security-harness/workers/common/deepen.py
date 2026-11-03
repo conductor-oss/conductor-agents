@@ -335,6 +335,13 @@ def observe(state: dict, family: str, lesson: str, *, result: dict | None = None
     if lesson and fam and classification == "genuine":
         lessons.append({"family": fam, "lesson": str(lesson)[:400]})
     state["lessons"] = lessons[-12:]
+    # Track level-4 escalation: remember when the agent has ATTEMPTED (and when a receipt CONFIRMED)
+    # a level-4 impact oracle, so the gate forces at most ONE escalation and never loops.
+    iv = inband_verification or {}
+    if str(iv.get("oracle") or "") in _LEVEL4_ORACLES:
+        state["level4_attempted"] = True
+        if iv.get("available") is True and iv.get("confirmed") is True:
+            state["level4_confirmed"] = True
     if confirmed:
         state["confirmed"] = True
         state["confirm_evidence"] = ev
@@ -354,9 +361,17 @@ def exhausted(state: dict, max_variants: int = MAX_VARIANTS) -> bool:
 # doesn't burn the whole per-sink step budget retrying the same non-attempt.
 INFRA_CIRCUIT_BREAKER = 3
 
+# LEVEL-4 escalation: once the base bug is confirmed AND the campaign is authorized to capability 4,
+# the gate requires ONE attempt at the finding's level-4 IMPACT proof before it lets the agent
+# conclude -- so level-4 proofs are actively pursued, not merely available. Bounded by state
+# ``level4_attempted`` (set in observe the moment any level-4 oracle receipt is seen): at most one
+# extra round-trip, and the per-sink step budget is the ultimate backstop.
+_LEVEL4_ORACLES = ("data_exfiltration", "destructive_persist", "availability_degradation")
+L4_ESCALATION = {"sqli": "data_exfiltration", "injection": "data_exfiltration"}
+
 
 def gate_conclude(state: dict, proposed_confirmed: bool = False, max_variants: int = MAX_VARIANTS,
-                  infra_circuit_breaker: int = INFRA_CIRCUIT_BREAKER) -> dict:
+                  infra_circuit_breaker: int = INFRA_CIRCUIT_BREAKER, capability_max=1) -> dict:
     """THE no-premature-give-up guard (design-doc Theorem 2).
 
     Returns {allow, reason, directive}:
@@ -374,6 +389,24 @@ def gate_conclude(state: dict, proposed_confirmed: bool = False, max_variants: i
     del proposed_confirmed
     confirmed = bool(state.get("confirmed"))
     if confirmed:
+        try:
+            cap = int(capability_max or 1)
+        except (TypeError, ValueError):
+            cap = 1
+        esc = L4_ESCALATION.get(str(state.get("sink_class") or ""))
+        if cap >= 4 and esc and not state.get("level4_attempted") and not state.get("level4_confirmed"):
+            return {
+                "allow": False, "reason": "escalate-to-level4", "confirmed": True,
+                "directive": (
+                    "You CONFIRMED the base bug and capability 4 is AUTHORIZED. Before concluding, PROVE "
+                    f"its LEVEL-4 IMPACT: plant sc.inband_probe('{esc}', ...). For this "
+                    f"{state.get('sink_class')} sink, turn it into a BULK data_exfiltration -- "
+                    "extract={the UNION/error request that returns many real rows, e.g. the "
+                    "credential/user table}, record_path='<json path to the row list>', min_records=5. "
+                    "Execute that attempt now (tag your action's family). This is a ONE-TIME escalation: "
+                    "if the impact genuinely cannot be proven, conclude with the base proof."
+                ),
+            }
         return {"allow": True, "reason": "confirmed", "confirmed": True, "directive": ""}
     if state.get("policy_refused"):
         return {"allow": True, "reason": "policy-refused", "confirmed": False, "directive": "",
