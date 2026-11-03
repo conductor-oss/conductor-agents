@@ -6,7 +6,7 @@
   "retryLogic": "FIXED",
   "retryDelaySeconds": 5,
   "timeoutSeconds": 0,
-  "responseTimeoutSeconds": 0,
-  "pollTimeoutSeconds": 60,
+  "responseTimeoutSeconds": 31536000,
+  "pollTimeoutSeconds": 31536000,
   "concurrentExecLimit": 0
 }

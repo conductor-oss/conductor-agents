@@ -4,7 +4,7 @@
   "ownerEmail": "security-conductor@local",
   "retryCount": 0,
   "timeoutSeconds": 0,
-  "responseTimeoutSeconds": 0,
-  "pollTimeoutSeconds": 120,
+  "responseTimeoutSeconds": 31536000,
+  "pollTimeoutSeconds": 31536000,
   "concurrentExecLimit": 0
 }
