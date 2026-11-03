@@ -218,8 +218,11 @@ def markdown(f: dict) -> str:
     for i, s in enumerate(r["steps"], 1):
         out.append(f"{i}. {s}")
     out.append("")
-    if r["technique"]:
-        out.append(f"> Oracle confirmation: {r['technique']}")
+    tech = r["technique"]
+    # Keep a genuine recorded technique, but drop the generic oracle boilerplate ("verified …"),
+    # which is often the cross-cutting reachability oracle and can mismatch the finding's class.
+    if tech and not tech.lower().startswith("verified "):
+        out.append(f"> Technique: {tech}")
         out.append("")
     if r["curl"]:
         out += ["Request skeleton (set `$TARGET` and `$ATTACKER_JWT`; fill the body from the technique):",
