@@ -156,10 +156,15 @@ _sc_ensure_workers() {
   [ -x "$_SC_PY" ] || { echo "ERROR: worker venv missing ($_SC_PY). Run 'make venv' first." >&2; return 1; }
   echo "ℹ  workers: starting fleet [$_SC_WORKER_MODULES] (logs: $_SC_WORKER_LOG) …"
   mkdir -p "$_SC_ROOT/state"
+  # Detach the long-lived fleet from the caller's stdio entirely: stdin from /dev/null, stdout+stderr
+  # to the log. Critically, </dev/null means the fleet never inherits a caller's stdout/stderr PIPE —
+  # otherwise a parent that captures output (e.g. subprocess.run(capture_output=True), as in the width
+  # sweep) would block forever on EOF waiting for this daemon to exit. nohup + disown detach it from
+  # job control so the launching script can exit immediately.
   ( cd "$_SC_ROOT/workers" \
     && REPORTS_DIR="${REPORTS_DIR:-$_SC_ROOT/reports}" STATE_DIR="${STATE_DIR:-$_SC_ROOT/state}" \
        WORKER_MODULES="$_SC_WORKER_MODULES" \
-       nohup "$_SC_PY" -u main.py >"$_SC_WORKER_LOG" 2>&1 & echo $! >"$_SC_ROOT/state/workers.pid" )
+       nohup "$_SC_PY" -u main.py >"$_SC_WORKER_LOG" 2>&1 </dev/null & echo $! >"$_SC_ROOT/state/workers.pid"; disown 2>/dev/null || true )
   for _ in $(seq 1 40); do _sc_workers_live && { echo "ℹ  workers: fleet up (pid $(cat "$_SC_ROOT/state/workers.pid" 2>/dev/null))"; return 0; }; sleep 1; done
   echo "ERROR: worker fleet did not start polling (see $_SC_WORKER_LOG)." >&2; return 1
 }

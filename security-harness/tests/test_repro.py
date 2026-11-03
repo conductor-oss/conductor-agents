@@ -40,8 +40,10 @@ def test_build_has_steps_curl_and_endpoint():
 def test_markdown_sections_present():
     md = repro.markdown({"title": "SSRF via HTTP task", "signature": "ssrf|post/api/workflow|a,b",
                          "evidence": "verified SSRF differential"})
-    for sect in ("Steps to reproduce", "Validate:", "Fix:", "Verify the fix:"):
+    for sect in ("Steps to reproduce", "Reproduction script", "Validate", "Fix:", "Verify the fix:"):
         assert sect in md, sect
+    # the verbose script is a real runnable bash block
+    assert "```bash" in md and "curl -sS" in md
 
 
 def test_no_endpoint_degrades_gracefully():
@@ -67,4 +69,6 @@ def test_exact_request_renders_runnable_curl():
     assert r["exact"] is True
     assert "169.254.169.254" in r["curl"] and "$JWT_viren" in r["curl"] and "-X POST" in r["curl"]
     md = repro.markdown(f)
-    assert "Exact confirming request" in md
+    # the exact captured request is embedded in the reproduction script as the decisive step
+    assert "EXACT confirming request" in md
+    assert "169.254.169.254" in md and "$JWT_viren" in md

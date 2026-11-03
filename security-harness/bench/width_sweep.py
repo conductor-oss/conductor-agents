@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 
@@ -41,35 +42,65 @@ def _api(path):
 
 
 def run_one(target: str, width: int, rounds: int, budget: int) -> dict:
-    """Start one campaign at a given width, wait for it to finish, return {width, confirmed, cost}."""
+    """Start one campaign at a given width, wait for it to finish, return {width, confirmed, cost}.
+
+    Robust against the launcher's own lifetime: ./swarm's output goes to a FILE (never a captured pipe,
+    which would deadlock on a daemon child's inherited fd), we poll that file for the campaign id, then
+    poll the SERVER by API for completion — independent of whether ./swarm has exited yet."""
     argv = ["./swarm", target, "--authorized", "--width", str(width), "--rounds", str(rounds),
             "--budget", str(budget), "--no-wait"]
     print(f"\n=== width {width}: {' '.join(argv)} ===", flush=True)
-    out = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True).stdout
-    m = _UUID.findall(out)
-    if not m:
-        print("  could not parse campaign id:\n" + out[-500:], flush=True)
+    logf = tempfile.NamedTemporaryFile("w+", prefix=f"sweep_w{width}_", suffix=".log", delete=False)
+    proc = subprocess.Popen(argv, cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT,
+                            stdin=subprocess.DEVNULL, start_new_session=True)
+    cid, t0 = None, time.time()
+    while time.time() - t0 < 1800:  # bootstrap (stale-fleet reload + register) can take a while
+        m = _UUID.findall(open(logf.name).read())
+        if m:
+            cid = m[-1]
+            break
+        if proc.poll() is not None:  # launcher exited without printing a campaign id -> real failure
+            break
+        time.sleep(3)
+    if not cid:
+        print("  could not parse campaign id:\n" + open(logf.name).read()[-600:], flush=True)
+        _reap(proc)
         return {"width": width, "confirmed": 0, "cost": 0.0, "error": "no campaign id"}
-    cid = m[-1]
-    print(f"  campaign {cid} — waiting…", flush=True)
+    print(f"  campaign {cid} - polling server...", flush=True)
     t0 = time.time()
-    while time.time() - t0 < 3 * 3600:
-        w = _api(f"/workflow/{cid}?includeTasks=false") or {}
-        st = w.get("status")
-        if st in ("COMPLETED", "FAILED", "TERMINATED", "TIMED_OUT"):
-            o = w.get("output") or {}
-            roll = o.get("rollup") or {}
-            confirmed = roll.get("confirmed_count")
-            if confirmed is None:
-                confirmed = len(o.get("confirmed_findings") or [])
-            requests = (roll.get("spend") or {}).get("requests") or 0
-            rounds_run = o.get("rounds_run")
-            print(f"  {st}: confirmed={confirmed} requests={requests} rounds={rounds_run}", flush=True)
-            return {"width": width, "confirmed": int(confirmed or 0),
-                    "cost": round(float(requests) * COST_PER_REQUEST, 4), "cid": cid,
-                    "requests": requests, "rounds_run": rounds_run, "status": st}
-        time.sleep(20)
-    return {"width": width, "confirmed": 0, "cost": 0.0, "error": "timeout", "cid": cid}
+    try:
+        while time.time() - t0 < 6 * 3600:  # no artificial cap on the campaign itself
+            w = _api(f"/workflow/{cid}?includeTasks=false") or {}
+            st = w.get("status")
+            if st in ("COMPLETED", "FAILED", "TERMINATED", "TIMED_OUT"):
+                o = w.get("output") or {}
+                roll = o.get("rollup") or {}
+                confirmed = roll.get("confirmed_count")
+                if confirmed is None:
+                    confirmed = len(o.get("confirmed_findings") or [])
+                requests = (roll.get("spend") or {}).get("requests") or 0
+                rounds_run = o.get("rounds_run")
+                print(f"  {st}: confirmed={confirmed} requests={requests} rounds={rounds_run}", flush=True)
+                return {"width": width, "confirmed": int(confirmed or 0),
+                        "cost": round(float(requests) * COST_PER_REQUEST, 4), "cid": cid,
+                        "requests": requests, "rounds_run": rounds_run, "status": st}
+            time.sleep(20)
+        return {"width": width, "confirmed": 0, "cost": 0.0, "error": "timeout", "cid": cid}
+    finally:
+        _reap(proc)  # the launcher should have exited on --no-wait; clean up if it lingered
+
+
+def _reap(proc) -> None:
+    """Terminate the ./swarm launcher if it is still alive (the nohup'd fleet it started survives)."""
+    try:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                proc.kill()
+    except Exception:
+        pass
 
 
 def main():
@@ -99,7 +130,7 @@ def main():
     os.makedirs(os.path.join(ROOT, "reports"), exist_ok=True)
     with open(os.path.join(ROOT, "reports", "width_sweep.md"), "w") as fh:
         fh.write(md + "\n")
-    print("\n" + md + f"\n\nsaved -> reports/width_sweep.md")
+    print("\n" + md + "\n\nsaved -> reports/width_sweep.md")
 
 
 if __name__ == "__main__":

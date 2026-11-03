@@ -574,4 +574,6 @@ def scribe_rollup(task):
             "verified_primitives": state["verified_primitives"],
             "tried_signatures": state["tried_signatures"],
             "reproduction": [bb.replay_ref(f) for f in confirmed],
+            # One-time Prerequisites/setup block prepended to the report's Reproduction section.
+            "reproduction_preamble": (repro_mod.preamble() if confirmed else ""),
             "summary": f"rollup: {rollup['confirmed_count']} confirmed, {rollup['coverage_areas']} areas"}

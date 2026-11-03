@@ -235,6 +235,139 @@ def _shq(s: str) -> str:
     return "'" + s.replace("'", "'\\''") + "'"
 
 
+def _var(ident: str) -> str:
+    """Shell-variable-safe suffix for an identity label, used as $JWT_<var>."""
+    v = re.sub(r"[^A-Za-z0-9_]", "_", str(ident or "x"))
+    return v or "x"
+
+
+def _req(method: str, path: str, ident: str, comment: str, body: str | None = None) -> str:
+    """One annotated request (comment line + curl) for a reproduction script. ident 'anon' = no token."""
+    verb = (method or "GET").upper()
+    url = path if str(path).startswith("http") else '"$TARGET' + str(path) + '"'
+    head = "" if ident == "anon" else f'-H "X-Authorization: $JWT_{_var(ident)}"'
+    out = [f"# {comment}"] if comment else []
+    toks = ["curl", "-sS"]
+    if verb != "GET" or body is not None:
+        toks += ["-X", verb]
+    if head:
+        toks.append(head)
+    if verb in ("POST", "PUT", "PATCH", "DELETE") or body is not None:
+        toks.append("-H 'Content-Type: application/json'")
+        b = body if body is not None else "'<JSON body - fill from the finding/technique above>'"
+        out.append(" ".join(toks) + " \\")
+        out.append(f"     -d {b} {url}")
+    else:
+        toks.append(url)
+        out.append(" ".join(toks))
+    return "\n".join(out)
+
+
+def _script(r: dict) -> str:
+    """A complete, copy-pasteable bash script reflecting the oracle's full confirming sequence.
+
+    Uses the exact captured request as the decisive step when available, and class-correct template
+    requests (with clearly-marked placeholders) for the setup/readback around it."""
+    cls = r["oracle_class"]
+    method, path = r.get("method") or "", r.get("path") or ""
+    ids = r["identities"] or []
+    atk = ids[0] if ids else "attacker"
+    vic = ids[1] if len(ids) > 1 else "victim"
+    L: list[str] = []
+    if not path:
+        # Keep the class-specific sequence (more useful than a generic request) but mark the endpoint
+        # as a placeholder the analyst fills from the Signature/Evidence.
+        L += ["# NOTE: no concrete endpoint was parsed for this finding; replace /<path-from-signature>",
+              "#       below with the affected METHOD /path (see the Signature/Evidence above).", ""]
+        path = "/<path-from-signature>"
+    if cls in ("bola", "xtenant_read"):
+        L += [_req("", path, vic, f"1) As {vic}: create/identify a resource holding a unique marker (note its id as OID)."),
+              "", 'OID="<victim-object-id-from-step-1>"',
+              _req(method, path.replace("{id}", "$OID"), atk,
+                   f"2) As {atk} (different tenant / lower privilege): request {vic}'s object:"),
+              "", f"# 3) CONFIRM: {atk}'s response contains {vic}'s data / the marker -> object-level authz missing (BOLA/IDOR)."]
+    elif cls == "xtenant_write":
+        L += [_req(method or "POST", path, atk, f"1) As {atk}: write a unique marker into the shared/{vic}-owned resource:"),
+              "", _req("GET", path, vic, f"2) As {vic} (other tenant): read the same resource back:"),
+              "", f"# 3) CONFIRM: {vic} sees {atk}'s marker -> the write crossed the tenant boundary."]
+    elif cls == "ssrf":
+        L += ["# Point the server-side fetch at an internal address (in-band) or your $OOB (blind).",
+              _req(method or "POST", path, atk,
+                   "1) Configure/trigger the outbound fetch (integration / HTTP-task / webhook / discovery URL):",
+                   body="'{\"url\":\"http://169.254.169.254/latest/meta-data/\"}'"),
+              "", "# 2) In-band: look for an internal-only marker reflected in the response/error.",
+              "#    Blind:   re-run with \"$OOB/ssrf\" and check your collaborator log for the inbound hit.",
+              "# 3) CONFIRM (differential): the internal marker / OOB hit occurs ONLY for the internal target."]
+    elif cls == "injection":
+        L += [_req(method or "POST", path, atk,
+                   "1) Submit a deterministic probe into the expression/template/script/prompt sink:",
+                   body="'{\"input\":\"${7919*1337}\"}'"),
+              "", "# 2) The probe is unambiguous: product 10588103 (or a unique marker / time delay) proves evaluation.",
+              "# 3) CONFIRM: the server EVALUATED the input (product echoed / secret resolved / code ran)."]
+    elif cls == "xxe":
+        L += ["# 1) Build an XML/BPMN doc with an external entity pointing at your $OOB (or a file:// read):",
+              "cat > /tmp/xxe.xml <<'XML'",
+              '<?xml version="1.0"?>',
+              '<!DOCTYPE r [ <!ENTITY x SYSTEM "REPLACE_WITH_OOB/xxe"> ]>',
+              "<r>&x;</r>",
+              "XML",
+              'sed -i "s#REPLACE_WITH_OOB#$OOB#" /tmp/xxe.xml',
+              "", _req(method or "POST", path, atk, "2) Submit it to the XML/BPMN import parser:", body="@/tmp/xxe.xml"),
+              "", "# 3) CONFIRM: your $OOB collaborator logs the inbound entity fetch -> XXE."]
+    elif cls == "privesc":
+        L += [_req(method or "POST", path, atk,
+                   f"1) As {atk} (low-priv): grant yourself / an app you create an elevated role/authorization:",
+                   body="'{\"role\":\"ADMIN\"}'"),
+              "", "# 2) Obtain a token/key for the elevated principal, then perform an admin-only action.",
+              "# 3) CONFIRM: the previously-denied privileged action now succeeds -> self-escalation."]
+    elif cls == "secret":
+        L += [_req(method or "GET", path, atk, f"1) As {atk}: call the endpoint and inspect the FULL response body:"),
+              "", "# 2) Also check any execution output / logs the feature echoes.",
+              f"# 3) CONFIRM: a plaintext secret/credential/API key {atk} should not see is present (unmasked)."]
+    elif cls == "auth_bypass":
+        L += [_req(method or "GET", path, "anon", "1) As an ANONYMOUS caller (no token):"),
+              "", _req(method or "GET", path, atk, "2) Compare with the legitimate authorized path:"),
+              "", "# 3) CONFIRM: the action succeeds without the required auth -> authN/authZ bypass."]
+    else:
+        L += [_req(method or "GET", path, atk, "1) Reproduce the condition described in the steps above:"),
+              "", "# 2) Observe the behaviour the oracle checked (see Validate below).",
+              "# 3) CONFIRM: the security property is violated."]
+    script = "\n".join(L)
+    if r.get("exact") and r.get("curl"):
+        script = ("# --- EXACT confirming request captured by the verifier (the decisive step) ---\n"
+                  + r["curl"]
+                  + "\n\n# --- full sequence (fill setup/readback with real ids) ---\n"
+                  + script)
+    return script
+
+
+def preamble() -> str:
+    """One-time Prerequisites/setup block for the Reproduction section (identities, tokens, OOB, tooling)."""
+    return "\n".join([
+        "### Prerequisites (set these once, then run any script below)",
+        "",
+        "```bash",
+        "# Target base URL (no trailing slash).",
+        'export TARGET="https://your-target.example.com"',
+        "",
+        "# One bearer token per identity named in the findings. Conductor/Orkes mints a short-lived JWT",
+        "# from an app key/secret; a raw JWT from the UI also works. Repeat per identity (e.g. viren, virenx):",
+        'export JWT_viren="$(curl -sS -X POST "$TARGET/api/token" -H \'Content-Type: application/json\' \\',
+        '  -d \'{\"keyId\":\"<APP_KEY>\",\"keySecret\":\"<APP_SECRET>\"}\' | jq -r .token)"',
+        "# NOTE: Conductor expects the RAW jwt in X-Authorization (not \"Bearer <jwt>\").",
+        "",
+        "# Tooling: curl + jq. For blind SSRF/RCE/XXE you also need an out-of-band (OOB) collaborator",
+        "# (any host that logs inbound requests - interactsh / Burp Collaborator, or 'make oob' in this repo):",
+        'export OOB="https://your-collaborator.example.net"',
+        "```",
+        "",
+        "Each script below uses `$TARGET`, the per-identity `$JWT_<name>` tokens, and `$OOB` from above. "
+        "Where the verifier captured the exact confirming request it is shown verbatim; otherwise the script "
+        "is a class-correct template - replace the `<...>` placeholders and any `{id}`/`$OID` with a real id.",
+        "",
+    ])
+
+
 def build(f: dict) -> dict:
     """Return a structured reproduction block for a confirmed finding. When the verifier captured the
     exact confirming request (``reproduction_request``), the curl is that exact request; otherwise a
@@ -259,6 +392,8 @@ def build(f: dict) -> dict:
     return {
         "oracle_class": cls,
         "endpoint": disp,
+        "method": method,
+        "path": path,
         "identities": ids,
         "steps": steps,
         "observe": fmt(rec["observe"]),
@@ -271,27 +406,24 @@ def build(f: dict) -> dict:
 
 
 def markdown(f: dict) -> str:
-    """Render the reproduction block as report Markdown (used by scribe + the report template)."""
+    """Render a verbose, self-contained reproduction block as report Markdown (used by scribe + the
+    report template). Pairs with preamble(), which is emitted once at the top of the section."""
     r = build(f)
-    out = ["**Steps to reproduce** (identities: "
-           + (", ".join(r["identities"]) if r["identities"] else "attacker, victim")
-           + f" · oracle: {r['oracle_class']}):", ""]
+    ids = ", ".join(r["identities"]) if r["identities"] else "attacker, victim"
+    out = [f"_Class: **{r['oracle_class']}** on `{r['endpoint']}` (identities: {ids})._", "",
+           "**Steps to reproduce:**", ""]
     for i, s in enumerate(r["steps"], 1):
         out.append(f"{i}. {s}")
     out.append("")
     tech = r["technique"]
-    # Keep a genuine recorded technique, but drop the generic oracle boilerplate ("verified …"),
+    # Keep a genuine recorded technique, but drop the generic oracle boilerplate ("verified ..."),
     # which is often the cross-cutting reachability oracle and can mismatch the finding's class.
     if tech and not tech.lower().startswith("verified "):
-        out.append(f"> Technique: {tech}")
+        out.append(f"> Technique (recorded by the agent): {tech}")
         out.append("")
-    if r["curl"] and r.get("exact"):
-        out += ["Exact confirming request (captured by the verifier — set `$TARGET` and the identity's `$JWT_*` token):",
-                "```bash", r["curl"], "```", ""]
-    elif r["curl"]:
-        out += ["Request skeleton (set `$TARGET` and `$ATTACKER_JWT`; fill the body from the technique):",
-                "```bash", r["curl"], "```", ""]
-    out.append(f"**Validate:** {r['observe']}")
+    out += ["**Reproduction script** (uses the variables from *Prerequisites* above):", "",
+            "```bash", _script(r), "```", ""]
+    out.append(f"**Validate (success):** {r['observe']}")
     out.append("")
     out.append(f"**Fix:** {r['fix']}")
     out.append("")

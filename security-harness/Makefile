@@ -104,8 +104,11 @@ schedule: ## Schedule recurring scans: make schedule URL=http://x [CRON='0 0 2 *
 	@test -n "$(URL)" || { echo "usage: make schedule URL=<target> [CRON='0 0 2 * * ?'] [SRC=./code]"; exit 1; }
 	@bash $(ROOT)/conductor/schedule.sh "$(URL)" "$(CRON)" "$(SRC)"
 
+# PYTEST_DISABLE_PLUGIN_AUTOLOAD: the tests in tests/ are pure-logic and need no pytest plugins; a
+# broken third-party plugin in the venv (e.g. agentspan/langsmith pulling an incompatible conductor.ai)
+# would otherwise fail collection for ALL tests. Disabling autoload keeps the suite runnable.
 test: venv ## Run the unit test suite (scope, net, workflow jq)
-	@$(VENV)/bin/pip install -q pytest && $(VENV)/bin/python -m pytest $(ROOT)/tests -q
+	@$(VENV)/bin/pip install -q pytest && PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(VENV)/bin/python -m pytest $(ROOT)/tests -q
 
 # CI venv: worker deps + pytest + ruff, WITHOUT the Chromium download (the unit tests in tests/ are
 # pure-logic and don't need a browser). Sentinel-backed so `lint` + `test-ci` share one build.
@@ -126,7 +129,7 @@ lint: venv-ci ## Lint workers/ + bench/ with ruff (config: ruff.toml)
 		$(ROOT)/conductor/rag-setup.sh
 
 test-ci: venv-ci ## CI unit tests (no Chromium download; pure-logic tests only)
-	@$(VENV)/bin/python -m pytest $(ROOT)/tests -q
+	@PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(VENV)/bin/python -m pytest $(ROOT)/tests -q
 
 bench: venv ## Oracle readiness (§19.2): catalog coverage + adversarial + held-out split -> reports/BENCH.md (offline, no server)
 	@$(PY) $(ROOT)/bench/coverage.py $(ROOT)/bench/targets.json
