@@ -116,8 +116,43 @@ _sc_ensure_registered() {
   _sc_registered "$1" || { echo "ERROR: $1 still not registered after register.sh." >&2; return 1; }
 }
 
+# The running fleet is STALE if any worker source file is newer than the fleet's start marker
+# (state/workers.pid, written when we start it). A live fleet keeps executing the code it imported
+# AT START — editing a worker or `git pull` does NOT reload it — so reusing a stale fleet silently
+# runs old code (and a newly-added worker ends up with 0 pollers, which, now that task timeouts are
+# removed, hangs forever instead of erroring). .venv/__pycache__ are excluded so deps never count.
+_sc_fleet_stale() {
+  local pidfile="$_SC_ROOT/state/workers.pid" pid
+  [ -f "$pidfile" ] || return 0                              # no record of our fleet → cannot trust it
+  pid="$(cat "$pidfile" 2>/dev/null)"
+  { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; } || return 0   # our recorded fleet is gone → reload
+  [ -n "$(find "$_SC_ROOT/workers" -name '*.py' \
+            -not -path '*/.venv/*' -not -path '*/__pycache__/*' \
+            -newer "$pidfile" -print 2>/dev/null | head -1)" ]
+}
+
+# Kill ONLY this harness's fleet — the tracked pid plus any main.py whose cwd is this workers dir,
+# so a sibling project's workers (e.g. coding-harness) are never touched.
+_sc_kill_fleet() {
+  local pid p cwd; pid="$(cat "$_SC_ROOT/state/workers.pid" 2>/dev/null)"
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+  for p in $(pgrep -f "main.py" 2>/dev/null); do
+    cwd="$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | grep '^n' | cut -c2-)"
+    case "$cwd" in "$_SC_ROOT/workers"*) kill "$p" 2>/dev/null || true ;; esac
+  done
+  rm -f "$_SC_ROOT/state/workers.pid"
+  sleep 2
+}
+
 _sc_ensure_workers() {
-  if _sc_workers_live; then echo "ℹ  workers: live (fleet polling)"; return 0; fi
+  if _sc_workers_live; then
+    if _sc_fleet_stale; then
+      echo "ℹ  workers: running fleet is STALE (worker source changed since it started) — reloading …"
+      _sc_kill_fleet
+    else
+      echo "ℹ  workers: live (fleet polling, up to date)"; return 0
+    fi
+  fi
   [ -x "$_SC_PY" ] || { echo "ERROR: worker venv missing ($_SC_PY). Run 'make venv' first." >&2; return 1; }
   echo "ℹ  workers: starting fleet [$_SC_WORKER_MODULES] (logs: $_SC_WORKER_LOG) …"
   mkdir -p "$_SC_ROOT/state"
