@@ -41,7 +41,10 @@ def test_private_ip_is_infra_not_pii_and_excluded_from_halt():
 def test_resilience_off_by_default():
     assert authz.resilience_allowed({}) is False
     assert authz.resilience_allowed({"allowed_classes": ["bola"]}) is False
-    assert authz.resilience_allowed({"allowed_classes": ["resilience"]}) is True
+    # Resilience is the level-4 (availability) tier: the class alone is not enough any more,
+    # the campaign must also be authorized to capability_max>=4.
+    assert authz.resilience_allowed({"allowed_classes": ["resilience"]}) is False
+    assert authz.resilience_allowed({"allowed_classes": ["resilience"], "capability_max": 4}) is True
 
 
 def test_knee_detected_when_latency_inflects():

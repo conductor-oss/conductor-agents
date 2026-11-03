@@ -84,6 +84,23 @@ def test_action_capability_by_method():
     assert authz.action_capability("", is_code_exec=True, is_sensitive=True) == 3
 
 
+def test_action_capability_destructive_is_level_4():
+    # Level 4 is a real, enforced tier: a destructive action outranks every other flag.
+    assert authz.action_capability("DELETE", is_destructive=True) == 4
+    assert authz.action_capability("", is_code_exec=True, is_destructive=True) == 4
+    assert authz.action_capability("", is_code_exec=True, is_sensitive=True, is_destructive=True) == 4
+    assert authz.action_capability("GET", is_destructive=True) == 4
+
+
+def test_resilience_requires_capability_4():
+    # Availability/resilience is the canonical level-4 class: needs BOTH the class and cap>=4.
+    assert authz.resilience_allowed({"allowed_classes": ["resilience"], "capability_max": 4}) is True
+    assert authz.resilience_allowed({"allowed_classes": ["resilience"], "capability_max": 3}) is False
+    assert authz.resilience_allowed({"allowed_classes": ["resilience"]}) is False  # default cap=1
+    assert authz.resilience_allowed({"capability_max": 4}) is False  # class not opted in
+    assert authz.resilience_allowed(None) is False
+
+
 def test_forbids_glob_and_protected_records():
     m = _manifest(forbidden_operations=["DELETE /api/users/*", "POST /api/billing/*"],
                   protected_records=["userId:1"])

@@ -17,11 +17,15 @@ Capability levels (spec section 15.1):
   0  passive reading / observation
   1  reversible, low-volume active tests (GET/HEAD/OPTIONS)
   2  state-changing tests using synthetic data (POST/PUT/PATCH/DELETE, code_exec)
-  3  potentially sensitive / operationally risky proof (just-in-time approval)
-  4  destructive / availability-impacting / real-data extraction (prohibited by default)
+  3  potentially sensitive / operationally risky proof (sensitive code_exec / writes)
+  4  destructive / availability-impacting / real-data extraction -- an action flagged
+     ``destructive`` (code_exec or write), and resilience/availability testing. OFF by
+     default: a campaign reaches it only with an explicit ``capability_max: 4`` manifest.
 
 The harness cannot raise its own level: ``capability_max`` comes from the manifest
-and every worker refuses an action whose required level exceeds it.
+and every worker refuses an action whose required level exceeds it. ``action_capability``
+emits 1-4; level 4 is reached via the ``is_destructive`` flag (and gated for resilience in
+``resilience_allowed``), so the ladder is coherent end to end rather than capping at 3.
 """
 
 from __future__ import annotations
@@ -106,8 +110,16 @@ def validate(manifest: dict | None, target: str, now: datetime | None = None) ->
     return {"ok": True, "reason": "authorized", "capability_max": cap}
 
 
-def action_capability(method: str, is_code_exec: bool = False, is_sensitive: bool = False) -> int:
-    """Required capability level for one action."""
+def action_capability(method: str, is_code_exec: bool = False, is_sensitive: bool = False,
+                      is_destructive: bool = False) -> int:
+    """Required capability level for one action.
+
+    Level 4 (destructive / availability-impacting / real-data extraction) is reached ONLY when the
+    action is explicitly flagged destructive -- an irreversible write, a data wipe, an availability/
+    load probe, or bulk extraction of real (non-synthetic) data. It outranks every other flag so such
+    an action is refused unless the campaign is authorized all the way to level 4."""
+    if is_destructive:
+        return 4
     if is_code_exec:
         return 3 if is_sensitive else 2
     m = (method or "GET").upper()
@@ -138,11 +150,18 @@ def forbids(method: str, url: str, manifest: dict | None) -> bool:
 
 
 def resilience_allowed(manifest: dict | None) -> bool:
-    """Resilience/availability testing is OFF by default (it applies bounded load): it
-    runs only when the manifest explicitly lists 'resilience' in allowed_classes."""
+    """Resilience/availability testing is the canonical LEVEL-4 class (it applies bounded load and can
+    impact availability). It runs only when BOTH hold: the campaign is authorized to capability_max>=4
+    AND the manifest explicitly lists 'resilience' in allowed_classes. The number authorizes the
+    destructive tier; the class opts into this specific technique within it."""
     if not isinstance(manifest, dict):
         return False
-    return "resilience" in {str(c).lower() for c in (manifest.get("allowed_classes") or [])}
+    has_class = "resilience" in {str(c).lower() for c in (manifest.get("allowed_classes") or [])}
+    try:
+        cap = int(manifest.get("capability_max", 1))
+    except (TypeError, ValueError):
+        cap = 1
+    return has_class and cap >= 4
 
 
 def technique_allowed(category: str, manifest: dict | None) -> bool:

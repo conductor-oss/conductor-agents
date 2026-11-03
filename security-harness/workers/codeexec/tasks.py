@@ -85,9 +85,12 @@ def code_exec(task):
 
     # Capability gate (spec 15.1): operating the product (running agent-authored code
     # that drives multi-step state-changing flows) is a level-2 action -- level-3 when
-    # flagged sensitive. The harness cannot raise its own level.
+    # flagged sensitive, level-4 when flagged destructive (irreversible/data-wipe/real-data
+    # extraction). The harness cannot raise its own level.
     is_sensitive = bool(inp.get("sensitive"))
-    needed = authz.action_capability("", is_code_exec=True, is_sensitive=is_sensitive)
+    is_destructive = bool(inp.get("destructive"))
+    needed = authz.action_capability("", is_code_exec=True, is_sensitive=is_sensitive,
+                                     is_destructive=is_destructive)
     try:
         capability_max = int(inp.get("capability_max")) if str(inp.get("capability_max") or "").strip() else 1
     except (TypeError, ValueError):

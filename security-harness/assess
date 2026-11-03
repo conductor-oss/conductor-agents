@@ -325,6 +325,10 @@ elif $AUTH; then
   # Bare --authorized remains conservative. Product-feature execution is state-changing
   # and therefore requires an explicit --capability 2 (or a full manifest).
   cap="${CAPABILITY:-1}"
+  # Resilience/availability is the level-4 tier: authorizing it implies capability 4.
+  if $RESILIENCE && [ "$cap" -lt 4 ] 2>/dev/null; then
+    cap=4; echo "ℹ  --resilience is the destructive/availability tier -> capability raised to 4."
+  fi
   MANIFEST_JSON=$(jq -nc \
     --argjson hosts "$hosts_json" --arg start "$now_iso" --arg exp "$exp_iso" --argjson cap "$cap" \
     --argjson resil "$RESILIENCE" '

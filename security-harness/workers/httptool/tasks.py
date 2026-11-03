@@ -152,8 +152,11 @@ def http_request(task):
         result["operation"]["blocked_reason"] = result["error"]
         result["summary"] = f"{method} {url} [{identity}] -> REFUSED (out of scope)"
         return result
-    # Capability gate (spec 15.1): the harness cannot exceed its authorized level.
-    needed = authz.action_capability(method, is_code_exec=False, is_sensitive=False)
+    # Capability gate (spec 15.1): the harness cannot exceed its authorized level. A write the caller
+    # flags destructive (irreversible / real-data) is a level-4 action.
+    needed = authz.action_capability(method, is_code_exec=False,
+                                     is_sensitive=bool(inp.get("sensitive")),
+                                     is_destructive=bool(inp.get("destructive")))
     if needed > capability_max:
         result["error"] = "refused: capability"
         result["refused_reason"] = (f"{method} needs capability level {needed} but the campaign "
