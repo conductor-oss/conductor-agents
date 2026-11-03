@@ -4,16 +4,23 @@
   "description": "Source-only DEEP assessment: run sast_scan + triage, VERIFY each scanner finding (reachability), and independently HUNT the source for exploitable attack chains the scanners miss (sast_hunt_core), adversarially refute each hunter hypothesis, then merge both streams (dropping false positives) into one report.md + report.pdf + findings.json + report.sarif. No live target required.",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
-  "timeoutSeconds": 7200,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["source_path", "target", "max_steps"],
+  "inputParameters": [
+    "source_path",
+    "target",
+    "max_steps"
+  ],
   "tasks": [
     {
       "name": "sast_scan",
       "taskReferenceName": "sast_sub",
       "type": "SUB_WORKFLOW",
-      "subWorkflowParam": { "name": "sast_scan", "version": 1 },
-      "inputParameters": { "source_path": "${workflow.input.source_path}" }
+      "subWorkflowParam": {
+        "name": "sast_scan",
+        "version": 1
+      },
+      "inputParameters": {
+        "source_path": "${workflow.input.source_path}"
+      }
     },
     {
       "name": "dep_cve_scan",
@@ -57,8 +64,14 @@
         "maxTokens": 12000,
         "jsonOutput": true,
         "messages": [
-          { "role": "system", "message": "SYSTEM_PROMPT_TRIAGE" },
-          { "role": "user", "message": "Scan data (JSON):\n${prep_triage.output.result}" }
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_TRIAGE"
+          },
+          {
+            "role": "user",
+            "message": "Scan data (JSON):\n${prep_triage.output.result}"
+          }
         ]
       }
     },
@@ -84,7 +97,11 @@
         "forkTasksInputs": "${build_verify_jobs.output.result.forkTasksInputs}"
       }
     },
-    { "name": "verify_join", "taskReferenceName": "verify_join", "type": "JOIN" },
+    {
+      "name": "verify_join",
+      "taskReferenceName": "verify_join",
+      "type": "JOIN"
+    },
     {
       "name": "collect_verify",
       "taskReferenceName": "collect_verify",
@@ -100,7 +117,10 @@
       "taskReferenceName": "hunt_core",
       "type": "SUB_WORKFLOW",
       "optional": true,
-      "subWorkflowParam": { "name": "sast_hunt_core", "version": 1 },
+      "subWorkflowParam": {
+        "name": "sast_hunt_core",
+        "version": 1
+      },
       "inputParameters": {
         "source_path": "${workflow.input.source_path}",
         "routes": "${sast_sub.output.routes}",
@@ -134,7 +154,11 @@
         "forkTasksInputs": "${build_hunt_verify_jobs.output.result.forkTasksInputs}"
       }
     },
-    { "name": "hunt_verify_join", "taskReferenceName": "hunt_verify_join", "type": "JOIN" },
+    {
+      "name": "hunt_verify_join",
+      "taskReferenceName": "hunt_verify_join",
+      "type": "JOIN"
+    },
     {
       "name": "collect_hunt_verify",
       "taskReferenceName": "collect_hunt_verify",
@@ -175,8 +199,14 @@
         "temperature": 0.2,
         "maxTokens": 12000,
         "messages": [
-          { "role": "system", "message": "SYSTEM_PROMPT_REPORT" },
-          { "role": "user", "message": "Report data (JSON):\n${prep_report.output.result}" }
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_REPORT"
+          },
+          {
+            "role": "user",
+            "message": "Report data (JSON):\n${prep_report.output.result}"
+          }
         ]
       }
     },
@@ -198,7 +228,10 @@
         "pageSize": "A4",
         "theme": "default",
         "baseFontSize": 10,
-        "marginTop": 54, "marginBottom": 54, "marginLeft": 54, "marginRight": 54,
+        "marginTop": 54,
+        "marginBottom": 54,
+        "marginLeft": 54,
+        "marginRight": 54,
         "pdfMetadata": {
           "title": "Static Analysis (SAST) Report -- source-verified + hunted",
           "author": "security-conductor",

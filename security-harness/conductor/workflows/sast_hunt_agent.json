@@ -4,10 +4,20 @@
   "description": "Source-code hunter: investigates ONE lead (entry-point cluster, dependency CVE, or objective sweep) by reading/grepping the source, traces untrusted input to dangerous sinks, and emits exploitable attack hypotheses (standard schema + code citations) via a note action. Read-only, path-jailed. System prompt injected from prompts/sast_hunt.md.",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
-  "timeoutSeconds": 0,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["lead", "source_path", "max_steps", "catalog_objectives", "cve_leads", "identities", "oob_available"],
-  "variables": { "messages": [], "done": "", "hypotheses": [] },
+  "inputParameters": [
+    "lead",
+    "source_path",
+    "max_steps",
+    "catalog_objectives",
+    "cve_leads",
+    "identities",
+    "oob_available"
+  ],
+  "variables": {
+    "messages": [],
+    "done": "",
+    "hypotheses": []
+  },
   "tasks": [
     {
       "name": "build_init",
@@ -28,8 +38,14 @@
       "type": "SET_VARIABLE",
       "inputParameters": {
         "messages": [
-          { "role": "system", "message": "SYSTEM_PROMPT_SAST_HUNT" },
-          { "role": "user", "message": "${build_init.output.result.msg}" }
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_SAST_HUNT"
+          },
+          {
+            "role": "user",
+            "message": "${build_init.output.result.msg}"
+          }
         ],
         "done": "",
         "hypotheses": []
@@ -79,14 +95,18 @@
           "type": "SWITCH",
           "evaluatorType": "graaljs",
           "expression": "$.atype === 'conclude' ? 'conclude' : ($.atype === 'read' ? 'read' : ($.atype === 'grep' ? 'grep' : ($.atype === 'list' ? 'list' : ($.atype === 'note' ? 'note' : 'other'))))",
-          "inputParameters": { "atype": "${parse_decide.output.result.action.type}" },
+          "inputParameters": {
+            "atype": "${parse_decide.output.result.action.type}"
+          },
           "decisionCases": {
             "conclude": [
               {
                 "name": "mark_done",
                 "taskReferenceName": "mark_done",
                 "type": "SET_VARIABLE",
-                "inputParameters": { "done": "done" }
+                "inputParameters": {
+                  "done": "done"
+                }
               }
             ],
             "note": [
@@ -138,7 +158,9 @@
                 "name": "update_state_read",
                 "taskReferenceName": "update_state_read",
                 "type": "SET_VARIABLE",
-                "inputParameters": { "messages": "${build_turn_read.output.result.messages}" }
+                "inputParameters": {
+                  "messages": "${build_turn_read.output.result.messages}"
+                }
               }
             ],
             "grep": [
@@ -168,7 +190,9 @@
                 "name": "update_state_grep",
                 "taskReferenceName": "update_state_grep",
                 "type": "SET_VARIABLE",
-                "inputParameters": { "messages": "${build_turn_grep.output.result.messages}" }
+                "inputParameters": {
+                  "messages": "${build_turn_grep.output.result.messages}"
+                }
               }
             ],
             "list": [
@@ -196,7 +220,9 @@
                 "name": "update_state_list",
                 "taskReferenceName": "update_state_list",
                 "type": "SET_VARIABLE",
-                "inputParameters": { "messages": "${build_turn_list.output.result.messages}" }
+                "inputParameters": {
+                  "messages": "${build_turn_list.output.result.messages}"
+                }
               }
             ]
           },
@@ -215,7 +241,9 @@
               "name": "update_state_nudge",
               "taskReferenceName": "update_state_nudge",
               "type": "SET_VARIABLE",
-              "inputParameters": { "messages": "${build_turn_nudge.output.result.messages}" }
+              "inputParameters": {
+                "messages": "${build_turn_nudge.output.result.messages}"
+              }
             }
           ]
         }
@@ -227,7 +255,9 @@
       "type": "SWITCH",
       "evaluatorType": "graaljs",
       "expression": "$.done === '' ? 'force' : 'ok'",
-      "inputParameters": { "done": "${workflow.variables.done}" },
+      "inputParameters": {
+        "done": "${workflow.variables.done}"
+      },
       "decisionCases": {
         "force": [
           {

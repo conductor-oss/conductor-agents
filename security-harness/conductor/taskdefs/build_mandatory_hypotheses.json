@@ -3,9 +3,8 @@
   "description": "Deterministically seed still-missing product-feature and top-CVE hypotheses from the target profile and operation ledger.",
   "ownerEmail": "security-conductor@local",
   "retryCount": 0,
-  "timeoutSeconds": 60,
-  "responseTimeoutSeconds": 30,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
   "pollTimeoutSeconds": 60,
-  "timeoutPolicy": "TIME_OUT_WF",
   "concurrentExecLimit": 0
 }

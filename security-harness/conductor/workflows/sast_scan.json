@@ -4,9 +4,9 @@
   "description": "Static analysis of provided source: semgrep + gitleaks + trivy in parallel, plus framework-agnostic route extraction. Returns SAST findings and the routes used to seed the live scan.",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
-  "timeoutSeconds": 1900,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["source_path"],
+  "inputParameters": [
+    "source_path"
+  ],
   "tasks": [
     {
       "name": "sast_fork",
@@ -18,7 +18,9 @@
             "name": "sast_semgrep",
             "taskReferenceName": "semgrep",
             "type": "SIMPLE",
-            "inputParameters": { "source_path": "${workflow.input.source_path}" }
+            "inputParameters": {
+              "source_path": "${workflow.input.source_path}"
+            }
           }
         ],
         [
@@ -26,7 +28,9 @@
             "name": "sast_secrets",
             "taskReferenceName": "secrets",
             "type": "SIMPLE",
-            "inputParameters": { "source_path": "${workflow.input.source_path}" }
+            "inputParameters": {
+              "source_path": "${workflow.input.source_path}"
+            }
           }
         ],
         [
@@ -34,7 +38,9 @@
             "name": "sast_deps",
             "taskReferenceName": "deps",
             "type": "SIMPLE",
-            "inputParameters": { "source_path": "${workflow.input.source_path}" }
+            "inputParameters": {
+              "source_path": "${workflow.input.source_path}"
+            }
           }
         ],
         [
@@ -42,7 +48,9 @@
             "name": "route_extract",
             "taskReferenceName": "routes",
             "type": "SIMPLE",
-            "inputParameters": { "source_path": "${workflow.input.source_path}" }
+            "inputParameters": {
+              "source_path": "${workflow.input.source_path}"
+            }
           }
         ]
       ]
@@ -51,7 +59,12 @@
       "name": "sast_join",
       "taskReferenceName": "sast_join",
       "type": "JOIN",
-      "joinOn": ["semgrep", "secrets", "deps", "routes"]
+      "joinOn": [
+        "semgrep",
+        "secrets",
+        "deps",
+        "routes"
+      ]
     },
     {
       "name": "collect_sast",

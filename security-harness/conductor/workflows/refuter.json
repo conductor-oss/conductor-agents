@@ -1,0 +1,91 @@
+{
+  "name": "refuter",
+  "version": 1,
+  "description": "Swarm REFUTER (adversarial peer review): a different model/identity tries to BREAK a candidate finding \u2014 argue it is benign, unreachable, misattributed, or a false positive. Posts a critique fact {survived, reason} to the board. A candidate survives only if the refuter fails AND a deterministic oracle fired; this is the filter that keeps massive breadth trustworthy.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "inputParameters": [
+    "correlation_id",
+    "candidate",
+    "app_model",
+    "model",
+    "llm_provider",
+    "role",
+    "area",
+    "objective_id"
+  ],
+  "tasks": [
+    {
+      "name": "refuter_build",
+      "taskReferenceName": "refuter_build",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "candidate": "${workflow.input.candidate}",
+        "app_model": "${workflow.input.app_model}",
+        "queryExpression": "{ msg: (\"Candidate finding to refute:\\n\" + ((.candidate // {}) | tojson) + \"\\n\\nApplication model (context):\\n\" + ((.app_model // {}) | tojson) + \"\\n\\nTry to BREAK this finding. Decide and respond.\") }"
+      }
+    },
+    {
+      "name": "refuter_init",
+      "taskReferenceName": "refuter_init",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "messages": [
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_REFUTER"
+          },
+          {
+            "role": "user",
+            "message": "${refuter_build.output.result.msg}"
+          }
+        ]
+      }
+    },
+    {
+      "name": "refuter_judge",
+      "taskReferenceName": "refuter_judge",
+      "type": "LLM_CHAT_COMPLETE",
+      "optional": true,
+      "retryCount": 2,
+      "retryDelaySeconds": 10,
+      "inputParameters": {
+        "llmProvider": "${workflow.input.llm_provider}",
+        "model": "${workflow.input.model}",
+        "temperature": 1,
+        "maxTokens": 2000,
+        "jsonOutput": false,
+        "messages": "${workflow.variables.messages}"
+      }
+    },
+    {
+      "name": "parse_refuter",
+      "taskReferenceName": "parse_refuter",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "raw": "${refuter_judge.output.result}",
+        "candidate": "${workflow.input.candidate}",
+        "area": "${workflow.input.area}",
+        "queryExpression": ".raw as $r | ((if ($r|type) == \"object\" then $r else (try ($r[ ($r|index(\"{\")) : (($r|rindex(\"}\"))+1) ] | fromjson) catch {broken:false, reason:\"unparseable refuter output\"}) end)) as $j | { area: (.area // \"\"), survived: (($j.broken // false) == false), broken: (($j.broken // false) == true), reason: ($j.reason // \"\"), candidate_title: (.candidate.title // \"\") }"
+      }
+    },
+    {
+      "name": "swarm_post_fact",
+      "taskReferenceName": "post_critique",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlation_id": "${workflow.input.correlation_id}",
+        "author": "${workflow.workflowId}",
+        "kind": "critique",
+        "data": "${parse_refuter.output.result}"
+      }
+    }
+  ],
+  "variables": {
+    "messages": []
+  },
+  "outputParameters": {
+    "survived": "${parse_refuter.output.result.survived}",
+    "reason": "${parse_refuter.output.result.reason}"
+  }
+}

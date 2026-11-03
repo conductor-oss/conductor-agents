@@ -47,3 +47,6 @@ Rules:
 - Keep severity labels exactly as given (Critical/High/Medium/Low/Info).
 - Use plain ASCII punctuation (`-`, `->`, `...`). Do NOT use Unicode arrows, em/en dashes, smart quotes, or emoji — they break PDF rendering.
 - Output ONLY the Markdown document, with no preamble and no code fence around the whole thing.
+
+## Access posture (REQUIRED when present)
+The report data may include an `access_posture` object. When `access_posture.needs_credentials` is true, the assessment was run WITHOUT credentials against an auth-gated target: state PROMINENTLY near the top that the authenticated surface was NOT assessed and that "0 confirmed" means "not reached", NOT "secure", and recommend re-running with an API key/secret or token. Never imply the target is secure when the access posture shows it was auth-gated and unauthenticated.

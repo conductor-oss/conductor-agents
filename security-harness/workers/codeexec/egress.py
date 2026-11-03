@@ -51,6 +51,14 @@ def _net_exists(docker, name):
     return rc == 0
 
 
+def _proxy_running(docker):
+    """True only if the proxy container exists AND is actually running. A stale/exited proxy
+    (e.g. OOM-killed) must be force-recreated, else the sandbox gets a proxy URL that resolves to a
+    dead container and every exploit fails with a connection/resolution error."""
+    rc, out = _run([docker, "inspect", "-f", "{{.State.Running}}", PROXY])
+    return rc == 0 and out.strip() == "true"
+
+
 def _proxy_allowlist(docker):
     rc, out = _run([docker, "inspect", "-f",
                     "{{range .Config.Env}}{{println .}}{{end}}", PROXY])
@@ -106,6 +114,10 @@ def _ensure_jail_locked(docker, target_url: str, oob_base: str) -> dict | None:
     th = _host(target_url)
     if th:
         allow.add(th)
+    # A localhost target lives on the Docker host; the sandbox rewrites it to host.docker.internal,
+    # so the proxy must allow (and be able to resolve) that name too.
+    if th in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
+        allow.add("host.docker.internal")
     # Allow ONLY the exact OOB collaborator host (e.g. resolve-x.trycloudflare.com),
     # NEVER the trycloudflare.com apex -- allow-listing the apex would let agent code
     # reach ANY attacker's quick-tunnel and exfiltrate the injected token, and would
@@ -123,17 +135,22 @@ def _ensure_jail_locked(docker, target_url: str, oob_base: str) -> dict | None:
     if not _net_exists(docker, INT_NET) or not _net_exists(docker, OUT_NET):
         return None
 
-    existing = _proxy_allowlist(docker)
-    existing_block = _proxy_blocklist(docker)
+    running = _proxy_running(docker)
+    existing = _proxy_allowlist(docker) if running else None
+    existing_block = _proxy_blocklist(docker) if running else None
     blocked = {oh} if oh else set()
     need = allow if existing is None else (allow | set(existing))
     need_block = blocked if existing_block is None else (blocked | set(existing_block))
-    if existing is None or existing_block is None or set(existing) != need or set(existing_block) != need_block:
+    # Recreate when the proxy is not running (stale/dead), has no allow-list yet, or the allow/block
+    # list must grow. A non-running proxy is the critical case: without this check ensure_jail would
+    # return a URL to a dead container and every sandboxed exploit would fail to connect.
+    if not running or existing is None or existing_block is None or set(existing) != need or set(existing_block) != need_block:
         # (Re)create the proxy with the (unioned) allow-list.
         _run([docker, "rm", "-f", PROXY])
         rc, out = _run([
             docker, "run", "-d", "--name", PROXY,
             "--network", INT_NET,
+            "--add-host", "host.docker.internal:host-gateway",  # resolve the host for localhost targets
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "-e", f"SC_ALLOW={','.join(sorted(need))}",
             "-e", f"SC_BLOCK={','.join(sorted(need_block))}",

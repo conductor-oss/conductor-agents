@@ -1,0 +1,10 @@
+{
+  "name": "swarm_rehypothesize_prep",
+  "description": "Build the hypothesize input from accumulated campaign learning (scout observations + confirmed findings) so each round forms NEW hypotheses, deduped against all prior ones.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 60,
+  "concurrentExecLimit": 0
+}

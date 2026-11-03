@@ -1,0 +1,10 @@
+{
+  "name": "swarm_inbox",
+  "description": "One call per agent step: the broadcast peer digest PLUS the agent's direct inbox (messages teammates addressed to it by workflowId, role, or broadcast). Enables real agent-to-agent conversation.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 60,
+  "concurrentExecLimit": 0
+}

@@ -4,9 +4,11 @@
   "description": "Adversarial verification of one claimed finding: re-run its PoC request live, then a skeptical LLM judges whether the evidence + replay prove a real, reproducible vulnerability. System prompt injected from prompts/verify.md.",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
-  "timeoutSeconds": 0,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["finding", "identities", "scope"],
+  "inputParameters": [
+    "finding",
+    "identities",
+    "scope"
+  ],
   "tasks": [
     {
       "name": "http_request",
@@ -54,8 +56,14 @@
         "maxTokens": 8000,
         "jsonOutput": false,
         "messages": [
-          { "role": "system", "message": "SYSTEM_PROMPT_VERIFY" },
-          { "role": "user", "message": "Claimed finding + live PoC replay + OOB confirmation (JSON):\n${prep_verify.output.result}" }
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_VERIFY"
+          },
+          {
+            "role": "user",
+            "message": "Claimed finding + live PoC replay + OOB confirmation (JSON):\n${prep_verify.output.result}"
+          }
         ]
       }
     },

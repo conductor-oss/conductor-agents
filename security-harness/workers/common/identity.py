@@ -14,6 +14,84 @@ field on the `--id` spec. We say so in the note (honesty over false precision).
 
 from __future__ import annotations
 
+import base64
+import json
+
+# Claim keys that make good VICTIM MARKERS for cross-identity / cross-tenant oracles — a distinctive
+# datum that belongs to THIS identity and would appear in another identity's read only on a real BOLA.
+_MARKER_KEYS = ("id", "userId", "user_id", "uid", "sub", "email", "username", "name",
+                "tenantId", "tenant_id", "orgId", "org_id", "accountId", "account_id")
+
+
+def _b64url_decode(seg: str) -> bytes:
+    seg = seg.strip().replace("-", "+").replace("_", "/")
+    seg += "=" * (-len(seg) % 4)  # restore padding
+    return base64.b64decode(seg)
+
+
+def jwt_claims(auth_value) -> dict:
+    """Best-effort decode of a JWT's payload claims (NO signature check — we only want the claims as
+    identity markers). Accepts a raw JWT or a 'Bearer <jwt>'/'<scheme> <jwt>' header value. Returns {}
+    on anything that isn't a JWT. Pure, never raises."""
+    try:
+        tok = str(auth_value or "").strip()
+        if " " in tok:               # strip a scheme prefix like "Bearer "
+            tok = tok.split()[-1]
+        parts = tok.split(".")
+        if len(parts) < 2:
+            return {}
+        claims = json.loads(_b64url_decode(parts[1]).decode("utf-8", "replace"))
+        return claims if isinstance(claims, dict) else {}
+    except Exception:                # noqa: BLE001 - any malformed token -> no markers
+        return {}
+
+
+def identity_markers(identities: dict | None) -> dict:
+    """For each non-anon identity, pull its distinctive self-identifiers from its JWT claims so a
+    cross-identity/cross-tenant agent gets a ready VICTIM MARKER instead of burning its budget
+    discovering 'which resource does identity B own'. Returns {label: {marker_key: value, ...}}.
+
+    Markers are harvested from top-level claims AND one level of nesting (Juice Shop puts the user in
+    ``data``; many APIs nest under ``user``/``identity``/``principal``). Empty when no JWT is present."""
+    out: dict[str, dict] = {}
+    for label, spec in (identities or {}).items():
+        if label == "anon" or not isinstance(spec, dict):
+            continue
+        claims = jwt_claims(spec.get("value"))
+        if not claims:
+            continue
+        found: dict[str, str] = {}
+        def _harvest(d: dict):
+            for k, v in d.items():
+                if k in _MARKER_KEYS and isinstance(v, (str, int)) and str(v).strip():
+                    found.setdefault(k, str(v))
+        _harvest(claims)
+        for nest in ("data", "user", "identity", "principal", "account"):
+            if isinstance(claims.get(nest), dict):
+                _harvest(claims[nest])
+        if spec.get("tenant"):
+            found.setdefault("tenant", str(spec["tenant"]))
+        if found:
+            out[label] = found
+    return out
+
+
+def victim_marker_directive(identities: dict | None, exclude: str = "") -> str:
+    """A one-line directive listing OTHER identities' markers for use as the oracle's victim_marker.
+    `exclude` is the attacking identity's label (don't offer its own markers as a victim marker)."""
+    markers = identity_markers(identities)
+    others = {lbl: m for lbl, m in markers.items() if lbl != exclude}
+    if not others:
+        return ""
+    parts = []
+    for lbl, m in others.items():
+        kv = ", ".join(f"{k}={v}" for k, v in list(m.items())[:4])
+        parts.append(f"{lbl} ({kv})")
+    return ("VICTIM MARKERS (use one of these distinctive values — a datum that belongs ONLY to the "
+            "victim identity — as the oracle's victim_marker/injected_marker; prove it appears in the "
+            "attacker's read of the victim's resource and is ABSENT from the attacker's own control): "
+            + " | ".join(parts) + ".")
+
 
 def classify(identities: dict | None) -> dict:
     """Return an adequacy report for the supplied {label: {header,value,tenant?}} map."""

@@ -1,0 +1,192 @@
+{
+  "name": "swarm_round",
+  "version": 1,
+  "description": "One round of the swarm collaboration loop (design/SWARM.md section 2): STANDUP (allocator plans a credit-sized wave) -> WAVE (FORK_JOIN_DYNAMIC of hundreds of independent agents, each posting facts to the board) -> RECONCILE (dedup, boost/decay credit, synthesize verified primitives into emergent chains, decide continue/stop). Independent work in the wave; all sharing happens at the join.",
+  "schemaVersion": 2,
+  "ownerEmail": "security-conductor@local",
+  "inputParameters": [
+    "correlation_id",
+    "areas",
+    "credits",
+    "round_idx",
+    "max_rounds",
+    "width_ceiling",
+    "budget_left",
+    "base_url",
+    "scope",
+    "identities",
+    "app_model",
+    "surface",
+    "manifest",
+    "capability_max",
+    "oob_base",
+    "run_id",
+    "docs_namespace",
+    "docs_index",
+    "docs_available",
+    "model",
+    "llm_provider",
+    "embed_provider",
+    "embed_model",
+    "max_steps",
+    "sast_findings",
+    "feature_playbook",
+    "personas",
+    "feature_inventory",
+    "docs_digest",
+    "recalled_confirmed",
+    "recalled_recipes",
+    "recalled_tried"
+  ],
+  "tasks": [
+    {
+      "name": "swarm_rehypothesize_prep",
+      "taskReferenceName": "rehypo_prep",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "correlation_id": "${workflow.input.correlation_id}",
+        "app_model": "${workflow.input.app_model}",
+        "identities": "${workflow.input.identities}",
+        "docs_digest": "${workflow.input.docs_digest}",
+        "sast_findings": "${workflow.input.sast_findings}",
+        "feature_playbook": "${workflow.input.feature_playbook}",
+        "personas": "${workflow.input.personas}",
+        "feature_inventory": "${workflow.input.feature_inventory}",
+        "recalled_confirmed": "${workflow.input.recalled_confirmed}",
+        "recalled_recipes": "${workflow.input.recalled_recipes}",
+        "recalled_tried": "${workflow.input.recalled_tried}"
+      }
+    },
+    {
+      "name": "hypothesize",
+      "taskReferenceName": "hypothesize",
+      "type": "LLM_CHAT_COMPLETE",
+      "optional": true,
+      "retryCount": 2,
+      "retryDelaySeconds": 10,
+      "inputParameters": {
+        "llmProvider": "${workflow.input.llm_provider}",
+        "model": "${workflow.input.model}",
+        "temperature": 1,
+        "maxTokens": 12000,
+        "thinkingTokenLimit": 4000,
+        "jsonOutput": false,
+        "messages": [
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_HYPOTHESIZE"
+          },
+          {
+            "role": "user",
+            "message": "Application model + exploration + identities + focus (JSON):\n${rehypo_prep.output.prep}"
+          }
+        ]
+      }
+    },
+    {
+      "name": "parse_rehypo",
+      "taskReferenceName": "parse_rehypo",
+      "type": "JSON_JQ_TRANSFORM",
+      "inputParameters": {
+        "raw": "${hypothesize.output.result}",
+        "queryExpression": ".raw as $r | (if ($r|type) == \"object\" then $r else (try ($r[ ($r|index(\"{\")) : (($r|rindex(\"}\"))+1) ] | fromjson) catch {hypotheses: []}) end)"
+      }
+    },
+    {
+      "name": "swarm_absorb_hypotheses",
+      "taskReferenceName": "absorb",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "correlation_id": "${workflow.input.correlation_id}",
+        "hypotheses": "${parse_rehypo.output.result.hypotheses}"
+      }
+    },
+    {
+      "name": "swarm_standup",
+      "taskReferenceName": "standup",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlation_id": "${workflow.input.correlation_id}",
+        "areas": "${workflow.input.areas}",
+        "credits": "${workflow.input.credits}",
+        "width_ceiling": "${workflow.input.width_ceiling}",
+        "budget_left": "${workflow.input.budget_left}",
+        "base_url": "${workflow.input.base_url}",
+        "scope": "${workflow.input.scope}",
+        "identities": "${workflow.input.identities}",
+        "app_model": "${workflow.input.app_model}",
+        "manifest": "${workflow.input.manifest}",
+        "capability_max": "${workflow.input.capability_max}",
+        "oob_base": "${workflow.input.oob_base}",
+        "run_id": "${workflow.input.run_id}",
+        "docs_namespace": "${workflow.input.docs_namespace}",
+        "docs_index": "${workflow.input.docs_index}",
+        "model": "${workflow.input.model}",
+        "llm_provider": "${workflow.input.llm_provider}",
+        "max_steps": "${workflow.input.max_steps}",
+        "docs_available": "${workflow.input.docs_available}"
+      }
+    },
+    {
+      "name": "width_gate",
+      "taskReferenceName": "width_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "$.width > 0 ? 'go' : 'empty'",
+      "inputParameters": {
+        "width": "${standup.output.width}"
+      },
+      "decisionCases": {
+        "go": [
+          {
+            "name": "wave",
+            "taskReferenceName": "wave",
+            "type": "FORK_JOIN_DYNAMIC",
+            "dynamicForkTasksParam": "forkTasks",
+            "dynamicForkTasksInputParamName": "forkTasksInputs",
+            "inputParameters": {
+              "forkTasks": "${standup.output.forkTasks}",
+              "forkTasksInputs": "${standup.output.forkTasksInputs}"
+            }
+          },
+          {
+            "name": "wave_join",
+            "taskReferenceName": "wave_join",
+            "type": "JOIN"
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "wave_noop",
+          "taskReferenceName": "wave_noop",
+          "type": "NOOP"
+        }
+      ]
+    },
+    {
+      "name": "swarm_reconcile",
+      "taskReferenceName": "reconcile",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlation_id": "${workflow.input.correlation_id}",
+        "credits": "${workflow.input.credits}",
+        "fact_watermark": "${standup.output.fact_watermark}",
+        "round_idx": "${workflow.input.round_idx}",
+        "max_rounds": "${workflow.input.max_rounds}",
+        "budget_left": "${workflow.input.budget_left}",
+        "identities": "${workflow.input.identities}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "credits": "${reconcile.output.credits}",
+    "keep_going": "${reconcile.output.keep_going}",
+    "reason": "${reconcile.output.reason}",
+    "width": "${standup.output.width}",
+    "rollup": "${reconcile.output.rollup}",
+    "emergent_chains": "${reconcile.output.emergent_chains}"
+  }
+}

@@ -4,9 +4,18 @@
   "description": "Ingest the target's how-to-use docs (local paths + URLs): chunk them, index into a per-run pgvector docs namespace for on-demand agent retrieval, and produce a digest (intended workflows + documented invariants) for understanding/hypotheses. A single warm-up index creates the namespace relation before the parallel fan-out to avoid the create-relation race; indexing is best-effort so the digest always runs. System prompt injected by register.sh into task ref docs_digest.",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
-  "timeoutSeconds": 0,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["docs", "auth", "scope", "run_id", "model", "provider", "embed_provider", "embed_model", "index_docs", "render_js"],
+  "inputParameters": [
+    "docs",
+    "auth",
+    "scope",
+    "run_id",
+    "model",
+    "provider",
+    "embed_provider",
+    "embed_model",
+    "index_docs",
+    "render_js"
+  ],
   "tasks": [
     {
       "name": "ingest_docs",
@@ -16,7 +25,8 @@
         "docs": "${workflow.input.docs}",
         "auth": "${workflow.input.auth}",
         "scope": "${workflow.input.scope}",
-        "render_js": "${workflow.input.render_js}"
+        "render_js": "${workflow.input.render_js}",
+        "run_id": "${workflow.input.run_id}"
       }
     },
     {
@@ -38,7 +48,10 @@
       "type": "SWITCH",
       "evaluatorType": "graaljs",
       "expression": "($.has === true && ($.idx === true || $.idx === 'true')) ? 'go' : 'skip'",
-      "inputParameters": { "has": "${build_docs_index_jobs.output.result.has_warmup}", "idx": "${workflow.input.index_docs}" },
+      "inputParameters": {
+        "has": "${build_docs_index_jobs.output.result.has_warmup}",
+        "idx": "${workflow.input.index_docs}"
+      },
       "decisionCases": {
         "go": [
           {
@@ -59,7 +72,13 @@
           }
         ]
       },
-      "defaultCase": [ { "name": "no_warmup", "taskReferenceName": "no_warmup", "type": "NOOP" } ]
+      "defaultCase": [
+        {
+          "name": "no_warmup",
+          "taskReferenceName": "no_warmup",
+          "type": "NOOP"
+        }
+      ]
     },
     {
       "name": "rest_index_gate",
@@ -67,7 +86,10 @@
       "type": "SWITCH",
       "evaluatorType": "graaljs",
       "expression": "($.c > 0 && ($.idx === true || $.idx === 'true')) ? 'go' : 'skip'",
-      "inputParameters": { "c": "${build_docs_index_jobs.output.result.rest_count}", "idx": "${workflow.input.index_docs}" },
+      "inputParameters": {
+        "c": "${build_docs_index_jobs.output.result.rest_count}",
+        "idx": "${workflow.input.index_docs}"
+      },
       "decisionCases": {
         "go": [
           {
@@ -81,10 +103,20 @@
               "forkTasksInputs": "${build_docs_index_jobs.output.result.forkTasksInputs}"
             }
           },
-          { "name": "docs_index_join", "taskReferenceName": "docs_index_join", "type": "JOIN" }
+          {
+            "name": "docs_index_join",
+            "taskReferenceName": "docs_index_join",
+            "type": "JOIN"
+          }
         ]
       },
-      "defaultCase": [ { "name": "no_rest_index", "taskReferenceName": "no_rest_index", "type": "NOOP" } ]
+      "defaultCase": [
+        {
+          "name": "no_rest_index",
+          "taskReferenceName": "no_rest_index",
+          "type": "NOOP"
+        }
+      ]
     },
     {
       "name": "docs_digest",
@@ -99,8 +131,14 @@
         "reasoningSummary": "detailed",
         "jsonOutput": false,
         "messages": [
-          { "role": "system", "message": "SYSTEM_PROMPT_DOCS_DIGEST" },
-          { "role": "user", "message": "Documentation excerpts:\n${ingest_docs.output.raw_excerpt}" }
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_DOCS_DIGEST"
+          },
+          {
+            "role": "user",
+            "message": "Documentation excerpts:\n${ingest_docs.output.raw_excerpt}"
+          }
         ]
       }
     },
@@ -112,10 +150,19 @@
         "raw": "${docs_digest.output.result}",
         "queryExpression": ".raw as $r | (if ($r|type) == \"object\" then $r else (try ($r[ ($r|index(\"{\")) : (($r|rindex(\"}\"))+1) ] | fromjson) catch {}) end)"
       }
+    },
+    {
+      "name": "enrich_docs_digest",
+      "taskReferenceName": "enrich_docs_digest",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "digest": "${parse_docs_digest.output.result}",
+        "run_id": "${workflow.input.run_id}"
+      }
     }
   ],
   "outputParameters": {
-    "digest": "${parse_docs_digest.output.result}",
+    "digest": "${enrich_docs_digest.output}",
     "docs_available": "${ingest_docs.output.docs_available}",
     "index_ready": "${build_docs_index_jobs.output.result.has_warmup}",
     "namespace": "docs",

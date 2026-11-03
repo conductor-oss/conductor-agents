@@ -1,0 +1,10 @@
+{
+  "name": "swarm_seed",
+  "description": "Seed the swarm blackboard from the surface/app_model: one coverage area per catalog objective. Returns the area list for the first standup.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 60,
+  "concurrentExecLimit": 0
+}

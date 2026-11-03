@@ -1,0 +1,10 @@
+{
+  "name": "swarm_read_board",
+  "description": "Live peer digest for one agent: what teammates have found/claimed/tried so far this campaign (excluding the caller). Lets agents collaborate in real time by folding peers' context into each reasoning step.",
+  "ownerEmail": "security-conductor@local",
+  "retryCount": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 60,
+  "concurrentExecLimit": 0
+}

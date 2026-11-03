@@ -1,12 +1,22 @@
 {
   "name": "surface",
   "version": 1,
-  "description": "Shared attack-surface gathering: recon ∥ browser crawl ∥ API discovery ∥ optional SAST, plus an optional ReAct browser agent, merged into a single {findings, surface} model. Reused by the Understand phase of deep_assess (and available to security_scan).",
+  "description": "Shared attack-surface gathering: recon \u2225 browser crawl \u2225 API discovery \u2225 optional SAST, plus an optional ReAct browser agent, merged into a single {findings, surface} model. Reused by the Understand phase of deep_assess (and available to security_scan).",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
-  "timeoutSeconds": 0,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["base_url", "scope", "source_path", "login_url", "username", "password", "max_pages", "max_depth", "agent", "agent_steps", "auth"],
+  "inputParameters": [
+    "base_url",
+    "scope",
+    "source_path",
+    "login_url",
+    "username",
+    "password",
+    "max_pages",
+    "max_depth",
+    "agent",
+    "agent_steps",
+    "auth"
+  ],
   "tasks": [
     {
       "name": "surface_fork",
@@ -30,7 +40,10 @@
             "name": "web_crawl",
             "taskReferenceName": "crawl_sub",
             "type": "SUB_WORKFLOW",
-            "subWorkflowParam": { "name": "web_crawl", "version": 1 },
+            "subWorkflowParam": {
+              "name": "web_crawl",
+              "version": 1
+            },
             "inputParameters": {
               "base_url": "${workflow.input.base_url}",
               "scope": "${workflow.input.scope}",
@@ -62,8 +75,13 @@
             "taskReferenceName": "sast_sub",
             "type": "SUB_WORKFLOW",
             "optional": true,
-            "subWorkflowParam": { "name": "sast_scan", "version": 1 },
-            "inputParameters": { "source_path": "${workflow.input.source_path}" }
+            "subWorkflowParam": {
+              "name": "sast_scan",
+              "version": 1
+            },
+            "inputParameters": {
+              "source_path": "${workflow.input.source_path}"
+            }
           }
         ]
       ]
@@ -72,7 +90,12 @@
       "name": "surface_join",
       "taskReferenceName": "surface_join",
       "type": "JOIN",
-      "joinOn": ["recon", "crawl_sub", "api_discover", "sast_sub"]
+      "joinOn": [
+        "recon",
+        "crawl_sub",
+        "api_discover",
+        "sast_sub"
+      ]
     },
     {
       "name": "agent_gate",
@@ -80,7 +103,9 @@
       "type": "SWITCH",
       "evaluatorType": "graaljs",
       "expression": "($.agent === true || $.agent === 'true') ? 'yes' : 'no'",
-      "inputParameters": { "agent": "${workflow.input.agent}" },
+      "inputParameters": {
+        "agent": "${workflow.input.agent}"
+      },
       "decisionCases": {
         "yes": [
           {
@@ -88,7 +113,10 @@
             "taskReferenceName": "agent_sub",
             "type": "SUB_WORKFLOW",
             "optional": true,
-            "subWorkflowParam": { "name": "browser_agent", "version": 1 },
+            "subWorkflowParam": {
+              "name": "browser_agent",
+              "version": 1
+            },
             "inputParameters": {
               "base_url": "${workflow.input.base_url}",
               "scope": "${workflow.input.scope}",
@@ -103,7 +131,11 @@
         ]
       },
       "defaultCase": [
-        { "name": "no_agent", "taskReferenceName": "no_agent", "type": "NOOP" }
+        {
+          "name": "no_agent",
+          "taskReferenceName": "no_agent",
+          "type": "NOOP"
+        }
       ]
     },
     {

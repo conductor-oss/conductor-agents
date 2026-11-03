@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# security-conductor — SWARM CAMPAIGN against an authorized target (design/SWARM.md).
+#
+#   ./swarm <url> --authorized [options]
+#
+# Scales the deep pentest from one agent to a round-based TEAM of hundreds: understand once,
+# then each round a standup plans a credit-sized wave of independent agents (scouts/exploiters/
+# chainers/refuters) that post to a shared blackboard, and a reconcile step synthesizes their
+# partial findings into emergent chains. Discovers deep, hidden, chained vulnerabilities that no
+# single agent sees end to end. Same authorization/capability/scope gates as ./assess.
+#
+# Options:
+#   --authorized            Assert you may test this target (synthesizes a capability-bounded manifest).
+#   --manifest <path>       Machine-enforceable authorization manifest (JSON); source of truth when set.
+#   --capability <0-4>      Capability ceiling (default 1 = read-only; 2 = synthetic state-changing).
+#   --width <n>             Max agents per wave (wave width ceiling; default 24). Bounded by the
+#                           task-def throughput ceiling regardless of this value.
+#   --rounds <n>            Max standup rounds (default 4; loops until dry or budget out).
+#   --budget <n>            Campaign request budget (default 5000); starves waves when exhausted.
+#   --diversity-models <a,b> Model pool scouts rotate across (ensemble by construction).
+#   --scope <h1,h2,...>     Hosts in scope (default: the target's host).
+#   --id '<label>=<spec>'   Add a test identity (REPEATABLE). spec: token:<JWT> | key:<K>,secret:<S>,
+#                           tokenurl:<U> | session:<file>; optional header:<name>, scheme:<s>, tenant:<id>.
+#   --source <path>         Target source code (enriches understanding; optional).
+#   --oob <base>            OOB collaborator base URL (confirms blind SSRF/RCE/exfil).
+#   --model <id>            Analysis model (default claude-opus-4-8).
+#   --kill-switch <path>    Sentinel file; its presence halts (terminates) the campaign.
+#   --no-bootstrap          Use an already-running stack (skip auto server/register/workers).
+#   --no-wait               Start and return immediately (don't poll to completion).
+#   -h | --help             This help.
+set -euo pipefail
+
+SC_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WF="swarm_assess"
+
+URL=""; AUTH=false; MANIFEST_PATH=""; CAPABILITY=""; SCOPE=""; SOURCE=""; OOB=""
+WIDTH=""; ROUNDS=""; BUDGET=""; DIVERSITY_MODELS=""; MODEL=""; KILL_SWITCH=""
+NO_BOOTSTRAP=false; WAIT=true
+IDS_JSON="[]"; NID=0; FIRST_TOKEN=""; FIRST_HEADER=""; FIRST_SCHEME=""
+DOCS_JSON="[]"
+
+usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+add_identity() {
+  local raw="$1" label spec; label="${raw%%=*}"; spec="${raw#*=}"
+  [ "$label" != "$raw" ] || { echo "ERROR: --id must be 'label=spec'" >&2; exit 1; }
+  local tok="" key="" sec="" turl="" hdr="" sch="" tnt="" ses=""
+  local IFS=','; for kv in $spec; do
+    local k="${kv%%:*}" v="${kv#*:}"
+    case "$k" in
+      token) tok="$v" ;; key) key="$v" ;; secret) sec="$v" ;; tokenurl) turl="$v" ;;
+      header) hdr="$v" ;; scheme) sch="$v" ;; tenant) tnt="$v" ;; session) ses="$v" ;;
+      *) echo "ERROR: unknown identity field '$k'" >&2; exit 1 ;;
+    esac
+  done
+  if [ -n "$ses" ]; then
+    [ -f "$ses" ] || { echo "ERROR: session file not found: $ses" >&2; exit 1; }
+    tok=$(jq -r '.auth_token // empty' "$ses"); [ -z "$hdr" ] && hdr=$(jq -r '.auth_header // empty' "$ses")
+    [ -z "$sch" ] && sch=$(jq -r '.auth_scheme // empty' "$ses")
+  fi
+  if [ -z "$tok" ] && [ -n "$key" ] && [ -n "$sec" ] && [ -n "$turl" ]; then
+    echo "  exchanging key/secret -> short-lived token for '$label'"
+    local body; body=$(jq -nc --arg k "$key" --arg s "$sec" '{keyId:$k, keySecret:$s}')
+    tok=$(curl -sk -X POST "$turl" -H 'Content-Type: application/json' -d "$body" | jq -r '.token // empty')
+    [ -n "$tok" ] || { echo "ERROR: token exchange failed for '$label'" >&2; exit 1; }
+  fi
+  [ -n "$tok" ] || { echo "ERROR: identity '$label' has no token" >&2; exit 1; }
+  local obj; obj=$(jq -nc --arg l "$label" --arg t "$tok" --arg h "$hdr" --arg s "$sch" --arg tn "$tnt" '
+    {label:$l, auth_token:$t} + (if $h=="" then {} else {auth_header:$h} end)
+    + (if $s=="" then {} else {auth_scheme:$s} end) + (if $tn=="" then {} else {tenant:$tn} end)')
+  IDS_JSON=$(jq -c --argjson e "$obj" '. + [$e]' <<< "$IDS_JSON")
+  if [ "$NID" -eq 0 ]; then FIRST_TOKEN="$tok"; FIRST_HEADER="$hdr"; FIRST_SCHEME="$sch"; fi
+  NID=$((NID+1))
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --authorized) AUTH=true ;;
+    --manifest)   MANIFEST_PATH="${2:-}"; shift ;;
+    --capability) CAPABILITY="${2:-}"; shift ;;
+    --width)      WIDTH="${2:-}"; shift ;;
+    --rounds)     ROUNDS="${2:-}"; shift ;;
+    --budget)     BUDGET="${2:-}"; shift ;;
+    --diversity-models) DIVERSITY_MODELS="${2:-}"; shift ;;
+    --scope)      SCOPE="${2:-}"; shift ;;
+    --id)         add_identity "${2:-}"; shift ;;
+    --source)     SOURCE="${2:-}"; shift ;;
+    --docs)       DOCS_JSON=$(jq -c --arg d "${2:-}" '. + [$d]' <<< "$DOCS_JSON"); shift ;;
+    --oob)        OOB="${2:-}"; shift ;;
+    --model)      MODEL="${2:-}"; shift ;;
+    --kill-switch) KILL_SWITCH="${2:-}"; shift ;;
+    --no-bootstrap) NO_BOOTSTRAP=true ;;
+    --no-wait)    WAIT=false ;;
+    -h|--help)    usage 0 ;;
+    -*)           echo "unknown option: $1" >&2; usage 1 ;;
+    *)            if [ -z "$URL" ]; then URL="$1"; else echo "unexpected arg: $1" >&2; usage 1; fi ;;
+  esac
+  shift
+done
+
+[ -n "$URL" ] || { echo "ERROR: target URL required" >&2; usage 1; }
+command -v conductor >/dev/null || { echo "ERROR: conductor CLI not found" >&2; exit 1; }
+command -v jq >/dev/null || { echo "ERROR: jq required" >&2; exit 1; }
+command -v curl >/dev/null || { echo "ERROR: curl required" >&2; exit 1; }
+
+if ! $NO_BOOTSTRAP; then
+  export SC_REPO_ROOT
+  source "$SC_REPO_ROOT/conductor/ensure-stack.sh"
+  sc_ensure_stack "$WF"
+fi
+
+MANIFEST_JSON="{}"
+if [ -n "$MANIFEST_PATH" ]; then
+  [ -f "$MANIFEST_PATH" ] || { echo "ERROR: manifest not found: $MANIFEST_PATH" >&2; exit 1; }
+  MANIFEST_JSON=$(cat "$MANIFEST_PATH")
+elif $AUTH; then
+  now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  exp_iso=$(date -u -v+1d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)
+  host=$(printf '%s' "$URL" | sed -E 's#^[a-zA-Z]+://##; s#[:/?].*$##')
+  if [ -n "$SCOPE" ]; then hosts_json=$(jq -cn --arg s "$SCOPE" '$s|split(",")'); else hosts_json=$(jq -cn --arg h "$host" '[$h]'); fi
+  cap="${CAPABILITY:-1}"
+  MANIFEST_JSON=$(jq -nc --argjson hosts "$hosts_json" --arg start "$now_iso" --arg exp "$exp_iso" --argjson cap "$cap" '
+    { approvers: ["local-operator"], in_scope_hosts: $hosts, window: {start: $start, expiry: $exp},
+      capability_max: $cap, rate: {burst_max: 20}, note: "synthesized by ./swarm --authorized" }')
+  echo "ℹ  synthesized capability-$cap manifest (24h window)."
+fi
+
+DIVERSITY_JSON="{}"
+[ -n "$DIVERSITY_MODELS" ] && DIVERSITY_JSON=$(jq -cn --arg m "$DIVERSITY_MODELS" '{models: ($m|split(","))}')
+
+input=$(jq -n \
+  --arg t "$URL" --arg src "$SOURCE" --arg scope "$SCOPE" --arg oob "$OOB" --arg md "$MODEL" \
+  --arg w "$WIDTH" --arg r "$ROUNDS" --arg b "$BUDGET" --arg ks "$KILL_SWITCH" \
+  --arg atoken "$FIRST_TOKEN" --arg aheader "$FIRST_HEADER" --arg ascheme "$FIRST_SCHEME" \
+  --argjson manifest "$MANIFEST_JSON" --argjson ids "$IDS_JSON" --argjson auth "$AUTH" \
+  --argjson diversity "$DIVERSITY_JSON" --argjson docs "$DOCS_JSON" '
+  {target: $t, authorized: $auth, identities: $ids}
+  + (if ($manifest|length)==0 then {} else {manifest: $manifest} end)
+  + (if ($diversity|length)==0 then {} else {diversity: $diversity} end)
+  + (if $ks=="" then {} else {kill_switch: $ks} end)
+  + (if $src=="" then {} else {source_path: $src, hunt: true} end)
+  + (if ($docs|length)==0 then {} else {docs: $docs} end)
+  + (if $scope=="" then {} else {scope: {in_scope_hosts: ($scope|split(","))}} end)
+  + (if $oob=="" then {} else {oob_base: $oob} end)
+  + (if $md=="" then {} else {model: $md} end)
+  + (if $w==""  then {} else {width_ceiling: ($w|tonumber)} end)
+  + (if $r==""  then {} else {max_rounds: ($r|tonumber)} end)
+  + (if $b==""  then {} else {budget: ($b|tonumber)} end)
+  + (if $atoken==""  then {} else {auth_token: $atoken} end)
+  + (if $aheader=="" then {} else {auth_header: $aheader} end)
+  + (if $ascheme=="" then {} else {auth_scheme: $ascheme} end)')
+
+echo "→ starting $WF against $URL (authorized=$AUTH, identities=$NID + anon, width=${WIDTH:-24}, rounds=${ROUNDS:-4})"
+_start_out=$(conductor workflow start -w "$WF" -i "$input" 2>&1 || true)
+WID=$(printf '%s' "$_start_out" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)
+[ -n "$WID" ] || { echo "ERROR: could not parse workflow id from:" >&2; printf '%s\n' "$_start_out" >&2; exit 1; }
+echo "  campaign id (= correlation id): $WID"
+BASE_URL="${CONDUCTOR_SERVER_URL:-http://localhost:8080/api}"; BASE_URL="${BASE_URL%/api}"
+echo "  UI: $BASE_URL/execution/$WID"
+$WAIT || exit 0
+
+echo -n "  working (swarm campaigns can run for a while; waiting for completion)"
+while true; do
+  J=$(conductor workflow get-execution "$WID" 2>/dev/null || true)
+  status=$(printf '%s' "$J" | jq -r '.status // empty' 2>/dev/null || true)
+  case "$status" in
+    COMPLETED|FAILED|TERMINATED|TIMED_OUT) echo; echo "  status: $status"; break ;;
+    *) echo -n "."; sleep 10 ;;
+  esac
+done

@@ -4,10 +4,21 @@
   "description": "Autonomous ReAct browser agent: an LLM drives a real browser one action at a time (navigate/fill/click) to reach states a link crawler misses. Returns discovered URLs + the resulting (possibly authenticated) session. The agent system prompt is injected from prompts/agent.md by register.sh.",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
-  "timeoutSeconds": 0,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["base_url", "scope", "goal", "max_steps", "storage_state", "auth"],
-  "variables": { "messages": [], "done": "", "cur_url": "", "cur_state": null, "discovered": [] },
+  "inputParameters": [
+    "base_url",
+    "scope",
+    "goal",
+    "max_steps",
+    "storage_state",
+    "auth"
+  ],
+  "variables": {
+    "messages": [],
+    "done": "",
+    "cur_url": "",
+    "cur_state": null,
+    "discovered": []
+  },
   "tasks": [
     {
       "name": "playwright_action",
@@ -18,7 +29,9 @@
         "scope": "${workflow.input.scope}",
         "url": "${workflow.input.base_url}",
         "storage_state": "${workflow.input.storage_state}",
-        "action": { "type": "observe" },
+        "action": {
+          "type": "observe"
+        },
         "auth": "${workflow.input.auth}"
       }
     },
@@ -38,8 +51,14 @@
       "type": "SET_VARIABLE",
       "inputParameters": {
         "messages": [
-          { "role": "system", "message": "SYSTEM_PROMPT_AGENT" },
-          { "role": "user", "message": "${build_init.output.result.msg}" }
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_AGENT"
+          },
+          {
+            "role": "user",
+            "message": "${build_init.output.result.msg}"
+          }
         ],
         "done": "",
         "cur_url": "${observe_start.output.url}",
@@ -87,7 +106,9 @@
                 "name": "mark_done",
                 "taskReferenceName": "mark_done",
                 "type": "SET_VARIABLE",
-                "inputParameters": { "done": "done" }
+                "inputParameters": {
+                  "done": "done"
+                }
               }
             ],
             "act": [

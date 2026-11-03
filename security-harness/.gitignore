@@ -38,3 +38,7 @@ c123.db*
 
 # Scratch
 .scratch/
+
+# editor/backup cruft
+*.bak
+*.bak[0-9]

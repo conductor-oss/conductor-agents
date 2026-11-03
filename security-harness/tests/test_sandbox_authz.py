@@ -44,3 +44,25 @@ def test_sandbox_forbids_agrees_with_canonical_authz(monkeypatch):
         ("POST", "https://app.test/orders"),
     ]:
         assert sandbox_sc._forbids(method, url) == authz.forbids(method, url, manifest)
+
+
+def test_inband_probe_returns_actionable_ack_not_none():
+    # Regression (run a903e328): inband_probe returned None, so agents thought it failed and thrashed
+    # ("probe returns None regardless of marker"). It must return an ack naming the planted oracle and
+    # the fields it received, so a non-None ack reads as "queued" and a missing field is visible.
+    sandbox_sc._state["inband"] = []
+    ack = sandbox_sc.inband_probe("cross_identity_access",
+                                  victim={"path": "/rest/basket/5"}, attacker={"path": "/rest/basket/5"},
+                                  victim_marker="bob@x.io", control={"path": "/rest/basket/6"})
+    assert ack is not None
+    assert ack["planted"] == "cross_identity_access"
+    assert ack["status"] == "recorded"
+    assert set(ack["fields"]) == {"victim", "attacker", "victim_marker", "control"}
+    # and it actually queued the plan for the verifier
+    assert sandbox_sc._state["inband"][-1]["oracle"] == "cross_identity_access"
+
+
+def test_inband_probe_ack_surfaces_missing_field():
+    sandbox_sc._state["inband"] = []
+    ack = sandbox_sc.inband_probe("cross_identity_access", victim={"path": "/a"})  # missing fields
+    assert "attacker" not in ack["fields"] and "victim" in ack["fields"]

@@ -4,10 +4,17 @@
   "description": "Source-only verification agent: investigates ONE candidate SAST finding by reading and searching the source (read/grep/list, read-only, path-jailed), decides whether it is reachable from untrusted input (real) or dead/test/sanitized (false positive), and concludes with a verdict + evidence chain. System prompt injected from prompts/sast_verify.md.",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
-  "timeoutSeconds": 0,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["finding", "source_path", "max_steps"],
-  "variables": { "messages": [], "done": "", "conclusion": {}, "evidence": [] },
+  "inputParameters": [
+    "finding",
+    "source_path",
+    "max_steps"
+  ],
+  "variables": {
+    "messages": [],
+    "done": "",
+    "conclusion": {},
+    "evidence": []
+  },
   "tasks": [
     {
       "name": "build_init",
@@ -24,8 +31,14 @@
       "type": "SET_VARIABLE",
       "inputParameters": {
         "messages": [
-          { "role": "system", "message": "SYSTEM_PROMPT_SAST_VERIFY" },
-          { "role": "user", "message": "${build_init.output.result.msg}" }
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_SAST_VERIFY"
+          },
+          {
+            "role": "user",
+            "message": "${build_init.output.result.msg}"
+          }
         ],
         "done": "",
         "conclusion": {},
@@ -76,7 +89,9 @@
           "type": "SWITCH",
           "evaluatorType": "graaljs",
           "expression": "$.atype === 'conclude' ? 'conclude' : ($.atype === 'read' ? 'read' : ($.atype === 'grep' ? 'grep' : ($.atype === 'list' ? 'list' : 'other')))",
-          "inputParameters": { "atype": "${parse_decide.output.result.action.type}" },
+          "inputParameters": {
+            "atype": "${parse_decide.output.result.action.type}"
+          },
           "decisionCases": {
             "conclude": [
               {
@@ -217,7 +232,9 @@
       "type": "SWITCH",
       "evaluatorType": "graaljs",
       "expression": "$.done === '' ? 'force' : 'ok'",
-      "inputParameters": { "done": "${workflow.variables.done}" },
+      "inputParameters": {
+        "done": "${workflow.variables.done}"
+      },
       "decisionCases": {
         "force": [
           {

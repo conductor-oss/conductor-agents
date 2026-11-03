@@ -318,6 +318,21 @@ def build_inventory(app_model: dict | None, surface: dict | None,
             inputs = [{"name": k, "location": "body"} for k in body.keys()]
             upsert(method, path, "docs", inputs, name=rec.get("name") or "")
 
+    # 3b) doc-surface endpoints (deterministic extraction over the ingested docs) — ensures the
+    # feature-complete sweep covers EVERY documented endpoint, not only those the LLM digest happened
+    # to turn into a recipe. Backfilled into the digest by enrich_docs_digest (run 05b95dd9: the LLM
+    # recipes named 4 endpoints; doc-surface found 49, incl. the whole /api/a2a and /api/audit surface).
+    for ep in (docs_digest.get("surface_endpoints") or []):
+        if isinstance(ep, dict) and ep.get("path"):
+            upsert((ep.get("method") or "").upper() or "GET", ep.get("path"), "docs-surface",
+                   name=ep.get("name") or "")
+        elif isinstance(ep, str) and ep.strip():
+            m, _, pth = ep.strip().partition(" ")
+            if pth:
+                upsert(m.upper(), pth, "docs-surface")
+            else:
+                upsert("GET", m, "docs-surface")
+
     # finalize: attach sink hints + global query params (to GET features lacking inputs) + priority
     out = []
     for f in feats.values():

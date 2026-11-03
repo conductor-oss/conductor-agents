@@ -263,6 +263,7 @@ LLM reasoning runs in native `LLM_CHAT_COMPLETE` tasks (Anthropic). Security too
 | `sast` | Entry point: source-only static assessment (`sast_report` workflow) — no live site |
 | `scan` | Entry point: fast surface scan (`security_scan` workflow) |
 | `assess` | Entry point: deep agentic pentest (`deep_assess` workflow) |
+| `swarm` | Entry point: round-based swarm of hundreds of collaborating agents (`swarm_assess` workflow) — see [`design/SWARM.md`](design/SWARM.md) |
 | `sso-capture` | Capture an SSO browser session → an `--id` credential |
 
 ---
@@ -291,6 +292,99 @@ The bounded availability / denial-of-wallet tier (load probing) is **off** unles
 - **Capability 2 without touching existing resources:** level 2 operates only on synthetic, prefixed objects it creates and then cleans up; destructive/availability actions are level 4 (off). To turn that convention into a *hard* fence, add `forbidden_operations` / `protected_records` to a `--manifest` — they are enforced on direct HTTP calls **and inside the `code_exec` sandbox**. (Avoid a blanket `DELETE *`, which would also block cleanup of the synthetic objects.)
 
 An independent safety governor halts the campaign on window expiry, a `--kill-switch` file, a rate/data-volume budget breach, or a policy breach. A tamper-evident audit log records every action.
+
+---
+
+## Swarm mode (experimental)
+
+The default `deep_assess` runs one expert agent that doubts itself. **Swarm mode** scales that to a
+round-based *team* of hundreds of agents to discover the deepest, most unobvious, chained
+vulnerabilities — the ones no single agent sees end to end. The design and rationale are in
+[`design/SWARM.md`](design/SWARM.md).
+
+The engine is massive parallelism plus a collaboration loop. Each round: a **standup** (allocator)
+reads the campaign **blackboard** and plans a credit-sized wave; a **wave** of independent agents
+(scouts for breadth, exploiters for depth, chainers, refuters) works in parallel and posts findings
+to the board; a **reconcile/synthesize** step composes verified primitives from different agents into
+emergent chains and decides whether to go another round. The swarm tree is the Conductor execution
+tree: the campaign `workflowId` is the `correlationId` stamped down every child, so the whole swarm
+is one query and terminating the root cascades to every agent (the kill switch).
+
+```
+WORKFLOW swarm_assess
+  authorization_gate → seed blackboard
+    → understand once (recon → app model → DOCS INGEST → feature inventory → SAST hunt → personas)
+    → DO_WHILE round_loop:  safety_check → swarm_round (standup → wave FORK_JOIN_DYNAMIC → reconcile)
+    → scribe rollup (coverage + confirmed findings + spend, by correlationId)
+```
+
+### Running a swarm campaign
+
+`./swarm` takes the same target / auth / scope / capability flags as `./assess`, plus `--width`
+(agents per wave, default 24), `--rounds` (standup rounds, default 4), and `--budget` (request
+budget). It loops until the surface is covered or the budget/round cap is hit.
+
+```bash
+# (a) Against the bundled OWASP Juice Shop demo (run `make up` first):
+./swarm http://localhost:3001 --authorized --rounds 4
+
+# (b) Add the target's SOURCE so scouts hunt real code paths, not just the URL surface
+#     (source enables the SAST hunt that seeds code-grounded hypotheses):
+./swarm https://app.example.com --authorized --capability 2 --source ./code \
+  --id 'userA=token:eyJ...A' --id 'userB=token:eyJ...B' --scope app.example.com
+
+# (c) Full authenticated, multi-tenant campaign with DOCS + SOURCE (the strongest setup) —
+#     prefer key/secret identities so tokens auto-refresh across a long campaign:
+./swarm https://your-system.example.com --authorized --capability 2 \
+  --docs https://your-docs.example.com/ --source /path/to/source \
+  --width 24 --rounds 8 --budget 10000 \
+  --id 'orgA=key:K1,secret:S1,tokenurl:https://your-system.example.com/api/token,tenant:orgA' \
+  --id 'orgB=key:K2,secret:S2,tokenurl:https://your-system.example.com/api/token,tenant:orgB' \
+  --oob <collaborator>
+```
+
+**What `--docs` and `--source` give the swarm** — this is what makes it pentest a *system*, not a
+list of URLs:
+
+- `--docs <url|path>` (repeatable; also auto-loaded from a `--profile`) — the swarm **ingests the
+  product documentation and learns how the system actually works**: its features, the call sequences
+  to operate them, and the security *invariants* the docs claim (e.g. "only admins view audit logs",
+  "secrets are masked in output", "a tag's grant is inherited by tagged resources"). It turns each
+  documented endpoint and invariant into a tested hypothesis — *"prove the system does **not**
+  enforce this rule"* — so agents weaponize features (define-and-run a workflow that SSRFs, register
+  an integration that exfiltrates) instead of only probing endpoints. Scouts also query the docs live
+  (`search_docs`) mid-campaign to learn a feature before attacking it. JS-rendered doc sites are
+  supported (headless render), and the crawler prioritises the concrete reference/how-to pages that
+  state the rules.
+- `--source <path>` — runs the SAST hunt over the code and seeds **code-grounded** hypotheses
+  (reachable sinks, weak authz checks) that agents then confirm live. Combine with `--hunt` to drive
+  source-discovered chains to dynamic confirmation.
+- **Two or more `--id` identities with distinct `tenant:` markers** unlock the cross-identity oracles
+  (BOLA / privilege-escalation / cross-tenant isolation) — the swarm replays an action as one
+  identity and checks it was reachable by another.
+- `--oob <collaborator>` — an out-of-band callback host that confirms *blind* SSRF / RCE / exfil
+  (`make oob` starts a local one). `--capability 2` (with `make codeexec-image`) is what lets agents
+  create-and-run workflows/integrations — required for the state-changing feature-abuse classes.
+
+Watch it live in the Conductor UI at the printed `/execution/<id>` URL; terminating that root
+execution cascades the kill switch to every agent in the tree.
+
+Key properties that keep breadth safe and trustworthy:
+
+- **Trust:** only a deterministic verifier worker that re-issues an oracle promotes a finding; every
+  candidate also faces an adversarial `refuter`. Oracle coverage spans SSRF, arithmetic RCE,
+  time-blind SQLi, stored-XSS-in-victim-context, race invariants, path-traversal, and auth-state.
+- **Shared memory:** an append-only blackboard keyed by `correlationId` (local disk or S3 via
+  external payload storage) — one object per fact, lock-free, so hundreds of writers never collide.
+- **Safety at scale:** a global throughput ceiling on `http_request`/`code_exec` task defs bounds
+  live-target load at any tree width; the root terminates the whole swarm on any breach.
+- **Prove before scaling:** `bench/swarm_eval.py` measures confirmed-findings-per-dollar vs. wave
+  width; raise the width only while that curve climbs.
+
+Like the other entry points, a campaign writes `reports/<campaign-id>/report.pdf` + `report.md` +
+`findings.json` + `report.sarif` + `dossier.json` (the `<campaign-id>` is the correlation id). Swarm
+mode shares the same authorization, capability, and scope gates as the rest of the harness; it never
+raises its own level.
 
 ---
 

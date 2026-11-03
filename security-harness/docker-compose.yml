@@ -29,6 +29,9 @@ services:
       REPORTS_DIR: /app/reports
       WORKER_MODULES: ${WORKER_MODULES:-recon}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SC_BLACKBOARD_DIR: ${SC_BLACKBOARD_DIR:-/app/state/blackboard}
+      SC_BLACKBOARD_S3_BUCKET: ${SC_BLACKBOARD_S3_BUCKET:-}
+      SC_BLACKBOARD_S3_PREFIX: ${SC_BLACKBOARD_S3_PREFIX:-swarm}
     volumes:
       - ./reports:/app/reports
     extra_hosts:

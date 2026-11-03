@@ -4,9 +4,13 @@
   "description": "Purple-team control assurance for ONE confirmed finding (spec 21): re-issue the malicious PoC to see if it is now PREVENTED, probe any audit/event endpoint for DETECTION, then a purple-team LLM judges prevention/detection/response. System prompt injected from prompts/purple.md into task ref purple_check.",
   "schemaVersion": 2,
   "ownerEmail": "security-conductor@local",
-  "timeoutSeconds": 0,
-  "timeoutPolicy": "TIME_OUT_WF",
-  "inputParameters": ["finding", "identities", "scope", "manifest", "capability_max"],
+  "inputParameters": [
+    "finding",
+    "identities",
+    "scope",
+    "manifest",
+    "capability_max"
+  ],
   "tasks": [
     {
       "name": "http_request",
@@ -46,8 +50,14 @@
         "maxTokens": 8000,
         "jsonOutput": false,
         "messages": [
-          { "role": "system", "message": "SYSTEM_PROMPT_PURPLE" },
-          { "role": "user", "message": "Confirmed finding + detection probe (JSON):\n${prep_purple.output.result}" }
+          {
+            "role": "system",
+            "message": "SYSTEM_PROMPT_PURPLE"
+          },
+          {
+            "role": "user",
+            "message": "Confirmed finding + detection probe (JSON):\n${prep_purple.output.result}"
+          }
         ]
       }
     },
