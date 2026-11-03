@@ -61,6 +61,10 @@ oob: ## Start the OOB collaborator (listener + cloudflared tunnel) for blind-bug
 oob-stop: ## Stop the OOB collaborator
 	@bash $(ROOT)/conductor/oob-setup.sh --stop
 
+ui: ## Launch the live dashboard (trigger workflows + watch swarm progress/messages) at http://127.0.0.1:8700
+	@echo "Swarm Console -> http://127.0.0.1:$${SC_UI_PORT:-8700}  (Ctrl-C to stop)"
+	@$(PY) $(ROOT)/ui/app.py
+
 workers-docker: ## Run the Dockerized base worker
 	@docker compose --profile workers up -d --build base-worker
 	@docker compose logs -f base-worker
@@ -138,4 +142,4 @@ retest: venv ## Re-test a prior dossier's PoCs (remediation verification): make 
 clean: ## Remove scan artifacts and the worker venv
 	@rm -rf $(ROOT)/reports/* $(VENV) && echo "cleaned"
 
-.PHONY: help server server-stop server-logs up down venv venv-ci lint test-ci workers workers-docker dast sast sast-report chrome rag register scan schedule test bench bench-live retest clean
+.PHONY: help server server-stop server-logs up down venv venv-ci lint test-ci workers workers-docker dast sast sast-report chrome rag register scan schedule test bench bench-live retest clean ui oob oob-stop
