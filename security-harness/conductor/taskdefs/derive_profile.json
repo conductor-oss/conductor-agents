@@ -2,9 +2,12 @@
   "name": "derive_profile",
   "description": "Synthesize an editable target profile from a run (verified auth header + discovered protected probe paths + archetype) and persist it under state/profiles/<host>.json so the next run auto-loads it.",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 0,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }

@@ -2,9 +2,12 @@
   "name": "build_coverage",
   "description": "Build the multi-dimensional coverage ledger (spec 22): persona x invariant x sensitive-operation x object-id x interface, each classified tested/partial/untested.",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 0,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }

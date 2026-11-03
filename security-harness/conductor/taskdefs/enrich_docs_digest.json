@@ -2,9 +2,12 @@
   "name": "enrich_docs_digest",
   "description": "Backfill the LLM docs digest with deterministic doc-surface extraction (documented endpoints, authz/tenancy/masking invariants, feature families) so the system's security model is always available to the feature-complete sweep and the hypothesizer, even when the LLM digest returns thin/empty fields.",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 1,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }

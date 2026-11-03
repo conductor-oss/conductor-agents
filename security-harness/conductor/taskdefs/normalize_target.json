@@ -2,11 +2,12 @@
   "name": "normalize_target",
   "description": "Parse/validate the target URL, derive authorized scope, emit the authorization flag.",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 1,
+  "retryCount": 3,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 5,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY"
 }

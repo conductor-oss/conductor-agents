@@ -2,9 +2,12 @@
   "name": "ingest_docs",
   "description": "Ingest how-to-use docs (local paths and/or URLs: markdown/text/HTML/PDF/OpenAPI) into chunks for the per-run docs index, plus a bounded raw excerpt for the docs digest.",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 0,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }

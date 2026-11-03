@@ -2,9 +2,12 @@
   "name": "hc_analyze",
   "description": "Read-only hill-climbing analysis (design \u00a719.2/P4-a): mine the trace corpus, keep corroborated (multi-trace) failure signatures, emit config-change PROPOSALS via the diagnosis->surface map. No write-back; proposals go to the benchmark gate + ratification.",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 0,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }

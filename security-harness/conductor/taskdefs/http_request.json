@@ -2,11 +2,14 @@
   "name": "http_request",
   "description": "Generic scope-enforced HTTP request executor for the pentest agent (any method/url/headers/body, chosen identity); returns redacted req + full resp as evidence.",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 0,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
+  "pollTimeoutSeconds": 600,
   "concurrentExecLimit": 24,
   "rateLimitPerFrequency": 60,
-  "rateLimitFrequencyInSeconds": 1
+  "rateLimitFrequencyInSeconds": 1,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }

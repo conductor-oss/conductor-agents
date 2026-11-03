@@ -2,9 +2,12 @@
   "name": "docs_search",
   "description": "Lexical (BM25) retrieval over the per-run ingested documentation chunks \u2014 backs the agents' live search_docs action without a vector DB. Returns top doc snippets for a query so an agent can learn how a feature is meant to be used.",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 1,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }

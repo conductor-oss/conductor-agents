@@ -2,11 +2,12 @@
   "name": "playwright_crawl",
   "description": "Scoped headless-browser crawl: render JS, map URL/form/param/endpoint surface, emit passive DOM findings.",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 1,
+  "retryCount": 3,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 15,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY"
 }

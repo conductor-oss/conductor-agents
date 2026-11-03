@@ -2,9 +2,12 @@
   "name": "cleanup_resources",
   "description": "Best-effort removal of resources the exploit agents created (the created_resources ledger): scope-enforced cleanup requests (usually DELETE). Returns removed + residue.",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 0,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }

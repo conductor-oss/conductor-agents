@@ -2,9 +2,12 @@
   "name": "deepen_action_gate",
   "description": "Authorize the next generated deep-exploitation action against the deterministic technique ladder before code execution. Rejects missing, repeated, and out-of-order families; conclusions are deferred to deepen_gate.",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 0,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 8
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 8,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }

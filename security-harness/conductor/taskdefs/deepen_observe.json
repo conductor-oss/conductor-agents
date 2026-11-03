@@ -2,9 +2,12 @@
   "name": "deepen_observe",
   "description": "Persistent exploitation deepening (deepen_observe): technique-ladder walk with no-premature-give-up guard + self-learning lessons (design/DEEP_EXPLOITATION.md).",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 0,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }

@@ -2,9 +2,12 @@
   "name": "report_quality_gate",
   "description": "PLAN_V3 Phase 6.2: gate the generated report Markdown before PDF -- redact secret-like literals, strip PDF-hostile characters, and validate required sections + Markdown table syntax. Returns cleaned Markdown + the violation list.",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 0,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }

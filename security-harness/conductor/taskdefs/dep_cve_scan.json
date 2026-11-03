@@ -2,9 +2,12 @@
   "name": "dep_cve_scan",
   "description": "Dependency -> known-CVE lookup via OSV.dev (ROADMAP E4 supply chain): parse source manifests or infer the stack, find known CVEs, emit findings + cve_leads to seed exploitation. No trivy/docker required.",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 0,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }

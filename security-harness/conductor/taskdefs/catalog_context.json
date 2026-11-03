@@ -2,9 +2,12 @@
   "name": "catalog_context",
   "description": "Load the Security Objective Catalog and compute which objectives are APPLICABLE to this target (from app_model facts), to seed hypothesis breadth and the coverage ledger (spec ROADMAP E0).",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 0,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }

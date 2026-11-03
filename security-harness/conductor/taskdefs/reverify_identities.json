@@ -2,9 +2,12 @@
   "name": "reverify_identities",
   "description": "Re-verify supplied identities against the discovered surface: auto-derive the app's real protected endpoints and re-probe each credential so authenticated testing is confirmed without a hand-written profile.",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 0,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }

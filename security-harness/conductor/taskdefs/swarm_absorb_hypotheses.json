@@ -2,9 +2,12 @@
   "name": "swarm_absorb_hypotheses",
   "description": "Post a round's freshly-generated hypotheses to the board as open work, deduped against every hypothesis already seen. Completes the round-over-round learning loop.",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 1,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }

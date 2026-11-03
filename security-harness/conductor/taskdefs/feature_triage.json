@@ -2,9 +2,12 @@
   "name": "feature_triage",
   "description": "Cheap polyglot-canary reflection probe across every input-bearing feature; classifies which injection class (XSS/SQLi/SSTI/traversal/open-redirect) each surfaces, so only flagged features get the deep ladder walk (triage-then-deepen).",
   "ownerEmail": "security-conductor@local",
-  "retryCount": 0,
+  "retryCount": 3,
   "timeoutSeconds": 0,
   "responseTimeoutSeconds": 31536000,
-  "pollTimeoutSeconds": 31536000,
-  "concurrentExecLimit": 0
+  "pollTimeoutSeconds": 600,
+  "concurrentExecLimit": 0,
+  "timeoutPolicy": "RETRY",
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 5
 }
