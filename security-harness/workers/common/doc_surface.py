@@ -245,7 +245,6 @@ def seed_hypotheses(run_id: str) -> list:
     independent of whether the hypothesize LLM chooses to instantiate it."""
     surface = surface_for_run(run_id)
     seeds = surface.get("seeds") or []
-    families = surface.get("families") or []
     _INVARIANT_OBJECTIVE = {
         "invariant/authz": "authz-invariant-violation",
         "invariant/tenancy": "crosstenant-invariant-violation",

@@ -460,7 +460,7 @@ def _peer_digest(cid: str, me: str) -> dict:
         # repeating the same payload — collaboration that works even when NOTHING is confirmed yet.
         items = sorted(tried.items(), key=lambda kv: -kv[1][0])[:10]
         lines.append("Already attempted by teammates (don't repeat the same payload — go deeper or a new angle): "
-                     + " | ".join(f"{s} (x{a}){': '+l if l else ''}" for s, (a, l) in items))
+                     + " | ".join(f"{s} (x{a}){': '+lsn if lsn else ''}" for s, (a, lsn) in items))
     if hyps:
         lines.append("Hypotheses the team is pursuing (pick a DIFFERENT angle or a deeper variant): "
                      + " | ".join(sorted(set(hyps))[:12]))
