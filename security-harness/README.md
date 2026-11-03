@@ -2,7 +2,9 @@
 
 > Part of **[conductor-agents](../README.md)** — production-grade AI agents orchestrated by Conductor.
 
-An autonomous web-application & API **penetration-testing agent** orchestrated by **[Conductor](https://conductor-oss.org/)**. Point it at a target and it crawls with a real browser, reasons about the attack surface with an LLM, runs scanners in parallel, **actively exploits** what it finds (multi-identity, out-of-band confirmed), triages away false positives, and writes a report — all as a durable, observable, retryable Conductor workflow. Point it at the **source code** or the **product docs** too, and it mines them to find and prove more.
+An autonomous web-app & API **penetration-testing agent** orchestrated by **[Conductor](https://conductor-oss.org/)**.
+
+Point it at a target: it crawls with a real browser, reasons about the attack surface with an LLM, runs scanners in parallel, then **actively exploits and confirms** what it finds — multi-identity, out-of-band — and writes a report. The whole run is a durable, observable, retryable Conductor workflow. Give it the **source code** or **product docs** too, and it mines them for more to test.
 
 > **⚠️ Authorized testing only.** Only test systems you **own or have explicit written permission to test**. Unauthorized scanning may be illegal; you are responsible for use. Scope and mutation limits are machine-enforced — see [Authorization & safety](#authorization--safety).
 
@@ -91,9 +93,9 @@ A tiny seeded-vuln app ships in `examples/vuln-app/` (command/code/SQL injection
 
 ### `./swarm` — the collaborative deep hunt
 
-The strongest mode. Instead of one agent, a **round-based team** works a shared **blackboard**: each round a standup plans a wave of independent agents — scouts for breadth, exploiters for depth, chainers, and adversarial refuters — then a reconcile step composes their verified primitives into **emergent chains no single agent sees end to end**. The whole swarm is one Conductor execution tree (the campaign `workflowId` is the `correlationId` on every child), so terminating the root is a one-shot kill switch.
+The strongest mode. Instead of one agent, a **round-based team** shares a **blackboard**: each round a standup plans a wave of independent agents — scouts for breadth, exploiters for depth, chainers, refuters — and a reconcile step composes their verified primitives into **chains no single agent sees end to end**.
 
-It takes the same target/auth/scope/capability flags as `./assess`, plus `--width` (agents per wave, default 24), `--rounds` (default 4), and `--budget` (request budget). It loops until the surface is covered or a cap is hit.
+Same flags as `./assess`, plus `--width` (agents per wave, default 24), `--rounds` (default 4), and `--budget`. It loops until the surface is covered or a cap is hit.
 
 ```bash
 # (a) The bundled Juice Shop demo (run `make up` first):
@@ -115,12 +117,12 @@ It takes the same target/auth/scope/capability flags as `./assess`, plus `--widt
 
 **What the inputs unlock** — this is what makes the swarm pentest a *system*, not a list of URLs:
 
-- **`--docs <url|path>`** (repeatable; also loaded from a `--profile`) — ingests the product documentation and **learns how the system works**: its features, how to operate them, and the security *invariants* the docs claim ("only admins view audit logs", "secrets are masked", "a tag's grant is inherited"). Each documented endpoint and invariant becomes a tested hypothesis — *"prove the system does **not** enforce this"* — so agents weaponize features (define-and-run a workflow that SSRFs, register an integration that exfiltrates) instead of only probing endpoints. Scouts also query the docs live mid-campaign. JS-rendered doc sites are rendered headless.
-- **`--source <path>`** — runs the SAST hunt and seeds code-grounded hypotheses (reachable sinks, weak authz) that agents confirm live; add `--hunt` to drive source-found chains to confirmation.
-- **Two+ `--id` identities with distinct `tenant:` markers** — unlock the cross-identity oracles (BOLA / privilege-escalation / cross-tenant isolation).
-- **`--oob <collaborator>`** (`make oob`) — confirms *blind* SSRF/RCE/exfil. **`--capability 2`** (with `make codeexec-image`) is what lets agents create-and-run workflows/integrations, required for state-changing feature abuse.
+- **`--docs`** — ingests the product docs and **learns the system**: its features, how to operate them, and the invariants they claim ("only admins read audit logs", "secrets are masked"). Each becomes a hypothesis to disprove, so agents abuse real features (a workflow that SSRFs, an integration that exfiltrates) — not just endpoints.
+- **`--source`** — seeds code-grounded hypotheses from a SAST hunt (reachable sinks, weak authz); add `--hunt` to drive source-found chains to live confirmation.
+- **Two+ `--id` with `tenant:` markers** — unlock the cross-identity oracles (BOLA, privilege escalation, cross-tenant isolation).
+- **`--oob`** (`make oob`) confirms *blind* SSRF/RCE/exfil; **`--capability 2`** (needs `make codeexec-image`) lets agents create-and-run workflows and integrations for state-changing feature abuse.
 
-**What keeps it safe and trustworthy at breadth:** only a deterministic verifier that re-issues an oracle promotes a finding (oracles span SSRF, arithmetic RCE, time-blind SQLi, stored-XSS-in-victim-context, race invariants, path traversal, auth-state), and every candidate also faces an adversarial refuter. A global throughput ceiling on the `http_request`/`code_exec` task defs bounds live-target load at any tree width, and the root terminates the whole campaign on any policy/budget breach. Cost scales with wave width, so size it deliberately — `bench/swarm_eval.py` measures confirmed-findings-per-dollar vs. width; raise width only while that curve climbs. Design and rationale: [`design/SWARM.md`](design/SWARM.md).
+**Safe at breadth:** every finding is promoted only by a deterministic oracle re-issued by a trusted verifier and must survive an adversarial refuter, a global throughput ceiling bounds live-target load at any width, and the root kills the whole tree on any policy/budget breach. Cost scales with width, so size it deliberately. Full design, oracle list, and tuning: [`design/SWARM.md`](design/SWARM.md).
 
 ---
 
