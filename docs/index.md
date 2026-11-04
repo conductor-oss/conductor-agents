@@ -53,7 +53,7 @@ hide:
   <span class="dc-card__more">View agent →</span>
 </a>
 <a class="dc-card acc-devops" href="coding-harness/" data-cat="DevOps" data-text="coding harness github issue pull request parallel worktree code review">
-  <span class="dc-card__tag">DevOps · Ready</span>
+  <span class="dc-card__tag">DevOps · Experimental</span>
   <span class="dc-card__name">Coding Harness</span>
   <span class="dc-card__desc">Autonomous coding across local repositories, GitHub issues, and pull requests with parallel worktrees, durable sub-workflows, and human publication gates.</span>
   <span class="dc-card__more">View agent →</span>

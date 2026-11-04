@@ -22,7 +22,7 @@ harness owns its setup, safety requirements, workflows, and examples in its dire
 | Harness | Category | Status | Start here |
 |---|---|---|---|
 | **[security-harness](security-harness/)** | Security testing | ✅ Ready | [README](security-harness/README.md) · [Agent skill](security-harness/SKILL.md) |
-| **[coding-harness](coding-harness/)** | Software delivery | ✅ Ready | [README](coding-harness/README.md) · [Agent skill](coding-harness/SKILL.md) |
+| **[coding-harness](coding-harness/)** | Software delivery | 🧪 Experimental | [README](coding-harness/README.md) · [Agent skill](coding-harness/SKILL.md) |
 | deep-research | Research | 🚧 Coming soon | — |
 | customer-support | Customer operations | 🚧 Coming soon | — |
 
