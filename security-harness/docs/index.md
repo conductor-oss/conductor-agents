@@ -9,13 +9,11 @@ Point it at a web app and it crawls with a real browser, reasons about the attac
 
 ## Walkthrough
 
-<div class="dc-video">
-  <div class="dc-video__inner">
-    <span class="dc-video__play">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-    </span>
-    <span class="dc-video__label">Video coming soon · 6-minute walkthrough</span>
-  </div>
+<div class="dc-video dc-video--filled">
+  <video controls preload="none" playsinline poster="assets/walkthrough-poster.jpg">
+    <source src="assets/walkthrough.mp4" type="video/mp4" />
+    Your browser doesn't support embedded video. <a href="assets/walkthrough.mp4">Download the walkthrough</a>.
+  </video>
 </div>
 
 ## The closed adversarial loop
@@ -35,6 +33,8 @@ UNDERSTAND ─▶ HYPOTHESIZE ─▶ EXPLOIT ─▶ VERIFY ─▶ REFLECT ─▶
 
 The loop is multi-pass and goal-directed: a confirmed finding becomes a precondition that seeds deeper, chained hypotheses, so the harness pursues a kill chain rather than a flat list of independent findings. See [Architecture](architecture.md) for the full design.
 
+A single agent runs this loop in `./assess`. The strongest mode, **`./swarm`**, runs it as a *team*: each round a standup plans a wave of independent agents (scouts, exploiters, chainers, refuters) that share a blackboard, and a reconcile step composes their verified primitives into chains no single agent sees end to end. See [SAST, Scan, Assess & Swarm](scan-vs-assess.md#swarm-the-collaborative-deep-hunt).
+
 ## Why Conductor
 
 Security scans are long-running, parallel, and failure-prone — exactly the problem Conductor was built to solve. Running the harness as a Conductor workflow makes it:
@@ -48,7 +48,8 @@ Security scans are long-running, parallel, and failure-prone — exactly the pro
 <div class="grid cards" markdown>
 
 - :material-rocket: **[Quickstart](quickstart.md)** — get a scan running in ~30s
-- :material-compare: **[Scan vs Assess](scan-vs-assess.md)** — fast surface scan vs deep agentic pentest
+- :material-compare: **[SAST, Scan, Assess & Swarm](scan-vs-assess.md)** — pick a mode: source-only, fast surface scan, deep single-agent pentest, or the collaborative swarm
+- :material-account-group: **[Swarm](scan-vs-assess.md#swarm-the-collaborative-deep-hunt)** — the round-based team hunt: breadth × depth × synthesis
 - :material-shield-lock: **[Authorization](authorization.md)** — capability levels and the safety governor
 - :material-key: **[Authentication & SSO](authentication.md)** — supply credentials, capture SSO sessions
 - :material-sitemap: **[Architecture](architecture.md)** — the loop, the catalog spine, the worker layout

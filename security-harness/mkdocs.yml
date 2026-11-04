@@ -4,9 +4,10 @@ site_name: security-harness
 nav:
   - Overview: index.md
   - Quickstart: quickstart.md
-  - Sast, Scan & Assess: scan-vs-assess.md
+  - SAST, Scan, Assess & Swarm: scan-vs-assess.md
   - Authentication & SSO: authentication.md
   - Authorization & capabilities: authorization.md
   - Architecture: architecture.md
+  - Live exploitation roadmap: live-exploit-roadmap.md
   - Outputs: outputs.md
   - Deployment modes: deployment.md

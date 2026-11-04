@@ -29,7 +29,7 @@ Every harness in this catalog runs as a durable Conductor workflow: every step i
 
     The open-source orchestration engine.
 
--   :material-shield-check: **[Security Harness](../security-harness/)**
+-   :material-shield-check: **[Security Harness](security-harness/index.md)**
 
     The flagship agent in this catalog — see the primitives in action.
 

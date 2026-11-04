@@ -202,6 +202,8 @@ body { color: var(--c-text); -webkit-font-smoothing: antialiased; background: va
 .dc-video__inner { display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; }
 .dc-video__play { width: 62px; height: 62px; border-radius: 50%; background: var(--c-accent); color: #fff; display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 24px rgba(249,115,22,.35); }
 .dc-video__label { font-family: var(--md-code-font, monospace); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--c-text-dim); }
+.dc-video--filled { aspect-ratio: 16 / 9; padding: 0; background: #0E0A1F; background-size: auto; }
+.dc-video--filled video { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 /* ---------- Catalog controls ---------- */
 .dc-search {

@@ -11,6 +11,7 @@ The worker fleet can run entirely on the host, or with heavier tooling isolated 
 | Dockerized SAST | `make sast SRC_ROOT=<dir>` | semgrep/gitleaks/trivy in a container; source mounted read-only at its real path |
 | Persistent browser | `make chrome` + `SC_CDP_URL=http://127.0.0.1:9222` | Playwright connects over CDP to one live browser, preserving in-page/SPA state across `--agent` steps |
 | Vector-RAG | `make rag` | Starts pgvector, indexes `knowledge/`; triage pulls relevant remediation chunks rather than the full static KB |
+| Swarm console (UI) | `make ui` | Live dashboard at `http://127.0.0.1:8700` (override with `SC_UI_PORT`) — trigger workflows and watch swarm rounds, progress, and blackboard messages |
 
 ## Project layout
 
@@ -24,4 +25,7 @@ The worker fleet can run entirely on the host, or with heavier tooling isolated 
 | `sast` | Entry point: source-only static assessment (`sast_report` workflow) — no live site |
 | `scan` | Entry point: fast surface scan (`security_scan` workflow) |
 | `assess` | Entry point: deep agentic pentest (`deep_assess` workflow) |
+| `swarm` | Entry point: collaborative round-based swarm (`swarm_assess` workflow) |
 | `sso-capture` | Capture an SSO browser session → an `--id` credential |
+| `ui/` | Stdlib swarm console served by `make ui` |
+| `design/` | Design docs — `SWARM.md`, architecture, roadmap |

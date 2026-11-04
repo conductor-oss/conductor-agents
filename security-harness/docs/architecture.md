@@ -16,7 +16,21 @@ WORKFLOW security_scan
 
 LLM reasoning runs in native `LLM_CHAT_COMPLETE` tasks (Anthropic). Security tools run in Dockerized workers. Surface gathering (recon, crawl, API discovery, SAST) runs concurrently in a `FORK_JOIN` — the three sequential LLM steps (plan → triage → report) are on a true data dependency and cannot overlap.
 
-The fast `security_scan` workflow above is the surface scan; `deep_assess` layers the multi-pass agentic loop on top of the same building blocks. Conductor's `DO_WHILE` bounds the iterative-deepening passes, `FORK_JOIN_DYNAMIC` fans out active checks, and `GENERATE_PDF` renders the final report — all durable and retryable. See [Scan vs Assess](scan-vs-assess.md).
+The fast `security_scan` workflow above is the surface scan; `deep_assess` layers the multi-pass agentic loop on top of the same building blocks. Conductor's `DO_WHILE` bounds the iterative-deepening passes, `FORK_JOIN_DYNAMIC` fans out active checks, and `GENERATE_PDF` renders the final report — all durable and retryable. See [SAST, Scan, Assess & Swarm](scan-vs-assess.md).
+
+The deepest mode, `swarm_assess`, runs the same loop as a round-based *team* rather than one agent:
+
+```text
+WORKFLOW swarm_assess
+  authorization_gate → seed blackboard
+    → understand once (recon → app model → DOCS INGEST → feature inventory → SAST hunt → personas)
+    → DO_WHILE rounds: safety_check → standup (allocator plans a wave)
+                       → wave (FORK_JOIN_DYNAMIC: scouts, exploiters, chainers, refuters — each works alone, writes the board)
+                       → reconcile (single-writer: dedupe, promote oracle-verified findings, compose primitives into new chains)
+    → scribe rollup (coverage + confirmed findings + spend)
+```
+
+Every agent is a sub-workflow stamped with the campaign root's `correlationId`, so the whole swarm is one query and one kill switch (terminate the root → cascade). Agents coordinate only through the durable blackboard — independent work inside each wave, synthesis at the join — which is what lets the tree run wide without shared mutable state. Full design in [`design/SWARM.md`](https://github.com/conductor-oss/conductor-agents/blob/main/security-harness/design/SWARM.md).
 
 ## The closed adversarial loop
 
@@ -86,10 +100,14 @@ Workers are external processes that poll Conductor by task name. They are organi
 | `browser/` | Playwright crawl, login, and in-page actions |
 | `dast/` | Active dynamic scanners (nuclei/sqlmap/dalfox/ffuf) |
 | `sast/` | Static analysis, secret and dependency scanning (semgrep/gitleaks/trivy) |
+| `codenav/` | Read-only code-navigation tools for the source-only deepening agent |
 | `api/` | API discovery and route extraction |
+| `httptool/` | Generic HTTP request worker — the exploit/explore agent's primary "hands"; strips credentials on cross-host redirects |
 | `codeexec/` | Hardened sandbox for exploit code execution |
 | `oob/` | Out-of-band collaborator for blind SSRF/RCE/exfil confirmation |
 | `rag/` | Vector-RAG retrieval over the remediation knowledge base |
+| `swarm/` | Standup/allocator, wave planning, reconcile, and scribe rollup for `swarm_assess` |
+| `hc/` | Hill-climbing meta-loop that steers passes toward untested, high-value surface |
 | `safety/` | Capability gate, safety governor, cleanup |
 | `common/` | Shared scope, findings, SARIF, and voting logic |
 
