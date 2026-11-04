@@ -72,3 +72,20 @@ def test_exact_request_renders_runnable_curl():
     # the exact captured request is embedded in the reproduction script as the decisive step
     assert "EXACT confirming request" in md
     assert "169.254.169.254" in md and "$JWT_viren" in md
+
+
+def test_codename_callsigns():
+    from common import codename
+    # deterministic + stable
+    a = "1d9ace1a-1377-381d-ba1e-af237b184547"
+    assert codename.callsign(a) == codename.callsign(a)
+    cs = codename.callsign(a)
+    assert "-" in cs and cs.split("-")[0] in codename.CALLSIGNS and cs.split("-")[1].isdigit()
+    # distinct ids usually get distinct handles
+    handles = {codename.callsign(f"agent-{i}") for i in range(40)}
+    assert len(handles) >= 30
+    # label passes roles/broadcast through, maps ids
+    assert codename.label("role:scout") == "role:scout"
+    assert codename.label("all") == "all"
+    assert codename.label(a) == cs
+    assert codename.callsign("") == "GHOST-00"

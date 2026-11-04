@@ -25,6 +25,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+import sys as _sys  # noqa: E402
+_sys.path.insert(0, os.path.join(ROOT, "workers"))
+try:  # SFW red-team callsigns so the board reads like a real op, not a wall of UUIDs
+    from common.codename import callsign as _callsign, label as _cs_label
+except Exception:  # keep the UI working even if the module is unavailable
+    def _callsign(x):
+        return (str(x or "?")[:8])
+
+    def _cs_label(x):
+        return str(x or "?")
 PORT = int(os.environ.get("SC_UI_PORT", "8700"))
 CONDUCTOR = os.environ.get("CONDUCTOR_SERVER_URL", "http://localhost:8080/api").rstrip("/")
 MODES = {"sast": "./sast", "scan": "./scan", "assess": "./assess", "swarm": "./swarm"}
@@ -132,11 +143,13 @@ def messages(cid: str, limit: int = 400) -> list[dict]:
     rows = []
     for m in msgs:
         d = m.get("data") or {}
+        _from = d.get("from") or m.get("author") or "?"
         rows.append({
             "ts": m.get("ts") or 0,
-            "from": (d.get("from") or "?")[:8],
+            "from": _callsign(_from),
+            "from_id": str(_from)[:8],
             "from_role": d.get("from_role") or "?",
-            "to": d.get("to") or "?",
+            "to": _cs_label(d.get("to") or "?"),
             "intent": d.get("intent") or "share",
             "thread": (d.get("thread") or "")[:28],
             "body": d.get("body") or "",
@@ -374,7 +387,7 @@ function fmtTsFull(ts){return ts?new Date(ts*1000).toLocaleString():"";}
 function msgHTML(m){return `<div class="msg ${m.intent}"><div class="h">`+
   `<span class="mut mono" title="${fmtTsFull(m.ts)}">${fmtTs(m.ts)}</span> `+
   `<span class="intent ${m.intent}">${m.intent}</span> `+
-  `<span class="mono">${m.from}</span><span class="mut">(${m.from_role})</span>→<span class="mono">${m.to}</span>`+
+  `<span class="mono" title="${m.from_id||''}">${m.from}</span><span class="mut">(${m.from_role})</span>→<span class="mono">${m.to}</span>`+
   `${m.thread?` <span class="mut">«${m.thread}»</span>`:""}</div><div class="b">${(m.body||"").replace(/</g,"&lt;")}</div></div>`;}
 function renderFeed(){const feed=$("#feed");if(!feed)return;
   if(!CID){feed.innerHTML=`<div class="mut" style="padding:24px">← Pick a run on the Run tab to watch its message board.</div>`;$("#mcount").textContent="select a run →";return;}
