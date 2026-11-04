@@ -68,7 +68,6 @@ def execute_definition(name: str, version: int, inputs: dict,
                        mocks: dict[str, list[dict]], workflow: dict) -> dict:
     body = json.dumps({
         "name": name,
-        "version": version,
         "input": inputs,
         "workflowDef": workflow,
         "taskRefToMockOutput": mocks,

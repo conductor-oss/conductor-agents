@@ -114,7 +114,7 @@ def campaign_schedule(task):
             ref = f"wave_{number}_{item['id']}"
             dynamic.append({"name": "campaign_subtask", "taskReferenceName": ref,
                             "type": "SUB_WORKFLOW",
-                            "subWorkflowParam": {"name": "campaign_subtask", "version": 1}})
+                            "subWorkflowParam": {"name": "campaign_subtask"}})
             inputs[ref] = {"repoPath": repo, "task": item, "wave": number,
                            "agent": i.get("agent") or "", "model": i.get("model") or "",
                            "maxTurns": int(i.get("maxTurns") or 500),

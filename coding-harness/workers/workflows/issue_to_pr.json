@@ -146,8 +146,7 @@
       "type": "SUB_WORKFLOW",
       "optional": true,
       "subWorkflowParam": {
-        "name": "code_parallel",
-        "version": 1
+        "name": "code_parallel"
       },
       "inputParameters": {
         "callerWorkflow": "issue_to_pr",
@@ -217,8 +216,7 @@
       "type": "SUB_WORKFLOW",
       "optional": true,
       "subWorkflowParam": {
-        "name": "test_cycle",
-        "version": 1
+        "name": "test_cycle"
       },
       "inputParameters": {
         "repoPath": "${publication_workspace.output.worktreePath}",
@@ -295,8 +293,7 @@
             "taskReferenceName": "pr_draft_approval",
             "type": "SUB_WORKFLOW",
             "subWorkflowParam": {
-              "name": "pr_draft_approval",
-              "version": 1
+              "name": "pr_draft_approval"
             },
             "inputParameters": {
               "callerWorkflow": "issue_to_pr",

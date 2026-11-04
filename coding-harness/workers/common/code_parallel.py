@@ -76,7 +76,7 @@ def build_forks(*, repo_path: object, subtasks: object, change_dir: object,
         all_files.extend(files)
         dynamic_tasks.append({
             "name": "code_subtask", "taskReferenceName": subtask_id, "type": "SUB_WORKFLOW",
-            "optional": True, "subWorkflowParam": {"name": "code_subtask", "version": 1},
+            "optional": True, "subWorkflowParam": {"name": "code_subtask"},
         })
         dynamic_inputs[subtask_id] = {
             "repoPath": repo_path, "name": subtask_id, "model": code_model,

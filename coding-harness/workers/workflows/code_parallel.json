@@ -85,8 +85,7 @@
             "decisionCases": {},
             "defaultCase": [],
             "subWorkflowParam": {
-              "name": "design_docs",
-              "version": 1
+              "name": "design_docs"
             }
           }
         ]
@@ -153,8 +152,7 @@
             "decisionCases": {},
             "defaultCase": [],
             "subWorkflowParam": {
-              "name": "openspec_plan",
-              "version": 1
+              "name": "openspec_plan"
             }
           },
           {
@@ -196,8 +194,7 @@
           "decisionCases": {},
           "defaultCase": [],
           "subWorkflowParam": {
-            "name": "document_plan",
-            "version": 1
+            "name": "document_plan"
           }
         },
         {
@@ -557,8 +554,7 @@
       "decisionCases": {},
       "defaultCase": [],
       "subWorkflowParam": {
-        "name": "merge_remediation",
-        "version": 1
+        "name": "merge_remediation"
       }
     },
     {
@@ -586,8 +582,7 @@
       "type": "SUB_WORKFLOW",
       "optional": true,
       "subWorkflowParam": {
-        "name": "test_cycle",
-        "version": 1
+        "name": "test_cycle"
       },
       "inputParameters": {
         "repoPath": "${workspace.output.worktreePath}",

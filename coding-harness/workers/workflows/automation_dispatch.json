@@ -93,8 +93,7 @@
                   "modelsConfig": "${workflow.input.modelsConfig}",
                   "modelOverrides": "${workflow.input.modelOverrides}"
                 },
-                "name": "${workflow.input.childWorkflow}",
-                "version": "${workflow.input.childWorkflowVersion}"
+                "name": "${workflow.input.childWorkflow}"
               }
             },
             "type": "START_WORKFLOW",
@@ -139,7 +138,6 @@
     "approvalMode",
     "attempt",
     "childWorkflow",
-    "childWorkflowVersion",
     "codePromptTemplate",
     "codePromptTemplateSource",
     "designJudgePromptTemplate",
@@ -184,7 +182,6 @@
     "approvalJudgePromptTemplate": "",
     "approvalJudgePromptTemplateSource": "",
     "approvalMode": "human",
-    "childWorkflowVersion": 1,
     "codePromptTemplate": "",
     "codePromptTemplateSource": "",
     "designJudgePromptTemplate": "",
@@ -246,11 +243,6 @@
         "childWorkflow": {
           "type": "string",
           "description": "Name of the long-running child workflow to start once the claim is won."
-        },
-        "childWorkflowVersion": {
-          "type": "integer",
-          "default": 1,
-          "description": "Version of the child workflow to start."
         },
         "agent": {
           "type": "string",

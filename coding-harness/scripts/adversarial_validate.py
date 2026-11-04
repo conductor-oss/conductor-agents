@@ -349,7 +349,7 @@ def validate_workflow_transforms() -> int:
     assert subtask["allowedTools"] == code_parallel.CODE_SUBTASK_TOOLS
     assert not any("swift" in tool or "pytest" in tool for tool in subtask["allowedTools"])
     assert subtask["allowedWriteRoots"] == ["src/a.py"]
-    assert built["dynamicTasks"][0]["subWorkflowParam"] == {"name": "code_subtask", "version": 1}
+    assert built["dynamicTasks"][0]["subWorkflowParam"] == {"name": "code_subtask"}
     assert built["groupIds"] == "multi-runtime"
 
     passed = code_parallel.resolve_verification_outcome(

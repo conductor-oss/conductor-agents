@@ -241,7 +241,7 @@ def test_campaign_design_phase_delegates_to_design_docs():
     call = next(t for t in gate["decisionCases"]["run"]
                if t["taskReferenceName"] == "campaign_design_docs")
     assert call["type"] == "SUB_WORKFLOW"
-    assert call["subWorkflowParam"] == {"name": "design_docs", "version": 1}
+    assert call["subWorkflowParam"] == {"name": "design_docs"}
     assert call["inputParameters"]["repoPath"] == "${campaign_workspace.output.worktreePath}"
     assert call["inputParameters"]["instruction"] == "${workflow.variables.effectiveInstruction}"
     assert call["inputParameters"]["humanApproval"] == "${workflow.input.designHumanApproval}"
@@ -308,7 +308,7 @@ def test_campaign_plan_phase_delegates_to_dag_plan_approval():
     call = next(t for t in gate["decisionCases"]["run"]
                if t["taskReferenceName"] == "campaign_plan_approval")
     assert call["type"] == "SUB_WORKFLOW"
-    assert call["subWorkflowParam"] == {"name": "dag_plan_approval", "version": 1}
+    assert call["subWorkflowParam"] == {"name": "dag_plan_approval"}
     assert call["inputParameters"]["callerWorkflow"] == "feature_campaign"
     assert call["inputParameters"]["repoPath"] == "${campaign_workspace.output.worktreePath}"
     assert call["inputParameters"]["instruction"] == "${workflow.variables.effectiveInstruction}"
@@ -390,7 +390,7 @@ def test_campaign_implementation_phase_delegates_to_implementation_waves():
     call = next(t for t in gate["decisionCases"]["run"]
                if t["taskReferenceName"] == "campaign_implementation_waves")
     assert call["type"] == "SUB_WORKFLOW"
-    assert call["subWorkflowParam"] == {"name": "implementation_waves", "version": 1}
+    assert call["subWorkflowParam"] == {"name": "implementation_waves"}
     assert call["inputParameters"]["callerWorkflow"] == "feature_campaign"
     assert call["inputParameters"]["repoPath"] == "${campaign_workspace.output.worktreePath}"
     assert call["inputParameters"]["plan"] == "${workflow.variables.plan}"
@@ -456,7 +456,7 @@ def test_campaign_final_phase_delegates_to_final_verification():
     call = next(t for t in gate["decisionCases"]["run"]
                if t["taskReferenceName"] == "campaign_final_verification")
     assert call["type"] == "SUB_WORKFLOW"
-    assert call["subWorkflowParam"] == {"name": "final_verification", "version": 1}
+    assert call["subWorkflowParam"] == {"name": "final_verification"}
     assert call["inputParameters"]["callerWorkflow"] == "feature_campaign"
     assert call["inputParameters"]["repoPath"] == "${campaign_workspace.output.worktreePath}"
     assert call["inputParameters"]["instruction"] == "${workflow.variables.effectiveInstruction}"
@@ -632,7 +632,7 @@ def test_campaign_commits_locally_and_only_publishes_once_a_human_approves():
     recorded = next(x for x in _walk(wf)
                     if x.get("taskReferenceName") == "record_campaign_pr_approval")
     assert approval["type"] == "SUB_WORKFLOW"
-    assert approval["subWorkflowParam"] == {"name": "pr_draft_approval", "version": 1}
+    assert approval["subWorkflowParam"] == {"name": "pr_draft_approval"}
     # Publication is authorized by the human's answer and nothing else, and the
     # push itself now sits inside that answer's branch -- an unapproved draft
     # pushes nothing at all, where the old createPr path pushed first and only

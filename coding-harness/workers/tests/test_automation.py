@@ -42,15 +42,13 @@ def test_automation_dispatch_carries_bounded_approval_configuration():
         task for task in workflow["tasks"][2]["decisionCases"]["true"]
         if task["taskReferenceName"] == "start_child"
     )
-    assert start["inputParameters"]["startWorkflow"]["version"] == \
-        "${workflow.input.childWorkflowVersion}"
+    assert "version" not in start["inputParameters"]["startWorkflow"]
 
 
-def test_automation_candidates_pin_each_current_child_workflow_version():
+def test_automation_candidates_never_pin_a_child_workflow_version():
     source = {"title": "x", "html_url": "https://example.invalid/x"}
-    assert _candidate("review", 1, "r", 1, source)["childWorkflowVersion"] == 2
-    assert _candidate("address", 1, "r", 1, source)["childWorkflowVersion"] == 2
-    assert _candidate("issue", 1, "r", 1, source)["childWorkflowVersion"] == 2
+    for kind in ("review", "address", "issue"):
+        assert "childWorkflowVersion" not in _candidate(kind, 1, "r", 1, source)
 
 
 def test_markers_require_trusted_author_and_version():

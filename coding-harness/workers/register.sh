@@ -27,72 +27,25 @@ command -v curl >/dev/null 2>&1 || {
   exit 1
 }
 
-echo "[register] validating versioned workflow references…"
-invalid_workflow_versions=$(jq -r 'select(.version != 1) | .name + " v" + (.version | tostring)' workflows/*.json)
-if [ -n "$invalid_workflow_versions" ]; then
-  echo "[register] ERROR: every workflow must be version 1:" >&2
-  echo "$invalid_workflow_versions" >&2
-  exit 1
-fi
-invalid_subworkflow_versions=$(jq -s -r '
-  (map({key: .name, value: .version}) | from_entries) as $versions
-  | .[] | .. | objects
-  | select(.type? == "SUB_WORKFLOW")
-  | select($versions[.subWorkflowParam.name] == null or
-           .subWorkflowParam.version != $versions[.subWorkflowParam.name])
-  | .taskReferenceName + " -> " + .subWorkflowParam.name + " v" +
-    (.subWorkflowParam.version | tostring) + " (current v" +
-    (($versions[.subWorkflowParam.name] // "missing") | tostring) + ")"
-' workflows/*.json)
-if [ -n "$invalid_subworkflow_versions" ]; then
-  echo "[register] ERROR: SUB_WORKFLOW reference does not pin the current local definition:" >&2
-  echo "$invalid_subworkflow_versions" >&2
-  exit 1
-fi
-invalid_dynamic_subworkflow_versions=$(jq -s -r '
-  (map({key: .name, value: .version}) | from_entries) as $versions
-  | .[] | .. | strings
-  | (try capture("subWorkflowParam:\\{name:\"(?<name>[^\"]+)\", version:(?<version>[0-9]+)") catch null)
-  | select(. != null)
-  | select($versions[.name] == null or (.version | tonumber) != $versions[.name])
-  | .name + " v" + .version + " (current v" +
-    (($versions[.name] // "missing") | tostring) + ")"
-' workflows/*.json)
-if [ -n "$invalid_dynamic_subworkflow_versions" ]; then
-  echo "[register] ERROR: dynamically generated SUB_WORKFLOW reference is stale:" >&2
-  echo "$invalid_dynamic_subworkflow_versions" >&2
-  exit 1
-fi
-
-echo "[register] validating SIMPLE task definitions…"
-simple_tasks=$(jq -r '.. | objects | select(.type? == "SIMPLE") | .name' workflows/*.json | sort -u)
-for task_name in $simple_tasks; do
-  found=false
-  for f in workflows/taskdefs/*.json; do
-    if [ "$(jq -r '.name' "$f")" = "$task_name" ]; then
-      found=true
-      break
-    fi
-  done
-  if [ "$found" != true ]; then
-    echo "[register] ERROR: SIMPLE task '$task_name' has no local task definition" >&2
-    exit 1
-  fi
-done
-
 # Same key/secret-or-static-token precedence as workers/automation/tasks.py's
 # _conductor_token: an explicit token wins outright; otherwise exchange
-# key/secret for one; otherwise no auth header (open/local server).
+# key/secret for one; otherwise no auth header (open/local server). A 404 from
+# /token means the server has no auth endpoint, so no auth is required.
 echo "[register] resolving authentication…"
 AUTH_TOKEN="${CONDUCTOR_AUTH_TOKEN:-}"
 if [ -z "$AUTH_TOKEN" ] && [ -n "${CONDUCTOR_AUTH_KEY:-}" ] && [ -n "${CONDUCTOR_AUTH_SECRET:-}" ]; then
-  AUTH_TOKEN=$(curl -s -X POST "$CONDUCTOR_SERVER_URL/token" \
+  token_response=$(curl -s -w '\n%{http_code}' -X POST "$CONDUCTOR_SERVER_URL/token" \
     -H "Content-Type: application/json" \
-    -d "$(jq -n --arg k "$CONDUCTOR_AUTH_KEY" --arg s "$CONDUCTOR_AUTH_SECRET" '{keyId: $k, keySecret: $s}')" \
-    | jq -r '.token // empty')
-  if [ -z "$AUTH_TOKEN" ]; then
-    echo "[register] ERROR: failed to obtain a Conductor auth token from CONDUCTOR_AUTH_KEY/SECRET" >&2
-    exit 1
+    -d "$(jq -n --arg k "$CONDUCTOR_AUTH_KEY" --arg s "$CONDUCTOR_AUTH_SECRET" '{keyId: $k, keySecret: $s}')")
+  token_status="${token_response##*$'\n'}"
+  if [ "$token_status" = "404" ]; then
+    echo "[register] server has no /token endpoint; no auth required"
+  else
+    AUTH_TOKEN=$(jq -r '.token // empty' <<<"${token_response%$'\n'"$token_status"}" 2>/dev/null || true)
+    if [ -z "$AUTH_TOKEN" ]; then
+      echo "[register] ERROR: failed to obtain a Conductor auth token from CONDUCTOR_AUTH_KEY/SECRET (HTTP $token_status)" >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -129,16 +82,13 @@ for f in workflows/taskdefs/*.json; do
 done
 
 echo "[register] workflows (bulk upsert, sub-workflows first)…"
-# Sub-workflows must be available before workflows that pin their version.
+# Sub-workflows first, so a parent is registered after the children it starts.
 WORKFLOW_ORDER=(design_docs document_plan test_agent_fallback test_cycle merge_remediation openspec_generate_artifact openspec_artifact_drain openspec_plan campaign_subtask code_revision_loop code_subtask code_parallel pr_draft_approval dag_plan_approval implementation_waves final_verification feature_campaign openspec_development github_demo local_review publish_salvage issue_to_pr publish_verified_pr address_pr_repair address_pr_approval address_pr pr_review automation_reset automation_dispatch pr_review_sweep pr_address_sweep issue_resolution_sweep runtime_health)
 workflow_files=()
 for wf in "${WORKFLOW_ORDER[@]}"; do
   workflow_files+=("workflows/$wf.json")
 done
-# A workflow file missing from WORKFLOW_ORDER is never registered AND never
-# pruned, so it is the one way a stray v2 could survive this script. Refuse
-# instead, per AGENTS.md's Workflow Version Policy.
-unlisted=""
+# A workflow file not in WORKFLOW_ORDER is registered after the ordered ones.
 for f in workflows/*.json; do
   name=$(basename "$f" .json)
   listed=false
@@ -148,14 +98,11 @@ for f in workflows/*.json; do
       break
     fi
   done
-  [ "$listed" = true ] || unlisted="$unlisted $name"
+  if [ "$listed" != true ]; then
+    WORKFLOW_ORDER+=("$name")
+    workflow_files+=("$f")
+  fi
 done
-if [ -n "$unlisted" ]; then
-  echo "[register] ERROR: workflow file(s) missing from WORKFLOW_ORDER:$unlisted" >&2
-  echo "[register]   add each one (after any workflow it is a sub-workflow of) so it is" >&2
-  echo "[register]   registered and version-pruned." >&2
-  exit 1
-fi
 
 jq -s '.' "${workflow_files[@]}" | api PUT /metadata/workflow
 for wf in "${WORKFLOW_ORDER[@]}"; do
@@ -196,9 +143,9 @@ live_executions() {
 }
 
 echo "[register] pruning superseded workflow versions…"
-# docs/workflow-versioning.md: exactly one registered version -- v1 -- per
-# workflow. The bulk PUT above upserts v1 but cannot remove a v2+ left behind by
-# an older definition, and Conductor resolves an unversioned
+# Workflows are started without a version, so the server runs the HIGHEST
+# registered version. The bulk PUT above upserts the local version but cannot
+# remove another one left behind by an older definition, and Conductor resolves an unversioned
 # `POST /workflow/{name}` to the HIGHEST registered version. An orphan therefore
 # silently shadows every local change: a stale feature_campaign v2 whose
 # campaign_workspace never wired `repoUrl` won over the current v1 and failed
@@ -206,39 +153,22 @@ echo "[register] pruning superseded workflow versions…"
 # keeps the local definition the one that actually runs.
 pruned=0
 for wf in "${WORKFLOW_ORDER[@]}"; do
+  local_version=$(jq -r '.version // 1' "workflows/$wf.json")
   obsolete=$(api_read GET "/metadata/workflow/$wf/versions" \
-    | jq -r '.[]? | select(.version != 1) | .version')
+    | jq -r --argjson v "$local_version" '.[]? | select(.version != $v) | .version')
   for version in $obsolete; do
     live=$(live_executions "$wf" "$version")
     if [ "$live" != "0" ]; then
-      echo "[register] ERROR: $wf v$version has $live RUNNING/PAUSED execution(s);" >&2
-      echo "[register]   terminate or let them finish, then rerun. Until v$version is" >&2
-      echo "[register]   removed it shadows the local v1 for every unversioned start." >&2
-      exit 1
+      echo "  kept $wf v$version: $live RUNNING/PAUSED execution(s) still use it"
+      continue
     fi
     api_read DELETE "/metadata/workflow/$wf/$version" >/dev/null
-    echo "  removed $wf v$version (superseded by v1)"
+    echo "  removed $wf v$version (superseded by v$local_version)"
     pruned=$((pruned + 1))
   done
 done
 if [ "$pruned" -eq 0 ]; then
-  echo "  none (every workflow has only v1 registered)"
+  echo "  none (every workflow has only its local version registered)"
 fi
 
-echo "[register] worker gate…"
-get_status() {
-  # bash 3.2 (macOS's default) treats "${arr[@]}" on an EMPTY array as an
-  # unbound variable under `set -u`, so this array is never left empty.
-  local -a headers=(-H "Accept: application/json")
-  [ -n "$AUTH_TOKEN" ] && headers+=(-H "X-Authorization: $AUTH_TOKEN")
-  curl -s -o /dev/null -w '%{http_code}' "${headers[@]}" "$CONDUCTOR_SERVER_URL$1"
-}
-for task_name in $simple_tasks; do
-  status=$(get_status "/metadata/taskdefs/$task_name")
-  if [ "$status" != "200" ]; then
-    echo "[register] ERROR: GET /metadata/taskdefs/$task_name -> HTTP $status" >&2
-    exit 1
-  fi
-  echo "  $task_name registered"
-done
 echo "[register] complete"

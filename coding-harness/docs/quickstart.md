@@ -19,7 +19,7 @@ From `coding-harness/`:
 ```
 
 The script creates the worker environment, starts a local Conductor server when needed,
-registers or updates task/workflow definitions, runs the SIMPLE-task worker gate, and starts the
+registers or updates task/workflow definitions and starts the
 workers. Set `CONDUCTOR_SERVER_URL` first to use a remote server.
 
 ## Run a local coding workflow

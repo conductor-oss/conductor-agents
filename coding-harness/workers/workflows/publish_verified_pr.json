@@ -353,8 +353,7 @@
                 "taskReferenceName": "revalidate_reconciled_candidate",
                 "type": "SUB_WORKFLOW",
                 "subWorkflowParam": {
-                  "name": "test_cycle",
-                  "version": 1
+                  "name": "test_cycle"
                 },
                 "inputParameters": {
                   "repoPath": "${workflow.input.repoPath}",

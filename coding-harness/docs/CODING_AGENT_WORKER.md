@@ -553,7 +553,7 @@ CONDUCTOR_SERVER_URL=http://localhost:8080/api WORKER_MODULES=coding_agent,gitop
 
 conductor task create workers/workflows/taskdefs/prepare_repo.json  # new taskdef
 conductor workflow create workers/workflows/code_subtask.json       # register sub-workflow FIRST
-conductor workflow create workers/workflows/code_parallel.json      # (the stub pins version:1)
+conductor workflow create workers/workflows/code_parallel.json
 
 conductor workflow start -w code_parallel -i '{
   "repoPath": "/path/to/repo",
@@ -573,7 +573,7 @@ progress (§ Progress reporting) is visible per branch, and so is the planner's 
   where the worker runs.
 - **Worker gate.** The worker must poll `gitops` (for `prepare_repo`/`create_branch`/
   `worktree_add`/`commit`/`merge_worktrees`) in addition to `coding_agent`, or those steps hang.
-- **Register `code_subtask` before `code_parallel`** — the fork stub pins `version:1`.
+- **Register `code_subtask` before `code_parallel`** — the fork stub starts it by name.
 - **Git prep + concurrency are handled.** `prepare_repo` guarantees an inited repo with an
   identity and a HEAD commit; `worktree_add`/`commit` serialize on the shared git dir
   (`fcntl.flock` in `common/git.py`) with a git-lock retry, so the simultaneous worktree burst

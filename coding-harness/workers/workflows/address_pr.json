@@ -155,8 +155,7 @@
             "taskReferenceName": "cp",
             "type": "SUB_WORKFLOW",
             "subWorkflowParam": {
-              "name": "code_parallel",
-              "version": 1
+              "name": "code_parallel"
             },
             "inputParameters": {
               "callerWorkflow": "address_pr",
@@ -230,8 +229,7 @@
             "type": "SUB_WORKFLOW",
             "optional": true,
             "subWorkflowParam": {
-              "name": "test_cycle",
-              "version": 1
+              "name": "test_cycle"
             },
             "inputParameters": {
               "repoPath": "${workflow.variables.currentWorkspacePath}",
@@ -283,8 +281,7 @@
                 "taskReferenceName": "repair",
                 "type": "SUB_WORKFLOW",
                 "subWorkflowParam": {
-                  "name": "address_pr_repair",
-                  "version": 1
+                  "name": "address_pr_repair"
                 },
                 "inputParameters": {
                   "candidateCommit": "${workflow.variables.currentCandidate}",
@@ -334,8 +331,7 @@
                   "taskReferenceName": "approval",
                   "type": "SUB_WORKFLOW",
                   "subWorkflowParam": {
-                    "name": "address_pr_approval",
-                    "version": 1
+                    "name": "address_pr_approval"
                   },
                   "inputParameters": {
                     "repo": "${workflow.input.repo}",
@@ -409,8 +405,7 @@
                   "taskReferenceName": "publish",
                   "type": "SUB_WORKFLOW",
                   "subWorkflowParam": {
-                    "name": "publish_verified_pr",
-                    "version": 1
+                    "name": "publish_verified_pr"
                   },
                   "inputParameters": {
                     "repoPath": "${workflow.variables.currentWorkspacePath}",

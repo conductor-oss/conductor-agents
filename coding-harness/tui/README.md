@@ -45,7 +45,7 @@ Requires Python 3.12+, a reachable Conductor server, **`ANTHROPIC_API_KEY`** for
 By default the TUI starts and supervises the local harness workers, forwarding its selected
 Conductor server and the `CONDUCTOR_AUTH_KEY` / `CONDUCTOR_AUTH_SECRET` pair. Workers stop with
 the TUI; their output is written to `~/.conductor-harness/workers.log`. `./run.sh tui` also
-registers the current workflows/task definitions and runs the SIMPLE-task worker gate before
+registers the current workflows/task definitions before
 launch, preventing stale server-side contracts. Use `--no-workers` only when workers are already
 managed elsewhere.
 
@@ -60,7 +60,7 @@ terminating, or retrying a run pops a confirmation** first. After it starts a ru
 
 Slash commands: `/dashboard` · `/sessions` (browse & resume past chats) · `/templates`
 (manage prompt templates) · `/models` (manage workflow model policies) · `/open [id]` · `/folder [id]` (open a run's working folder in your
-editor) · `/register` (update task/workflow definitions and run the worker gate) ·
+editor) · `/register` (update task/workflow definitions) ·
 `/new` · `/help` · `/quit`.
 
 **Model profiles.** Press `m` on the dashboard or use `/models` to create, browse, edit, and

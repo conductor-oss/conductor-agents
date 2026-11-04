@@ -89,8 +89,8 @@ def main() -> int:
     source = source_contract()
     if source.get("type") != "SUB_WORKFLOW":
         raise RuntimeError("address_pr repair is not a SUB_WORKFLOW")
-    if (source.get("subWorkflowParam") or {}) != {"name": "address_pr_repair", "version": 1}:
-        raise RuntimeError("address_pr repair does not pin address_pr_repair version 1")
+    if (source.get("subWorkflowParam") or {}).get("name") != "address_pr_repair":
+        raise RuntimeError("address_pr repair does not start address_pr_repair")
     if (source.get("inputParameters") or {}).get("verification") != "${verify.output}":
         raise RuntimeError("address_pr repair no longer consumes the full verify.output envelope")
 
@@ -126,7 +126,7 @@ def main() -> int:
                 "name": "address_pr_repair",
                 "taskReferenceName": "repair",
                 "type": "SUB_WORKFLOW",
-                "subWorkflowParam": {"name": "address_pr_repair", "version": 1},
+                "subWorkflowParam": {"name": "address_pr_repair"},
                 "inputParameters": {
                     "candidateCommit": "${workflow.input.candidateCommit}",
                     "fixPromptTemplate": "",
@@ -154,7 +154,7 @@ def main() -> int:
     delete_definition()
     request("POST", "/metadata/workflow/validate", definition)
     request("POST", "/metadata/workflow", definition)
-    started = request("POST", f"/workflow/{PROOF_NAME}?version=1", {
+    started = request("POST", f"/workflow/{PROOF_NAME}", {
         "repoPath": str(ROOT),
         "candidateCommit": head,
     })

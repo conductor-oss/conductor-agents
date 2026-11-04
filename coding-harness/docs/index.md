@@ -30,6 +30,7 @@ Local repository ──code_parallel──▶ planned parallel changes ──▶
 - [Workflow guide](workflows.md) — choose a workflow, workspace mode, design mode, and publication gate.
 - [Workflow input reference](workflow-inputs.md) — required and optional parameters, including exact defaults.
 - [Workflow versioning policy](workflow-versioning.md) — the single-version deployment rule.
+- [As-built design and review findings](HARNESS_REVIEW.md) — the architecture as it runs today and the ranked defect list.
 - [Models and profiles](model-profiles.md) — role mapping, policy files, model catalog, costs, and TUI selection.
 - [Prompt templates](templates.md) — reusable role-specific prompt guidance and trust boundaries.
 - [Local OpenSpec development](openspec.md) — local sources, worktrees, verification, archive, and draft PR behavior.

@@ -619,8 +619,7 @@
       "type": "SUB_WORKFLOW",
       "optional": true,
       "subWorkflowParam": {
-        "name": "test_cycle",
-        "version": 1
+        "name": "test_cycle"
       },
       "inputParameters": {
         "repoPath": "${wt.output.worktreePath}",

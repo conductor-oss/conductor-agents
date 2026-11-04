@@ -155,14 +155,13 @@ def test_local_branch_is_prepared_before_any_target_mutation():
                 assert owner_index < index, f"{name}: {task.get('taskReferenceName')} mutates before branch ownership"
 
 
-def test_nested_workflows_pin_current_versions_and_inherit_parent_workspace():
+def test_nested_workflows_never_pin_versions_and_inherit_parent_workspace():
     for name in ("issue_to_pr", "address_pr", "openspec_development"):
         workflow = _load(name)
         children = [node for node in _walk(workflow) if node.get("type") == "SUB_WORKFLOW"]
         assert children
         for child in children:
-            target = child["subWorkflowParam"]["name"]
-            assert child["subWorkflowParam"]["version"] == _load(target)["version"]
+            assert "version" not in child["subWorkflowParam"]
         if name == "openspec_development":
             assert "workspacePath" in json.dumps(workflow)
 
@@ -173,17 +172,13 @@ def test_nested_workflows_pin_current_versions_and_inherit_parent_workspace():
     build_forks = next(node for node in _walk(code_parallel)
                        if node.get("taskReferenceName") == "build_forks")
     assert build_forks["name"] == "code_parallel_build_forks"
-    # The dynamic-fork pin used to be a literal string in a jq expression that
-    # register.sh's stale-version regex could grep for; it is Python now, so
-    # the pin is asserted directly against the function that builds it.
     forks = code_parallel_logic.build_forks(
         repo_path="/tmp", subtasks=[{"id": "a", "description": "d", "files": ["a.py"]}],
         change_dir="", code_model="", code_prompt_template="", code_prompt_template_source="",
         spec_context_path="", context_paths=[], max_turns=1, max_budget_usd=1,
         model_profile="", model_policy={}, model_policy_source="", model_policy_sha256="",
         models_config="", model_overrides={})
-    assert forks["dynamicTasks"][0]["subWorkflowParam"] == \
-        {"name": "code_subtask", "version": _load("code_subtask")["version"]}
+    assert forks["dynamicTasks"][0]["subWorkflowParam"] == {"name": "code_subtask"}
 
 
 def test_code_parallel_returns_source_handoff_after_plan_validation_and_merge():

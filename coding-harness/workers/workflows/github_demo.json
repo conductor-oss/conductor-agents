@@ -331,8 +331,7 @@
       "taskReferenceName": "verify",
       "type": "SUB_WORKFLOW",
       "subWorkflowParam": {
-        "name": "test_cycle",
-        "version": 1
+        "name": "test_cycle"
       },
       "inputParameters": {
         "repoPath": "${clone.output.repoPath}",

@@ -45,13 +45,13 @@ def _children(workflow: dict) -> list[dict]:
             if task.get("subWorkflowParam", {}).get("name") == "test_cycle"]
 
 
-def test_every_embedding_is_optional_pinned_and_in_the_expected_mode():
+def test_every_embedding_is_optional_unpinned_and_in_the_expected_mode():
     for name, (ref, mode) in EMBEDDINGS.items():
         children = _children(_load(name))
         assert len(children) == 1, f"{name}: expected exactly one test_cycle child"
         child = children[0]
         assert child["taskReferenceName"] == ref, name
-        assert child["subWorkflowParam"]["version"] == 1, name
+        assert "version" not in child["subWorkflowParam"], name
         # A failing or unavailable verifier must degrade the caller, not fail it.
         assert child.get("optional") is True, name
         assert child["inputParameters"]["testMode"] == mode, name

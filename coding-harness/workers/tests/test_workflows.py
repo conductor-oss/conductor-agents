@@ -239,11 +239,9 @@ def test_sub_workflow_references_resolve():
             assert target in by_name, (
                 f"{f.name}: SUB_WORKFLOW references unknown workflow {target!r}"
             )
-            if "version" in param:
-                assert param["version"] == by_name[target]["version"], (
-                    f"{f.name}: SUB_WORKFLOW {target!r} pinned v{param['version']} "
-                    f"but that workflow is v{by_name[target]['version']}"
-                )
+            assert "version" not in param, (
+                f"{f.name}: SUB_WORKFLOW {target!r} must not pass a version"
+            )
     assert seen, "expected at least one static SUB_WORKFLOW reference"
 
 

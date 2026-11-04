@@ -319,12 +319,9 @@ class Conductor:
         except json.JSONDecodeError:
             return raw
 
-    def start(self, workflow: str, payload: dict[str, Any], version: int = 1) -> str:
-        # Pin the version: unversioned, Conductor starts the HIGHEST registered
-        # version, so an obsolete definition left on the server would silently
-        # replace the one under test. docs/workflow-versioning.md fixes this
-        # harness at exactly one registered version: v1.
-        result = self.request("POST", f"/workflow/{workflow}?version={version}", payload)
+    def start(self, workflow: str, payload: dict[str, Any]) -> str:
+        # Never pass a version: the server starts whatever version is registered.
+        result = self.request("POST", f"/workflow/{workflow}", payload)
         workflow_id = result.get("workflowId") if isinstance(result, dict) else result
         value = str(workflow_id or "").strip().strip('"')
         if not value:

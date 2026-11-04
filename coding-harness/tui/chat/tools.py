@@ -131,7 +131,7 @@ TOOLS = [
         "name": "register_workflows",
         "description": (
             "Register or update all harness task and workflow definitions on the selected "
-            "Conductor server, then run the SIMPLE-task worker gate. Use this when the user "
+            "Conductor server. Use this when the user "
             "asks to register, re-register, update, or refresh workflows. Requires confirmation."
         ),
         "input_schema": {"type": "object", "properties": {}},

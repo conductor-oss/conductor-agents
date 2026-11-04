@@ -93,7 +93,7 @@ When the remote-head guard finds the PR branch has moved since the candidate was
 
 Required: `repo`, `kind`, `childWorkflow`, `number`, `revision`, `attempt`.
 
-Optional: `childWorkflowVersion` = `1`; `approvalMode` = `"human"`; `agent` = `"claude"`; `model` = `""`; `judgeAgent` = `"claude"`; `judgeModel` = `""`; `judgeMaxTurns` = `50`; `judgeMaxBudgetUsd` = `5`; `maxApprovalRevisions` = `2`; `verificationProfile` = `""`; `reviewPromptTemplate` = `""`; `reviewPromptTemplateSource` = `""`; `fixPromptTemplate` = `""`; `fixPromptTemplateSource` = `""`; `designPromptTemplate` = `""`; `designPromptTemplateSource` = `""`; `designJudgePromptTemplate` = `""`; `designJudgePromptTemplateSource` = `""`; `planPromptTemplate` = `""`; `planPromptTemplateSource` = `""`; `codePromptTemplate` = `""`; `codePromptTemplateSource` = `""`; `approvalJudgePromptTemplate` = `""`; `approvalJudgePromptTemplateSource` = `""`.
+Optional: `approvalMode` = `"human"`; `agent` = `"claude"`; `model` = `""`; `judgeAgent` = `"claude"`; `judgeModel` = `""`; `judgeMaxTurns` = `50`; `judgeMaxBudgetUsd` = `5`; `maxApprovalRevisions` = `2`; `verificationProfile` = `""`; `reviewPromptTemplate` = `""`; `reviewPromptTemplateSource` = `""`; `fixPromptTemplate` = `""`; `fixPromptTemplateSource` = `""`; `designPromptTemplate` = `""`; `designPromptTemplateSource` = `""`; `designJudgePromptTemplate` = `""`; `designJudgePromptTemplateSource` = `""`; `planPromptTemplate` = `""`; `planPromptTemplateSource` = `""`; `codePromptTemplate` = `""`; `codePromptTemplateSource` = `""`; `approvalJudgePromptTemplate` = `""`; `approvalJudgePromptTemplateSource` = `""`.
 
 ## `automation_reset` (internal)
 

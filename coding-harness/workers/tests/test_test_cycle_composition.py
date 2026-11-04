@@ -244,7 +244,7 @@ def test_agent_fallback_is_a_sub_workflow_between_discovery_and_planning():
 
     fallback = _find(workflow, "agent_fallback")
     assert fallback["type"] == "SUB_WORKFLOW"
-    assert fallback["subWorkflowParam"] == {"name": "test_agent_fallback", "version": 1}
+    assert fallback["subWorkflowParam"] == {"name": "test_agent_fallback"}
     assert fallback.get("optional") is True
     assert fallback["inputParameters"]["candidateCommit"] == "${workflow.variables.candidateCommit}"
     assert fallback["inputParameters"]["discoveryOutcome"] == "${initial_discover.output.executionOutcome}"

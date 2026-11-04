@@ -76,11 +76,9 @@ def _feedback(repo: str, number: int, login: str) -> tuple[str, int]:
 
 def _candidate(kind: str, number: int, revision: str, attempt: int, source: dict) -> dict:
     child_workflow = {"review": "pr_review", "address": "address_pr", "issue": "issue_to_pr"}[kind]
-    child_version = {"review": 2, "address": 2, "issue": 2}[kind]
     return {
         "kind": kind,
         "childWorkflow": child_workflow,
-        "childWorkflowVersion": child_version,
         "number": number,
         "revision": revision,
         "attempt": attempt,
@@ -193,7 +191,7 @@ def github_automation_scan(task):
             ref = f"dispatch_{kind}_{item['number']}_{index}"
             dynamic_tasks.append({
                 "name": "automation_dispatch", "taskReferenceName": ref,
-                "type": "SUB_WORKFLOW", "subWorkflowParam": {"name": "automation_dispatch", "version": 2},
+                "type": "SUB_WORKFLOW", "subWorkflowParam": {"name": "automation_dispatch"},
             })
             dynamic_inputs[ref] = {**i, **item, "trustedAuthor": login}
         output = {

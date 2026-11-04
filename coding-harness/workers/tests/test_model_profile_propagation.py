@@ -61,10 +61,7 @@ def test_subworkflows_and_started_workflows_forward_the_envelope():
                 assert ENVELOPE <= set(task.get("inputParameters", {})), path.name
             if task.get("type") == "START_WORKFLOW":
                 child = task["inputParameters"]["startWorkflow"]
-                if isinstance(child["version"], int):
-                    assert child["version"] >= 1
-                else:
-                    assert child["version"] == "${workflow.input.childWorkflowVersion}"
+                assert "version" not in child, path.name
                 assert ENVELOPE <= set(child["input"]), path.name
 
 

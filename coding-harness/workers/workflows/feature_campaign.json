@@ -170,8 +170,7 @@
             "taskReferenceName": "campaign_design_docs",
             "type": "SUB_WORKFLOW",
             "subWorkflowParam": {
-              "name": "design_docs",
-              "version": 1
+              "name": "design_docs"
             },
             "inputParameters": {
               "callerWorkflow": "feature_campaign",
@@ -308,8 +307,7 @@
             "taskReferenceName": "campaign_plan_approval",
             "type": "SUB_WORKFLOW",
             "subWorkflowParam": {
-              "name": "dag_plan_approval",
-              "version": 1
+              "name": "dag_plan_approval"
             },
             "inputParameters": {
               "callerWorkflow": "feature_campaign",
@@ -476,8 +474,7 @@
             "taskReferenceName": "campaign_implementation_waves",
             "type": "SUB_WORKFLOW",
             "subWorkflowParam": {
-              "name": "implementation_waves",
-              "version": 1
+              "name": "implementation_waves"
             },
             "inputParameters": {
               "callerWorkflow": "feature_campaign",
@@ -604,8 +601,7 @@
             "taskReferenceName": "campaign_final_verification",
             "type": "SUB_WORKFLOW",
             "subWorkflowParam": {
-              "name": "final_verification",
-              "version": 1
+              "name": "final_verification"
             },
             "inputParameters": {
               "callerWorkflow": "feature_campaign",
@@ -708,8 +704,7 @@
       "type": "SUB_WORKFLOW",
       "optional": true,
       "subWorkflowParam": {
-        "name": "test_cycle",
-        "version": 1
+        "name": "test_cycle"
       },
       "inputParameters": {
         "repoPath": "${campaign_workspace.output.worktreePath}",
@@ -786,8 +781,7 @@
       "taskReferenceName": "campaign_pr_approval",
       "type": "SUB_WORKFLOW",
       "subWorkflowParam": {
-        "name": "pr_draft_approval",
-        "version": 1
+        "name": "pr_draft_approval"
       },
       "inputParameters": {
         "callerWorkflow": "feature_campaign",

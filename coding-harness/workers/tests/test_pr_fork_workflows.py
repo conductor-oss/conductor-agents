@@ -177,8 +177,8 @@ def test_address_pr_requires_approval_before_publishing_changes():
     workflow = _load("address_pr")
     approval = _task(workflow, "approval")
     publish = _task(workflow, "publish")
-    assert approval["subWorkflowParam"] == {"name": "address_pr_approval", "version": 1}
-    assert publish["subWorkflowParam"] == {"name": "publish_verified_pr", "version": 1}
+    assert approval["subWorkflowParam"] == {"name": "address_pr_approval"}
+    assert publish["subWorkflowParam"] == {"name": "publish_verified_pr"}
     # The parent owns approval; the shared child owns all remote mutations.
     rendered = json.dumps(workflow)
     assert rendered.index('"taskReferenceName": "approval"') < \
@@ -193,7 +193,7 @@ def test_a_revision_infra_failure_degrades_rather_than_failing_the_whole_run():
     # address_pr run the way an unmarked required task would.
     revise = _task(_load("address_pr_approval"), "revise_address_candidate")
     assert revise["type"] == "SUB_WORKFLOW"
-    assert revise["subWorkflowParam"] == {"name": "code_parallel", "version": 1}
+    assert revise["subWorkflowParam"] == {"name": "code_parallel"}
     assert revise.get("optional") is True
 
 
@@ -220,7 +220,7 @@ def test_pr_draft_approval_gate_waits_for_a_human_before_anything_publishes():
     assert rendered.index('"taskReferenceName": "pr_gate"') < \
         rendered.index('"taskReferenceName": "revise_candidate"')
     revise = _task(approval, "revise_candidate")
-    assert revise["subWorkflowParam"] == {"name": "code_parallel", "version": 1}
+    assert revise["subWorkflowParam"] == {"name": "code_parallel"}
     assert "${workflow.input.originalContext}" in revise["inputParameters"]["instruction"]
     assert "${normalize_pr_decision.output.feedback}" in revise["inputParameters"]["instruction"]
 
@@ -271,7 +271,7 @@ def test_address_pr_requires_local_verification_then_publishes_without_waiting_o
     assert '"taskReferenceName": "verify"' in rendered
     assert rendered.index('"taskReferenceName": "verify"') < rendered.index('"taskReferenceName": "publish"')
     verify = _task(workflow, "verify")
-    assert verify["subWorkflowParam"] == {"name": "test_cycle", "version": 1}
+    assert verify["subWorkflowParam"] == {"name": "test_cycle"}
     assert verify["inputParameters"]["candidateCommit"] == \
         "${workflow.variables.currentCandidate}"
     # Every repair-loop iteration re-runs this gate, not just a final check --
@@ -299,12 +299,12 @@ def test_failed_local_verification_uses_shared_bounded_remediation_and_hands_bac
     workflow = _load("address_pr")
     repair = _task(workflow, "repair")
     assert repair["type"] == "SUB_WORKFLOW"
-    assert repair["subWorkflowParam"] == {"name": "address_pr_repair", "version": 1}
+    assert repair["subWorkflowParam"] == {"name": "address_pr_repair"}
 
     recovery = _load("address_pr_repair")
     remediation = _task(recovery, "repair")
     assert remediation["type"] == "SUB_WORKFLOW"
-    assert remediation["subWorkflowParam"] == {"name": "test_cycle", "version": 1}
+    assert remediation["subWorkflowParam"] == {"name": "test_cycle"}
     assert remediation["inputParameters"]["priorVerification"] == "${workflow.input.verification}"
     assert remediation["inputParameters"]["repairPromptTemplate"] == "${workflow.input.fixPromptTemplate}"
     task_types = {task["type"] for task in _walk(recovery)}
@@ -440,7 +440,7 @@ def test_publish_reconciles_branch_drift_instead_of_just_reporting_it():
     resolved = gate["decisionCases"]["resolved"]
     revalidate = next(t for t in resolved if t["taskReferenceName"] == "revalidate_reconciled_candidate")
     assert revalidate["type"] == "SUB_WORKFLOW"
-    assert revalidate["subWorkflowParam"] == {"name": "test_cycle", "version": 1}
+    assert revalidate["subWorkflowParam"] == {"name": "test_cycle"}
     assert revalidate["inputParameters"]["candidateCommit"] == "${reconcile.output.commit}"
     verify_gate = next(t for t in resolved if t["taskReferenceName"] == "reconcile_verify_gate")
     assert verify_gate["inputParameters"]["state"] == "${revalidate_reconciled_candidate.output.testsPassed}"
@@ -492,7 +492,7 @@ def test_every_other_automated_publication_is_bound_to_its_candidate_commit():
     assert set(gate["decisionCases"].keys()) == {"true", "false"}
     approval = gate["decisionCases"]["true"][0]
     assert approval["type"] == "SUB_WORKFLOW"
-    assert approval["subWorkflowParam"] == {"name": "pr_draft_approval", "version": 1}
+    assert approval["subWorkflowParam"] == {"name": "pr_draft_approval"}
     assert approval["inputParameters"]["callerWorkflow"] == "issue_to_pr"
     from common import issue_to_pr as issue_to_pr_logic
 

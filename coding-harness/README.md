@@ -25,7 +25,7 @@ coding backend. Claude is the default; run `claude login` or set
 ```
 
 `run.sh` starts a local Conductor server when needed, creates the worker environment,
-registers/updates all definitions, runs the SIMPLE-task worker gate, and starts the workers.
+registers/updates all definitions and starts the workers.
 
 In a second terminal, point the harness at any local checkout:
 
@@ -96,8 +96,7 @@ CONDUCTOR_SERVER_URL=http://localhost:8080/api tui/.venv/bin/python -m tui --das
 ```
 
 Ask chat to “register/update the workflows”, use `/register`, or press `g` on the dashboard
-whenever definitions change. The TUI confirms the target server, updates the definitions, and
-runs the SIMPLE-task worker gate before reporting success. Chat starts at most one workflow per
+whenever definitions change. The TUI confirms the target server, and updates the definitions. Chat starts at most one workflow per
 user message; when the requested action is ambiguous, it asks which workflow you want first.
 Every `code_parallel` path always plans through OpenSpec first (proposal/specs/design/tasks) —
 there's no "skip planning" toggle. That plan goes through an iterative human review gate by
@@ -170,6 +169,7 @@ opened as a draft PR. It never accepts credential values in workflow inputs.
 | [`docs/openspec.md`](docs/openspec.md) | **OpenSpec** — local/Git/archive sources, isolated worktrees, verification, archive, and PR behavior. |
 | [`docs/CODING_AGENT_WORKER.md`](docs/CODING_AGENT_WORKER.md) | **Reference** — the `coding_agent` worker, all workflows, backends, guardrails, remote git/GitHub. |
 | [`docs/CLAUDE_AGENT_SDK.md`](docs/CLAUDE_AGENT_SDK.md) | Claude Agent SDK deep-dive (features, interception, gotchas). |
+| [`docs/HARNESS_REVIEW.md`](docs/HARNESS_REVIEW.md) | **Review** — as-built design, ranked findings, and the recommended order of work. |
 | [`docs/SPEC.md`](docs/SPEC.md) · [`docs/DESIGN.md`](docs/DESIGN.md) | **Historical** — original design material, not the current operator contract. |
 
 ## Prerequisites

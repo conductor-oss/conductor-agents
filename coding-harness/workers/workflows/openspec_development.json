@@ -275,8 +275,7 @@
             "decisionCases": {},
             "defaultCase": [],
             "subWorkflowParam": {
-              "name": "feature_campaign",
-              "version": 1
+              "name": "feature_campaign"
             }
           },
           {
@@ -323,8 +322,7 @@
             "decisionCases": {},
             "defaultCase": [],
             "subWorkflowParam": {
-              "name": "code_parallel",
-              "version": 1
+              "name": "code_parallel"
             }
           },
           {

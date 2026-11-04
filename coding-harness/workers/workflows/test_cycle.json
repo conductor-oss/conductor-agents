@@ -484,8 +484,7 @@
       "type": "SUB_WORKFLOW",
       "optional": true,
       "subWorkflowParam": {
-        "name": "test_agent_fallback",
-        "version": 1
+        "name": "test_agent_fallback"
       },
       "inputParameters": {
         "repoPath": "${workflow.input.repoPath}",

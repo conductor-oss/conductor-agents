@@ -14,12 +14,10 @@ workflow -- version 1 -- on disk and on the server.
 
 - Every workflow definition in this repository must use `"version": 1`.
 - Update workflow version 1 in place. Do not create, register, or recommend a new workflow version. "Bump the version" is never the answer to a definition change, a breaking change, or a migration.
-- Every `SUB_WORKFLOW` reference, including dynamically generated task definitions, must pin version 1.
+- Never pass a version when starting a workflow: no `?version=` on `POST /workflow/{name}`, no `version` in a `startWorkflowRequest`, `START_WORKFLOW` task, or `subWorkflowParam` (static or dynamically generated). The server starts the version it has registered.
 - Keep exactly one registered definition per workflow name: version 1. A registered v2 or higher is a defect to delete, not a definition to maintain.
-- Every start must pin the version (`POST /workflow/{name}?version=1`, or `"version": 1` in a `startWorkflowRequest`). Never start a workflow unversioned.
-- Before registering workflows, verify the local definitions and all sub-workflow references comply with this policy.
 
-Why this is strict rather than stylistic: an unversioned `POST /workflow/{name}` starts the
+Why one registered version is strict rather than stylistic: an unversioned start runs the
 **highest** registered version, so a single obsolete definition left on the server silently
 replaces the local one for every launch, and the run's input is merged with the obsolete
 `inputTemplate`. A stale `feature_campaign` v2 whose `campaign_workspace` never wired `repoUrl`
@@ -27,16 +25,16 @@ shadowed the current v1 for weeks and failed every clone-from-GitHub campaign at
 `workspace_prepare` with "requires repoPath or repoUrl", while the definition on disk was
 correct the whole time (execution `f69afa80-6c1b-48c3-a116-cffb688cfb4e`).
 
-Enforcement, so the rule cannot rot back into advice:
+How it is kept that way:
 
-- `workers/register.sh` refuses any local workflow that is not version 1, any `SUB_WORKFLOW`
-  reference that does not pin the current version, and any workflow file missing from
-  `WORKFLOW_ORDER`. After registering it deletes every registered version other than 1,
-  refusing if one has a `RUNNING`/`PAUSED` execution.
+- `workers/register.sh` does not gate registration on task types, versions, or task
+  definitions. After registering it deletes every registered version other than the local one,
+  keeping any version that still has a `RUNNING`/`PAUSED` execution.
 - `scripts/audit_harness_invariants.py` fails with `REGISTERED_VERSION` when the server holds
   any version besides the local one. It is skipped, not passed, when no server is reachable.
-- `scripts/validate_live_paths.py` and the e2e scripts execute a definition by explicit
-  version, never "latest".
+- Pinning a version at start time is not a substitute: a pinned start 404s whenever the
+  registered version differs, while the cleanup above already guarantees the unversioned
+  start resolves to v1.
 
 See `docs/workflow-versioning.md` for the deployment procedure.
 

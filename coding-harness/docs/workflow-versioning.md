@@ -5,10 +5,11 @@ This harness does not use workflow versioning. There is exactly one version of e
 the rule and why it is enforced rather than advisory.
 
 - Every workflow definition must declare `"version": 1`.
-- Every `SUB_WORKFLOW` reference must pin its child to version `1`.
 - Update version 1 in place; never create a new workflow version.
-- Never start a workflow unversioned: an unversioned `POST /workflow/{name}` runs the *highest*
-  registered version, so any stray version silently shadows the definition on disk.
+- Never pass a version when starting a workflow — not on `POST /workflow/{name}`, a schedule's
+  `startWorkflowRequest`, a `START_WORKFLOW` task, or a `subWorkflowParam`. An unversioned start
+  runs the *highest* registered version, which is why stray versions are deleted (below) rather
+  than worked around by pinning; a pinned start 404s when the registered version differs.
 
 ## Deploying a change
 
@@ -16,15 +17,12 @@ the rule and why it is enforced rather than advisory.
 via direct REST, never the `conductor` CLI: the CLI re-serializes definitions from its own internal
 model and silently drops fields it does not know, including `inputSchema`/`outputSchema`.
 
-The script enforces this policy end to end, failing loudly rather than deploying something that
-violates it:
+The script does not validate task types, versions, or task definitions before registering:
 
-1. Refuses any local workflow that is not version 1, any `SUB_WORKFLOW` reference (static or
-   dynamically generated) that does not pin the current version, and any workflow file missing from
-   `WORKFLOW_ORDER` — an unlisted file would be neither registered nor pruned.
-2. Upserts every task definition and workflow, sub-workflows first.
-3. Deletes every registered version other than 1, refusing if one still has a `RUNNING` or
-   `PAUSED` execution. Let those finish or terminate them, then rerun.
+1. Upserts every task definition and workflow, sub-workflows first; a workflow file not in
+   `WORKFLOW_ORDER` is registered after the listed ones.
+2. Deletes every registered version other than the local one, keeping (and reporting) a version
+   that still has a `RUNNING` or `PAUSED` execution.
 
 Removing a stray version is no longer a manual post-deployment step.
 

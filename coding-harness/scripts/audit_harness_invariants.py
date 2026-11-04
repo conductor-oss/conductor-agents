@@ -176,13 +176,6 @@ def audit_definitions(definitions: dict[str, dict]) -> list[Finding]:
                 child = sub.get("name")
                 if child == "publish_verified_pr":
                     has_pr = True
-                if child in definitions:
-                    if not isinstance(sub.get("version"), int):
-                        report("SUBWORKFLOW_VERSION", name, location,
-                               f"local sub-workflow {child!r} is not version-pinned")
-                    elif sub["version"] != definitions[child].get("version", 1):
-                        report("SUBWORKFLOW_VERSION", name, location,
-                               f"local sub-workflow {child!r} version does not match source")
                 if child == "test_cycle":
                     # A caller that omits either flag silently collapses to
                     # test_cycle's own false/false default -- confirmed live

@@ -367,11 +367,12 @@ class ConductorClient:
         self._auth_token: str | None = None
         self._auth_token_time = 0.0
         self._auth_lock = asyncio.Lock()
+        self._no_auth = False
 
     async def _ensure_auth_token(self, *, force: bool = False,
                                  stale_token: str | None = None) -> None:
         """Acquire or refresh the API token without exposing credential values."""
-        if self._credentials is None:
+        if self._credentials is None or self._no_auth:
             return
         now = time.monotonic()
         if not force and self._auth_token and now - self._auth_token_time < 45 * 60:
@@ -390,6 +391,11 @@ class ConductorClient:
                 })
             except httpx.HTTPError as exc:
                 raise ConductorError(f"Conductor authentication request failed: {exc}") from exc
+            if response.status_code == 404:
+                # No /token endpoint (OSS server): it has no auth, so send requests
+                # without a token rather than failing every call on stray credentials.
+                self._no_auth = True
+                return
             if response.status_code >= 400:
                 raise ConductorError(
                     f"Conductor authentication failed: HTTP {response.status_code}"
@@ -639,13 +645,9 @@ class ConductorClient:
         return approvals
 
     # -- mutations -----------------------------------------------------------
-    async def start(self, name: str, payload: dict, version: int = 1) -> str:
-        # Always pin the version. Unversioned, Conductor starts the HIGHEST
-        # registered version, so one obsolete definition left on the server
-        # shadows the local one for every launch -- see docs/workflow-versioning.md,
-        # which fixes this harness at exactly one registered version: v1.
-        r = await self._request("POST", f"/workflow/{name}",
-                                params={"version": version}, json=payload)
+    async def start(self, name: str, payload: dict) -> str:
+        # Never pass a version: the server starts whatever version is registered.
+        r = await self._request("POST", f"/workflow/{name}", json=payload)
         if r.status_code >= 400:
             raise ConductorError(f"start {name}: HTTP {r.status_code} {r.text[:200]}")
         return r.text.strip().strip('"')
@@ -669,8 +671,7 @@ class ConductorClient:
     async def run_schedule_now(self, schedule: Schedule) -> str:
         request = schedule.raw.get("startWorkflowRequest") or {}
         return await self.start(str(request.get("name") or schedule.workflow),
-                                coerce_map(request.get("input")),
-                                version=int(request.get("version") or 1))
+                                coerce_map(request.get("input")))
 
     async def terminate(self, workflow_id: str, reason: str = "") -> None:
         r = await self._request("DELETE", f"/workflow/{workflow_id}",
@@ -691,11 +692,6 @@ class ConductorClient:
         correctly use generated refs such as ``design_review__1`` rather than the static
         reference in the workflow definition.
         """
-        if task_type == "HUMAN":
-            raise ConductorError(
-                f"signal {task_ref}: this execution uses a legacy HUMAN checkpoint; "
-                "register the current workflow definitions and relaunch the run"
-            )
         if not status:
             # A caller forwarding a raw "deferred" decision (status=None, e.g. an
             # ApprovalModal Escape/"Later") must intercept it before this point --

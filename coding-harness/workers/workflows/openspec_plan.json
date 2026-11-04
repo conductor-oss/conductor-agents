@@ -281,8 +281,7 @@
           "taskReferenceName": "artifact_drain",
           "type": "SUB_WORKFLOW",
           "subWorkflowParam": {
-            "name": "openspec_artifact_drain",
-            "version": 1
+            "name": "openspec_artifact_drain"
           },
           "inputParameters": {
             "repoPath": "${workflow.input.repoPath}",
