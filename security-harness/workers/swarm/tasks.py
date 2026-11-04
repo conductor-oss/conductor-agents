@@ -544,6 +544,30 @@ def scribe_rollup(task):
     state = bb.assemble_state(cid)
     rollup = bb.campaign_rollup(cid)
     confirmed = [f for f in state["findings"] if f.get("confirmed") and f.get("refuted") is not True]
+    # DEDUP: several agents frequently confirm the SAME vuln (same oracle class + same endpoint),
+    # which inflates the count with near-identical entries. Collapse each (class, endpoint) group to one
+    # representative -- the highest-severity, most-evidenced -- and record how many agents corroborated
+    # it. Distinct vectors keep distinct endpoints/classes, so they are never merged.
+    _SEV = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+    _groups: dict = {}
+    for f in confirmed:
+        try:
+            m, p = repro_mod._endpoint(f)
+            ep = repro_mod.endpoint_key(m, p)
+            key = (repro_mod.oracle_class(f), ep or str(f.get("objective_id") or f.get("title") or "")[:60].lower())
+        except Exception:
+            key = ("", str(f.get("title") or ""))
+        _groups.setdefault(key, []).append(f)
+    deduped = []
+    for grp in _groups.values():
+        grp.sort(key=lambda f: (_SEV.get(f.get("severity"), 5), -len(str(f.get("evidence") or ""))))
+        rep = dict(grp[0])
+        if len(grp) > 1:
+            rep["corroborations"] = len(grp)
+        deduped.append(rep)
+    deduped.sort(key=lambda f: (_SEV.get(f.get("severity"), 5), str(f.get("title") or "")))
+    confirmed = deduped
+    rollup = {**rollup, "confirmed_count": len(confirmed)}
     # Join the EXACT confirming requests the verifier captured (kind "repro" facts, keyed by endpoint)
     # onto the matching findings — the finding fact is assembled downstream and cannot carry it directly.
     repro_by_ep, repro_by_obj = {}, {}
