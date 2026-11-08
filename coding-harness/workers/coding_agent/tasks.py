@@ -31,6 +31,8 @@ Inputs (task.input_data):
   allowedDomains    (optional) network domains the OS sandbox may reach (list or
                     comma-separated), e.g. "registry.npmjs.org" for npm install.
                     Default: none — sandboxed commands have NO network access.
+  holGuardEnabled  (optional, default false) enable the installed HOL Guard CLI as a
+                    fail-closed Bash PreToolUse gate. Currently supported by the Claude backend.
   promptTemplate    (optional) full-override prompt text, OR "@repo/rel/path" to read the
                     prompt from a file in the worktree. When set it REPLACES the built-in
                     `prompt`; {{key}} placeholders are filled from promptContext.
@@ -634,6 +636,7 @@ async def _coding_agent(task):
                 backend=model_tier["agent"],
                 write_roots=write_roots,
                 context_paths=[entry["path"] for entry in agent_context_paths],
+                hol_guard_enabled=_bool(i.get("holGuardEnabled"), False),
             )
         finally:
             try:
