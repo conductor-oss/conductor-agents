@@ -153,6 +153,7 @@ async def _run_codex_sdk(
     output_schema: dict | None,
     resume_session_id: str | None,
     on_turn,
+    extra_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Drive one turn via the openai-codex SDK, consuming the notification stream
     ourselves (mirroring the SDK's own _collect_async_turn_result) so we can fire
@@ -206,8 +207,15 @@ async def _run_codex_sdk(
             except Exception:  # noqa: BLE001
                 pass
 
+    if extra_env:
+        # The SDK merges ``env`` onto the process environment; the shared runtime environment is passed
+        # whole so the spawned codex sees exactly what every other child process does.
+        from openai_codex import CodexConfig
+        client = AsyncCodex(config=CodexConfig(env=check_execution.inherited_environment(extra_env)))
+    else:
+        client = AsyncCodex()
     try:
-        async with AsyncCodex() as codex:
+        async with client as codex:
             if resume_session_id:
                 thread = await codex.thread_resume(
                     resume_session_id, cwd=worktree, sandbox=sandbox,
@@ -313,6 +321,7 @@ def _run_codex_cli(
     output_schema: dict | None = None,
     resume_session_id: str | None = None,
     on_turn=None,
+    extra_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Legacy driver: run one `codex exec` to completion, streaming its JSONL.
 
@@ -364,7 +373,7 @@ def _run_codex_cli(
         proc = subprocess.Popen(
             args, cwd=worktree, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            env=check_execution.inherited_environment(),
+            env=check_execution.inherited_environment(extra_env),
         )
         for line in proc.stdout:  # streams as Codex emits JSONL
             line = line.strip()
@@ -486,6 +495,7 @@ async def run_codex_agent(
     output_schema: dict | None = None,
     resume_session_id: str | None = None,
     on_turn=None,
+    extra_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Run one Codex session to completion; return the uniform coding_agent dict.
 
@@ -498,11 +508,11 @@ async def run_codex_agent(
         return _restore_optional(await _run_codex_sdk(
             prompt, worktree=worktree, model=model, write=write, effort=effort,
             output_schema=output_schema, resume_session_id=resume_session_id,
-            on_turn=on_turn), output_schema)
+            on_turn=on_turn, extra_env=extra_env), output_schema)
     log.info("codex driver: CLI fallback (%s)",
              "CODEX_DRIVER=cli" if CODEX_DRIVER == "cli" else "openai_codex not installed")
     return _restore_optional(await asyncio.to_thread(
         _run_codex_cli,
         prompt, worktree=worktree, model=model, write=write,
         output_schema=output_schema, resume_session_id=resume_session_id,
-        on_turn=on_turn), output_schema)
+        on_turn=on_turn, extra_env=extra_env), output_schema)

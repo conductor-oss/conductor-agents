@@ -29,13 +29,15 @@ import importlib
 import logging
 import os
 import signal
+import socket
+import time
 from pathlib import Path
 
 from conductor.client.automator.task_handler import TaskHandler
 from common import check_execution
 from common.conductor_config import configuration_from_env
 from common.polling import configure_registered_workers, configure_sdk_polling, poll_interval_ms, poll_timeout_ms
-from common import source_watch
+from common import orphans, source_watch
 from common.worker_lock import DuplicateWorkerError, singleton_worker
 
 DEFAULT_MODULES = "coding_agent,gitops,campaign,team,stages,openspec,openspecops,automation,model_policy,planning"
@@ -78,6 +80,13 @@ def main() -> None:
         importlib.import_module(mod)
         log.info("loaded worker module: %s", mod)
     configure_registered_workers()
+    # Every task this generation claims carries its identity, so the next generation can tell what its
+    # predecessor left behind without comparing clocks (``common.orphans``).
+    from conductor.client.automator.task_handler import _decorated_functions
+    generation_started_ms = int(time.time() * 1000)
+    identity = orphans.generation_identity(socket.gethostname(), generation_started_ms)
+    for record in _decorated_functions.values():
+        record["worker_id"] = identity
 
     config = configuration_from_env()
     auth_mode = "key/secret" if config.authentication_settings is not None else "none"
@@ -90,6 +99,8 @@ def main() -> None:
             log.info("acquired worker deployment lock: %s", lock_path)
             with TaskHandler(configuration=config, scan_for_annotated_workers=True) as handler:
                 handler.start_processes()
+                orphans.reclaim_in_background([name for name, _domain in _decorated_functions],
+                                              identity=identity, before_ms=generation_started_ms)
                 # A fleet outlives the source it loaded. Without this, an edit
                 # reaches nothing until someone restarts the generation by
                 # hand, and the stale answer is indistinguishable from a wrong

@@ -311,7 +311,7 @@ def test_wrong_frozen_acceptance_test_is_amended_when_the_reviewer_approves(monk
     assert "== 2" in open(os.path.join(shared, test)).read()  # nothing merged yet
     rv = team_review_build(fake_task_input(correlationId=cid, sharedRepo=shared, sharedBranch=branch)).output_data
     prompt = rv["dynamicTasksInput"]["review_keys"]["prompt"]
-    assert "AMENDS THE FROZEN ACCEPTANCE TEST" in prompt and "== 0" in prompt
+    assert "AMENDS FROZEN FILE(S)" in prompt and "== 0" in prompt
     ap = team_apply_reviews(fake_task_input(correlationId=cid, sharedRepo=shared, sharedBranch=branch,
                                             reviewed=["keys"], joined={"review_keys": {"output": {
                                                 "verdict": "lgtm", "findings": []}}})).output_data

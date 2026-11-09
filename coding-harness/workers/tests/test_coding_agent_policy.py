@@ -368,6 +368,36 @@ def test_ensure_repo_initializes_only_a_directory_without_a_head(tmp_path):
     assert git.ensure_repo(str(tmp_path / "typo")) is False and not (tmp_path / "typo").exists()
 
 
+def test_a_reverted_out_of_scope_edit_is_reported_as_a_refused_write(monkeypatch, tmp_path, fake_task_input):
+    """Codex edits through its shell, past the file-tool guard, so its out-of-scope edits are only reverted
+    afterwards. resp-types' correct fix to reader.go was undone repeatedly and, with deniedWrites empty,
+    the Lead never widened the item (run 1177c2d2). Generated files are not evidence of anything."""
+    import coding_agent.tasks as worker
+    from common import git
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git.ensure_repo(str(repo))
+    (repo / "reader.go").write_text("package resp\n")
+    (repo / "value.go").write_text("package resp\n")
+    git.git(str(repo), "add", "-A")
+    git.git(str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-m", "base")
+
+    async def fake_run(prompt, **kw):
+        (repo / "reader.go").write_text("package resp\n// fixed\n")
+        (repo / "go.sum").write_text("example.com v1.0.0 h1:x\n")  # a tool's side effect, nobody's scope
+        (repo / "__pycache__").mkdir()
+        (repo / "__pycache__" / "x.pyc").write_text("x")
+        return {"ok": True, "status": "success", "result": "done", "structured": None, "session_id": "s",
+                "num_turns": 1, "turns": [], "tokens": 1, "cost_usd": 0.01, "denials": [], "denied_writes": [],
+                "turn_log": [], "error": None, "model": "m"}
+    monkeypatch.setattr(worker, "run_coding_agent", fake_run)
+    task = fake_task_input(worktreePath=str(repo), prompt="fix", modelRole="code", allowedWriteRoots=["value.go"])
+    task.task_id = "test-task-reverted-scope"  # the worker de-duplicates deliveries by task id
+    data = worker.coding_agent(task).output_data
+    assert data["deniedWrites"] == ["reader.go"], data
+    assert (repo / "reader.go").read_text() == "package resp\n"
+
+
 def test_coding_agent_worker_initializes_a_fresh_directory_before_reading_head(monkeypatch, tmp_path,
                                                                                fake_task_input):
     """A planner or classifier is often the first step to touch a fresh project directory; the worker

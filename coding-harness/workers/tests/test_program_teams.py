@@ -320,7 +320,7 @@ def test_an_incomplete_team_is_re_run_once_with_its_diagnosis(monkeypatch, tmp_p
     assert ap3["continue"] is False and tb.fold_board(pid)["items"]["cli"]["state"] == tb.BLOCKED
     import json as _j
     wf = _j.load(open(os.path.join(os.path.dirname(__file__), "..", "workflows", "cc_program.json")))
-    assert wf["inputTemplate"]["maxTeamAttempts"] == 2
+    assert wf["inputTemplate"]["maxTeamAttempts"] == 5
     def walk(ts):
         for t in ts:
             yield t

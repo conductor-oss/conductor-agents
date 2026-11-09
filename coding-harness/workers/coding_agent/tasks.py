@@ -75,6 +75,7 @@ from common.results import cap, fail, ok
 from common.session_store import store_from_env
 from common.templating import resolve_prompt_details
 from common.tool_policy import denied_without_changes
+from common.verification import is_generated_path
 
 # Operator knob (doc §10 item 5): which filesystem settings load. Default "project"
 # loads the repo's CLAUDE.md conventions but also its .claude/settings.json
@@ -240,6 +241,10 @@ def _within_write_roots(path: str, roots: list[str] | None) -> bool:
     return False
 
 
+_LOCKFILES = frozenset({"go.sum", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock",
+                        "Pipfile.lock", "Gemfile.lock", "composer.lock", "uv.lock"})
+
+
 def denied_write_paths(paths: list[str], worktree: str, write_roots: list[str] | None) -> list[str]:
     """Repo-relative paths the worktree guard refused because they lie outside this task's write roots.
 
@@ -247,8 +252,10 @@ def denied_write_paths(paths: list[str], worktree: str, write_roots: list[str] |
     criteria needed eviction hooks in ``store/store.go`` (owned by a sibling item), every attempt was
     denied there, and the item exhausted its review rounds re-wiring eviction elsewhere (run fc6467b7).
     ``team_standup`` widens the item's write roots from this record once the owning item has landed.
-    Paths that escape the worktree are a different denial (never widened) and are left out; with no
-    write roots the guard denies nothing on scope, so the list is empty.
+    Paths that escape the worktree are a different denial (never widened) and are left out, as are
+    generated files (bytecode, build output) and lockfiles a tool rewrites as a side effect (go.sum after
+    `go mod tidy`), which no item owns; with no write roots the guard denies nothing on scope, so the
+    list is empty.
     """
     if not write_roots:
         return []
@@ -260,7 +267,8 @@ def denied_write_paths(paths: list[str], worktree: str, write_roots: list[str] |
         if target == root or not target.startswith(root + os.sep):
             continue
         rel = os.path.relpath(target, root).replace(os.sep, "/")
-        if not _within_write_roots(rel, write_roots) and rel not in out:
+        if (not _within_write_roots(rel, write_roots) and not is_generated_path(rel)
+                and os.path.basename(rel) not in _LOCKFILES and rel not in out):
             out.append(rel)
     return sorted(out)
 
@@ -777,7 +785,10 @@ async def _coding_agent(task):
             "denials": res.get("denials") or [],
             # Files inside the worktree the guard refused as outside this task's write roots: the
             # Lead's signal to widen the item's scope (team_standup), kept apart from the log lines.
-            "deniedWrites": denied_write_paths(res.get("denied_writes") or [], wt, write_roots),
+            # Both ways a write is refused count. Codex edits through its shell, past the file-tool guard,
+            # so its out-of-scope edits appear only as reverted changes: a correct fix to reader.go was
+            # undone repeatedly and the item never widened (run 1177c2d2).
+            "deniedWrites": denied_write_paths([*(res.get("denied_writes") or []), *unauthorized], wt, write_roots),
             "feedbackInjections": res.get("feedbackInjections") or [],
             "interruptedBy": res.get("interruptedBy"),
             "checkpoints": res.get("checkpoints") or [],

@@ -504,13 +504,21 @@ def team_standup(task):
         own_cid = parent or cid
         owners = file_ownership.owner_map(own_cid) if own_cid else {}
         denied = _denied_writes(cid)
+        rescued_items = _rescue_map(cid)
+        # F: help climbs one tier per helper, up to maxRescues tiers, then stays at the strongest reached.
+        tiers_up = max(int(i.get("maxRescues") if i.get("maxRescues") not in (None, "") else 2), 0)
         scope_waits: list[str] = []
         scope_refusals: list[str] = []
         for entry in ready[:wave_n]:
             sid = str(entry.get("id"))
             files = [str(p).strip() for p in _list(entry.get("files")) if str(p).strip()]
             attempt = int(entry.get("attempt") or 0)
-            widen, held_by, refused = _widen_scope(items, sid, files, denied.get(sid, []), contract_paths)
+            # Help for a stuck item may write anywhere, so it is never held or refused on scope: the
+            # foundation item's fix sat in internal/store/zsets.go, outside its team's directories, and
+            # both helpers were refused there until it blocked (run 41fddf7a).
+            helps = rescued_items.get(sid, [])
+            widen, held_by, refused = ([], [], []) if helps else _widen_scope(items, sid, files, denied.get(sid, []),
+                                                                              contract_paths)
             for path in refused:
                 mech = (f"refused to widen {sid}'s write scope to {path}: outside the directories this "
                         f"team's items span ({', '.join(sorted(d or '.' for d in _team_span(items)))})")
@@ -594,8 +602,7 @@ def team_standup(task):
             }
             prompt = templating.render_default(prompt_key, prompt_context)
             # Help for a stuck item (``_rescue``): a stronger teammate, briefed with everything tried so far.
-            helps = _rescues(cid, sid)
-            model_tier = base_tier + len(helps)
+            model_tier = base_tier + min(len(helps), tiers_up)
             if helps:
                 prompt_key = "team_rescue"
                 prompt_context = {"item": sid, "mechanism": helps[-1].get("mechanism"),
@@ -639,7 +646,9 @@ def team_standup(task):
                   "allowedTools": CODE_SUBTASK_TOOLS,
                   # Its own frozen acceptance test is writable only so a WRONG test can be amended; that edit
                   # is never merged unless the peer reviewer approves it (team_integrate / apply_reviews).
-                  "allowedWriteRoots": files + [p for p in _list(entry.get("acceptanceTests")) if p not in files],
+                  # Help is unscoped (empty): it fixes the root cause wherever that is.
+                  "allowedWriteRoots": [] if helps else files + [p for p in _list(entry.get("acceptanceTests"))
+                                                                 if p not in files],
                   # ...and the delivery audit never counts that untouched oracle as a missing delivery.
                   "acceptanceTests": _list(entry.get("acceptanceTests")),
                   "modelProfile": i.get("modelProfile") or "", "modelPolicy": i.get("modelPolicy") or {},
@@ -681,6 +690,15 @@ ORACLE_REOPEN = "integration_oracle_red"
 RESCUE_KIND = "rescue"
 
 
+def _rescue_map(cid: str | None) -> dict[str, list[dict]]:
+    """Every item's help so far, one read of the rescue log per step."""
+    out: dict[str, list[dict]] = {}
+    for f in (file_ownership.bb.read_facts(cid, kind=RESCUE_KIND) if cid else []):
+        d = _mapping(f.get("data"))
+        out.setdefault(str(d.get("item")), []).append({**d, "ts": f.get("ts")})
+    return out
+
+
 def _rescues(cid: str | None, gid: str) -> list[dict]:
     if not cid:
         return []
@@ -693,19 +711,19 @@ def _rescue(cid: str | None, gid: str, mechanism: str, *, max_rescues: int) -> b
     block — attempts exhausted, review rounds exhausted with findings unaddressed, a pushback that could
     not be resolved, contract churn — the Lead reopens it with a fresh attempt budget and the next standup
     hands it to a STRONGER teammate (the next model tier) together with everything the item went through
-    (``_item_history``): every attempt, review finding, failure output, pushback and refused file. Up to
-    ``max_rescues`` times; only then does the item block. Returns True when the item was rescued."""
+    (``_item_history``): every attempt, review finding, failure output, pushback and refused file. The
+    swarm never gives up on an item: help keeps coming until the work lands or the run reaches its budget
+    or wave limit. ``max_rescues`` is how many tiers up help may climb (one per helper, then the strongest
+    reached, see ``team_standup``); 0 turns help off. Returns True when the item was rescued."""
     if not cid or max_rescues <= 0:
         return False
     n = len(_rescues(cid, gid))
-    if n >= max_rescues:
-        return False
-    file_ownership.bb.post_fact(cid, "lead", RESCUE_KIND, {"item": gid, "rescue": n + 1, "of": max_rescues,
+    file_ownership.bb.post_fact(cid, "lead", RESCUE_KIND, {"item": gid, "rescue": n + 1,
                                                           "mechanism": str(mechanism)[:1500]})
     team_board.set_state(cid, "lead", gid, team_board.REOPENED, attempt=0,
                          reason=f"stuck: {str(mechanism)[:240]} — a stronger teammate takes it over with its "
-                                f"full history (help {n + 1} of {max_rescues})")
-    note = f"'{gid}' got stuck ({str(mechanism)[:300]}); a stronger teammate takes it over (help {n + 1} of {max_rescues})"
+                                f"full history (help {n + 1})")
+    note = f"'{gid}' got stuck ({str(mechanism)[:300]}); a stronger teammate takes it over (help {n + 1})"
     team_board.post_exception(cid, "lead", gid, "rescue", note, severity="info")
     team_board.resolve_exception(cid, "lead", gid, "rescue", note)
     return True
@@ -1085,20 +1103,35 @@ def team_integrate(task):
         # rejected and the next standup re-dispatches the proposer against the contract as-is (bounded by
         # maxContractEvents, after which the item blocks naming the churn).
         frozen_tests = set(_frozen_acceptance(cid).get("acceptanceTests") or []) if cid else set()
+        rescued_items = _rescue_map(cid)
         held: set[str] = set()  # forks kept unmerged until the peer reviewer decides their amendment
         for ev in contract_events:
             gid = ev["item"]
-            if peer_review and cid and set(ev["paths"]) <= frozen_tests:
+            tests_only = set(ev["paths"]) <= frozen_tests
+            what = "acceptance test(s)" if tests_only else "file(s)"
+            amend = {"item": gid, "candidate": ev["candidate"], "worktree": ev["worktree"], "branch": ev["branch"],
+                     "head": ev["head"], "base": base_before, "paths": ev["paths"], "files": ev["changed"]}
+            if cid and not peer_review and rescued_items.get(gid):
+                # Help was told a wrong frozen file is its to correct, and no reviewer is configured to judge
+                # it: the Lead approves the strongest teammate's correction rather than loop it for good.
+                if _decide_amendment(cid, shared_repo, shared_branch, amend, True,
+                                     "no peer review configured; the help's correction stands"):
+                    team_board.set_state(cid, "integrator", gid, team_board.DONE,
+                                         reason=f"integrated with its correction of frozen {what} {', '.join(ev['paths'])}")
+                    done_now.append(gid)
+                else:
+                    failures.append((gid, "rebase_conflict", f"the correction of frozen {what} "
+                                                             f"{', '.join(ev['paths'])} did not merge", ev["paths"]))
+                continue
+            if peer_review and cid and (tests_only or rescued_items.get(gid)):
                 # An amendment of frozen acceptance test(s) only — the test itself may be wrong (one asserted
                 # Exists==2 right after deleting both keys, contradicting the design; run 3e502ddc). Held
                 # UNMERGED and judged by the peer reviewer (a different agent than both authors), not
                 # auto-rejected: a defective oracle otherwise deadlocks its item for good.
                 held.add(str(ev["candidate"]))
-                file_ownership.bb.post_fact(cid, "integrator", AMENDMENT_KIND, {
-                    "item": gid, "candidate": ev["candidate"], "worktree": ev["worktree"], "branch": ev["branch"],
-                    "head": ev["head"], "base": base_before, "paths": ev["paths"], "files": ev["changed"]})
+                file_ownership.bb.post_fact(cid, "integrator", AMENDMENT_KIND, amend)
                 team_board.set_state(cid, "integrator", gid, team_board.REVIEW,
-                                     reason=f"proposes amending frozen acceptance test(s) {', '.join(ev['paths'])}; "
+                                     reason=f"proposes amending frozen {what} {', '.join(ev['paths'])}; "
                                             f"the peer reviewer decides")
                 reviewing.append(gid)
                 continue
@@ -1236,6 +1269,7 @@ def team_review_build(task):
         reviewing += sorted(gid for gid, it in items.items()
                             if it.get("state") == team_board.REVIEW and gid not in reviewing)
         deliveries = _latest_delivery(cid)
+        rescued_items = _rescue_map(cid)
 
         dynamic_tasks, dynamic_inputs, reviewed = [], {}, []
         for gid in reviewing:
@@ -1246,6 +1280,8 @@ def team_review_build(task):
             if amend:  # the unmerged fork that proposes amending frozen acceptance test(s)
                 dlv = amend
                 files = files + [p for p in _list(amend.get("paths")) if p not in files]
+            if rescued_items.get(gid):
+                files = []  # help may have changed anything: the reviewer reads its whole diff
             base = str(dlv.get("base") or wave_base or f"{final_head}~1")
             head = str(dlv.get("head") or final_head)
             diff = ""
@@ -1281,12 +1317,15 @@ def team_review_build(task):
                     f"item's files but lives elsewhere, as concrete requested changes. "
                     if dlv.get("claimedSatisfied") else ""),
                 "amendSection": (
-                    f"THIS CHANGE AMENDS THE FROZEN ACCEPTANCE TEST(S) {', '.join(_list(amend.get('paths')))} — "
-                    f"the oracle another agent wrote before implementation. It is held unmerged and YOU decide. "
-                    f"Return 'lgtm' only if the original test is genuinely wrong (it contradicts the design "
-                    f"documents, the frozen contract or the acceptance criteria — cite where) AND the amended "
-                    f"test still checks the criterion (it would fail without the feature). If the original test "
-                    f"was right and the implementation should change instead, return 'changes' saying so. "
+                    f"THIS CHANGE AMENDS FROZEN FILE(S) {', '.join(_list(amend.get('paths')))} — the acceptance "
+                    f"test or contract another agent wrote before implementation. It is held unmerged and YOU decide: "
+                    f"approve or reject, you cannot send the test back for more edits. Return 'lgtm' to approve "
+                    f"when the original test is genuinely wrong (it contradicts the design documents, the frozen "
+                    f"contract or the acceptance criteria, or cannot run as written — cite where) AND the amended "
+                    f"test checks at least what the original did. A weakness the original test also had is not "
+                    f"grounds to reject: judge the correction, not whether the test could be stronger. Return "
+                    f"'changes' only to reject, when the original test was right. The test then stays exactly as "
+                    f"it was, so every finding must be a change to the implementation, never to the test. "
                     if amend else ""),
                 "oracleNote": (
                     "This item's deliverable is DOCUMENTS, not code: you are the only oracle (there are no "
@@ -1454,11 +1493,16 @@ def team_apply_reviews(task):
                     unavailable.append(gid)  # stays in review; re-reviewed next wave
                 continue
             if verdict == "changes" and findings:
+                # A rejected amendment is final for that test. Sending its findings on as "address these"
+                # told the implementer to edit a file its brief calls frozen: it pushed back every round
+                # and resp-reader spent both rescues on the contradiction (run 0588dafa).
+                lead_in = (f"Your amendment of frozen file(s) {', '.join(_list(amend.get('paths')))} was "
+                           f"rejected and discarded. They stay exactly as they are: do not edit them, make the "
+                           f"implementation pass them. Peer review: " if amend else "Address the peer-review findings: ")
                 n = prior_changes.get(gid, 0) + (0 if scope_only else 1)
                 if scope_only or n <= max_rounds:
                     if cid:
-                        team_board.post_directive(cid, f"reviewer_{gid}", gid,
-                                                  "Address the peer-review findings: " + "; ".join(findings),
+                        team_board.post_directive(cid, f"reviewer_{gid}", gid, lead_in + "; ".join(findings),
                                                   authority="agent")
                         team_board.set_state(cid, "lead", gid, team_board.REOPENED,
                                              reason=("peer review needs a file outside the item's scope; the Lead "
@@ -1494,8 +1538,7 @@ def team_apply_reviews(task):
                     if _rescue(cid, gid, f"review_rounds_exhausted: {n} change rounds over the cap of {max_rounds}; "
                                          f"prior findings unaddressed: {'; '.join(fields['unresolved'] or [])}; "
                                          f"latest: {'; '.join(findings)}", max_rescues=max_rescues):
-                        team_board.post_directive(cid, f"reviewer_{gid}", gid,
-                                                  "Address the peer-review findings: " + "; ".join(findings),
+                        team_board.post_directive(cid, f"reviewer_{gid}", gid, lead_in + "; ".join(findings),
                                                   authority="agent")
                         rescued_now.append(gid)
                         continue
@@ -1872,6 +1915,26 @@ def team_monitor(task):
         stuck = team_board.starvation(after["items"], open_exc,
                                       dispatched=int(dispatched) if dispatched not in (None, "") else None,
                                       held=held)
+        # A deadlock is the Lead's to break, never a reason to stop: someone is assigned to each item at
+        # its root, and an item waiting on work that can never land stops waiting for it.
+        max_rescues = int(i.get("maxRescues") or 0)
+        if stuck["starved"] and max_rescues > 0:
+            roots = [h.split(" waits for ", 1)[0] for h in held] if stuck["starvedBy"] == "scope_wait" else []
+            roots = roots or sorted(g for g, it in after["items"].items() if it.get("state") == team_board.BLOCKED)
+            for gid in roots:
+                _rescue(cid, gid, f"deadlock: {stuck['detail']}", max_rescues=max_rescues)
+            if not roots:  # a dependency on no real item, or a cycle: drop exactly those edges
+                for gid, dead in team_board.dead_dependencies(after["items"]).items():
+                    keep = [str(d) for d in _list(after["items"][gid].get("dependsOn")) if str(d) not in dead]
+                    team_board.post_item(cid, "lead", {**after["items"][gid], "id": gid, "dependsOn": keep,
+                                                       "replaceDependsOn": True})
+                    team_board.post_exception(cid, "lead", gid, "deadlock",
+                                              f"{gid} no longer waits for {', '.join(dead)}: that dependency can "
+                                              f"never land ({stuck['detail'][:300]})", severity="info")
+                    team_board.resolve_exception(cid, "lead", gid, "deadlock", "dependency dropped by the Lead")
+            after = team_board.fold_board(cid)
+            open_exc = team_board.open_exceptions(after.get("exceptions") or [])
+            stuck = team_board.starvation(after["items"], open_exc)
         if stuck["starved"] and stuck["starvedBy"] == "scope_wait":
             for h in held:
                 team_board.post_exception(cid, "monitor", h.split(" waits for ", 1)[0], "scope_wait", h,

@@ -915,6 +915,49 @@ def test_apply_reviews_reports_the_head_after_an_approved_amendment(monkeypatch,
     assert by_ref["outcome"]["inputParameters"]["finalHead"] == "${workflow.variables.finalHead}"
 
 
+def test_a_rejected_amendment_tells_the_implementer_the_frozen_test_stands(monkeypatch, tmp_path, fake_task_input):
+    """resp-reader's reviewer kept answering a frozen-test amendment with "update the test". Each answer
+    discarded the amendment and told the implementer to edit a file its brief calls frozen, so it pushed
+    back until both rescues were spent (run 0588dafa). The reviewer now only approves or rejects, and a
+    rejection tells the implementer the test stands."""
+    _isolate_board(monkeypatch, tmp_path)
+    from common import blackboard as bbx
+    cid = "run-amend-reject"
+    shared = str(tmp_path / "shared")
+    git.ensure_ready(shared)
+    os.makedirs(os.path.join(shared, "tests"))
+    original = "def test_g():\n    assert gamma() == 1\n"
+    with open(os.path.join(shared, "tests", "test_acc.py"), "w") as fh:
+        fh.write(original)
+    _commit_all(shared, "acceptance")
+    frozen = git.head(shared)
+    branch = git._current_branch(shared)
+    team_plan_init(fake_task_input(correlationId=cid, subtasks=[_ITEMS[2]], contractPaths=["tests/test_acc.py"]))
+    bbx.post_fact(cid, "lead", "contract", {"paths": ["tests/test_acc.py"], "frozen": True, "revision": 1,
+                                            "acceptanceTests": ["tests/test_acc.py"], "acceptanceCommit": frozen})
+    _fork_worktree(shared, "gamma", branch, edit=("tests/test_acc.py", "def test_g():\n    assert gamma() == 2\n"))
+    team_integrate(fake_task_input(
+        sharedRepo=shared, sharedBranch=branch, correlationId=cid, groupIds="gamma",
+        contractPaths=["tests/test_acc.py"], enablePeerReview=True,
+        dispatched=[{"id": "gamma", "files": ["gamma.py"], "attempt": 0}],
+        joined={"gamma__1": {"output": {"testsPassed": True, "deliveryOutcome": "passed"}}}))
+    built = team_review_build(fake_task_input(correlationId=cid, sharedRepo=shared, sharedBranch=branch,
+                                              reviewing=["gamma"], finalHead=frozen, waveBase=frozen)).output_data
+    prompt = built["dynamicTasksInput"]["review_gamma"]["prompt"]
+    assert "approve or reject, you cannot send the test back" in prompt
+    assert "A weakness the original test also had is not grounds to reject" in prompt
+    assert "never to the test" in prompt
+
+    out = team_apply_reviews(fake_task_input(
+        correlationId=cid, sharedRepo=shared, sharedBranch=branch, reviewed=["gamma"], maxReviewRounds=2,
+        joined={"review_gamma": {"output": {"verdict": "changes", "findings": ["gamma() must return 1"]}}})).output_data
+    assert out["doneCount"] == 0 and git.head(shared) == frozen
+    assert open(os.path.join(shared, "tests", "test_acc.py")).read() == original
+    text = [f["data"]["text"] for f in bbx.read_facts(cid, kind="directive") if f["data"].get("target") == "gamma"][-1]
+    assert "was rejected and discarded" in text and "do not edit them" in text and "gamma() must return 1" in text
+    assert "Address the peer-review findings" not in text
+
+
 def test_integrate_removes_the_worktrees_of_decided_forks(monkeypatch, tmp_path, fake_task_input):
     """Fork worktrees stayed registered after their wave (18 of them for one finished run). Claude Code's
     Bash sandbox adds deny paths for every registered worktree; at 171 the profile exceeded the OS exec
@@ -1180,6 +1223,53 @@ def test_lead_widens_scope_when_the_file_owner_depends_on_the_waiting_item():
     # An owner that does not depend on the item can land first: the item waits for it, as before.
     widen, held, refused = _widen_scope(items, "core", ["store/store.go"], ["store/keys.go"], [])
     assert widen == [] and held == ["core waits for keys to land store/keys.go"]
+
+
+def test_the_lead_breaks_a_deadlock_instead_of_ending_the_run(monkeypatch, tmp_path, fake_task_input):
+    """A board where no work can move is the Lead's to resolve. Each stuck root gets a helper, and an item
+    waiting on a dependency that can never land stops waiting for it."""
+    from team.tasks import team_monitor
+    _isolate_board(monkeypatch, tmp_path)
+    cid = "run-deadlock-hold"
+    team_plan_init(fake_task_input(correlationId=cid, subtasks=_ITEMS[:2], contractPaths=[]))
+    tb.set_state(cid, "lead", "alpha", tb.REOPENED)
+    held = ["alpha waits for beta to land registry.py"]
+    m = team_monitor(fake_task_input(correlationId=cid, ceilingUsd=10, dispatchedCount=0, scopeWaits=held,
+                                     maxRescues=2)).output_data
+    assert m["starved"] is False
+    board = tb.fold_board(cid)
+    assert board["items"]["alpha"]["state"] == tb.REOPENED and "deadlock" in board["items"]["alpha"]["reason"]
+
+    # A dependency on no item at all: only that edge goes, the real order stands.
+    cid = "run-deadlock-ghost"
+    team_plan_init(fake_task_input(correlationId=cid, contractPaths=[], subtasks=[
+        {"id": "alpha", "description": "a", "files": ["a.py"], "dependsOn": ["beta"]},
+        {"id": "beta", "description": "b", "files": ["b.py"], "dependsOn": ["ghost"]}]))
+    m = team_monitor(fake_task_input(correlationId=cid, ceilingUsd=10, dispatchedCount=0, scopeWaits=[],
+                                     maxRescues=2)).output_data
+    items = tb.fold_board(cid)["items"]
+    assert m["starved"] is False and [i["id"] for i in tb.ready_items(items)] == ["beta"]
+    assert items["alpha"]["dependsOn"] == ["beta"] and items["beta"]["dependsOn"] == []
+
+    # A dependency cycle: nothing is ready and nothing is blocked.
+    cid = "run-deadlock-cycle"
+    team_plan_init(fake_task_input(correlationId=cid, contractPaths=[], subtasks=[
+        {"id": "a", "description": "a", "files": ["a.py"], "dependsOn": ["b"]},
+        {"id": "b", "description": "b", "files": ["b.py"], "dependsOn": ["a"]}]))
+    m = team_monitor(fake_task_input(correlationId=cid, ceilingUsd=10, dispatchedCount=0, scopeWaits=[],
+                                     maxRescues=2)).output_data
+    assert m["starved"] is False
+    assert [i["id"] for i in tb.ready_items(tb.fold_board(cid)["items"])] == ["a"]
+
+    # A blocked root is reopened with help, freeing what waits on it.
+    cid = "run-deadlock-blocked"
+    team_plan_init(fake_task_input(correlationId=cid, contractPaths=[], subtasks=[
+        {"id": "a", "description": "a", "files": ["a.py"]},
+        {"id": "b", "description": "b", "files": ["b.py"], "dependsOn": ["a"]}]))
+    tb.set_state(cid, "integrator", "a", tb.BLOCKED, reason="stuck")
+    m = team_monitor(fake_task_input(correlationId=cid, ceilingUsd=10, dispatchedCount=0, scopeWaits=[],
+                                     maxRescues=2)).output_data
+    assert m["starved"] is False and tb.fold_board(cid)["items"]["a"]["state"] == tb.REOPENED
 
 
 def test_monitor_ends_the_run_when_ready_work_is_held_and_nothing_is_in_flight(monkeypatch, tmp_path,
@@ -1535,7 +1625,7 @@ def test_a_stuck_item_gets_a_stronger_teammate_with_its_history_before_it_ever_b
                                                                                        fake_task_input):
     """A swarm helps the agent that is struggling. An item that exhausted its attempts used to block (and
     could starve everything downstream). Now the Lead reopens it, and the next standup hands it to the next
-    model tier with everything it went through; only after maxRescues helpers does it block."""
+    model tier with everything it went through, and help keeps coming until the work lands."""
     from team.tasks import _item_history
     _isolate_board(monkeypatch, tmp_path)
     cid = "run-help"
@@ -1568,14 +1658,112 @@ def test_a_stuck_item_gets_a_stronger_teammate_with_its_history_before_it_ever_b
     assert spec["modelTier"] == 1                                 # the next tier up
     assert spec["prompt"].startswith("YOU ARE THE HELP FOR A STUCK WORK ITEM")
     assert "gamma() must return 1" in history and "empty_delivery" in history and history in spec["prompt"]
-    # A second helper runs a tier higher still; past maxRescues the item blocks, naming why.
+    # A second helper runs a tier higher still, and help does not stop at maxRescues.
     empty_wave(0); assert empty_wave(1)["rescued"] == ["gamma"]
-    assert team_standup(fake_task_input(repoPath=shared, correlationId=cid, maxWidth=6)).output_data[
+    assert team_standup(fake_task_input(repoPath=shared, correlationId=cid, maxWidth=6, maxRescues=2)).output_data[
         "dynamicTasksInput"]["gamma"]["modelTier"] == 2
     empty_wave(0)
     final = empty_wave(1)
-    assert final["rescued"] == [] and [b["item"] for b in final["blocked"]] == ["gamma"]
-    assert tb.fold_board(cid)["items"]["gamma"]["state"] == tb.BLOCKED
+    assert final["rescued"] == ["gamma"] and final["blocked"] == []
+    assert tb.fold_board(cid)["items"]["gamma"]["state"] == tb.REOPENED
+    # maxRescues is how many tiers up help may climb: the third helper stays at the strongest reached.
+    assert team_standup(fake_task_input(repoPath=shared, correlationId=cid, maxWidth=6, maxRescues=2)).output_data[
+        "dynamicTasksInput"]["gamma"]["modelTier"] == 2
+
+
+def test_help_for_a_stuck_item_may_change_anything(monkeypatch, tmp_path, fake_task_input):
+    """foundation's fix sat in internal/store/zsets.go, outside its team's directories: both helpers were
+    refused there and the item blocked, starving the team (run 41fddf7a). A helper is unscoped, is never
+    held or refused, and its reviewer reads the whole diff."""
+    _isolate_board(monkeypatch, tmp_path)
+    from common import blackboard as bbx
+    cid = "run-help-scope"
+    shared = str(tmp_path / "shared")
+    git.ensure_ready(shared)
+    with open(os.path.join(shared, "seed.py"), "w") as fh:
+        fh.write("x = 1\n")
+    _commit_all(shared, "base")
+    branch = git._current_branch(shared)
+    team_plan_init(fake_task_input(correlationId=cid, subtasks=[_ITEMS[2]], contractPaths=[]))
+    bbx.post_fact(cid, "integrator", "session", {"item": "gamma", "candidate": "gamma",
+                                                 "deniedWrites": ["other/subsystem/store.go"]})
+    # Before any help the old scope rules stand.
+    tb.set_state(cid, "lead", "gamma", tb.REOPENED)
+    su = team_standup(fake_task_input(repoPath=shared, correlationId=cid, maxWidth=6)).output_data
+    assert su["dynamicTasksInput"]["gamma"]["allowedWriteRoots"] == ["gamma.py"]
+    tb.set_state(cid, "lead", "gamma", tb.IN_PROGRESS)
+
+    _fork_worktree(shared, "gamma", branch)  # no commit
+    out = team_integrate(fake_task_input(
+        sharedRepo=shared, sharedBranch=branch, correlationId=cid, groupIds="gamma", maxAttempts=1, maxRescues=2,
+        dispatched=[{"id": "gamma", "files": ["gamma.py"], "attempt": 0}],
+        joined={"gamma__1": {"output": {"deliveryOutcome": "incomplete_delivery"}}})).output_data
+    assert out["rescued"] == ["gamma"]
+    su = team_standup(fake_task_input(repoPath=shared, correlationId=cid, maxWidth=6)).output_data
+    spec = su["dynamicTasksInput"]["gamma"]
+    assert spec["allowedWriteRoots"] == [] and "You may change ANY file in the repository" in spec["prompt"]
+    assert su["scopeRefusals"] == [] and su["scopeWaits"] == []
+
+    wt = _fork_worktree(shared, "gamma", branch, edit=("elsewhere.py", "fixed = True\n"))
+    assert os.path.isdir(wt)
+    team_integrate(fake_task_input(
+        sharedRepo=shared, sharedBranch=branch, correlationId=cid, groupIds="gamma", maxAttempts=2, maxRescues=2,
+        enablePeerReview=True, dispatched=[{"id": "gamma", "files": ["gamma.py"], "attempt": 0}],
+        joined={"gamma__1": {"output": {"testsPassed": True, "deliveryOutcome": "passed"}}}))
+    assert open(os.path.join(shared, "elsewhere.py")).read() == "fixed = True\n"
+    rv = team_review_build(fake_task_input(correlationId=cid, sharedRepo=shared, sharedBranch=branch)).output_data
+    assert "elsewhere.py" in rv["dynamicTasksInput"]["review_gamma"]["prompt"]
+
+
+def test_without_a_reviewer_the_lead_merges_a_helpers_contract_correction(monkeypatch, tmp_path, fake_task_input):
+    """With peer review off nobody could judge the correction its prompt invites; the Lead merges it instead
+    of blocking the item as a pending contract change and looping helper after helper."""
+    _isolate_board(monkeypatch, tmp_path)
+    from common import blackboard as bbx
+    cid = "run-help-contract-noreview"
+    shared = str(tmp_path / "shared")
+    git.ensure_ready(shared)
+    with open(os.path.join(shared, "api.py"), "w") as fh:
+        fh.write("V = 1\n")
+    _commit_all(shared, "contract")
+    branch = git._current_branch(shared)
+    team_plan_init(fake_task_input(correlationId=cid, subtasks=[_ITEMS[2]], contractPaths=["api.py"]))
+    bbx.post_fact(cid, "lead", "contract", {"paths": ["api.py"], "frozen": True, "revision": 1})
+    bbx.post_fact(cid, "lead", "rescue", {"item": "gamma", "rescue": 1, "mechanism": "stuck"})
+    _fork_worktree(shared, "gamma", branch, edit=("api.py", "V = 2\n"))
+    out = team_integrate(fake_task_input(
+        sharedRepo=shared, sharedBranch=branch, correlationId=cid, groupIds="gamma", contractPaths=["api.py"],
+        enablePeerReview=False, dispatched=[{"id": "gamma", "files": ["gamma.py"], "attempt": 0}],
+        joined={"gamma__1": {"output": {"testsPassed": True, "deliveryOutcome": "passed"}}})).output_data
+    assert out["doneNow"] == ["gamma"] and out["blocked"] == []
+    assert open(os.path.join(shared, "api.py")).read() == "V = 2\n"
+    decided = [f["data"] for f in bbx.read_facts(cid, kind="acceptance_amendment") if f["data"].get("decision")]
+    assert decided[-1]["decision"] == "approve" and "no peer review" in decided[-1]["reason"]
+    assert tb.fold_board(cid)["items"]["gamma"]["state"] == tb.DONE
+
+
+def test_a_helper_may_propose_changing_the_frozen_contract_for_review(monkeypatch, tmp_path, fake_task_input):
+    """A frozen contract that is genuinely wrong would otherwise reject every helper's fix for good."""
+    _isolate_board(monkeypatch, tmp_path)
+    from common import blackboard as bbx
+    cid = "run-help-contract"
+    shared = str(tmp_path / "shared")
+    git.ensure_ready(shared)
+    with open(os.path.join(shared, "api.py"), "w") as fh:
+        fh.write("V = 1\n")
+    _commit_all(shared, "contract")
+    branch = git._current_branch(shared)
+    team_plan_init(fake_task_input(correlationId=cid, subtasks=[_ITEMS[2]], contractPaths=["api.py"]))
+    bbx.post_fact(cid, "lead", "contract", {"paths": ["api.py"], "frozen": True, "revision": 1})
+    bbx.post_fact(cid, "lead", "rescue", {"item": "gamma", "rescue": 1, "mechanism": "stuck"})
+    wt = _fork_worktree(shared, "gamma", branch, edit=("api.py", "V = 2\n"))
+    out = team_integrate(fake_task_input(
+        sharedRepo=shared, sharedBranch=branch, correlationId=cid, groupIds="gamma", contractPaths=["api.py"],
+        enablePeerReview=True, dispatched=[{"id": "gamma", "files": ["gamma.py"], "attempt": 0}],
+        joined={"gamma__1": {"output": {"testsPassed": True, "deliveryOutcome": "passed"}}})).output_data
+    assert out["reviewing"] == ["gamma"] and os.path.isdir(wt)
+    assert tb.fold_board(cid)["items"]["gamma"]["state"] == tb.REVIEW
+    assert open(os.path.join(shared, "api.py")).read() == "V = 1\n"  # held unmerged until the reviewer decides
 
 
 def test_review_rounds_restart_for_the_helper_and_a_silent_reviewer_is_escalated(monkeypatch, tmp_path,

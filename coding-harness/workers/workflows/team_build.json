@@ -466,7 +466,8 @@
             "parentCorrelationId": "${workflow.input.parentCorrelationId}",
             "subsystemId": "${workflow.input.subsystemId}",
             "sandboxChecks": "${workflow.input.sandboxChecks}",
-            "baseModelTier": "${workflow.input.baseModelTier}"
+            "baseModelTier": "${workflow.input.baseModelTier}",
+            "maxRescues": "${workflow.input.maxRescues}"
           }
         },
         {
@@ -577,7 +578,8 @@
             "qualityChanges": "${workflow.input.qualityChanges}",
             "maxHumanConstraints": "${workflow.input.maxHumanConstraints}",
             "dispatchedCount": "${standup.output.dispatchedCount}",
-            "scopeWaits": "${standup.output.scopeWaits}"
+            "scopeWaits": "${standup.output.scopeWaits}",
+            "maxRescues": "${workflow.input.maxRescues}"
           }
         },
         {

@@ -191,7 +191,8 @@ def _tool_cache_env(worktree_abs: str) -> dict[str, str]:
         if f"/{TOOL_CACHE_DIR}/" not in text.split("\n"):
             with open(exclude, "a") as fh:
                 fh.write(("" if not text or text.endswith("\n") else "\n") + f"/{TOOL_CACHE_DIR}/\n")
-    return {"GOCACHE": os.path.join(cache, "go-build"), "GOTMPDIR": os.path.join(cache, "tmp")}
+    return {"GOCACHE": os.path.join(cache, "go-build"), "GOTMPDIR": os.path.join(cache, "tmp"),
+            "PYTHONDONTWRITEBYTECODE": "1"}
 
 
 def _worktree_guard(worktree_abs: str, write_roots: list[str] | None = None) -> sdk.HookMatcher:
@@ -581,6 +582,8 @@ async def run_coding_agent(
             write=_is_write_surface(tools), effort=effort,
             output_schema=output_schema, resume_session_id=resume_session_id,
             on_turn=on_turn,
+            extra_env=(await asyncio.to_thread(_tool_cache_env, worktree_abs)
+                       if _is_write_surface(tools) else None),
         )
     if be == "gemini":
         from .gemini import run_gemini_agent

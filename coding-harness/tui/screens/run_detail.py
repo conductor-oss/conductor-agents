@@ -357,13 +357,26 @@ class RunDetail(Screen):
             self.app.bell()
             return
         status = self.detail.run.status
-        if not (status.startswith("FAIL") or status in ("TIMED_OUT", "TERMINATED")):
-            self.notify(f"Only a failed, timed-out or stopped run can be retried (this one is {status.lower()}); "
-                        "R starts it over.", severity="warning")
-            return
         if self._child_of_program():
             return
+        if status == "COMPLETED":
+            self.retry_unfinished()  # the console decides: only a run that did not deliver is retried
+            return
+        if not (status.startswith("FAIL") or status in ("TIMED_OUT", "TERMINATED")):
+            self.notify(f"Only a run that failed, was stopped or did not deliver can be retried (this one is "
+                        f"{status.lower()}); R starts it over.", severity="warning")
+            return
         self.run_retry()
+
+    @work(group="mutate")
+    async def retry_unfinished(self) -> None:
+        import asyncio
+        from .. import console as console_mod
+        result = await asyncio.to_thread(console_mod.retry_run, self._id, server_url=self._server())
+        if result.get("ok"):
+            self.notify(f"retry started from this run's branch: {result['run'][:8]}")
+        else:
+            self.notify(result.get("error") or "the run was not retried", severity="warning")
 
     def action_start_over(self) -> None:
         """Start a NEW run with the same input. Conductor's restart would reuse the run id, and a swarm's

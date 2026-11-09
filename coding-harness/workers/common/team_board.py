@@ -104,6 +104,7 @@ def post_item(correlation_id: str, author: str, item: dict, *, backend=None) -> 
         "kind": _str(item.get("kind")).strip() or "feature",
         "deliverable": deliverable_of(item),
         "dependsOn": [str(d).strip() for d in _listed(item.get("dependsOn")) if str(d).strip()],
+        "replaceDependsOn": item.get("replaceDependsOn") is True,  # an empty list alone means "unchanged"
         "files": [str(f).strip() for f in _listed(item.get("files")) if str(f).strip()],
         # Criteria written as one text (a planner's paragraph) are criteria, not nothing (run 90e5e3aa).
         "acceptanceCriteria": _lines(item.get("acceptanceCriteria")),
@@ -317,7 +318,8 @@ def _fold(item_facts: list[dict], state_facts: list[dict]) -> dict:
             "description": _str(data.get("description")) or prev.get("description", ""),
             "kind": _str(data.get("kind")) or prev.get("kind", "feature"),
             "deliverable": _str(data.get("deliverable")) or prev.get("deliverable") or deliverable_of(data),
-            "dependsOn": _listed(data.get("dependsOn")) or prev.get("dependsOn", []),
+            "dependsOn": (_listed(data.get("dependsOn")) if data.get("replaceDependsOn")
+                          else _listed(data.get("dependsOn")) or prev.get("dependsOn", [])),
             "files": _listed(data.get("files")) or prev.get("files", []),
             "acceptanceCriteria": _lines(data.get("acceptanceCriteria")) or prev.get("acceptanceCriteria", []),
             "reviewCriteria": _lines(data.get("reviewCriteria")) or prev.get("reviewCriteria", []),
@@ -468,6 +470,38 @@ def starvation(items: dict, open_exc: list, *, dispatched: int | None = None, he
     detail = "; ".join(f"{iid} depends on {', '.join(deps)}" for iid, deps in sorted(waiting.items()))
     return {"starved": True, "starvedBy": "dependency",
             "detail": f"dependency-starved: {detail or 'no dependency-ready work'}"}
+
+
+def dead_dependencies(items: dict) -> dict[str, list[str]]:
+    """Dependencies of open items that can never land (pure): on no item of this board, or on a cycle of
+    open items. Ghost dependencies are reported for every item that has one; a cycle is reported for one
+    item on it (the first by id) with only the edges that lead back to it, so the rest of the order
+    stands. The Lead drops exactly these; a real dependency is never touched."""
+    items = _mapping(items)
+    open_ids = {iid for iid, it in items.items() if it.get("state") in OPEN_STATES}
+    ghosts = {iid: [str(d) for d in _listed(items[iid].get("dependsOn")) if str(d) not in items]
+              for iid in sorted(open_ids)}
+    ghosts = {iid: deps for iid, deps in ghosts.items() if deps}
+    if ghosts:
+        return ghosts
+
+    def reaches(start: str, target: str, seen: set) -> bool:
+        for dep in _listed(items.get(start, {}).get("dependsOn")):
+            dep = str(dep)
+            if dep == target:
+                return True
+            if dep in open_ids and dep not in seen:
+                seen.add(dep)
+                if reaches(dep, target, seen):
+                    return True
+        return False
+
+    for iid in sorted(open_ids):
+        back = [str(d) for d in _listed(items[iid].get("dependsOn"))
+                if str(d) == iid or (str(d) in open_ids and reaches(str(d), iid, {iid}))]
+        if back:
+            return {iid: back}
+    return {}
 
 
 def board_rollup(board: dict) -> dict:

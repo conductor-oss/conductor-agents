@@ -129,7 +129,7 @@ def test_every_production_subprocess_uses_a_shared_runtime_environment():
 
     assert set(direct_launchers) == allowed
     for source in (root / "common" / "codex.py", root / "common" / "gemini.py"):
-        assert "env=check_execution.inherited_environment()" in source.read_text(encoding="utf-8")
+        assert "env=check_execution.inherited_environment(" in source.read_text(encoding="utf-8")
 
 
 def test_runtime_health_contract_covers_required_language_families():

@@ -70,7 +70,7 @@
     "modelPolicySha256": "",
     "modelsConfig": "",
     "modelOverrides": {},
-    "maxTeamAttempts": 2,
+    "maxTeamAttempts": 5,
     "branchName": "program"
   },
   "variables": {

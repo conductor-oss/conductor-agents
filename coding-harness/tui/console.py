@@ -1,4 +1,4 @@
-"""Web Swarm Console (roadmap Phase 3, §4.8) — the always-on, shareable surface for a long run.
+"""Conductor Software Factory web console (roadmap Phase 3, §4.8) — the always-on, shareable surface for a long run.
 
 A days-long, many-agents run needs a visual surface a terminal can't give: the **rollup + exception
 queue** (the default landing surface, H7), a kanban, a cost-burn bar, and agent drill-down. Per §4.8
@@ -294,25 +294,33 @@ def lifecycle_actions(wf: dict) -> dict:
     run from the step that failed — what completed is kept, and the board stays the run's own. ``startOver``
     starts a NEW run with the same input: Conductor's own restart reuses the run id, and the swarm's
     board is keyed by it, so the restarted run would read the old run's teams, done items and spend (spend
-    counted twice against the ceiling). A child team of a program is driven by its program: neither
+    counted twice against the ceiling). ``retryUnfinished``: Conductor reports a run that ended without
+    delivering as COMPLETED, has no failed step to resume, and refuses a retry; the run is retried as a
+    new run on its own branch instead. A child team of a program is driven by its program: none of these
     applies to it alone."""
     status = str(wf.get("status") or "")
     inp = wf.get("input") or {}
     top = not inp.get("parentCorrelationId") and not wf.get("parentWorkflowId")
     name = str(wf.get("workflowName") or wf.get("workflowType") or "")
     finished = status in _TERMINAL
-    return {"retry": top and status in RETRYABLE, "startOver": top and finished and name in SWARM_TYPES,
+    undelivered = status == "COMPLETED" and (wf.get("output") or {}).get("delivered") is False
+    return {"retry": top and status in RETRYABLE, "retryUnfinished": top and undelivered and name in LAUNCH_TYPES,
+            "startOver": top and finished and name in SWARM_TYPES,
             "editAndRun": top and finished and name in LAUNCH_TYPES}
 
 
 def retry_run(run: str, *, opener=None, server_url: str | None = None) -> dict:
-    """Resume a failed, timed-out or stopped run from the step that ended it."""
-    status, wf = _conductor("GET", f"/workflow/{run}?includeTasks=false", opener=opener, server_url=server_url)
+    """Resume a failed, timed-out or stopped run from the step that ended it, or retry a run that
+    finished without delivering as a new run on its branch."""
+    status, wf = _conductor("GET", f"/workflow/{run}?includeTasks=true", opener=opener, server_url=server_url)
     if status != 200 or not isinstance(wf, dict):
         return {"ok": False, "error": f"Conductor does not know run {run}."}
-    if not lifecycle_actions(wf)["retry"]:
-        return {"ok": False, "error": f"Only a failed, timed-out or stopped run can be retried (this one is "
-                                      f"{str(wf.get('status') or 'unknown').lower()})."}
+    actions = lifecycle_actions(wf)
+    if actions["retryUnfinished"]:
+        return _retry_unfinished(run, wf, opener=opener, server_url=server_url)
+    if not actions["retry"]:
+        return {"ok": False, "error": f"Only a run that failed, was stopped or did not deliver can be retried "
+                                      f"(this one is {str(wf.get('status') or 'unknown').lower()})."}
     # A failed child team is started afresh by its program's retry (its SUB_WORKFLOW task re-runs).
     status, body = _conductor("POST", f"/workflow/{run}/retry?resumeSubworkflowTasks=false",
                               opener=opener, server_url=server_url)
@@ -320,6 +328,29 @@ def retry_run(run: str, *, opener=None, server_url: str | None = None) -> dict:
         detail = body.get("message") or body.get("error") if isinstance(body, dict) else body
         return {"ok": False, "error": f"Conductor refused the retry: {detail or status}"}
     return {"ok": True, "run": run}
+
+
+def _retry_unfinished(run: str, wf: dict, *, opener=None, server_url: str | None = None) -> dict:
+    """A new run on the branch of one that finished without delivering: same request and settings, a
+    fresh budget, and the run's own report of what is left. With no branch there is nothing to keep."""
+    if not _handoff(wf).get("branch"):
+        return start_over(run, opener=opener, server_url=server_url)
+    name = str(wf.get("workflowName") or wf.get("workflowType"))
+    field, report = _TEXT_FIELD[name], str((wf.get("output") or {}).get("report") or "").strip()
+    values = dict(wf.get("input") or {})
+    values[field] = (str(values.get(field) or "").strip()
+                     + (f"\n\nThe previous attempt did not finish. Its report:\n{report}" if report else "")
+                     + "\n\nFinish everything this request still needs.")
+    try:
+        values = prepare_continuation(run, values, name, opener=opener, server_url=server_url)
+    except Exception as e:  # noqa: BLE001 - tell the human exactly what stands in the way
+        return {"ok": False, "error": str(e)}
+    start = {"name": name, "input": values, "correlationId": CONTINUE_PREFIX + run}
+    status, wid = _conductor("POST", "/workflow", start, opener=opener, server_url=server_url)
+    if status != 200 or not isinstance(wid, str) or not wid:
+        detail = wid.get("message") or wid.get("error") if isinstance(wid, dict) else wid
+        return {"ok": False, "error": f"Conductor refused the start: {detail or status}"}
+    return {"ok": True, "run": wid, "from": run, "workflow": name}
 
 
 def start_over(run: str, *, opener=None, server_url: str | None = None) -> dict:
@@ -765,7 +796,7 @@ def serve(port: int = 8750, host: str = "127.0.0.1", blackboard_dir: str | None 
 
 def _main(argv=None) -> None:  # pragma: no cover - CLI entry
     import argparse
-    ap = argparse.ArgumentParser(description="Web Swarm Console — board + exception queue over the blackboard")
+    ap = argparse.ArgumentParser(description="Conductor Software Factory web console — board + exception queue over the blackboard")
     ap.add_argument("--port", type=int, default=8750)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--blackboard-dir", default=None)

@@ -41,7 +41,7 @@ def test_runs_and_board_and_page(monkeypatch, tmp_path):
     assert v["burn"]["ceilingUsd"] == 10.0
 
     status, ctype, body = console.handle_get("/", {}, bb)
-    assert status == 200 and b"Swarm Console" in body and ctype.startswith("text/html")
+    assert status == 200 and b"Conductor Software Factory" in body and ctype.startswith("text/html")
 
     assert console.handle_get("/nope", {}, bb)[0] == 404
     assert console.handle_get("/api/board", {}, bb)[0] == 400  # run required
@@ -373,18 +373,56 @@ def test_a_failed_runs_snapshot_carries_why_it_failed():
     assert "lead with it" in swarm_state._ASK_SYSTEM
 
 
+def test_a_run_that_did_not_deliver_is_retried_on_its_own_branch(monkeypatch, tmp_path):
+    """Run ca01246b ended 0/6 and Conductor called it COMPLETED, so the console offered no Retry. An
+    undelivered run is retried as a new run on its branch, with its report of what is left."""
+    from common import git
+    repo = str(tmp_path / "repo")
+    git.ensure_ready(repo)
+    git.git(repo, "branch", "swarm/x-prog")
+    undelivered = {**_program("prog-i"), "status": "COMPLETED", "workflowName": "cc_program",
+                   "output": {"delivered": False, "verdict": "PROGRAM_INCOMPLETE", "report": "resp-reader blocked",
+                              "sourceHandoff": {"branch": "swarm/x-prog", "sourceRepoPath": repo}}}
+    undelivered["input"] = {**undelivered["input"], "repoPath": repo, "description": "Build a cache",
+                            "ceilingUsd": 100, "branchName": "swarm/x"}
+    actions = console.lifecycle_actions(undelivered)
+    assert actions["retryUnfinished"] is True and actions["retry"] is False and actions["startOver"] is True
+    delivered = {**undelivered, "output": {**undelivered["output"], "delivered": True}}
+    assert console.lifecycle_actions(delivered)["retryUnfinished"] is False
+    child = {**undelivered, "workflowName": "team_build", "input": {"parentCorrelationId": "p"}}
+    assert console.lifecycle_actions(child)["retryUnfinished"] is False
+
+    fake = _FakeConductor({"prog-i": undelivered, "prog-d": delivered}, start_id="retry-1")
+    out = console.retry_run("prog-i", opener=fake, server_url="http://c/api")
+    assert out == {"ok": True, "run": "retry-1", "from": "prog-i", "workflow": "cc_program"}
+    method, url, body = fake.calls[-1]
+    assert (method, url) == ("POST", "http://c/api/workflow") and body["correlationId"] == "continue:prog-i"
+    assert body["name"] == "cc_program" and body["input"]["ceilingUsd"] == 100
+    text = body["input"]["description"]
+    assert "Build a cache" in text and "resp-reader blocked" in text and "swarm/x-prog" in text
+    assert body["input"]["repoPath"] != repo and git._current_branch(body["input"]["repoPath"]) == "swarm/x-prog"
+    assert not any("/retry" in c[1] for c in fake.calls)  # Conductor refuses a retry of a COMPLETED run
+    assert "did not deliver" in console.retry_run("prog-d", opener=fake, server_url="http://c/api")["error"]
+
+    # Nothing landed (the plan was rejected): there is no branch to keep, so it starts afresh.
+    planless = {**undelivered, "output": {"delivered": False, "verdict": "PROGRAM_PLAN_REJECTED"}}
+    fake = _FakeConductor({"prog-p": planless}, start_id="retry-2")
+    out = console.retry_run("prog-p", opener=fake, server_url="http://c/api")
+    assert out["ok"] is True and fake.calls[-1][2]["input"]["description"] == "Build a cache"
+
+
 def test_finished_runs_offer_retry_start_over_and_run_again(monkeypatch, tmp_path):
     """Retry resumes the same run from the failed step; start over is a NEW run with the same input,
     because Conductor's restart reuses the run id and the board is keyed by it (old items, spend twice)."""
     failed = {**_program("prog-f"), "status": "FAILED", "workflowName": "cc_program"}
-    assert console.lifecycle_actions(failed) == {"retry": True, "startOver": True, "editAndRun": True}
+    assert console.lifecycle_actions(failed) == {"retry": True, "retryUnfinished": False, "startOver": True, "editAndRun": True}
     assert console.lifecycle_actions({**failed, "status": "TERMINATED"})["retry"] is True
     done = {**failed, "status": "COMPLETED"}
-    assert console.lifecycle_actions(done) == {"retry": False, "startOver": True, "editAndRun": True}
+    assert console.lifecycle_actions(done) == {"retry": False, "retryUnfinished": False, "startOver": True, "editAndRun": True}
     assert console.lifecycle_actions({**failed, "status": "RUNNING"}) == {
-        "retry": False, "startOver": False, "editAndRun": False}
+        "retry": False, "retryUnfinished": False, "startOver": False, "editAndRun": False}
     child = {**failed, "workflowName": "team_build", "input": {"parentCorrelationId": "prog-f"}}
-    assert console.lifecycle_actions(child) == {"retry": False, "startOver": False, "editAndRun": False}
+    assert console.lifecycle_actions(child) == {"retry": False, "retryUnfinished": False, "startOver": False, "editAndRun": False}
 
     repo = tmp_path / "repo"
     repo.mkdir()
