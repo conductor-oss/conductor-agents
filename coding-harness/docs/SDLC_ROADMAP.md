@@ -13,7 +13,7 @@
 > `dispatch`/`session` facts + the console item trace) and #7 (stdlib console, bearer-token actor identity)
 > are answered there.
 > Companion to [`DESIGN.md`](DESIGN.md) (architecture) and
-> [`../workers/IMPROVEMENTS.md`](../workers/IMPROVEMENTS.md) (scale roadmap). This document
+> `workers/IMPROVEMENTS.md` (scale roadmap). This document
 > defines how to grow the *coding* harness into a full **software-construction lifecycle**
 > harness run by a **collaborating team of agents** — not a one-shot coder.
 

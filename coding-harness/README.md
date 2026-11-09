@@ -169,7 +169,6 @@ opened as a draft PR. It never accepts credential values in workflow inputs.
 | [`docs/openspec.md`](docs/openspec.md) | **OpenSpec** — local/Git/archive sources, isolated worktrees, verification, archive, and PR behavior. |
 | [`docs/CODING_AGENT_WORKER.md`](docs/CODING_AGENT_WORKER.md) | **Reference** — the `coding_agent` worker, all workflows, backends, guardrails, remote git/GitHub. |
 | [`docs/CLAUDE_AGENT_SDK.md`](docs/CLAUDE_AGENT_SDK.md) | Claude Agent SDK deep-dive (features, interception, gotchas). |
-| [`docs/HARNESS_REVIEW.md`](docs/HARNESS_REVIEW.md) | **Review** — as-built design, ranked findings, and the recommended order of work. |
 | [`docs/SPEC.md`](docs/SPEC.md) · [`docs/DESIGN.md`](docs/DESIGN.md) | **Historical** — original design material, not the current operator contract. |
 
 ## Prerequisites
