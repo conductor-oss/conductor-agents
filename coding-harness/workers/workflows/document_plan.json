@@ -114,7 +114,10 @@
         "modelPolicySha256": "${workflow.input.modelPolicySha256}",
         "modelsConfig": "${workflow.input.modelsConfig}",
         "modelOverrides": "${workflow.input.modelOverrides}",
-        "modelResolution": "${model_policy.output}"
+        "modelResolution": "${model_policy.output}",
+        "promptContext": {
+          "instruction": "${workflow.input.instruction}"
+        }
       }
     }
   ],

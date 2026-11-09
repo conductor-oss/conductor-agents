@@ -1,0 +1,18 @@
+{
+  "name": "bug_outcome",
+  "description": "Bug fix (roadmap Phase 4, G2): fold the run into an honest verdict. FIXED iff the bug was reproduced (red at parent) AND the branch is green at the fix (the committed regression guard passes); otherwise NOT_FIXED or CANNOT_REPRODUCE.",
+  "retryCount": 1, "retryLogic": "FIXED", "retryDelaySeconds": 1,
+  "timeoutSeconds": 0, "responseTimeoutSeconds": 0, "pollTimeoutSeconds": 0, "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {"name": "bug_outcome_input", "type": "JSON", "data": {"type": "object", "properties": {
+    "reproduced": {"type": ["boolean", "string"]}, "testsPassed": {"type": ["boolean", "string"]},
+    "testCycleState": {"type": "string"}, "finalHead": {"type": "string"},
+    "repoPath": {"type": "string", "description": "Worktree, for the oracle-integrity (test-tamper) check."},
+    "reproCommit": {"type": "string", "description": "Commit where the repro test was proven red."},
+    "reproTestPaths": {"type": ["array", "string"], "description": "The repro test file(s) that must be unchanged by the fix."}
+  }}},
+  "outputSchema": {"name": "bug_outcome_output", "type": "JSON", "data": {"type": "object", "properties": {
+    "fixed": {"type": "boolean"}, "verdict": {"type": "string", "enum": ["FIXED", "NOT_FIXED", "CANNOT_REPRODUCE"]},
+    "reproTestTampered": {"type": "boolean"}, "report": {"type": "string"}
+  }, "required": ["fixed", "verdict", "report"]}}
+}

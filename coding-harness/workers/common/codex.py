@@ -70,7 +70,8 @@ def _strictify_schema(node: Any) -> Any:
     for keyword in _UNSUPPORTED_KEYWORDS:
         if out.pop(keyword, None) is not None:
             log.debug("codex: dropped unsupported schema keyword %r", keyword)
-    if out.get("type") == "object" and isinstance(out.get("properties"), dict):
+    kinds = out.get("type") if isinstance(out.get("type"), list) else [out.get("type")]
+    if "object" in kinds and isinstance(out.get("properties"), dict):
         props = out["properties"]
         original_required = set(out.get("required") or [])
         out["additionalProperties"] = False
@@ -83,9 +84,34 @@ def _strictify_schema(node: Any) -> Any:
                     props[key]["type"] = [t, "null"]
                 elif isinstance(t, list) and "null" not in t:
                     props[key]["type"] = t + ["null"]
+                if isinstance(props[key].get("enum"), list) and None not in props[key]["enum"]:
+                    props[key]["enum"] = [*props[key]["enum"], None]
     if "items" in out:
         out["items"] = _strictify_schema(out["items"])
     return out
+
+
+def _omit_strict_nulls(value: Any, schema: Any) -> Any:
+    """Undo what strict mode forces: a property the schema left optional comes back as null instead of
+    absent. Consumers are written for "absent", and an all-null ``pushback`` object is truthy, so every
+    Codex delivery would have read as a refused directive. Required properties are left as returned."""
+    if not isinstance(schema, dict):
+        return value
+    if isinstance(value, list):
+        return [_omit_strict_nulls(v, schema.get("items")) for v in value]
+    if not isinstance(value, dict) or not isinstance(schema.get("properties"), dict):
+        return value
+    required = set(schema.get("required") or [])
+    return {k: _omit_strict_nulls(v, schema["properties"].get(k)) for k, v in value.items()
+            if v is not None or k in required or k not in schema["properties"]}
+
+
+def _restore_optional(result: dict[str, Any], output_schema: dict | None) -> dict[str, Any]:
+    """The run result with strict-mode nulls removed from its structured output (and its JSON text)."""
+    if not output_schema or not isinstance(result.get("structured"), (dict, list)):
+        return result
+    structured = _omit_strict_nulls(result["structured"], output_schema)
+    return {**result, "structured": structured, "result": json.dumps(structured)}
 
 
 def _tokens(usage: dict[str, Any]) -> int:
@@ -469,14 +495,14 @@ async def run_codex_agent(
     the SDK driver.
     """
     if _sdk_available():
-        return await _run_codex_sdk(
+        return _restore_optional(await _run_codex_sdk(
             prompt, worktree=worktree, model=model, write=write, effort=effort,
             output_schema=output_schema, resume_session_id=resume_session_id,
-            on_turn=on_turn)
+            on_turn=on_turn), output_schema)
     log.info("codex driver: CLI fallback (%s)",
              "CODEX_DRIVER=cli" if CODEX_DRIVER == "cli" else "openai_codex not installed")
-    return await asyncio.to_thread(
+    return _restore_optional(await asyncio.to_thread(
         _run_codex_cli,
         prompt, worktree=worktree, model=model, write=write,
         output_schema=output_schema, resume_session_id=resume_session_id,
-        on_turn=on_turn)
+        on_turn=on_turn), output_schema)

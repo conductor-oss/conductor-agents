@@ -395,19 +395,6 @@ def probe(argv: list[str], *, cwd: str, env: dict[str, str]) -> dict[str, str | 
             "version": output[:500], "reason": "" if result.passed else output[:500]}
 
 
-def runtime_evidence(argv: list[str], *, cwd: str, env: dict[str, str]) -> dict:
-    """Describe the executable/runtime used by one repository command."""
-    entrypoint = argv[0] if argv else ""
-    evidence = {"entrypoint": entrypoint,
-                "executable": executable_for(argv, cwd=cwd, env=env) or ""}
-    if entrypoint in JAVA_ENTRYPOINTS:
-        java_home = env.get("JAVA_HOME", "")
-        java = str(Path(java_home, "bin", "java")) if java_home else "java"
-        return {**evidence, "runtime": "java", "javaHome": java_home,
-                "java": probe([java, "-version"], cwd=cwd, env=env)}
-    return evidence
-
-
 def runtime_capabilities(*, isolated: bool) -> dict[str, dict]:
     """Execute every supported runtime probe in inherited or isolated mode."""
     with tempfile.TemporaryDirectory(prefix="conductor-runtime-health-") as state_dir:
@@ -447,3 +434,61 @@ def runtime_health_report() -> dict:
         "inheritedCapabilities": inherited,
         "isolatedCapabilities": isolated,
     }
+
+
+# ─────────────────────────── sandboxed checks (H17, closure plan WP9) ───────────────────────────
+# Agent SESSIONS are OS-sandboxed by the Agent SDK; the repository CHECKS a verifier runs execute agent-
+# written code too, so they get the same containment: writes only inside the disposable checkout, the
+# verifier's scratch/cache dirs and the per-user package caches; no network except loopback. A missing
+# sandbox tool is a named block (``sandbox_unavailable``), never a silent unconfined run.
+_HOME_CACHES = (".cache", "Library/Caches", ".gradle", ".m2", ".npm", ".cargo", "go", ".pytest_cache")
+
+
+class SandboxUnavailable(RuntimeError):
+    pass
+
+
+def _sbpl_quote(path: str) -> str:
+    return '"' + str(path).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def macos_profile(writable: list[str], *, allow_network: bool = False) -> str:
+    """A Seatbelt (SBPL) profile: read anywhere, write only under ``writable`` (+ temp/devices), and —
+    unless ``allow_network`` — no network except loopback and Unix sockets."""
+    paths = [os.path.realpath(p) for p in writable if p]
+    lines = ["(version 1)", "(allow default)", "(deny file-write*)",
+             "(allow file-write* " + " ".join(f"(subpath {_sbpl_quote(p)})" for p in paths)
+             + ' (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/dev"))']
+    if not allow_network:
+        # Only the REMOTE side may name loopback for outbound: a (local ip "localhost:*") filter matches
+        # every socket's local side and would re-open the internet (measured on macOS Seatbelt).
+        lines += ["(deny network*)",
+                  '(allow network-outbound (remote ip "localhost:*"))',
+                  '(allow network-bind (local ip "localhost:*"))',
+                  '(allow network-inbound (local ip "localhost:*"))',
+                  "(allow network* (local unix-socket) (remote unix-socket))"]
+    return "\n".join(lines) + "\n"
+
+
+def sandboxed_argv(argv: list[str], *, cwd: str, writable: list[str] | None = None,
+                   allow_network: bool = False) -> list[str]:
+    """Wrap a check's argv in the platform OS sandbox (macOS ``sandbox-exec``, Linux ``bwrap``)."""
+    home = os.path.expanduser("~")
+    roots = [cwd, *(writable or []), *(os.path.join(home, c) for c in _HOME_CACHES),
+             tempfile.gettempdir()]
+    if sys.platform == "darwin":
+        tool = shutil.which("sandbox-exec") or ("/usr/bin/sandbox-exec" if os.path.exists("/usr/bin/sandbox-exec") else None)
+        if not tool:
+            raise SandboxUnavailable("sandbox-exec not found")
+        return [tool, "-p", macos_profile(roots, allow_network=allow_network), *argv]
+    tool = shutil.which("bwrap")
+    if not tool:
+        raise SandboxUnavailable("bubblewrap (bwrap) not installed; install it to run sandboxed checks")
+    args = [tool, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
+            "--die-with-parent"]
+    for root in roots:
+        if os.path.isdir(root):
+            args += ["--bind", root, root]
+    if not allow_network:
+        args += ["--unshare-net"]
+    return [*args, "--chdir", cwd, *argv]

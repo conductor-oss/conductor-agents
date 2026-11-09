@@ -1,3 +1,11 @@
+# Gap-Closure Policy
+
+- A known gap, limitation, or "caveat" is **work to finish, not a note to hand off**. When you find one, drive it to a fix or a concrete, verified resolution in the same effort — do not deliver the gap as a standing caveat and move on. That is the job.
+- Do not end a deliverable with a list of unresolved "honest caveats". If something is not proven, prove it; if a path is untested, test it; if a mechanism only works in theory, exercise it end to end until it demonstrably works.
+- This does **not** relax the honesty policies below. Outcomes are still reported truthfully and failures are still named by their precise mechanism. The rule is about *resolution*, not concealment: never hide a problem, and never leave one open that you could have closed. A truthful "it works, here is the proof" is the goal; a truthful "it might not work, caveat" is an unfinished task.
+- When a limit is genuinely external and cannot be removed in-repo (for example a physical-host or third-party-service ceiling), do not frame it as a vague caveat: name the exact limit, the concrete step that would remove it, and prove the largest increment that *is* reachable now. An external limit is a scoped next action, not a hedge.
+- Applies everywhere a caveat might otherwise appear: agent responses, PR/commit descriptions, result docs, task output, and review summaries.
+
 # Simplicity Policy
 
 - Default to the simplest design that meets the actual requirement. Only add complexity — a new task, branch, gate, flag, sub-workflow, or file — when the existing structure genuinely cannot express the requirement, not because it is convenient, symmetrical, or "might be needed later."
@@ -6,6 +14,13 @@
 - Prefer one task that does slightly more over two tasks wired together, when the second task has no independent retry, tracking, or reuse value of its own.
 - When a change is reviewed, justify new complexity by name: state the concrete requirement that could not be met without the new task/branch/flag. "It seemed safer" or "for consistency" is not sufficient justification on its own.
 - Simplifying an existing workflow (removing a task, branch, or flag that no longer earns its complexity) is a welcome change in its own right, independent of any feature it enables.
+
+# Swarm Human-Role Policy
+
+- Humans are passive actors in the agent swarm (`sdlc_intake`, `team_build`, `cc_program` and anything they route to): they monitor, give feedback, and can stop an agent or terminate a run. They never approve.
+- No swarm workflow may contain a `WAIT` task, a human-approval gate, or a `humanAvailable`-style input that makes progress depend on a human answer. Every decision the swarm faces is made by the swarm itself: a frozen-contract edit is rejected by the Lead, except an amendment of only frozen acceptance tests, which is held unmerged and decided by the item's peer reviewer (approve → merged and re-frozen at the merged head; reject → discarded), an honored agent pushback exempts that item from that one directive, a quarantine or starvation ends the run naming its mechanism.
+- Escalations are notices for awareness, not requests for decisions. Human feedback (a plain-language message, a nudge, a stop, a reopen, a constraint lift/replace) is advisory input the team takes at its next tool boundary or dispatch; it never unblocks anything because nothing is ever blocked on a human.
+- Enforcement: `workers/tests/test_team_cycle.py::test_swarm_workflows_never_wait_for_a_human` fails if a swarm workflow gains a `WAIT` or a `humanAvailable` input.
 
 # Conductor Workflow Version Policy
 
@@ -46,6 +61,7 @@ See `docs/workflow-versioning.md` for the deployment procedure.
 - Do not add hidden execution deadlines in Python, shell, HTTP clients, subprocess helpers, workers, or TUI orchestration. Commands and requests run until they complete or the user explicitly cancels them.
 - Do not add `timeout`, `timeout_s`, `timeout_seconds`, `asyncio.wait_for`, shell `timeout`, curl `--max-time`/`--connect-timeout`, or equivalent deadline mechanisms to execution paths.
 - Queue polling intervals, retry backoff, token-expiration timestamps, and UI notification display durations are not execution deadlines. They may control when to poll again or how long presentation remains visible, but must never abort running work.
+- A batch-poll request's wait for its response is a polling interval, not a deadline: the server answers within its own long-poll timeout, so `common/polling.py` bounds the wait to that timeout plus a grace period and the SDK simply polls again. Without it a lost response parks the task type's only poller in `recv` forever while its queue fills (coding_agent poller, 2026-11-07). The bound covers the poll call only; task execution, lease renewal and result updates carry none.
 - Every active worker task must hold the platform's idle-sleep inhibition assertion for its full execution. Lease renewal cannot protect a task while its worker process is suspended; prevent idle sleep instead of adding a longer deadline.
 
 # JQ Usage Policy

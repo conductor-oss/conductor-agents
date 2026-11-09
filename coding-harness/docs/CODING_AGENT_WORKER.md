@@ -249,6 +249,8 @@ never raises for an agent that merely didn't finish):
 | `filesChanged` | string[] | Files created/modified in the worktree (git status diff before→after). |
 | `result` | string | The agent's final text (capped), when not using a schema. |
 | `structured` | object \| null | Validated JSON when `schema` was passed. |
+| `structuredAttempts` | array | The last three StructuredOutput payloads the agent submitted, whole (the turn log caps each command at 300 chars), including the ones the CLI's validator rejected. |
+| `structuredSalvaged` | boolean | `true` when the session ended `error_max_structured_output_retries` and the worker salvaged `structured` from a rejected payload instead (`common/structured_output.py`: the payload emitted as tagged text inside one string, or raw input the CLI could not parse — untangled and validated against `schema`). The task then reports `status: success`. |
 | `sessionId` | string | Session id for resume (present on success **and** error). |
 | `turns` | object[] | Per-turn trace: one entry per assistant turn with `turn` (1-based), `commands` (the tool calls run that turn, e.g. `"$ go run main.go"`, `"Write main.go"`), `tools` (raw tool names), `text` (short prose slice), and `tokens`. |
 | `numTurns` | int | Scalar count of tool-use round trips the agent took. |

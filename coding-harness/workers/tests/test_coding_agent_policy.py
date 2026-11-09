@@ -1,6 +1,7 @@
 """Safety and capability policy regression tests for unattended coding sessions."""
 
 import asyncio
+import json
 import inspect
 import os
 import shutil
@@ -105,6 +106,57 @@ def test_claude_sandbox_allows_binding_a_local_test_server(monkeypatch, tmp_path
     network = captured["options"].sandbox["network"]
     assert network["allowLocalBinding"] is True
     assert network["allowedDomains"] == []
+
+
+def test_drive_keeps_every_structured_output_payload_whole(monkeypatch):
+    """The turn log caps each command at 300 chars; the StructuredOutput payloads the agent submitted
+    — including the ones the validator rejected — travel whole so a consumer can salvage a mangled one
+    (the retrospective of run a062184f) instead of recording the placeholder sent to get past it."""
+    import claude_agent_sdk as sdk
+    import common.coding_agent as m
+    big = {"summary": "x" * 400 + '</summary>\n<learnings>[{"scope":"repo","text":"real"}]'}
+    small = {"summary": "test", "learnings": []}
+
+    async def fake_query(prompt, options):
+        yield sdk.SystemMessage(subtype="init", data={"session_id": "s1"})
+        yield sdk.AssistantMessage(content=[sdk.ToolUseBlock(id="t1", name="StructuredOutput", input=big)], model="m")
+        yield sdk.AssistantMessage(content=[sdk.ToolUseBlock(id="t2", name="Read", input={"file_path": "a"})], model="m")
+        yield sdk.AssistantMessage(content=[sdk.ToolUseBlock(id="t3", name="StructuredOutput", input=small)], model="m")
+        yield sdk.ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=3,
+                                session_id="s1", total_cost_usd=0.1, result="", structured_output=small)
+
+    monkeypatch.setattr(m.sdk, "query", fake_query)
+    out = asyncio.run(m._drive("p", sdk.ClaudeAgentOptions()))
+    assert out["structured_attempts"] == [big, small] and out["structured"] == small
+    assert out["turns"][0]["commands"][0].endswith("…") and len(out["turns"][0]["commands"][0]) < 400
+
+
+def test_rejected_structured_output_is_salvaged_instead_of_failing_the_session(monkeypatch, tmp_path):
+    """Run a33d7061: the program planner's five StructuredOutput payloads were rejected (the plan as
+    tagged text inside 'summary'; raw input the CLI could not parse) and the task failed although the
+    plan was written. The runner keeps the newest payload that satisfies the schema."""
+    import common.coding_agent as m
+    schema = {"type": "object", "properties": {"subtasks": {"type": "array"}, "summary": {"type": "string"}},
+              "required": ["subtasks"]}
+    attempts = [{"summary": 'Five subsystems.</summary>\n<subtasks>[{"id": "design-docs"}, {"id": "resp"}]</subtasks>'},
+                {"__unparsedToolInput": {"raw": '{"subtasks": [{"id": "des'}}]
+
+    async def fake_drive(_prompt, options, on_turn=None):
+        return {"ok": False, "status": "error_max_structured_output_retries", "result": "", "structured": None,
+                "structured_attempts": attempts, "session_id": "s", "num_turns": 11, "turns": [], "tokens": 1,
+                "cost_usd": 1.1, "denials": [], "denied_writes": [], "turn_log": [], "error": None}
+
+    monkeypatch.setattr(m, "_drive", fake_drive)
+    out = asyncio.run(m.run_coding_agent("plan", worktree=str(tmp_path), output_schema=schema))
+    assert out["ok"] is True and out["status"] == "success" and out["structured_salvaged"] is True
+    assert out["structured"] == {"summary": "Five subsystems.", "subtasks": [{"id": "design-docs"}, {"id": "resp"}]}
+    assert json.loads(out["result"]) == out["structured"]
+    # Without a schema, or when nothing salvageable was submitted, the failure stands.
+    out2 = asyncio.run(m.run_coding_agent("plan", worktree=str(tmp_path)))
+    assert out2["ok"] is False and out2["status"] == "error_max_structured_output_retries"
+    attempts[:] = [{"file_path": "dummy"}]
+    out3 = asyncio.run(m.run_coding_agent("plan", worktree=str(tmp_path), output_schema=schema))
+    assert out3["ok"] is False and "structured_salvaged" not in out3
 
 
 def test_campaign_write_roots_only_tighten_the_worktree():
@@ -248,3 +300,96 @@ def test_snapshot_prompt_exposes_source_and_effective_path_without_contents(tmp_
     assert "never inline this" not in prompt
     _remove_context_snapshot(snapshot_root)
     assert not os.path.exists(snapshot_root)
+
+
+def test_denied_write_paths_are_repo_relative_and_only_outside_the_roots(tmp_path):
+    """The worktree guard's refusals become the Lead's evidence for widening an item's write scope
+    (st-lru / store.go, run fc6467b7): in-worktree paths outside the roots, repo-relative, deduplicated.
+    An escape of the worktree is a different denial and is left out; with no roots nothing is refused
+    on scope."""
+    from coding_agent.tasks import denied_write_paths
+    wt = str(tmp_path / "wt")
+    os.makedirs(os.path.join(wt, "store"))
+    refused = [os.path.join(wt, "store", "store.go"), os.path.join(wt, "store", "lru.go"),
+               "/etc/hosts", os.path.join(wt, "..", "outside.go"), os.path.join(wt, "store", "store.go")]
+    roots = ["store/lru.go", "tests/acceptance/test_accept_st_lru.py"]
+    assert denied_write_paths(refused, wt, roots) == ["store/store.go"]
+    assert denied_write_paths(refused, wt, []) == []
+    assert denied_write_paths(["store/value.go"], wt, roots) == ["store/value.go"]  # relative input
+
+
+def test_a_validator_accepted_placeholder_is_replaced_by_the_substantive_rejected_payload(monkeypatch, tmp_path):
+    """Run b8dc259b: the planner's real plan was rejected twice (tagged text inside 'summary'); its third
+    payload — one "test" item — validated, the session succeeded, and the program built that one item.
+    The runner now keeps the substantive payload the validator rejected."""
+    import common.coding_agent as m
+    schema = {"type": "object", "properties": {"subtasks": {"type": "array"}, "summary": {"type": "string"}},
+              "required": ["subtasks"]}
+    rich = {"summary": 'Six subsystems.</summary>\n<subtasks>[{"id": "design", "description": "author the architecture document that fixes the file layout and shared types", "deliverable": "docs", "files": ["docs/a.md"], '
+                       '"acceptanceCriteria": ["the architecture is fixed in one document"]}, {"id": "resp", "description": "a streaming RESP2 reader and writer with size bounds", "deliverable": '
+                       '"code", "files": ["resp/reader.go", "resp/writer.go"], "acceptanceCriteria": ["reader and writer"]}]'}
+    placeholder = {"subtasks": [{"id": "design", "description": "test", "acceptanceCriteria": ["ok"]}]}
+
+    async def fake_drive(_prompt, options, on_turn=None):
+        return {"ok": True, "status": "success", "result": json.dumps(placeholder), "structured": placeholder,
+                "structured_attempts": [rich, placeholder], "session_id": "s", "num_turns": 11, "turns": [],
+                "tokens": 1, "cost_usd": 1.1, "denials": [], "denied_writes": [], "turn_log": [], "error": None}
+
+    monkeypatch.setattr(m, "_drive", fake_drive)
+    out = asyncio.run(m.run_coding_agent("plan", worktree=str(tmp_path), output_schema=schema))
+    assert out["ok"] is True and out["structured_salvaged"] == "placeholder"
+    assert [s["id"] for s in out["structured"]["subtasks"]] == ["design", "resp"]
+    assert json.loads(out["result"]) == out["structured"]
+
+
+def test_ensure_repo_initializes_only_a_directory_without_a_head(tmp_path):
+    """Run edc1c893 started on an empty directory and failed four times on `git rev-parse HEAD`."""
+    from common import git
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    (fresh / "notes.txt").write_text("mine\n")
+    assert git.ensure_repo(str(fresh)) is True
+    assert git.git(str(fresh), "rev-parse", "--verify", "HEAD", check=False).code == 0
+    assert (fresh / "notes.txt").read_text() == "mine\n"
+    assert "notes.txt" in git.git(str(fresh), "status", "--porcelain").stdout  # never committed for the user
+    assert git.ensure_repo(str(fresh)) is False  # idempotent
+    # `git init` done by hand but no commit yet: still has no HEAD, so it gets the base commit.
+    bare = tmp_path / "inited"
+    bare.mkdir()
+    git.git(str(bare), "init")
+    assert git.ensure_repo(str(bare)) is True and git.head(str(bare))
+    # A directory inside an existing repository is that repository's: left alone.
+    sub = fresh / "pkg"
+    sub.mkdir()
+    head = git.head(str(fresh))
+    assert git.ensure_repo(str(sub)) is False and git.head(str(fresh)) == head
+    assert not (sub / ".git").exists()
+    # A path that does not exist is never created here.
+    assert git.ensure_repo(str(tmp_path / "typo")) is False and not (tmp_path / "typo").exists()
+
+
+def test_coding_agent_worker_initializes_a_fresh_directory_before_reading_head(monkeypatch, tmp_path,
+                                                                               fake_task_input):
+    """A planner or classifier is often the first step to touch a fresh project directory; the worker
+    makes it a repository before it reads HEAD, and says so."""
+    import coding_agent.tasks as worker
+    from common import git
+    fresh = tmp_path / "pg2"
+    fresh.mkdir()
+
+    async def fake_run(prompt, **kw):
+        return {"ok": True, "status": "success", "result": "planned", "structured": None, "session_id": "s",
+                "num_turns": 1, "turns": [], "tokens": 1, "cost_usd": 0.01, "denials": [], "denied_writes": [],
+                "turn_log": [], "error": None, "model": "m"}
+    monkeypatch.setattr(worker, "run_coding_agent", fake_run)
+    out = worker.coding_agent(fake_task_input(worktreePath=str(fresh), prompt="plan the program",
+                                              tools=["Read"], modelRole="plan"))
+    data = out.output_data
+    assert data.get("initializedRepo") is True, data
+    assert git.git(str(fresh), "rev-parse", "--verify", "HEAD", check=False).code == 0
+    assert any("was not a git repository: initialized it" in str(getattr(line, "log", line)) for line in out.logs)
+    typo = fake_task_input(worktreePath=str(tmp_path / "typo"), prompt="x")
+    typo.task_id = "test-task-typo"  # the worker de-duplicates deliveries by task id
+    missing = worker.coding_agent(typo)
+    assert not (tmp_path / "typo").exists()
+    assert "is not a directory" in str(missing.reason_for_incompletion or missing.output_data)

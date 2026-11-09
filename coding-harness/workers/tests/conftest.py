@@ -106,3 +106,13 @@ def load_fixture():
         return json.loads(text) if path.suffix == ".json" else text
 
     return _load
+
+
+@pytest.fixture(autouse=True)
+def _test_actor_registry(tmp_path_factory, monkeypatch):
+    """Every test sees a known actor registry (closure plan WP7) and never the operator's real one:
+    ``human:ops@example.com`` is the registered human, bearer token ``test-token``."""
+    path = tmp_path_factory.mktemp("actors") / "actors.json"
+    path.write_text(json.dumps({"tokens": {"test-token": {"name": "Ops", "email": "ops@example.com",
+                                                          "authority": "human"}}}))
+    monkeypatch.setenv("SWARM_ACTORS_FILE", str(path))

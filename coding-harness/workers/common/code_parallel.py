@@ -10,15 +10,14 @@ reachable by an ordinary unit test while it lived in jq.
 from __future__ import annotations
 
 import json
-from typing import Any
 
-CODE_SUBTASK_TOOLS = [
-    "Read", "Write", "Edit", "Glob", "Grep",
-    "Bash(python *)", "Bash(python3 *)", "Bash(node *)", "Bash(npm *)", "Bash(npx *)",
-    "Bash(go *)", "Bash(cargo *)",
-    "Bash(git status*)", "Bash(git diff*)", "Bash(git log*)", "Bash(git mv *)", "Bash(git rm *)",
-    "Bash(mv *)", "Bash(rm *)", "Bash(mkdir *)", "Bash(cp *)", "Bash(touch *)",
-]
+from common.tool_policy import DEFAULT_ALLOWED_TOOLS
+
+# Implementers get the whole unattended coding surface (one executable per rule, no shells). The
+# narrower list used before 2026-11-07 lacked `make`, `gofmt`, `cat`, `pytest` and most language
+# entrypoints, so team implementers could not run the repository's own documented verification command
+# (`make test`) from inside their fork and shipped unverified code (run fc6467b7).
+CODE_SUBTASK_TOOLS = list(DEFAULT_ALLOWED_TOOLS)
 
 _DELIVERY_PASSTHROUGH_STATES = {"incomplete_delivery", "audit_unavailable", "implementation_unavailable"}
 
@@ -53,19 +52,35 @@ def _flatten_join(joined: object) -> list[dict]:
     return reports
 
 
+def _one_subtask(subtasks: object) -> list:
+    """A validated plan folded into one work item, for a request routed to a single agent. The planner
+    still names the files; it cannot be relied on to stop at one piece (run c2ccb06d cut a one-agent
+    request into four forks and spent $0.86 of them on the README)."""
+    entries = [_mapping(s) for s in _listed(subtasks) if _text(_mapping(s).get("id"))]
+    if len(entries) < 2:
+        return entries
+    files = list(dict.fromkeys(f for e in entries for f in _listed(e.get("files")) if isinstance(f, str) and f))
+    return [{"id": "change", "files": files,
+             "description": "\n\n".join(_text(e.get("description")) for e in entries if _text(e.get("description")))}]
+
+
 def build_forks(*, repo_path: object, subtasks: object, change_dir: object,
                 code_model: object, code_prompt_template: object,
                 code_prompt_template_source: object, spec_context_path: object,
                 context_paths: object, max_turns: object, max_budget_usd: object,
                 model_profile: object, model_policy: object, model_policy_source: object,
                 model_policy_sha256: object, models_config: object,
-                model_overrides: object) -> dict:
-    """Build one dynamic-fork SUB_WORKFLOW descriptor per validated plan entry."""
+                model_overrides: object, skip_agent_test_fallback: bool = False,
+                single_subtask: bool = False) -> dict:
+    """Build one dynamic-fork SUB_WORKFLOW descriptor per validated plan entry. With
+    ``skip_agent_test_fallback`` a fork whose files map to no exact test stops there at no cost: the
+    post-merge run of the repository suite proves the work, and the agents a fork would start to find
+    or write a test were paid for and their tests discarded (run 1117790e, $2.44 of $5.53)."""
     dynamic_tasks: list[dict] = []
     dynamic_inputs: dict[str, dict] = {}
     group_ids: list[str] = []
     all_files: list[str] = []
-    for subtask in _listed(subtasks):
+    for subtask in (_one_subtask(subtasks) if single_subtask else _listed(subtasks)):
         entry = _mapping(subtask)
         subtask_id = _text(entry.get("id"))
         if not subtask_id:
@@ -91,6 +106,7 @@ def build_forks(*, repo_path: object, subtasks: object, change_dir: object,
             "modelProfile": model_profile, "modelPolicy": model_policy,
             "modelPolicySource": model_policy_source, "modelPolicySha256": model_policy_sha256,
             "modelsConfig": models_config, "modelOverrides": model_overrides,
+            **({"allowAgentTestPlan": False, "allowAgentAuthoredTests": False} if skip_agent_test_fallback else {}),
         }
     return {"dynamicTasks": dynamic_tasks, "dynamicTasksInput": dynamic_inputs,
             "groupIds": ",".join(group_ids), "allowedWriteRoots": sorted(set(all_files))}
@@ -169,9 +185,20 @@ def resolve_verification_outcome(*, candidate_commit: object, delivery: object, 
     else:
         state = "implementation_unavailable"
     final_commit = tested if isinstance(tested, str) and not _blank(tested) else candidate_commit
+    cycle = test_state if isinstance(test_state, str) else "not_run"
+    # ``passed`` means planned, merged and delivered. Whether the result was proven is a separate fact,
+    # and a run must not call itself delivered on the strength of tests that never ran.
+    proven = passed and tests_passed is True
+    verdict = ("DELIVERED" if proven else "INCOMPLETE" if not passed
+               else "TESTS_FAILED" if cycle.startswith("tests_failed") else "DELIVERED_UNTESTED")
+    report = {"DELIVERED": f"DELIVERED: merged and tested ({cycle}).",
+              "INCOMPLETE": f"INCOMPLETE: {state}.",
+              "TESTS_FAILED": f"TESTS_FAILED: the work is merged on its branch but its tests fail ({cycle}).",
+              "DELIVERED_UNTESTED": f"DELIVERED_UNTESTED: the work is merged on its branch but no test proved "
+                                    f"it ({cycle})."}[verdict]
     return {
-        "passed": passed, "testsPassed": tests_passed is True,
-        "testCycleState": test_state if isinstance(test_state, str) else "not_run",
+        "passed": passed, "testsPassed": tests_passed is True, "deliveredAndTested": proven,
+        "verdict": verdict, "report": report, "testCycleState": cycle,
         "candidateCommit": final_commit, "state": state, "executionOutcome": state,
         "mergeState": merge_state, "planValid": plan_valid is True,
         "delivery": delivery, "issues": _listed(issues),

@@ -17,7 +17,7 @@ WF = Path(__file__).resolve().parents[1] / "workflows"
 
 EMBEDDINGS = {
     "code_subtask": ("subtask_tests", "targeted"),
-    "code_parallel": ("post_merge_tests", "targeted"),
+    "code_parallel": ("post_merge_tests", "${post_merge_mode.output.testMode}"),
     "address_pr": ("verify", "targeted"),
     "feature_campaign": ("campaign_tests", "full"),
     "issue_to_pr": ("delivery_verification", "full"),

@@ -83,6 +83,55 @@ convenience (the working dir must be on the machine running the TUI); most usefu
 **code_parallel** (which has no PR) and **design_docs** (read/edit the generated markdown).
 GitHub-flow runs still review via the PR (`o`).
 
+**Agent swarm.** `n` → **Build with the agent swarm** (`sdlc_intake`) classifies the request,
+gates the decomposition, and routes it to one agent, parallel agents (`code_parallel`), or a
+collaborating team (`team_build`: shared board, peer review, continuous integration on one branch).
+Tick **Always use the team swarm** (`forceTeam`) to skip auto-routing and always get the team;
+The swarm never waits for you: you watch, give feedback, and can terminate; the team makes its own
+decisions (a frozen-contract edit is rejected by the Lead, an agent's pushback exempts it from that one
+rule, a quarantine is reported). **Build a program with teams of teams**
+(`cc_program`) runs one team per subsystem in dependency ranks. In chat, ask for "the swarm" or
+"a team". Open the run and press **`b`** for its live board: items, exception queue, constraints,
+child teams, per-item trace.
+
+**Steering is just a message.** On the board the message line is focused: type what you want in
+your own words ("the triangle code must reject negative sides", "stop square, wrong approach",
+"drop the no-ORM rule", "kill the run") and press enter. It is routed for you to the right item(s),
+child team, or the whole team, as guidance, a stop, a reopen, a constraint lift/replace, or a
+termination, and your words are delivered as written under your identity.
+The same box is on every run page of the web console, and in chat you just tell the assistant; it passes
+your words to the active swarm. If routing is unavailable the message still goes to the whole team.
+
+**Web console.** `make console` (port 8750, `PORT=` to change; set `SWARM_BLACKBOARD_PG_DSN` when the
+boards are on Postgres) serves the swarm's operating surface in a browser. The left rail lists every
+swarm run with its status, repo, age and spend; a program's child teams nest under it. **New run**
+starts a program (`cc_program`) or a request (`sdlc_intake`) from a form generated from the same
+catalog as the TUI launcher. A run page shows progress, spend against the ceiling, agents working right
+now and open escalations; a program draws its dependency ranks as a strip of team tiles, each a row of
+item cells coloured by state, and a click opens that team. Tabs hold the live activity feed with the
+message box, the board (click an item for its history, a note, stop-and-redo or reopen), escalations,
+constraints (lift one) and lessons. Every view has its own link (`#/run/<id>/board/<item>`, `#/new`). A failed, timed-out or stopped run shows why and offers **Retry** (resume from the step that failed; everything that finished is kept), **Start over** (a new run with the same request and settings, a fresh budget; the original stays) and **Edit and run again** (the launch form prefilled); a finished run offers the last two. Start over is a new run on purpose: Conductor's own restart reuses the run id, and the swarm's board is keyed by it, so a restarted run would read the old run's items and count its spend twice. A program's child team is retried or started over through its program. In the TUI run screen the same actions are `r` retry, `R` start over and `n` run again.
+
+**Where the work goes.** Every swarm run delivers onto a branch of its own in the repository you pointed it at, named after what you asked for: `swarm/pg-compatible-database-037e1cbe` (the short run id keeps two runs from sharing one). Your own checkout is never switched or edited. The run works in a scratch checkout under `.cc-worktrees/`; the branch holds every commit, so `git log`, `git diff` and `git merge` on it work from your own checkout. A finished run's scratch checkout is pruned when the next run starts on the repository, or handed over when you continue the run. A finished run's page shows a result card with the branch, what it adds over the branch it started from (commits, files, lines), the runs it continues, and what comes next:
+
+- **Continue this work** starts a follow-up run on top of what was delivered: more features, documentation, fixes. It runs in a checkout of the branch (`.cc-worktrees/continue-<branch>`), the request tells the swarm what already exists, and the new work lands on a branch of its own that contains the old one. Follow-ups chain; each names the run it continues.
+- **Open pull request into `<default branch>`** appears when the repository has a GitHub remote. It starts `ship_run`, which pushes the branch and opens the pull request through `pr_create` (an open one is reused), and the card links to it.
+- **Merge into `<branch>`** merges locally into the branch the first run of the chain started from: a fast-forward when that branch has not moved, otherwise a merge commit. A dirty checkout or a conflict changes nothing and says why.
+
+In the TUI run screen these are `F` continue, `P` pull request and `M` merge.
+
+**Settings** (the link at the bottom of the run list, `#/settings/models` and `#/settings/templates`) edits the same files as the TUI's `/models` and `/templates` screens, under `~/.conductor-harness`:
+
+- **Models** sets which agent and model each role uses (design, plan, code, review, judge, scribe) in each profile, the code role's rescue tiers, the profile new runs use, and model prices. **Edit as JSON** covers everything else in the policy. Saving runs the workers' own validator, so a backend that cannot run a model is refused with the reason. A save over a policy that changed since it was opened is refused instead of silently overwriting it. Every run started from the console or the TUI takes a copy of the policy when it starts.
+- **Prompt templates** creates, edits and deletes the templates that replace the built-in prompts of the review and coding workflows, scoped to workflows, prompt fields and repositories. **Start from the built-in prompt** loads the shipped prompt to edit. **Built-in prompts** lists the default of every agent step with the workflows that run it; commit `.conductor/<key>.md` to change one for a repository.
+Reading needs nothing; starting, messaging and stopping are signed: register once with
+`make console-actor EMAIL=you@example.com NAME="Your Name"`, which prints your token, and paste it into
+**Sign in**.
+`esc` moves to the item list for single-key shortcuts (`n` nudge · `s` stop · `o` reopen ·
+`l`/`e` lift/replace a constraint · `t t` terminate the run).
+Boards on Postgres need `SWARM_BLACKBOARD_PG_DSN`; steer with human authority by setting
+`SWARM_ACTOR_TOKEN` to your token from the `SWARM_ACTORS_FILE` registry.
+
 **Design review loop.** Before the TUI starts `issue_to_pr`, its form or chat asks whether you
 want design docs and requires an explicit yes/no. The prompt also recommends `feature_campaign`
 when tasks have dependencies or overlapping files, need migrations or rollout planning, span
@@ -200,6 +249,11 @@ guidance panel and you can still `/dashboard`.
 - **New run** (`n`) — pick an action (Review local changes / Review a PR / Resolve an issue / Address feedback /
   Run a feature campaign / Code a change / Generate design docs), fill a form (defaults prefilled, Advanced
   collapsed, `gh` issue/PR pickers when available), preflight-checked, and launch.
+- **Templates** (`t`, `/templates`): enter edits a template in the app (`ctrl+s` saves, `ctrl+d` loads the
+  built-in prompt), `E` opens the file in your editor, `n` new, `b` reads the built-in prompts, `d` delete.
+- **Models** (`/models`): one row per profile, role and rescue tier. Enter changes a role's agent and model,
+  `d` makes the highlighted profile the default, `j` edits the whole policy as JSON in the app, `e` opens the file.
+  Saves are validated by the workers' rules.
 - **Run detail** (`enter`) — the task tree (recurses into `code_parallel`'s parallel
   forks, including campaign waves, each with its own live turn count) beside a live agent trace (the per-turn
   commands/tokens the workers publish). On completion it becomes a result card with the
@@ -210,8 +264,9 @@ guidance panel and you can still `/dashboard`.
 Chat: type to talk · slash commands above · `ctrl+o` open last run.
 Dashboard: `n` new · `enter` open · `f` filter · `/` search · `o` browser · `e` open folder ·
 `t` templates · `g` register definitions · `q` quit. Run Detail: `a` review gate (approve/edit/reject when paused) · `f` changed files
-(enter opens one in editor) · `e` open folder · `o` open PR/URL · `t` terminate · `r` retry ·
-`l` logs · `y` copy id · `c` Conductor UI · `esc` back.
+(enter opens one in editor) · `e` open folder · `o` open PR/URL · `t` terminate · `r` retry (failed, timed out or stopped) ·
+`R` start over (new run, same input) · `n` run again (edit first) · `F` continue the work (follow-up run on its branch) ·
+`P` open pull request · `M` merge the branch · `l` logs · `y` copy id · `c` Conductor UI · `esc` back.
 
 ## Layout
 

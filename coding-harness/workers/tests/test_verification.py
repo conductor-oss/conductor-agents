@@ -953,7 +953,8 @@ def test_vetted_staging_rejects_cache_only_and_stages_source(tmp_git_repo: Path)
     staged = git.stage_vetted_changes(str(tmp_git_repo))
 
     assert staged["staged"] == ["src.py"]
-    assert staged["rejected"] == [".gradle-local/"]
+    # Untracked files are listed one by one (never a collapsed directory): the audit needs the files.
+    assert staged["rejected"] == [".gradle-local/state"]
 
 
 def test_cache_only_change_becomes_a_noop_commit(tmp_git_repo: Path):
@@ -965,7 +966,7 @@ def test_cache_only_change_becomes_a_noop_commit(tmp_git_repo: Path):
     assert result["noOp"] is True
     assert result["commit"] == git.head(str(tmp_git_repo))
     assert result["stagedPaths"] == []
-    assert result["rejectedPaths"] == ["build/"]
+    assert result["rejectedPaths"] == ["build/output"]
 
 
 def test_generated_change_prevents_ambiguous_source_deletion_from_being_committed(tmp_git_repo: Path):
@@ -979,7 +980,7 @@ def test_generated_change_prevents_ambiguous_source_deletion_from_being_committe
 
     assert result["noOp"] is True
     assert "source.py" not in result["stagedPaths"]
-    assert "build/" in result["rejectedPaths"]
+    assert "build/source.py" in result["rejectedPaths"]
     assert "protected deletion: source.py" in result["rejectedPaths"]
     assert git.git(str(tmp_git_repo), "ls-files", "--error-unmatch", "source.py", check=False).code == 0
 
@@ -1496,13 +1497,6 @@ def test_prepare_routes_to_its_own_validator_not_the_remediation_one():
     # The remediation adapter must keep refusing it: an install is not a test.
     with pytest.raises(verification.VerificationBlocked):
         verification.validate_remediation_argv(prepare["argv"])
-
-
-def test_a_broken_lockfile_edit_is_the_candidates_fault_but_an_outage_is_not(tmp_path: Path):
-    assert verification.prepare_failure_outcome(tmp_path, ["package-lock.json"]) == "code_failed"
-    assert verification.prepare_failure_outcome(tmp_path, ["Gemfile"]) == "code_failed"
-    # A registry outage must not consume the repair budget reproducing itself.
-    assert verification.prepare_failure_outcome(tmp_path, ["src/app.rb"]) == "infra_blocked"
 
 
 def _ruby_repo(tmp_path: Path, *, rspec: bool = True) -> Path:
@@ -2141,26 +2135,6 @@ def test_isolated_environment_leaves_toolchain_cache_locations_to_the_real_host(
 # --- Values that used to be derived by one-line jq tasks ----------------------
 
 
-def test_pr_commit_checks_names_a_pending_ci_state(monkeypatch):
-    from gitops import tasks as gitops_tasks
-    from conductor.client.http.models.task import Task
-
-    def checks(_repo, sha, state):
-        monkeypatch.setattr(gitops_tasks.github, "commit_checks",
-                            lambda *_a, **_k: {"sha": sha, "checks": [], "links": [],
-                                               "checkCount": 0, "verificationState": state})
-        t = Task(); t.task_id = "t"; t.workflow_instance_id = "w"
-        t.input_data = {"repo": "o/r", "sha": sha}
-        return gitops_tasks.pr_commit_checks(t).output_data
-
-    # Blank or "empty" means GitHub has not reported yet, which is a pending
-    # poll rather than a verdict. A jq task used to draw this distinction.
-    assert checks("o/r", "a" * 40, "")["ciState"] == "pending"
-    assert checks("o/r", "a" * 40, "empty")["ciState"] == "pending"
-    assert checks("o/r", "a" * 40, "passed")["ciState"] == "passed"
-    assert checks("o/r", "a" * 40, "failed")["ciState"] == "failed"
-
-
 def test_campaign_checkpoint_derives_its_own_blocking_verdict():
     from campaign.tasks import _blocking_passed
 
@@ -2566,3 +2540,67 @@ def test_the_inference_fallback_command_is_runnable_in_this_repository():
 
     assert "[tool.pytest.ini_options]" in pyproject
     assert 'testpaths = ["tui/tests", "workers/tests"]' in pyproject
+
+
+def test_a_failing_command_does_not_skip_the_commands_after_it(tmp_git_repo: Path):
+    """A root `pytest` failed on another team's tests and the verifier stopped there, so the team's own
+    required acceptance tests never ran and its head was refused as unproven (run 037e1cbe). Every
+    selected command now runs and leaves evidence; the run still fails."""
+    (tmp_git_repo / "test_red.py").write_text("def test_red():\n    assert False\n")
+    (tmp_git_repo / "test_green.py").write_text("def test_green():\n    assert True\n")
+    _commit(tmp_git_repo, "two tests")
+    head = git.head(str(tmp_git_repo))
+    result = verification.verify_candidate(str(tmp_git_repo), head, [
+        {"argv": ["pytest", "test_red.py"], "source": "x"}, {"argv": ["pytest", "test_green.py"], "source": "x"}],
+        scope="repository")
+    assert [c["argv"][1] for c in result["commands"]] == ["test_red.py", "test_green.py"]
+    assert [c["exitCode"] != 0 for c in result["commands"]] == [True, False]
+    assert result["verificationState"] == "failed" and result["executionOutcome"] == "code_failed"
+
+
+def test_bare_pytest_can_import_from_the_checkout_root():
+    from common.verification import _with_checkout_importable as importable
+    assert importable({"PYTHONPATH": "/x"}, ["pytest", "tests/a.py"], "/co")["PYTHONPATH"] == os.pathsep.join(["/co", "/x"])
+    assert importable({}, ["pytest"], "/co")["PYTHONPATH"] == "/co"
+    assert "PYTHONPATH" not in importable({}, ["go", "test", "./..."], "/co")
+
+
+def _make_only_repo(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    git.git(str(repo.parent), "init", "-q", "-b", "main", str(repo))
+    git.git(str(repo), "config", "user.name", "t")
+    git.git(str(repo), "config", "user.email", "t@e")
+    (repo / "Makefile").write_text("test:\n\t@true\n")
+    (repo / "AGENTS.md").write_text("Run the test suite with `make test`.\n")
+    (repo / "pkg" / "__init__.py").write_text("X = 1\n")
+    git.git(str(repo), "add", ".")
+    git.git(str(repo), "commit", "-qm", "base")
+    (repo / "pkg" / "__init__.py").write_text("X = 2\n")
+    git.git(str(repo), "add", ".")
+    git.git(str(repo), "commit", "-qm", "change")
+    return str(repo), git.git(str(repo), "rev-parse", "HEAD").stdout.strip()
+
+
+def test_a_merge_that_maps_to_no_exact_test_runs_the_repository_suite(tmp_path):
+    """Run 1117790e: a project with only `make test` was never tested after the merge."""
+    repo, head = _make_only_repo(tmp_path)
+    assert verification.repository_suite_available(repo) is True
+    assert verification.integration_test_mode(repo, head)["testMode"] == "full"
+
+
+def test_a_repository_with_no_suite_stays_targeted_for_the_agent_fallback(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git.git(str(repo.parent), "init", "-q", "-b", "main", str(repo))
+    git.git(str(repo), "config", "user.name", "t")
+    git.git(str(repo), "config", "user.email", "t@e")
+    (repo / "main.zig").write_text("// a\n")
+    git.git(str(repo), "add", ".")
+    git.git(str(repo), "commit", "-qm", "base")
+    (repo / "main.zig").write_text("// b\n")
+    git.git(str(repo), "add", ".")
+    git.git(str(repo), "commit", "-qm", "change")
+    head = git.git(str(repo), "rev-parse", "HEAD").stdout.strip()
+    assert verification.repository_suite_available(str(repo)) is False
+    assert verification.integration_test_mode(str(repo), head)["testMode"] == "targeted"

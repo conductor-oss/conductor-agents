@@ -9,7 +9,7 @@ from conductor.client.worker.worker_task import worker_task
 
 from common import check_execution, plan_validation, polling, test_plan, verification
 from common.progress import ProgressReporter
-from common.results import fail, ok
+from common.results import ok
 from common.task_flight import TaskFlight
 
 # Conductor may redeliver a still-SCHEDULED task before this worker's final
@@ -103,6 +103,14 @@ def test_discover(task):
                   [f"[test_discover] BLOCKED: {reason}"])
 
 
+@worker_task(task_definition_name="test_mode_select", thread_count=4)
+def test_mode_select(task):
+    """Choose how to test a merged change: targeted when it maps to exact tests, else the whole suite."""
+    i = task.input_data or {}
+    out = verification.integration_test_mode(str(i.get("repoPath") or ""), str(i.get("candidateCommit") or ""))
+    return ok(task, out, [f"[test_mode_select] {out['testMode']}: {out['reason']}"])
+
+
 # A parallel fan-out asks for one verification per subtask, and at thread_count
 # 1 they queue behind each other and serialize the whole phase. Each run makes
 # its own disposable clone and isolated environment, so they are disk-isolated;
@@ -141,7 +149,8 @@ def test_run(task):
             outcome = verification.verify_candidate(
                 str(i["repoPath"]), candidate, commands,
                 scope="repository" if mode == "full" else "changed", allow_heavy=allow_heavy,
-                on_progress=reporter.update)
+                on_progress=reporter.update,
+                sandbox=str(i.get("sandboxChecks", "")).strip().lower() in ("1", "true", "yes"))
         finally:
             reporter.stop()
         outcome = {**outcome, "testMode": mode}

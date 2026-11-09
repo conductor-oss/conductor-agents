@@ -71,12 +71,41 @@ def test_busy_tracks_live_child_work_and_excludes_its_own_probe():
     assert source_watch.busy() is False
 
 
+def test_idle_pollers_do_not_make_a_generation_busy():
+    """A generation is leader -> one poller per task type -> (work). The pollers are always
+    there, so a watcher that counted them deferred the reload forever (coding fleet 60592
+    logged "deferring reload" every minute while fully idle, 2026-11-07). Only a process
+    *below* a poller is work."""
+    import os
+    import sys
+
+    idle_poller = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        time.sleep(0.3)
+        assert source_watch.generation_busy(os.getpid()) is False
+        working_poller = subprocess.Popen(
+            [sys.executable, "-c", "import subprocess, time; subprocess.Popen(['sleep', '30']); time.sleep(30)"])
+        try:
+            time.sleep(0.6)
+            assert source_watch.generation_busy(os.getpid()) is True
+        finally:
+            for child in source_watch._children_map().get(working_poller.pid, []):
+                os.kill(child[0], 9)
+            working_poller.kill()
+            working_poller.wait()
+        time.sleep(0.3)
+        assert source_watch.generation_busy(os.getpid()) is False
+    finally:
+        idle_poller.kill()
+        idle_poller.wait()
+
+
 def test_watcher_defers_the_reload_until_child_work_finishes(tmp_path, monkeypatch):
     monkeypatch.setattr(source_watch, "WORKER_ROOT", tmp_path)
     _write(tmp_path, "common/verification.py")
     reloaded: list[bool] = []
     states = iter([True, True, False])
-    monkeypatch.setattr(source_watch, "busy", lambda pid=None: next(states, False))
+    monkeypatch.setattr(source_watch, "generation_busy", lambda leader: next(states, False))
     monkeypatch.setattr(source_watch, "changed_since", lambda *a, **k: ["common/verification.py"])
 
     thread = source_watch.watch(interval=0.01, reload_on_change=True,
@@ -92,7 +121,7 @@ def test_reload_can_be_disabled_leaving_only_the_warning(tmp_path, monkeypatch):
     monkeypatch.setattr(source_watch, "WORKER_ROOT", tmp_path)
     _write(tmp_path, "common/verification.py")
     reloaded: list[bool] = []
-    monkeypatch.setattr(source_watch, "busy", lambda pid=None: False)
+    monkeypatch.setattr(source_watch, "generation_busy", lambda leader: False)
     monkeypatch.setattr(source_watch, "changed_since", lambda *a, **k: ["common/verification.py"])
 
     thread = source_watch.watch(interval=0.01, reload_on_change=False,

@@ -1,0 +1,154 @@
+{
+  "name": "run_retrospective",
+  "description": "Retrospective for a finished swarm run (team_build / cc_program): gather what actually happened on its boards (blocked items, pushback, rejected contract edits, review rework, human feedback, test failures), have a read-only agent distil durable learnings scoped to the repo, this host's environment, the language, or the team process, and record them in the shared learnings store that later runs inject into planning and every implementer's prompt. Runs at the end of every run and as the failureWorkflow of a failed or terminated one; a child team of a program is covered by the program's retrospective.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "restartable": true,
+  "inputParameters": [
+    "correlationId",
+    "workflowId",
+    "repoPath",
+    "verdict",
+    "report",
+    "parentCorrelationId",
+    "codeModel",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides",
+    "workspacePath"
+  ],
+  "inputTemplate": {
+    "correlationId": "",
+    "workflowId": "",
+    "repoPath": "",
+    "verdict": "",
+    "report": "",
+    "parentCorrelationId": "",
+    "codeModel": "",
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {},
+    "workspacePath": ""
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "retro_evidence",
+      "taskReferenceName": "evidence",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.input.correlationId}",
+        "workflowId": "${workflow.input.workflowId}",
+        "repoPath": "${workflow.input.repoPath}",
+        "verdict": "${workflow.input.verdict}",
+        "report": "${workflow.input.report}",
+        "parentCorrelationId": "${workflow.input.parentCorrelationId}",
+        "workspacePath": "${workflow.input.workspacePath}"
+      }
+    },
+    {
+      "name": "retro_gate",
+      "taskReferenceName": "retro_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "skip",
+      "inputParameters": {
+        "skip": "${evidence.output.skip}"
+      },
+      "decisionCases": {
+        "no": [
+          {
+            "name": "coding_agent",
+            "taskReferenceName": "retro_agent",
+            "type": "SIMPLE",
+            "optional": true,
+            "inputParameters": {
+              "worktreePath": "${evidence.output.worktreePath}",
+              "tools": [
+                "Read",
+                "Grep",
+                "Glob"
+              ],
+              "templateKey": "retrospective",
+              "modelRole": "plan",
+              "modelResolution": "${model_policy.output}",
+              "model": "${workflow.input.codeModel}",
+              "maxTurns": 40,
+              "maxBudgetUsd": 2,
+              "prompt": "${evidence.output.prompt}",
+              "schema": "${evidence.output.schema}",
+              "promptContext": "${evidence.output.promptContext}",
+              "promptTemplate": "",
+              "promptTemplateSource": "",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}"
+            }
+          },
+          {
+            "name": "retro_record",
+            "taskReferenceName": "record",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "retro": "${retro_agent.output}",
+              "correlationId": "${evidence.output.correlationId}",
+              "repoKey": "${evidence.output.repoKey}",
+              "languages": "${evidence.output.languages}",
+              "host": "${evidence.output.host}"
+            }
+          },
+          {
+            "name": "capture_retro",
+            "taskReferenceName": "capture_retro",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "retroSummary": "${record.output.summary}",
+              "retroRecorded": "${record.output.recorded}",
+              "retroByScope": "${record.output.byScope}",
+              "retroLearnings": "${record.output.learnings}"
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    }
+  ],
+  "outputParameters": {
+    "skipped": "${evidence.output.skip}",
+    "summary": "${workflow.variables.retroSummary}",
+    "recorded": "${workflow.variables.retroRecorded}",
+    "byScope": "${workflow.variables.retroByScope}",
+    "learnings": "${workflow.variables.retroLearnings}"
+  },
+  "variables": {
+    "retroSummary": "",
+    "retroRecorded": 0,
+    "retroByScope": {},
+    "retroLearnings": []
+  }
+}

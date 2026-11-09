@@ -1,0 +1,148 @@
+{
+  "name": "team_outcome",
+  "description": "Team cycle (roadmap Phase 2): fold the whole run into an honest delivered / not-delivered verdict (the reviewed-branch result). DELIVERED iff every tracking-board item reached 'done' AND the shared branch is green under test_cycle; otherwise a precise mechanism (blocked items, a budget halt leaving work undone, or a branch not green). Counts come from the durable board, so the verdict is an audit, not a tally threaded through the loop.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "team_outcome_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "correlationId": {
+          "type": "string"
+        },
+        "finalHead": {
+          "type": "string"
+        },
+        "testCycleState": {
+          "type": "string"
+        },
+        "testsPassed": {
+          "type": [
+            "boolean",
+            "string"
+          ]
+        },
+        "testCommandsRan": {
+          "type": [
+            "array",
+            "string"
+          ],
+          "description": "The final test cycle's executed commands ([{argv, exitCode, ...}]): a delivered head must show a command naming each frozen acceptance test, or it is unproven against its oracle."
+        },
+        "sharedRepo": {
+          "type": "string",
+          "description": "The shared run worktree (the branch a green final-cycle repair is integrated onto)."
+        },
+        "sharedBranch": {
+          "type": "string"
+        },
+        "testsWorktree": {
+          "type": "string",
+          "description": "The final test cycle's own fork worktree (tests_fork); removed here after a green repair is integrated or a red one discarded."
+        },
+        "testsBranch": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "team_outcome_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "delivered": {
+          "type": "boolean"
+        },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "DELIVERED",
+            "INCOMPLETE"
+          ]
+        },
+        "finalHead": {
+          "type": "string"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "doneCount": {
+          "type": "integer"
+        },
+        "blockedCount": {
+          "type": "integer"
+        },
+        "openCount": {
+          "type": "integer"
+        },
+        "blocked": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "openExceptions": {
+          "type": "integer"
+        },
+        "exceptions": {
+          "type": "array"
+        },
+        "rollup": {
+          "type": "object"
+        },
+        "bigBangMerge": {
+          "type": "boolean"
+        },
+        "testCycleState": {
+          "type": "string"
+        },
+        "testsPassed": {
+          "type": "boolean"
+        },
+        "spendUsd": {
+          "type": "number"
+        },
+        "acceptanceTampered": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Frozen acceptance tests modified after they were frozen (never DELIVERED)."
+        },
+        "acceptanceUnproven": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Frozen acceptance tests the final test cycle ran no command for (never DELIVERED)."
+        },
+        "report": {
+          "type": "string"
+        },
+        "repairIntegrated": {
+          "type": "boolean",
+          "description": "True when the final test cycle's repair commit was integrated onto the shared branch (finalHead is then that head)."
+        },
+        "repairDropped": {
+          "type": "string",
+          "description": "Why a final-cycle repair commit was not integrated (red, or a rebase conflict); never DELIVERED."
+        }
+      },
+      "required": [
+        "delivered",
+        "verdict",
+        "report"
+      ]
+    }
+  }
+}

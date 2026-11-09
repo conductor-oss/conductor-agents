@@ -8,7 +8,6 @@ from common.model_policy import (
     ModelPolicyError, normalized_models_config, resolve_model_policy, select_role_tier,
     validate_policy,
 )
-from revision.tasks import score_candidate
 
 
 def test_standard_profile_does_not_get_masked_by_legacy_defaults():
@@ -74,8 +73,3 @@ def test_worker_reloads_checked_out_repository_policy_after_remote_preflight(tmp
     assert tier["model"] == "claude-sonnet-5"
 
 
-def test_scores_skip_checks_and_require_acceptance():
-    score = score_candidate({"checks": [{"status": "skipped"}, {"passed": True, "weight": 2}], "findings": [], "accepted": True})
-    assert score["checksScore"] == 1.0 and score["autoEligible"]
-    rejected = score_candidate({"checks": [{"passed": True}], "findings": [{"severity": "major"}], "accepted": True})
-    assert not rejected["autoEligible"] and rejected["reviewScore"] == 0.5

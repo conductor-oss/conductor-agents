@@ -29,7 +29,8 @@
     "modelPolicySource",
     "modelPolicySha256",
     "modelsConfig",
-    "modelOverrides"
+    "modelOverrides",
+    "sandboxChecks"
   ],
   "inputSchema": {
     "name": "test_cycle_input",
@@ -181,6 +182,11 @@
           ],
           "default": {},
           "description": "Per-role model overrides (or a JSON string of the same) merged on top of the selected profile."
+        },
+        "sandboxChecks": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run the repository's check commands inside the OS sandbox (macOS sandbox-exec / Linux bwrap): writes confined to the disposable checkout and caches, no network except loopback (closure plan WP9, H17). A missing sandbox tool blocks the check as sandbox_unavailable."
         }
       },
       "required": [
@@ -411,7 +417,8 @@
     "modelPolicySource": "",
     "modelPolicySha256": "",
     "modelsConfig": "",
-    "modelOverrides": {}
+    "modelOverrides": {},
+    "sandboxChecks": false
   },
   "variables": {
     "candidateCommit": "",
@@ -475,7 +482,8 @@
         "candidateCommit": "${workflow.variables.candidateCommit}",
         "testMode": "${workflow.input.testMode}",
         "allowHeavySuites": "${workflow.input.allowHeavySuites}",
-        "includeBrowserTests": "${workflow.input.includeBrowserTests}"
+        "includeBrowserTests": "${workflow.input.includeBrowserTests}",
+        "allowedWriteRoots": "${workflow.input.allowedWriteRoots}"
       }
     },
     {
@@ -551,7 +559,8 @@
         "discoveryOutcome": "${initial_plan.output.discoveryOutcome}",
         "discoveryReason": "${initial_plan.output.discoveryReason}",
         "testMode": "${workflow.input.testMode}",
-        "allowHeavySuites": "${workflow.input.allowHeavySuites}"
+        "allowHeavySuites": "${workflow.input.allowHeavySuites}",
+        "sandboxChecks": "${workflow.input.sandboxChecks}"
       }
     },
     {
@@ -628,7 +637,13 @@
                   "modelsConfig": "${workflow.input.modelsConfig}",
                   "modelOverrides": "${workflow.input.modelOverrides}",
                   "modelResolution": "${model_policy.output}",
-                  "failSoft": true
+                  "failSoft": true,
+                  "promptContext": {
+                    "scopeJson": "${repair_context.output.scopeJson}",
+                    "initialJson": "${repair_context.output.initialJson}",
+                    "currentJson": "${repair_context.output.currentJson}",
+                    "reportsJson": "${repair_context.output.reportsJson}"
+                  }
                 }
               },
               {
@@ -638,7 +653,8 @@
                 "optional": true,
                 "inputParameters": {
                   "repoPath": "${workflow.input.repoPath}",
-                  "message": "test_cycle repair"
+                  "message": "test_cycle repair",
+                  "allowedWriteRoots": "${workflow.input.allowedWriteRoots}"
                 }
               },
               {
@@ -662,7 +678,8 @@
                   "candidateCommit": "${repair_result.output.candidate}",
                   "testMode": "${workflow.input.testMode}",
                   "allowHeavySuites": "${workflow.input.allowHeavySuites}",
-                  "includeBrowserTests": "${workflow.input.includeBrowserTests}"
+                  "includeBrowserTests": "${workflow.input.includeBrowserTests}",
+                  "allowedWriteRoots": "${workflow.input.allowedWriteRoots}"
                 }
               },
               {
@@ -693,7 +710,8 @@
                   "discoveryOutcome": "${verification_plan.output.discoveryOutcome}",
                   "discoveryReason": "${verification_plan.output.discoveryReason}",
                   "testMode": "${workflow.input.testMode}",
-                  "allowHeavySuites": "${workflow.input.allowHeavySuites}"
+                  "allowHeavySuites": "${workflow.input.allowHeavySuites}",
+                  "sandboxChecks": "${workflow.input.sandboxChecks}"
                 }
               },
               {

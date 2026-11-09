@@ -1,0 +1,317 @@
+{
+  "name": "convergence_spike",
+  "description": "Roadmap Phase 1 H1/H4 GO/NO-GO spike: prove (or disprove) that >=3 agents can modify OVERLAPPING code behind a frozen contract and converge to a green shared branch without a big-bang merge. Dispatch runs in ownership-gated WAVES (two agents never hold the same shared file concurrently); each wave is integrated by continuous rebase, its file ownership released, its real spend recorded, and the reused budget_gate_check decides whether the next wave may dispatch. Reuses code_subtask for agent bodies and test_cycle for the green gate.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "restartable": true,
+  "variables": {
+    "pending": [],
+    "dispatchNewWork": false,
+    "finalHead": "",
+    "candidateCommit": ""
+  },
+  "inputParameters": [
+    "repoPath",
+    "subtasks",
+    "contractPaths",
+    "ceilingUsd",
+    "warnFraction",
+    "maxWaves",
+    "maxAttempts",
+    "codeModel",
+    "maxTurns",
+    "maxBudgetUsd",
+    "maxFixAttempts",
+    "branchRunId",
+    "inPlace",
+    "workspacePath",
+    "allowAgentTestPlan",
+    "allowAgentAuthoredTests",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "inputTemplate": {
+    "subtasks": [],
+    "contractPaths": [],
+    "ceilingUsd": 20,
+    "warnFraction": 0.8,
+    "maxWaves": 8,
+    "maxAttempts": 2,
+    "codeModel": "",
+    "maxTurns": 250,
+    "maxBudgetUsd": 10,
+    "maxFixAttempts": 2,
+    "branchRunId": "",
+    "inPlace": false,
+    "workspacePath": "",
+    "allowAgentTestPlan": true,
+    "allowAgentAuthoredTests": true,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "workspace_prepare",
+      "taskReferenceName": "workspace",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "branch": "convergence-spike",
+        "branchRunId": "${workflow.input.branchRunId}",
+        "inPlace": "${workflow.input.inPlace}",
+        "preserveExisting": true,
+        "workflowId": "${workflow.workflowId}",
+        "workspacePath": "${workflow.input.workspacePath}"
+      }
+    },
+    {
+      "name": "budget_gate_check",
+      "taskReferenceName": "budget",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.workflowId}",
+        "ceilingUsd": "${workflow.input.ceilingUsd}",
+        "warnFraction": "${workflow.input.warnFraction}",
+        "swarmMode": true
+      }
+    },
+    {
+      "name": "startable_gate",
+      "taskReferenceName": "startable_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "startable",
+      "inputParameters": {
+        "startable": "${budget.output.startable}"
+      },
+      "decisionCases": {
+        "false": [
+          {
+            "name": "terminate_not_startable",
+            "taskReferenceName": "terminate_not_startable",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "COMPLETED",
+              "workflowOutput": {
+                "converged": false,
+                "verdict": "NO-GO",
+                "report": "NO-GO: swarm-mode convergence_spike has no enforceable spend ceiling (roadmap H5 not-startable rule). Provide ceilingUsd > 0.",
+                "branch": "${workspace.output.branch}",
+                "startable": false,
+                "bigBangMerge": false,
+                "finalHead": "",
+                "testCycleState": "not_run",
+                "testsPassed": false
+              }
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "plan_init",
+      "taskReferenceName": "plan_init",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "pending": "${workflow.input.subtasks}",
+        "dispatchNewWork": "${budget.output.dispatchNewWork}",
+        "finalHead": "${workspace.output.baseCommit}",
+        "candidateCommit": "${workspace.output.baseCommit}"
+      }
+    },
+    {
+      "name": "wave_loop",
+      "taskReferenceName": "wave_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ return $.wave_loop['iteration'] < $.max_waves && Array.isArray($.pending) && $.pending.length > 0 && $.dispatch === true; })();",
+      "inputParameters": {
+        "max_waves": "${workflow.input.maxWaves}",
+        "pending": "${workflow.variables.pending}",
+        "dispatch": "${workflow.variables.dispatchNewWork}",
+        "wave_loop": "${wave_loop.output}"
+      },
+      "loopOver": [
+        {
+          "name": "convergence_build_forks",
+          "taskReferenceName": "build_forks",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "repoPath": "${workspace.output.worktreePath}",
+            "correlationId": "${workflow.workflowId}",
+            "subtasks": "${workflow.variables.pending}",
+            "contractPaths": "${workflow.input.contractPaths}",
+            "codeModel": "${workflow.input.codeModel}",
+            "maxTurns": "${workflow.input.maxTurns}",
+            "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+            "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
+            "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}"
+          }
+        },
+        {
+          "name": "fan_out",
+          "taskReferenceName": "fan_out",
+          "type": "FORK_JOIN_DYNAMIC",
+          "optional": true,
+          "inputParameters": {
+            "dynamicTasks": "${build_forks.output.dynamicTasks}",
+            "dynamicTasksInput": "${build_forks.output.dynamicTasksInput}"
+          },
+          "dynamicForkTasksParam": "dynamicTasks",
+          "dynamicForkTasksInputParamName": "dynamicTasksInput"
+        },
+        {
+          "name": "fan_join",
+          "taskReferenceName": "fan_join",
+          "type": "JOIN",
+          "optional": true
+        },
+        {
+          "name": "convergence_integrate",
+          "taskReferenceName": "integrate",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "sharedRepo": "${workspace.output.worktreePath}",
+            "sharedBranch": "${workspace.output.branch}",
+            "correlationId": "${workflow.workflowId}",
+            "contractPaths": "${build_forks.output.contractPaths}",
+            "groupIds": "${build_forks.output.groupIds}",
+            "dispatched": "${build_forks.output.dispatched}",
+            "remaining": "${build_forks.output.remaining}",
+            "maxAttempts": "${workflow.input.maxAttempts}",
+            "joined": "${fan_join.output}"
+          }
+        },
+        {
+          "name": "budget_gate_check",
+          "taskReferenceName": "wave_budget",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "correlationId": "${workflow.workflowId}",
+            "ceilingUsd": "${workflow.input.ceilingUsd}",
+            "warnFraction": "${workflow.input.warnFraction}",
+            "swarmMode": true
+          }
+        },
+        {
+          "name": "capture_round",
+          "taskReferenceName": "capture_round",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "pending": "${integrate.output.nextPending}",
+            "dispatchNewWork": "${wave_budget.output.dispatchNewWork}",
+            "finalHead": "${integrate.output.final_head}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_candidate",
+      "taskReferenceName": "set_candidate",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "candidateCommit": "${workflow.variables.finalHead}"
+      }
+    },
+    {
+      "name": "test_cycle",
+      "taskReferenceName": "tests",
+      "type": "SUB_WORKFLOW",
+      "optional": true,
+      "subWorkflowParam": {
+        "name": "test_cycle"
+      },
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "candidateCommit": "${workflow.variables.candidateCommit}",
+        "testMode": "targeted",
+        "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
+        "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
+        "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+        "model": "${workflow.input.codeModel}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "convergence_outcome",
+      "taskReferenceName": "outcome",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.workflowId}",
+        "subtasks": "${workflow.input.subtasks}",
+        "pendingRemaining": "${workflow.variables.pending}",
+        "testCycleState": "${tests.output.testCycleState}",
+        "testsPassed": "${tests.output.testsPassed}",
+        "finalHead": "${workflow.variables.finalHead}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "sourceHandoff": {
+      "sourceRepoPath": "${workspace.output.sourceRepoPath}",
+      "repoPath": "${workspace.output.worktreePath}",
+      "branch": "${workspace.output.branch}",
+      "commit": "${outcome.output.finalHead}",
+      "originalBranch": "${workspace.output.originalBranch}",
+      "originalHead": "${workspace.output.originalHead}",
+      "baselineCommit": "${workspace.output.baselineCommit}",
+      "includedSourcePaths": "${workspace.output.baselineIncludedPaths}",
+      "presented": "${outcome.output.converged}"
+    },
+    "converged": "${outcome.output.converged}",
+    "verdict": "${outcome.output.verdict}",
+    "report": "${outcome.output.report}",
+    "bigBangMerge": "${outcome.output.bigBangMerge}",
+    "finalHead": "${outcome.output.finalHead}",
+    "integratedCount": "${outcome.output.integratedCount}",
+    "forkCount": "${outcome.output.forkCount}",
+    "reopenedCount": "${outcome.output.reopenedCount}",
+    "undispatchedCount": "${outcome.output.undispatchedCount}",
+    "reopened": "${outcome.output.reopened}",
+    "testCycleState": "${outcome.output.testCycleState}",
+    "testsPassed": "${outcome.output.testsPassed}",
+    "branch": "${workspace.output.branch}",
+    "startable": "${budget.output.startable}",
+    "spendUsd": "${outcome.output.spendUsd}"
+  },
+  "enforceSchema": false
+}

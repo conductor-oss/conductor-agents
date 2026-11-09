@@ -19,19 +19,21 @@ def _mapping(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
 
-def build_prompt(*, instr: object, goal: object, feedback: object) -> str:
-    """Compose the prompt asking the agent to write exactly one OpenSpec artifact."""
+def prompt_context(*, instr: object, goal: object, feedback: object) -> dict:
+    """The values of the ``openspec_artifact`` prompt's placeholders."""
     instr = _mapping(instr)
-    artifact = instr.get("artifactId")
     rules = _listed(instr.get("rules"))
     rules_text = "\n".join(f"- {rule}" for rule in rules)
     feedback_text = feedback if isinstance(feedback, str) and not _blank(feedback) else ""
-    return (
-        f"You are contributing the '{artifact}' artifact to an OpenSpec change that plans "
-        f"this work:\n{goal}\n\n{instr.get('instruction')}"
-        + (f"\n\nAdditional rules:\n{rules_text}" if rules else "")
-        + f"\n\nWrite exactly this file: {instr.get('resolvedOutputPath')}\n\n"
-        f"Template structure to follow (fill in every section):\n{instr.get('template')}"
-        + (f"\n\nPrevious review feedback — address every item:\n{feedback_text}" if feedback_text else "")
-        + "\n\nWrite only this OpenSpec artifact file; do not write application/source code."
-    )
+    return {"artifact": str(instr.get("artifactId")), "goal": str(goal), "instruction": str(instr.get("instruction")),
+            "rulesSection": f"\n\nAdditional rules:\n{rules_text}" if rules else "",
+            "outputPath": str(instr.get("resolvedOutputPath")), "template": str(instr.get("template")),
+            "feedbackSection": (f"\n\nPrevious review feedback — address every item:\n{feedback_text}"
+                                if feedback_text else "")}
+
+
+def build_prompt(*, instr: object, goal: object, feedback: object) -> str:
+    """Compose the prompt asking the agent to write exactly one OpenSpec artifact."""
+    from common import templating
+    return templating.render_default("openspec_artifact", prompt_context(instr=instr, goal=goal, feedback=feedback))
+

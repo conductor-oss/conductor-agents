@@ -182,3 +182,51 @@ def test_verification_report_lists_issue_messages():
     assert "- overlap" in text
     assert "- raw string" in text
     assert "Plan: rejected" in text
+
+
+@pytest.mark.parametrize("state,passed,verdict,proven", [
+    ("tests_passed", True, "DELIVERED", True),
+    ("no_tests_required", True, "DELIVERED", True),
+    ("command_discovery_blocked", False, "DELIVERED_UNTESTED", False),
+    ("runtime_unavailable", False, "DELIVERED_UNTESTED", False),
+    ("tests_failed_after_fix_budget", False, "TESTS_FAILED", False),
+])
+def test_a_run_is_delivered_only_when_its_tests_prove_it(state, passed, verdict, proven):
+    out = code_parallel.resolve_verification_outcome(
+        candidate_commit="sha", delivery={"state": "passed"}, issues=[], merge_state="merged", plan_valid=True,
+        tested="sha", test_state=state, tests_passed=passed)
+    assert (out["passed"], out["verdict"], out["deliveredAndTested"]) == (True, verdict, proven)
+    assert state in out["report"]
+
+
+def test_a_run_that_did_not_merge_is_incomplete_whatever_the_tests_say():
+    out = code_parallel.resolve_verification_outcome(
+        candidate_commit="sha", delivery={"state": "passed"}, issues=[], merge_state="conflict", plan_valid=True,
+        tested="", test_state="tests_passed", tests_passed=True)
+    assert (out["verdict"], out["deliveredAndTested"]) == ("INCOMPLETE", False)
+
+
+def test_forks_skip_the_paid_test_agents_only_when_the_repository_suite_will_prove_the_work():
+    args = dict(repo_path="/r", subtasks=[{"id": "a", "description": "d", "files": ["a.py"]}], change_dir="",
+                code_model="", code_prompt_template="", code_prompt_template_source="", spec_context_path="",
+                context_paths=[], max_turns=1, max_budget_usd=1, model_profile="", model_policy={},
+                model_policy_source="", model_policy_sha256="", models_config="", model_overrides={})
+    assert "allowAgentTestPlan" not in code_parallel.build_forks(**args)["dynamicTasksInput"]["a"]
+    skipped = code_parallel.build_forks(**args, skip_agent_test_fallback=True)["dynamicTasksInput"]["a"]
+    assert (skipped["allowAgentTestPlan"], skipped["allowAgentAuthoredTests"]) == (False, False)
+
+
+def test_a_single_agent_route_builds_the_whole_plan_as_one_fork():
+    args = dict(repo_path="/r", change_dir="", code_model="", code_prompt_template="", code_prompt_template_source="",
+                spec_context_path="", context_paths=[], max_turns=1, max_budget_usd=1, model_profile="", model_policy={},
+                model_policy_source="", model_policy_sha256="", models_config="", model_overrides={})
+    plan = [{"id": "api", "description": "add the api", "files": ["a.py", "shared.py"]},
+            {"id": "cli", "description": "add the cli", "files": ["b.py", "shared.py"]}]
+    out = code_parallel.build_forks(subtasks=plan, single_subtask=True, **args)
+    assert out["groupIds"] == "change" and out["allowedWriteRoots"] == ["a.py", "b.py", "shared.py"]
+    fork = out["dynamicTasksInput"]["change"]
+    assert fork["allowedWriteRoots"] == ["a.py", "shared.py", "b.py"]
+    assert "add the api" in fork["promptContext"]["subtask"] and "add the cli" in fork["promptContext"]["subtask"]
+    assert code_parallel.build_forks(subtasks=plan, **args)["groupIds"] == "api,cli"
+    one = code_parallel.build_forks(subtasks=plan[:1], single_subtask=True, **args)
+    assert one["groupIds"] == "api"  # a one-piece plan keeps its own name

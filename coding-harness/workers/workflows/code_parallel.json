@@ -342,7 +342,12 @@
                     ]
                   },
                   "templateKey": "code-parallel-plan-repair",
-                  "worktreePath": "${workspace.output.worktreePath}"
+                  "worktreePath": "${workspace.output.worktreePath}",
+                  "promptContext": {
+                    "instruction": "${workflow.input.instruction}",
+                    "planJson": "${plan_repair_context.output.planJson}",
+                    "issuesJson": "${plan_repair_context.output.issuesJson}"
+                  }
                 }
               },
               {
@@ -499,7 +504,8 @@
         "modelPolicySource": "${workflow.input.modelPolicySource}",
         "modelPolicySha256": "${workflow.input.modelPolicySha256}",
         "modelsConfig": "${workflow.input.modelsConfig}",
-        "modelOverrides": "${workflow.input.modelOverrides}"
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "singleSubtask": "${workflow.input.singleSubtask}"
       },
       "type": "SIMPLE"
     },
@@ -577,6 +583,16 @@
       "defaultCase": []
     },
     {
+      "name": "test_mode_select",
+      "taskReferenceName": "post_merge_mode",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "candidateCommit": "${workflow.variables.candidateCommit}"
+      }
+    },
+    {
       "name": "test_cycle",
       "taskReferenceName": "post_merge_tests",
       "type": "SUB_WORKFLOW",
@@ -587,7 +603,7 @@
       "inputParameters": {
         "repoPath": "${workspace.output.worktreePath}",
         "candidateCommit": "${workflow.variables.candidateCommit}",
-        "testMode": "targeted",
+        "testMode": "${post_merge_mode.output.testMode}",
         "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
         "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
         "maxFixAttempts": "${workflow.input.maxFixAttempts}",
@@ -717,7 +733,8 @@
     "contextPaths",
     "maxFixAttempts",
     "allowAgentTestPlan",
-    "allowAgentAuthoredTests"
+    "allowAgentAuthoredTests",
+    "singleSubtask"
   ],
   "outputParameters": {
     "agentCompleted": true,
@@ -776,7 +793,10 @@
     "testCycleState": "${post_merge_tests.output.testCycleState}",
     "testsPassed": "${post_merge_tests.output.testsPassed}",
     "testRunCount": "${post_merge_tests.output.testRunCount}",
-    "testReport": "${post_merge_tests.output.testReport}"
+    "testReport": "${post_merge_tests.output.testReport}",
+    "deliveredAndTested": "${verification_outcome.output.deliveredAndTested}",
+    "verdict": "${verification_outcome.output.verdict}",
+    "report": "${verification_outcome.output.report}"
   },
   "schemaVersion": 2,
   "restartable": true,
@@ -832,7 +852,8 @@
     "workspacePath": "",
     "maxFixAttempts": 4,
     "allowAgentTestPlan": true,
-    "allowAgentAuthoredTests": true
+    "allowAgentAuthoredTests": true,
+    "singleSubtask": false
   },
   "overwriteTags": false,
   "inputSchema": {
@@ -1061,6 +1082,11 @@
           "type": "boolean",
           "default": true,
           "description": "Forwarded to the post-merge test_cycle sub-workflow: when true and allowAgentTestPlan's search also finds nothing, lets a coding agent author exactly one new test file, accepted only after a red/green check (fails against the pre-candidate baseline, passes against the real candidate change)."
+        },
+        "singleSubtask": {
+          "type": "boolean",
+          "default": false,
+          "description": "Fold the validated plan into one work item, built by one agent."
         }
       },
       "required": [

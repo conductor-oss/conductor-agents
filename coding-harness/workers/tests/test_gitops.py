@@ -313,8 +313,9 @@ def test_worktree_add_naming_and_placement(fake_task_input, tmp_git_repo):
     result = worktree_add(task)
     assert _completed(result)
     out = result.output_data
-    # Branch name is derived via GROUP_BRANCH; dir lands under .cc-worktrees/.
-    assert out["branch"] == "cc-group-alpha"
+    # Branch name is scoped to the shared checkout (one per run); dir lands under .cc-worktrees/.
+    assert out["branch"] == git.group_branch(str(tmp_git_repo), "alpha")
+    assert out["branch"].startswith("cc-group-") and out["branch"].endswith("-alpha")
     expected = tmp_git_repo / git.WORKTREES / "alpha"
     assert out["worktreePath"] == str(expected)
     assert (expected / ".git").exists()
@@ -328,7 +329,7 @@ def test_worktree_add_handles_collision(fake_task_input, tmp_git_repo):
     first = worktree_add(fake_task_input(repoPath=repo, name="dup"))
     second = worktree_add(fake_task_input(repoPath=repo, name="dup"))
     assert _completed(first) and _completed(second)
-    assert second.output_data["branch"] == "cc-group-dup"
+    assert second.output_data["branch"] == git.group_branch(repo, "dup")
     assert Path(second.output_data["worktreePath"], ".git").exists()
 
 
@@ -337,14 +338,14 @@ def test_worktree_add_handles_collision(fake_task_input, tmp_git_repo):
 def test_merge_worktrees_clean_merge(fake_task_input, tmp_git_repo):
     repo = str(tmp_git_repo)
     # A group branch adds a new file; merging it back is conflict-free.
-    git.git(repo, "checkout", "-b", "cc-group-a")
+    git.git(repo, "checkout", "-b", git.group_branch(repo, "a"))
     _commit_file(repo, "feature.txt", "hello\n", "add feature")
     git.git(repo, "checkout", "main")
 
     result = merge_worktrees(fake_task_input(repoPath=repo, groupIds="a"))
     assert _completed(result)
     out = result.output_data
-    assert out["merged"] == ["cc-group-a"]
+    assert out["merged"] == [git.group_branch(repo, "a")]
     assert out["conflicts"] == []
     assert out["resolved"] == []
     # The merge actually landed the branch's file on the change branch.
@@ -366,7 +367,7 @@ def test_merge_worktrees_aggregates_multiple_branches(fake_task_input, tmp_git_r
     repo = str(tmp_git_repo)
     for gid, fname in (("g1", "one.txt"), ("g2", "two.txt")):
         git.git(repo, "checkout", "main")
-        git.git(repo, "checkout", "-b", f"cc-group-{gid}")
+        git.git(repo, "checkout", "-b", git.group_branch(repo, gid))
         _commit_file(repo, fname, "x\n", f"add {fname}")
     git.git(repo, "checkout", "main")
 
@@ -374,7 +375,7 @@ def test_merge_worktrees_aggregates_multiple_branches(fake_task_input, tmp_git_r
     result = merge_worktrees(fake_task_input(repoPath=repo, groupIds="g1, g2"))
     assert _completed(result)
     out = result.output_data
-    assert out["merged"] == ["cc-group-g1", "cc-group-g2"]
+    assert out["merged"] == [git.group_branch(repo, "g1"), git.group_branch(repo, "g2")]
     assert out["conflicts"] == []
     assert (tmp_git_repo / "one.txt").exists()
     assert (tmp_git_repo / "two.txt").exists()
@@ -389,13 +390,13 @@ def test_merge_worktrees_reports_non_conflict_errors_as_unresolved(
     out = result.output_data
     assert out["merged"] == []
     assert out["conflicts"] == []
-    assert out["unresolved"] == ["cc-group-missing"]
-    assert out["errors"] and out["errors"][0]["branch"] == "cc-group-missing"
+    assert out["unresolved"] == [git.group_branch(str(tmp_git_repo), "missing")]
+    assert out["errors"] and out["errors"][0]["branch"] == git.group_branch(str(tmp_git_repo), "missing")
 
 
 def _make_conflict(repo: str, gid: str) -> None:
     """Diverge README on cc-group-<gid> and on main so a merge conflicts."""
-    git.git(repo, "checkout", "-b", f"cc-group-{gid}")
+    git.git(repo, "checkout", "-b", git.group_branch(repo, gid))
     _commit_file(repo, "README.md", "group side\n", "group edit")
     git.git(repo, "checkout", "main")
     _commit_file(repo, "README.md", "main side\n", "main edit")
@@ -423,8 +424,8 @@ def test_merge_worktrees_surfaces_and_resolves_conflict(
     assert _completed(result)
     out = result.output_data
     # The conflict is surfaced (not swallowed) AND recorded as resolved.
-    assert out["conflicts"] == ["cc-group-b"]
-    assert out["resolved"] == ["cc-group-b"]
+    assert out["conflicts"] == [git.group_branch(repo, "b")]
+    assert out["resolved"] == [git.group_branch(repo, "b")]
     assert out["unresolved"] == []
     assert out["tokenUsed"] == 42
     assert out["costUsd"] == 0.01
@@ -450,9 +451,9 @@ def test_merge_worktrees_aborts_when_resolution_fails(
     # Fail-soft: task COMPLETES but reports the unresolved conflict...
     assert _completed(result)
     out = result.output_data
-    assert out["conflicts"] == ["cc-group-c"]
+    assert out["conflicts"] == [git.group_branch(repo, "c")]
     assert out["resolved"] == []
-    assert out["unresolved"] == ["cc-group-c"]
+    assert out["unresolved"] == [git.group_branch(repo, "c")]
     # ...and the merge was aborted, so the working tree is NOT left broken.
     assert git.has_conflicts(repo) == []
 
@@ -547,3 +548,45 @@ def test_reconcile_branch_drift_leaves_the_tree_clean_when_resolution_fails(
     # own commit is untouched -- nothing unverified is left sitting on top of it.
     assert git.has_conflicts(local) == []
     assert git.head(local) == candidate_head
+
+
+def test_commit_confines_staging_to_the_write_roots(tmp_git_repo):
+    """The agent runner's guard refuses Write/Edit outside an item's write roots, but Bash can write any
+    file of the worktree: sv-cmd-decr removed a sibling's declaration through Bash after the Edit tool
+    refused it (run ba2491ff). The commit leaves such a change unstaged and reports it as outsideScope —
+    the Lead's scope-widening evidence — instead of integrating an edit nobody owns."""
+    repo = str(tmp_git_repo)
+    (tmp_git_repo / "mine.go").write_text("package x\n")
+    (tmp_git_repo / "sibling.go").write_text("package x // not mine\n")
+    (tmp_git_repo / "tests").mkdir()
+    (tmp_git_repo / "tests" / "test_accept_mine.py").write_text("def test_m():\n    assert True\n")
+    out = git.commit(repo, "confined", write_roots=["mine.go", "tests/test_accept_mine.py"])
+    assert out["noOp"] is False and out["stagedPaths"] == ["mine.go", "tests/test_accept_mine.py"]
+    assert out["outsideScope"] == ["sibling.go"]
+    assert "sibling.go" in git.git(repo, "status", "--porcelain").stdout  # left in the worktree, uncommitted
+    # Only out-of-scope changes: a no-op commit that names them.
+    only = git.commit(repo, "nothing of mine", write_roots=["mine.go"])
+    assert only["noOp"] is True and only["outsideScope"] == ["sibling.go"]
+    assert "outside the item's write roots: sibling.go" in only["reason"]
+    # A directory root covers its files; empty roots confine nothing.
+    (tmp_git_repo / "pkg").mkdir()
+    (tmp_git_repo / "pkg" / "a.go").write_text("package pkg\n")
+    assert git.commit(repo, "dir root", write_roots=["pkg"])["stagedPaths"] == ["pkg/a.go"]
+    assert git.commit(repo, "unconfined", write_roots=[])["stagedPaths"] == ["sibling.go"]
+    import json, os
+    wf = json.load(open(os.path.join(os.path.dirname(__file__), "..", "workflows", "code_subtask.json")))
+    cmt = [t for t in wf["tasks"] if t["taskReferenceName"] == "cmt"][0]
+    assert cmt["inputParameters"]["allowedWriteRoots"] == "${workflow.input.allowedWriteRoots}"
+    assert cmt["inputParameters"]["acceptanceTests"] == "${workflow.input.acceptanceTests}"
+    assert wf["outputParameters"]["outsideScope"] == "${cmt.output.outsideScope}"
+    tc = json.load(open(os.path.join(os.path.dirname(__file__), "..", "workflows", "test_cycle.json")))
+    def walk(tasks):
+        for t in tasks:
+            yield t
+            for k in ("loopOver", "forkTasks", "defaultCase"):
+                for sub in t.get(k) or []:
+                    yield from walk(sub if isinstance(sub, list) else [sub])
+            for case in (t.get("decisionCases") or {}).values():
+                yield from walk(case)
+    repair = [t for t in walk(tc["tasks"]) if t.get("taskReferenceName") == "repair_commit"][0]
+    assert repair["inputParameters"]["allowedWriteRoots"] == "${workflow.input.allowedWriteRoots}"

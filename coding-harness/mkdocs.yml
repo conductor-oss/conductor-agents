@@ -7,4 +7,8 @@ nav:
   - Worker & backends: CODING_AGENT_WORKER.md
   - Claude Agent SDK: CLAUDE_AGENT_SDK.md
   - Design review: HARNESS_REVIEW.md
+  - SDLC roadmap: SDLC_ROADMAP.md
+  - SDLC closure plan: SDLC_CLOSURE_PLAN.md
+  - SDLC closure result: closure_result.md
+  - Scale & enterprise review: SCALE_REVIEW.md
 

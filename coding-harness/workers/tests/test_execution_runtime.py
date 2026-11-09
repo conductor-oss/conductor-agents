@@ -101,10 +101,13 @@ def test_all_deterministic_repository_command_runners_use_the_shared_executor():
         text = source.read_text(encoding="utf-8")
         assert not any(call in text for call in forbidden), source
 
-    assert "check_execution.execute(" in (root / "openspecops" / "tasks.py").read_text()
     assert "check_execution.execute(" in (root / "campaign" / "checks.py").read_text()
     assert "verification.verify_candidate(" in (root / "verification" / "tasks.py").read_text()
-    assert "result = run(command[\"argv\"]" in (root / "common" / "verification.py").read_text()
+    # The check argv (optionally wrapped by check_execution.sandboxed_argv, WP9) still launches through
+    # the shared executor — sandboxing composes onto the one launch path, it never adds a second one.
+    verification_src = (root / "common" / "verification.py").read_text()
+    assert "result = run(argv, **run_options)" in verification_src
+    assert "argv = check_execution.sandboxed_argv(argv" in verification_src
 
 
 def test_every_production_subprocess_uses_a_shared_runtime_environment():
@@ -276,6 +279,20 @@ def test_node_engine_range_accepts_newer_compatible_runtime(tmp_path: Path):
     ) is None
 
 
+@pytest.mark.parametrize("declared,version,blocked", [
+    (">=3.9", "Python 3.14.5", False),
+    (">=3.9,<4", "Python 3.14.5", False),
+    (">=3.15", "Python 3.14.5", True),
+    (">=3.9,<3.12", "Python 3.14.5", True),
+])
+def test_requires_python_is_a_range_not_an_exact_version(tmp_path: Path, declared, version, blocked):
+    """Run c2ccb06d: `requires-python = ">=3.9"` refused Python 3.14.5 as a runtime failure."""
+    (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "x"\nrequires-python = "{declared}"\n')
+    requirements = verification.runtime_requirements(tmp_path)
+    reason = verification._runtime_requirement_reason(["pytest", "tests"], {"version": version}, requirements)
+    assert bool(reason) is blocked
+
+
 def test_sdk_batch_poll_uses_the_configured_long_poll_timeout(monkeypatch: pytest.MonkeyPatch):
     from conductor.client.http.api.task_resource_api import TaskResourceApi
 
@@ -293,7 +310,39 @@ def test_sdk_batch_poll_uses_the_configured_long_poll_timeout(monkeypatch: pytes
 
     TaskResourceApi.batch_poll(object(), "coding_agent", count=8, timeout=100)
 
-    assert observed == {"tasktype": "coding_agent", "count": 8, "timeout": 5000}
+    assert observed == {"tasktype": "coding_agent", "count": 8, "timeout": 5000,
+                        "_request_timeout": (10.0, 35.0)}
+
+
+def test_a_lost_poll_response_is_bounded_but_a_healthy_long_poll_is_not(monkeypatch: pytest.MonkeyPatch):
+    """The coding_agent poller (pid 60595, 2026-11-07) blocked in recv for over an hour on a batch
+    poll the server never answered, because the SDK sends ``timeout=None`` to httpx (no timeout at
+    all). The poll call carries its own bound: the server's long-poll timeout plus a grace period,
+    so a poll that returns when the server says it will never trips, and one that never returns
+    does. The SDK treats the resulting error as a poll failure (backoff, poll again) — not a task
+    failure, since no task is held during a poll."""
+    from common.polling import POLL_RESPONSE_GRACE_S, poll_response_bound, poll_timeout_ms
+
+    monkeypatch.setenv("CONDUCTOR_POLL_TIMEOUT_MS", "30000")
+    connect, read = poll_response_bound()
+    assert read == 30.0 + POLL_RESPONSE_GRACE_S
+    assert read > poll_timeout_ms() / 1000.0 and connect > 0
+    # The SDK's REST layer turns a (connect, read) pair into httpx.Timeout(read, connect=connect);
+    # anything else would silently fall back to "no timeout" again.
+    from conductor.client.http.rest import RESTClientObject
+    import httpx
+    captured: dict[str, object] = {}
+
+    class Client:
+        is_closed = False
+
+        def request(self, method, url, **kw):
+            captured["timeout"] = kw.get("timeout")
+            return httpx.Response(200, json=[], request=httpx.Request(method, url))
+
+    RESTClientObject(connection=Client()).request("GET", "http://conductor/api/tasks/poll/batch/x",
+                                                   _request_timeout=poll_response_bound())
+    assert captured["timeout"] == httpx.Timeout(read, connect=connect)
 
 
 def test_every_registered_worker_renews_the_server_response_lease(monkeypatch: pytest.MonkeyPatch):

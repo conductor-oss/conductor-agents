@@ -1,0 +1,39 @@
+{
+  "name": "team_route",
+  "description": "Team cycle (roadmap Phase 2, H9/H12 graceful degradation): decide the execution mode from the decomposition. One small piece → 'single' (plain code_parallel, no boards); multi-item/coupled work → 'team' (the board cycle). The mode is read off the work, never guessed.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "team_route_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "subtasks": {"type": ["array", "string"], "description": "Decomposed work items."},
+        "instruction": {"type": "string", "description": "Optional free-text instruction for the single path."},
+        "forceSingle": {"type": ["boolean", "string"]},
+        "forceTeam": {"type": ["boolean", "string"]}
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "team_route_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "mode": {"type": "string", "enum": ["single", "team"]},
+        "instruction": {"type": "string", "description": "Instruction for the single (code_parallel) path."},
+        "itemCount": {"type": "integer"},
+        "reason": {"type": "string"}
+      },
+      "required": ["mode"]
+    }
+  }
+}

@@ -3,7 +3,7 @@
 Imports every selected task package so the ``@worker_task`` decorators register
 their functions, then starts the Conductor poller. Which task modules load is
 controlled by the ``WORKER_MODULES`` env var (comma separated); the default
-(``coding_agent,gitops,campaign,openspec,openspecops,automation,model_policy,revision``)
+(``coding_agent,gitops,campaign,openspec,openspecops,automation,model_policy``)
 covers every ordinary workflow (including OpenSpec sub-workflows). The
 separately deployed read-only ``verification`` worker must run with
 ``WORKER_MODULES=verification`` so coding workers cannot satisfy their own gate.
@@ -38,7 +38,7 @@ from common.polling import configure_registered_workers, configure_sdk_polling, 
 from common import source_watch
 from common.worker_lock import DuplicateWorkerError, singleton_worker
 
-DEFAULT_MODULES = "coding_agent,gitops,campaign,openspec,openspecops,automation,model_policy,revision,planning"
+DEFAULT_MODULES = "coding_agent,gitops,campaign,team,stages,openspec,openspecops,automation,model_policy,planning"
 
 # Direct ``python workers/main.py`` launches previously resolved Python from a
 # virtualenv, but does not add that virtualenv's bin directory for subprocesses.

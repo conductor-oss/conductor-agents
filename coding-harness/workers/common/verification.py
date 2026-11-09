@@ -42,7 +42,6 @@ _JS_RUNNERS = {"jest", "vitest", "mocha", "ava", "tap"}
 _BROWSER_RUNNERS = {"playwright", "cypress"}
 _GRADLE_GOALS = {"test", "check", "build"}
 _MAVEN_GOALS = {"test", "verify", "package"}
-_SCRIPT_GOALS = {"test", "check", "build"}
 _MAKE_GOALS = {"test", "check", "build"}
 _GENERATED_PARTS = {".gradle", ".gradle-local", ".conductor-verify-build", "build", "target", "dist",
                     "out", "coverage", "__pycache__", ".pytest_cache", ".ruff_cache", ".tox"}
@@ -69,11 +68,6 @@ _HEAVY_MARKERS = ("acceptance", "benchmark", "docker", "e2e", "integration", "pe
 # allowlist above -- and stays untouched by this exemption.
 _FILTER_FLAGS_WITH_SEPARATE_VALUE = {"--tests", "--filter", "-R"}
 _FILTER_VALUE_PREFIXES = ("-Dtest=", "TEST=", "SPEC=")
-_SAFE_ENV_KEYS = (
-    "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP",
-    "SYSTEMROOT", "WINDIR", "COMSPEC", "SSL_CERT_FILE", "SSL_CERT_DIR",
-    "REQUESTS_CA_BUNDLE",
-)
 _GRADLE_PROJECT_DIR = re.compile(
     r"project\(\s*['\"]:(?P<name>[^'\"]+)['\"]\s*\)\s*\.projectDir\s*=\s*file\(\s*['\"](?P<directory>[^'\"]+)['\"]\s*\)"
 )
@@ -161,6 +155,11 @@ def runtime_requirements(repo_path: str | Path) -> dict[str, str]:
         match = re.search(r"(?P<version>\d+(?:\.\d+)?)", python_text)
     if match:
         requirements["python"] = match.group("version")
+    # requires-python is a range, like package.json's engines. Reading ">=3.9" as the bare version 3.9
+    # refused every newer interpreter as infrastructure failure (run c2ccb06d: Python 3.14.5).
+    declared = re.search(r"requires-python\s*=\s*['\"](?P<range>[^'\"]+)['\"]", python_text, re.I)
+    if declared:
+        requirements["python"] = " ".join(declared.group("range").replace(",", " ").split())
 
     go = _GO_VERSION.search(_read_first(root, ("go.mod",)))
     if go:
@@ -577,25 +576,6 @@ _PREPARE_ARGVS = [
     ["mix", "deps.get"],
     ["dotnet", "restore"],
 ]
-
-
-def prepare_failure_outcome(root: Path, changed_paths: list[str]) -> str:
-    """Classify a failed dependency install as the candidate's fault or the host's.
-
-    A broken manifest or lockfile edit is a real defect and should consume the
-    repair budget. A registry outage is not, and burning four agent turns on it
-    would only reproduce the same failure.
-    """
-    for path in changed_paths:
-        if Path(path).name in _BUILD_METADATA_NAMES | _LOCKFILE_NAMES:
-            return "code_failed"
-    return "infra_blocked"
-
-
-_LOCKFILE_NAMES = {
-    "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "Gemfile", "Gemfile.lock",
-    "composer.json", "composer.lock", "mix.exs", "mix.lock", "packages.lock.json",
-}
 
 
 def validate_repository_argv(argv: object, *, allow_heavy: bool = False,
@@ -1107,13 +1087,6 @@ def _targeted_gradle_candidates(root: Path, changed_paths: list[str]) -> list[di
                            "coveredPaths": [path for path in changed_paths
                                             if (match := _JVM_TEST_PATH.match(path)) and not match.group("module")]})
     return candidates
-
-
-def _root_gradle_build(argv: list[str]) -> bool:
-    """A root build is broader than this verifier is allowed to select."""
-    if not argv or argv[0] not in {"./gradlew", "gradle"}:
-        return False
-    return "build" in argv[1:] and not any(value.startswith(":") for value in argv[1:])
 
 
 def _maven_modules(root: Path) -> dict[str, str]:
@@ -1928,6 +1901,17 @@ def _isolated_environment(
     )
 
 
+def _with_checkout_importable(env: dict[str, str], argv: list[str], checkout: str) -> dict[str, str]:
+    """Bare ``pytest`` puts the test file's own directory on the import path, not the checkout root as
+    ``python -m pytest`` does. A correct acceptance test in tests/acceptance/ importing a root module then
+    died at collection, a repair agent patched sys.path into the frozen test, the reviewers refused the
+    amendment, and the item looped until the budget ran out (run 5e510556)."""
+    if not argv or os.path.basename(str(argv[0])) != "pytest":
+        return env
+    existing = env.get("PYTHONPATH") or ""
+    return {**env, "PYTHONPATH": os.pathsep.join(p for p in (checkout, existing) if p)}
+
+
 def _java_runtime_reason(env: dict[str, str]) -> str | None:
     """Return a diagnostic when the isolated environment cannot start Java."""
     java_home = env.get("JAVA_HOME", "")
@@ -1940,16 +1924,6 @@ def _java_runtime_reason(env: dict[str, str]) -> str | None:
         return None
     detail = str(probe.get("reason") or "unknown Java startup failure").strip().replace("\n", " ")
     return f"verification worker found Java at {java}, but it could not start: {detail[:500]}"
-
-
-def java_runtime_available() -> bool:
-    """Whether the worker can start its default JDK outside a candidate checkout."""
-    java_home = _java_home(None)
-    env = dict(os.environ)
-    if java_home:
-        env["JAVA_HOME"] = java_home
-        env["PATH"] = f"{java_home}/bin:{env.get('PATH', '')}"
-    return _java_runtime_reason(env) is None
 
 
 def runtime_capabilities() -> dict[str, dict]:
@@ -2146,6 +2120,31 @@ def _requires_verification_scope(path: str) -> bool:
     if candidate.name in _BUILD_METADATA_NAMES:
         return True
     return not any(part in {"docs", ".github"} for part in candidate.parts)
+
+
+def repository_suite_available(repo_path: str) -> bool:
+    """Whether the repository has a whole-suite command: documented, or inferred from its build."""
+    try:
+        return bool(discover_commands(repo_path, None, mode="full").get("candidates"))
+    except Exception:  # noqa: BLE001 - "cannot tell" must not change what a caller would otherwise do
+        return False
+
+
+def integration_test_mode(repo_path: str, candidate_commit: str) -> dict:
+    """How to test a merged change: targeted when its files map to exact tests, so a large repository
+    stays fast, otherwise the repository's own suite. Targeted discovery refuses a generic ``make test``
+    because it proves nothing about one fork's files, but after the merge the whole suite is the right
+    proof; without this a repository with only ``make test`` was never tested at all (run 1117790e).
+    A repository with no suite stays targeted, where the agent fallback can look for or write a test."""
+    try:
+        discover_commands(repo_path, candidate_commit, mode="targeted")
+        return {"testMode": "targeted", "reason": "the changed files map to exact tests"}
+    except VerificationBlocked as blocked:
+        if repository_suite_available(repo_path):
+            return {"testMode": "full", "reason": f"running the repository suite: {blocked}"}
+        return {"testMode": "targeted", "reason": f"no repository suite found: {blocked}"}
+    except Exception as exc:  # noqa: BLE001 - the test cycle reports the real problem
+        return {"testMode": "targeted", "reason": f"mode selection failed: {exc}"}
 
 
 def validator_for(candidate: dict, *, mode: str = "targeted"):
@@ -2462,7 +2461,8 @@ def _disposable_checkout(repo: str, sha: str) -> tuple[str, str]:
 
 
 def verify_candidate(repo_path: str, candidate_commit: str, commands: object | None = None, *,
-                     scope: str = "changed", allow_heavy: bool = False, on_progress=None) -> dict:
+                     scope: str = "changed", allow_heavy: bool = False, on_progress=None,
+                     sandbox: bool = False) -> dict:
     """Run validated checks in a disposable detached worktree at exactly ``candidate_commit``.
 
     ``scope="changed"`` (the default) keeps the remediation contract: every
@@ -2522,7 +2522,7 @@ def verify_candidate(repo_path: str, candidate_commit: str, commands: object | N
             raise VerificationBlocked("disposable worktree did not resolve the candidate commit exactly")
         results, passed, execution_outcome = _execute_selected_commands(
             worktree, temp, selected, dependency_cache, requirements, artifact_dir,
-            on_progress=on_progress)
+            on_progress=on_progress, sandbox=sandbox)
         non_code_block = execution_outcome in {"infra_blocked", "cancelled"}
         return {"verificationState": "passed" if passed else "blocked" if non_code_block else "failed",
                 "executionOutcome": execution_outcome, "candidateCommit": actual,
@@ -2540,7 +2540,8 @@ def verify_candidate(repo_path: str, candidate_commit: str, commands: object | N
 
 def _execute_selected_commands(worktree: str, temp: str, selected: list[dict],
                                dependency_cache: Path, requirements: dict,
-                               artifact_dir: Path, *, on_progress=None) -> tuple[list[dict], bool, str]:
+                               artifact_dir: Path, *, on_progress=None,
+                               sandbox: bool = False) -> tuple[list[dict], bool, str]:
     """Run a pre-validated, pre-selected command list inside an already-prepared
     disposable worktree, returning (results, passed, executionOutcome).
 
@@ -2567,7 +2568,8 @@ def _execute_selected_commands(worktree: str, temp: str, selected: list[dict],
                             "runtime": {"available": False}, "blocked": True,
                             "outcome": "infra_blocked", "output": str(exc)})
             break
-        env = _isolated_environment(temp, java_home, dependency_cache)
+        env = _with_checkout_importable(_isolated_environment(temp, java_home, dependency_cache),
+                                        command["argv"], worktree)
         _prepare_entrypoint(command["argv"], worktree)
         runtime = _runtime_evidence(command["argv"], env, worktree)
         blocked_reason = _runtime_block_reason(command["argv"], env, worktree) or _runtime_requirement_reason(
@@ -2582,8 +2584,21 @@ def _execute_selected_commands(worktree: str, temp: str, selected: list[dict],
                             "output": blocked_reason})
             break
         run_options = {"cwd": worktree, "check": False, "env": env, "clean_env": True}
+        argv = command["argv"]
+        if sandbox:
+            # Agent-written code under test runs OS-sandboxed (H17): writes confined to this disposable
+            # checkout + scratch/caches, no network but loopback. No sandbox tool = a named block.
+            try:
+                argv = check_execution.sandboxed_argv(argv, cwd=worktree,
+                                                      writable=[temp, str(dependency_cache), str(artifact_dir)])
+            except check_execution.SandboxUnavailable as exc:
+                results.append({"argv": command["argv"], "source": command["source"], "exitCode": 127,
+                                "scope": command.get("scope"), "affectedUnit": command.get("affectedUnit"),
+                                "runtime": runtime, "blocked": True, "outcome": "infra_blocked",
+                                "sandbox": "sandbox_unavailable", "output": f"sandbox_unavailable: {exc}"})
+                break
         try:
-            result = run(command["argv"], **run_options)
+            result = run(argv, **run_options)
         except OSError as exc:
             results.append({"argv": command["argv"], "source": command["source"], "exitCode": 127,
                             "scope": command.get("scope"), "affectedUnit": command.get("affectedUnit"),
@@ -2594,6 +2609,7 @@ def _execute_selected_commands(worktree: str, temp: str, selected: list[dict],
         full_output = (result.stdout or "") + ("\n" if result.stdout and result.stderr else "") + (result.stderr or "")
         output = _safe_output(full_output)
         results.append({"argv": command["argv"], "source": command["source"], "exitCode": result.code,
+                        "sandboxed": bool(sandbox),
                         "javaVersion": command.get("javaVersion"),
                         "scope": command.get("scope"), "affectedUnit": command.get("affectedUnit"),
                         "dependencyCache": str(dependency_cache),
@@ -2601,8 +2617,10 @@ def _execute_selected_commands(worktree: str, temp: str, selected: list[dict],
                         "logPath": _write_command_log(artifact_dir, len(results) + 1, full_output),
                         "outcome": "passed" if result.code == 0 else "code_failed",
                         "output": output})
-        if result.code != 0:
-            break
+        # A failing command does not end the run: every selected command leaves evidence. Stopping at
+        # the first failure meant a team's required oracle commands never ran after an unrelated
+        # repository-wide command failed, and its head was refused as unproven (run 037e1cbe); repair
+        # agents also saw one failure at a time. Only an infrastructure block (above) stops the run.
     blocked = any(item.get("blocked") for item in results)
     passed = bool(results) and not blocked and all(item["exitCode"] == 0 for item in results) and len(results) == len(selected)
     execution_outcome = "passed" if passed else "infra_blocked" if blocked else next(
@@ -2701,7 +2719,6 @@ def validate_authored_test_shape(repo: str, *, candidate_commit: str,
                 "authoredPath": path, "touchedPaths": touched}
     return {"accepted": True, "reason": "", "authoredPath": path,
             "touchedPaths": touched, "matchedIdentifier": matched}
-
 
 
 def discard_authored_test_attempt(repo: str, paths: list[str]) -> dict:

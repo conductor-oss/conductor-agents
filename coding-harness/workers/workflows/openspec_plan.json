@@ -3,7 +3,7 @@
   "version": 1,
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
-  "description": "Deterministic, OpenSpec-CLI-driven replacement for design_docs + code_parallel's old freeform plan step. Scaffolds an OpenSpec change, drains its artifact dependency graph each pass via the openspec_artifact_drain sub-workflow (typed CLI tasks select what's ready; a coding_agent per artifact writes content) \u2014 a sub-workflow because Conductor does not support a DO_WHILE nested directly inside another DO_WHILE \u2014 then reuses design_docs.json's human-or-AI-judge DO_WHILE review loop verbatim. Approval parses the generated tasks.md into the subtasks[] fan-out code_parallel's FORK_JOIN_DYNAMIC expects; the bounded loop fails closed if nothing is ever approved.",
+  "description": "Deterministic, OpenSpec-CLI-driven replacement for design_docs + code_parallel's old freeform plan step. Scaffolds an OpenSpec change, drains its artifact dependency graph each pass via the openspec_artifact_drain sub-workflow (typed CLI tasks select what's ready; a coding_agent per artifact writes content) — a sub-workflow because Conductor does not support a DO_WHILE nested directly inside another DO_WHILE — then reuses design_docs.json's human-or-AI-judge DO_WHILE review loop verbatim. Approval parses the generated tasks.md into the subtasks[] fan-out code_parallel's FORK_JOIN_DYNAMIC expects; the bounded loop fails closed if nothing is ever approved.",
   "inputParameters": [
     "repoPath",
     "instruction",
@@ -393,7 +393,7 @@
                     }
                   }
                 },
-                "prompt": "Act as a read-only OpenSpec planning judge. Read every artifact under ${workflow.variables.lastChangeDir}/ (proposal.md, specs/**/*.md, design.md, tasks.md) and compare them with the requested change below. Judge whether the artifacts are complete, internally consistent, and implementable, and \u2014 critically \u2014 whether tasks.md's numbered task groups are genuinely independent and file-disjoint (each group must declare exact repository-relative files on a `Files:` line, and no file may repeat across groups). Test commands do not belong in this planning artifact. Approve only when all of that holds. Return the required structured output with approved (boolean) and concise actionable feedback (string). Do not edit any files.\n\nRequested change:\n${workflow.input.instruction}",
+                "prompt": "Act as a read-only OpenSpec planning judge. Read every artifact under ${workflow.variables.lastChangeDir}/ (proposal.md, specs/**/*.md, design.md, tasks.md) and compare them with the requested change below. Judge whether the artifacts are complete, internally consistent, and implementable, and — critically — whether tasks.md's numbered task groups are genuinely independent and file-disjoint (each group must declare exact repository-relative files on a `Files:` line, and no file may repeat across groups). Test commands do not belong in this planning artifact. Approve only when all of that holds. Return the required structured output with approved (boolean) and concise actionable feedback (string). Do not edit any files.\n\nRequested change:\n${workflow.input.instruction}",
                 "modelRole": "judge",
                 "modelProfile": "${workflow.input.modelProfile}",
                 "modelPolicy": "${workflow.input.modelPolicy}",
@@ -401,7 +401,11 @@
                 "modelPolicySha256": "${workflow.input.modelPolicySha256}",
                 "modelsConfig": "${workflow.input.modelsConfig}",
                 "modelOverrides": "${workflow.input.modelOverrides}",
-                "modelResolution": "${model_policy.output}"
+                "modelResolution": "${model_policy.output}",
+                "promptContext": {
+                  "lastChangeDir": "${workflow.variables.lastChangeDir}",
+                  "instruction": "${workflow.input.instruction}"
+                }
               }
             },
             {

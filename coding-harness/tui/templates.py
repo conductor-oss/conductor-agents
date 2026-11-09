@@ -70,7 +70,7 @@ FIELD_KEY = {
     "reviewPromptTemplate": "pr_review", "localReviewPromptTemplate": "local_review", "codePromptTemplate": "code",
     "planPromptTemplate": "plan", "designPromptTemplate": "design",
     "fixPromptTemplate": "address_pr",
-    "designJudgePromptTemplate": "design_judge",
+    "designJudgePromptTemplate": "design-judge",
     "approvalJudgePromptTemplate": "approval_judge",
     "reviewPromptTemplate": "pr_review",
     "revisionPromptTemplate": "campaign_revision",
@@ -207,10 +207,14 @@ def _slug(text: str) -> str:
 
 
 def save(name: str, text: str, *, workflows: tuple[str, ...] = (),
-         repos: tuple[str, ...] = (), fields: tuple[str, ...] = ()) -> Path:
-    """Write ``text`` as a new template with a small frontmatter. Returns the path."""
-    path = templates_dir() / f"{_slug(name)}.md"
+         repos: tuple[str, ...] = (), fields: tuple[str, ...] = (), description: str = "",
+         path: Path | None = None) -> Path:
+    """Write ``text`` as a template with a small frontmatter (a new file named after ``name``, or
+    ``path`` to rewrite an existing one in place). Returns the path."""
+    path = path or templates_dir() / f"{_slug(name)}.md"
     front = ["---", f"name: {name}"]
+    if description:
+        front.append(f"description: {' '.join(description.split())}")
     if workflows:
         front.append(f"workflows: [{', '.join(workflows)}]")
     if repos:
@@ -316,3 +320,98 @@ def delete(entry: TemplateEntry) -> None:
         entry.path.unlink()
     except OSError:
         pass
+
+
+# ─────────────────────────── editing in place (TUI editor screen and the web console) ───────────────────
+def entry_at(path: str | Path) -> TemplateEntry:
+    """The template stored at ``path``; only files inside the template library are addressable."""
+    p = Path(path).expanduser().resolve()
+    root = templates_dir().resolve()
+    if p.parent != root or p.suffix != ".md" or not p.is_file():
+        raise ValueError(f"no template at {path}")
+    return _parse(p.read_text(encoding="utf-8"), p)
+
+
+def update(path: str | Path | None, *, name: str, body: str, description: str = "",
+           workflows: tuple[str, ...] = (), repos: tuple[str, ...] = (),
+           fields: tuple[str, ...] = ()) -> TemplateEntry:
+    """Create (``path`` None) or rewrite a template. A new template never overwrites another one."""
+    name = " ".join(str(name or "").split())
+    if not name:
+        raise ValueError("a template needs a name")
+    if not str(body or "").strip():
+        raise ValueError("a template needs a prompt")
+    unknown = [w for w in workflows if w not in WORKFLOW_KEY]
+    if unknown:
+        raise ValueError("templates do not apply to " + ", ".join(unknown))
+    if path:
+        target = entry_at(path).path
+    else:
+        target = templates_dir() / f"{_slug(name)}.md"
+        if target.exists():
+            raise ValueError(f"a template named like {name!r} already exists ({target.name})")
+    save(name, body, workflows=tuple(workflows), repos=tuple(repos), fields=tuple(fields),
+         description=description, path=target)
+    return _parse(target.read_text(encoding="utf-8"), target)
+
+
+def targets() -> dict:
+    """What a template can be scoped to: each workflow that takes prompt templates, its prompt
+    fields (primary first), and the shipped default prompt each field starts from."""
+    from . import catalog
+    out = {}
+    for wf in WORKFLOW_KEY:
+        spec = catalog.CATALOG.get(wf)
+        names = [f.name for f in (spec.fields if spec else ()) if f.name.endswith("PromptTemplate")]
+        primary = primary_field(wf)
+        names = sorted(set(names) | ({primary} if primary else set()), key=lambda n: (n != primary, n))
+        out[wf] = {"label": spec.action if spec else wf, "fields": names, "primary": primary}
+    return out
+
+
+# Defaults whose steps are composed in code rather than declared in a workflow's tasks.
+_CODE_BUILT_USES = {
+    "team_implement": ("team_build",), "team_rescue": ("team_build",), "team_review": ("team_build",),
+    "team_acceptance_tests": ("team_build",), "convergence_subtask": ("convergence_spike",),
+    "merge_conflict": ("code_parallel", "merge_remediation", "publish_verified_pr"), "code": ("code_parallel",),
+    # The starting text for a custom fix prompt: those workflows run fixPromptTemplate when one is given.
+    "address_pr": ("address_pr", "pr_address_sweep"),
+}
+
+
+def _workflow_prompt_uses() -> dict[str, list[str]]:
+    """Which workflows run each templateKey, read from the workflow definitions."""
+    import json
+    uses: dict[str, set[str]] = {}
+
+    def walk(tasks, name):
+        for task in tasks:
+            key = (task.get("inputParameters") or {}).get("templateKey") if task.get("name") == "coding_agent" else None
+            if isinstance(key, str) and key and not key.startswith("${"):
+                uses.setdefault(key, set()).add(name)
+            for branch in (task.get("decisionCases") or {}).values():
+                walk(branch, name)
+            for field_name in ("defaultCase", "loopOver"):
+                walk(task.get(field_name) or [], name)
+    for path in sorted((_DEFAULTS_DIR.parents[1] / "workflows").glob("*.json")):
+        try:
+            definition = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        walk(definition.get("tasks") or [], str(definition.get("name") or path.stem))
+    return {key: sorted(names) for key, names in uses.items()}
+
+
+def builtins() -> list[dict]:
+    """Every shipped default prompt: the text, the workflows that run it, and how it can be changed.
+    ``copyable`` means a user-library template can replace it at launch; any of them can be replaced
+    for one repository by committing ``.conductor/<key>.md``."""
+    uses = _workflow_prompt_uses()
+    launchable = set(FIELD_KEY.values()) | set(WORKFLOW_KEY.values()) | {k for k in WORKFLOW_FIELD_KEY.values()}
+    out = []
+    for path in sorted(_DEFAULTS_DIR.glob("*.md")):
+        key = path.stem
+        names = sorted(set(uses.get(key, [])) | set(_CODE_BUILT_USES.get(key, ())))
+        out.append({"key": key, "usedBy": names, "copyable": key in launchable,
+                    "repoOverride": f".conductor/{key}.md", "body": path.read_text(encoding="utf-8").strip()})
+    return out

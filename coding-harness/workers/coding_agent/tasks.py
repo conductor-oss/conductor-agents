@@ -240,6 +240,31 @@ def _within_write_roots(path: str, roots: list[str] | None) -> bool:
     return False
 
 
+def denied_write_paths(paths: list[str], worktree: str, write_roots: list[str] | None) -> list[str]:
+    """Repo-relative paths the worktree guard refused because they lie outside this task's write roots.
+
+    This is the Lead's evidence that an item's scope was sliced too narrowly: st-lru's acceptance
+    criteria needed eviction hooks in ``store/store.go`` (owned by a sibling item), every attempt was
+    denied there, and the item exhausted its review rounds re-wiring eviction elsewhere (run fc6467b7).
+    ``team_standup`` widens the item's write roots from this record once the owning item has landed.
+    Paths that escape the worktree are a different denial (never widened) and are left out; with no
+    write roots the guard denies nothing on scope, so the list is empty.
+    """
+    if not write_roots:
+        return []
+    root = os.path.realpath(worktree)
+    out: list[str] = []
+    for raw in paths or []:
+        raw = str(raw)
+        target = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(root, raw))
+        if target == root or not target.startswith(root + os.sep):
+            continue
+        rel = os.path.relpath(target, root).replace(os.sep, "/")
+        if not _within_write_roots(rel, write_roots) and rel not in out:
+            out.append(rel)
+    return sorted(out)
+
+
 def _worktree_target(worktree: str, path: str) -> str:
     """Resolve a Git-reported path lexically without allowing worktree escape."""
     norm = _normalize_repo_path(path)
@@ -538,6 +563,10 @@ async def _coding_agent(task):
         wt = i.get("worktreePath") or ""
         if not wt:
             return fail(task, "coding_agent", "worktreePath is required")
+        if not os.path.isdir(wt):
+            return fail(task, "coding_agent", f"worktreePath {wt} is not a directory on this machine")
+        # A planner or classifier may be the first step to touch a fresh project directory.
+        initialized_repo = await asyncio.to_thread(git.ensure_repo, wt)
         role = str(i.get("modelRole") or "code").strip().lower()
         try:
             model_tier, model_resolution = select_role_tier(i, role=role, worktree=wt)
@@ -599,6 +628,14 @@ async def _coding_agent(task):
         # ownership visible through worker restarts and long model turns.
         reporter = ProgressReporter(task, heartbeat_s=10.0).start()
         scope_result = None
+        # In-session team feedback + checkpoints (closure plan WP2, H11/H17): only when the caller names
+        # the board run and item (team_build implementers) or asks for checkpoints.
+        from common.feedback import FeedbackWatcher
+        watcher = FeedbackWatcher(
+            str(i.get("feedbackCorrelationId") or ""), str(i.get("feedbackItem") or ""),
+            since_ts=float(i.get("feedbackSince") or 0) or None,
+            every=int(i.get("feedbackEveryTurns") if i.get("feedbackEveryTurns") not in (None, "") else 1),
+            checkpoint_every=int(i.get("checkpointEveryTurns") or 0), worktree=wt)
         try:
             res = await run_coding_agent(
                 prompt,
@@ -634,6 +671,7 @@ async def _coding_agent(task):
                 backend=model_tier["agent"],
                 write_roots=write_roots,
                 context_paths=[entry["path"] for entry in agent_context_paths],
+                feedback=watcher if watcher.active else None,
             )
         finally:
             try:
@@ -694,6 +732,9 @@ async def _coding_agent(task):
             f"[coding_agent] changed={len(changed)} {changed} turns={res['num_turns']} "
             f"tokens={res['tokens']} cost=${res['cost_usd']:.4f}",
         ]
+        if initialized_repo:
+            logs.append(f"[coding_agent] {wt} was not a git repository: initialized it (empty base commit, "
+                        f"files untouched)")
         for entry in res.get("turn_log") or []:
             logs.append(f"[coding_agent] {entry}")
         for d in res.get("denials") or []:
@@ -701,6 +742,7 @@ async def _coding_agent(task):
 
         out = {
             "status": res["status"],
+            "initializedRepo": initialized_repo,
             # Session completion is only evidence that the agent stopped. It is
             # intentionally distinct from independent build/test verification.
             "agentCompleted": bool(res.get("ok")),
@@ -719,6 +761,11 @@ async def _coding_agent(task):
             "fileChanges": file_changes,
             "result": cap(res.get("result"), 2000),
             "structured": res.get("structured"),
+            # The last StructuredOutput payloads the agent submitted, whole — including the ones the
+            # validator rejected — so a consumer can salvage a mangled payload (run a062184f's
+            # retrospective) instead of recording the placeholder the agent sent to get past it.
+            "structuredAttempts": res.get("structured_attempts") or [],
+            "structuredSalvaged": bool(res.get("structured_salvaged")),
             "planValidation": plan_validation or {},
             "sessionId": res.get("session_id") or "",
             # `turns` is the per-turn array (turn number + commands run + tokens);
@@ -728,6 +775,13 @@ async def _coding_agent(task):
             "tokenUsed": res.get("tokens", 0),
             "costUsd": res.get("cost_usd", 0.0),
             "denials": res.get("denials") or [],
+            # Files inside the worktree the guard refused as outside this task's write roots: the
+            # Lead's signal to widen the item's scope (team_standup), kept apart from the log lines.
+            "deniedWrites": denied_write_paths(res.get("denied_writes") or [], wt, write_roots),
+            "feedbackInjections": res.get("feedbackInjections") or [],
+            "interruptedBy": res.get("interruptedBy"),
+            "checkpoints": res.get("checkpoints") or [],
+            "restoredCheckpoint": res.get("restoredCheckpoint"),
             "contextPaths": context_paths,
             "promptTemplate": {
                 "requestedSource": str(i.get("promptTemplateSource") or "auto"),

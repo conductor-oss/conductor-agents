@@ -1,0 +1,54 @@
+{
+  "name": "test_mode_select",
+  "description": "Choose how to test a merged change: targeted when its files map to exact tests, otherwise the repository's whole suite.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "test_mode_select_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string"
+        },
+        "candidateCommit": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "repoPath",
+        "candidateCommit"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "test_mode_select_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "testMode": {
+          "type": "string",
+          "enum": [
+            "targeted",
+            "full"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "testMode",
+        "reason"
+      ]
+    }
+  }
+}

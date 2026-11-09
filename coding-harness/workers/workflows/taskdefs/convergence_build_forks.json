@@ -1,0 +1,61 @@
+{
+  "name": "convergence_build_forks",
+  "description": "Convergence spike (roadmap H1/H4): one wave of ownership-GATED dispatch. From the pending items, dispatch only those whose shared files are all free on the blackboard (claiming each dispatched item's files); items blocked by a live owner stay in 'remaining' for the next wave, so two agents never hold the same shared file concurrently. Each dispatched fork reuses code_subtask, rooted at the moving shared branch head.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "convergence_build_forks_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "The shared run worktree; each fork's own worktree is created under it, rooted at the shared branch head."
+        },
+        "correlationId": {
+          "type": "string",
+          "description": "Run id under which contract/ownership facts are recorded on the shared blackboard."
+        },
+        "subtasks": {
+          "type": ["array", "string"],
+          "description": "The still-pending work items for this wave [{id, description, files}]; files deliberately overlap across items."
+        },
+        "contractPaths": {
+          "type": ["array", "string"],
+          "description": "Repository-relative files that form the frozen contract; forks are told to build against, never edit, these."
+        },
+        "codeModel": {"type": "string", "description": "Model id passed through to each fork's coding agent."},
+        "maxTurns": {"type": ["integer", "string"], "description": "Per-fork agent turn cap."},
+        "maxBudgetUsd": {"type": ["number", "string"], "description": "Per-fork USD cap."},
+        "allowAgentTestPlan": {"type": ["boolean", "string"], "description": "Forwarded to each fork's test_cycle."},
+        "allowAgentAuthoredTests": {"type": ["boolean", "string"], "description": "Forwarded to each fork's test_cycle."}
+      },
+      "required": ["repoPath"]
+    }
+  },
+  "outputSchema": {
+    "name": "convergence_build_forks_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "dynamicTasks": {"type": "array", "description": "FORK_JOIN_DYNAMIC descriptors, one code_subtask per item."},
+        "dynamicTasksInput": {"type": "object", "description": "Per-fork input map keyed by subtask id."},
+        "groupIds": {"type": "string", "description": "Comma-separated ids dispatched THIS wave, in fork order."},
+        "contractPaths": {"type": "array", "items": {"type": "string"}, "description": "The frozen contract paths echoed back for the integrator."},
+        "dispatched": {"type": "array", "description": "Items dispatched this wave as [{id, description, files, attempt}] — passed to the integrator so it can release ownership and re-queue failed ones with attempt+1."},
+        "remaining": {"type": "array", "description": "Pending items blocked by a live owner this wave; carried to the next wave."},
+        "forkCount": {"type": "integer", "description": "Number of forks dispatched this wave."},
+        "remainingCount": {"type": "integer", "description": "Number of items deferred to the next wave."}
+      },
+      "required": ["dynamicTasks", "dynamicTasksInput", "groupIds", "dispatched", "remaining", "forkCount"]
+    }
+  }
+}

@@ -75,8 +75,8 @@ def changed_since(baseline: tuple[float, int], root: Path | None = None) -> list
     return [name for _, name in sorted(drifted, reverse=True)]
 
 
-def _descendant_commands(pid: int) -> list[str]:
-    """Command lines of every descendant of ``pid`` (the poller's own tree).
+def _children_map() -> dict[int, list[tuple[int, str]]]:
+    """``parent pid -> [(child pid, command)]`` for every process on the host.
 
     The listing runs through the shared runtime helper like every other command
     the harness launches, so it inherits the same environment and process-group
@@ -85,7 +85,7 @@ def _descendant_commands(pid: int) -> list[str]:
     try:
         listing = run(["ps", "-eo", "pid=,ppid=,command="], check=False).stdout
     except Exception:  # noqa: BLE001 - a probe failure must never stop the fleet
-        return []
+        return {}
     children: dict[int, list[tuple[int, str]]] = {}
     for line in listing.splitlines():
         parts = line.split(None, 2)
@@ -101,6 +101,12 @@ def _descendant_commands(pid: int) -> list[str]:
         if _PROBE_MARKER in parts[2]:
             continue
         children.setdefault(parent, []).append((child, parts[2]))
+    return children
+
+
+def _descendant_commands(pid: int) -> list[str]:
+    """Command lines of every descendant of ``pid`` (the poller's own tree)."""
+    children = _children_map()
     found: list[str] = []
     queue = [pid]
     seen = {pid}
@@ -122,6 +128,20 @@ def busy(pid: int | None = None) -> bool:
     descendant set is a sound "nothing in flight" signal for the generation.
     """
     return bool(_descendant_commands(pid if pid is not None else os.getpid()))
+
+
+def generation_busy(leader: int) -> bool:
+    """True while any poller of the generation led by ``leader`` has child work.
+
+    The leader's direct children are the pollers themselves, one per task type,
+    and they exist for the generation's whole life. Counting them as work made
+    every production generation look permanently busy: the coding fleet logged
+    "deferring reload" every minute while idle (leader 60592, 2026-11-07) and an
+    earlier fleet served two-month-old code. Work is what runs *below* a poller:
+    an agent CLI session, a build, a test run.
+    """
+    children = _children_map()
+    return any(children.get(poller) for poller, _ in children.get(leader, []))
 
 
 def watch(*, interval: float | None = None, reload_on_change: bool | None = None,
@@ -150,7 +170,7 @@ def watch(*, interval: float | None = None, reload_on_change: bool | None = None
                 warned = True
             if not reload_enabled:
                 continue
-            if busy(leader):
+            if generation_busy(leader):
                 log.warning("deferring reload: child work still running in this generation")
                 continue
             log.warning("reloading worker generation to pick up changed source")

@@ -1,0 +1,1135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swarm Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#EEF1F4; --sheet:#FFFFFF; --sunk:#E3E8ED; --rule:#D3DAE1; --rule-strong:#B7C1CC;
+  --ink:#17202B; --ink-2:#4A5765; --ink-3:#7B8794;
+  --blue:#2B4C7E; --blue-soft:#DCE5F2;
+  --working:#C7851B; --working-soft:#F7EAD3;
+  --review:#6E56CF; --review-soft:#E8E3F8;
+  --done:#2F8F5B; --done-soft:#DDF0E5;
+  --blocked:#C2412D; --blocked-soft:#F6DDD8;
+  --queued:#9AA5B1; --queued-soft:#E6EAEE;
+  --reopened:#B55A8B; --reopened-soft:#F3DEEA;
+  --shadow:0 1px 2px rgba(23,32,43,.06),0 8px 24px rgba(23,32,43,.08);
+  --sans:"Schibsted Grotesk",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --paper:#121820; --sheet:#19212B; --sunk:#0E141B; --rule:#273240; --rule-strong:#3A4757;
+    --ink:#E4E9EF; --ink-2:#A9B4C0; --ink-3:#77838F;
+    --blue:#86A8DB; --blue-soft:#1F2D42;
+    --working:#E3A43A; --working-soft:#3A2D16;
+    --review:#9C89EC; --review-soft:#2A2445;
+    --done:#4EB57D; --done-soft:#17321F;
+    --blocked:#E06A55; --blocked-soft:#3D1F1A;
+    --queued:#6E7A86; --queued-soft:#222B35;
+    --reopened:#D27CAA; --reopened-soft:#3A2030;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 28px rgba(0,0,0,.35);
+  }
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:4px}
+a{color:var(--blue)}
+.mono{font-family:var(--mono);font-size:.86em;letter-spacing:-.01em}
+.dim{color:var(--ink-2)}.faint{color:var(--ink-3)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+/* ── shell ───────────────────────────────────────────── */
+.shell{display:grid;grid-template-columns:320px minmax(0,1fr);height:100vh}
+.rail{background:var(--sheet);border-right:1px solid var(--rule);display:flex;flex-direction:column;min-height:0}
+.main{overflow:auto;min-width:0}
+
+.brand{display:flex;align-items:center;gap:10px;padding:18px 18px 14px}
+.brand svg{flex:none}
+.brand b{font-size:17px;font-weight:700;letter-spacing:-.01em}
+.brand span{color:var(--ink-3);font-size:13px}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--rule-strong);background:var(--sheet);
+  border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:500;line-height:1.2;white-space:nowrap}
+.btn:hover{border-color:var(--ink-3)}
+.btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+@media (prefers-color-scheme: dark){.btn.primary{color:#0E141B}}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.danger{color:var(--blocked);border-color:color-mix(in srgb,var(--blocked) 45%,var(--rule))}
+.btn.danger:hover{background:var(--blocked-soft)}
+.btn.quiet{border-color:transparent;background:transparent;color:var(--ink-2);padding:6px 10px}
+.btn.quiet:hover{background:var(--sunk);color:var(--ink)}
+.btn.sm{padding:5px 10px;font-size:13px}
+.btn[disabled]{opacity:.5;cursor:default}
+
+.rail-actions{padding:0 18px 12px;display:flex;flex-direction:column;gap:10px}
+.rail-actions .btn.primary{width:100%;padding:10px 14px}
+.search{width:100%;border:1px solid var(--rule);background:var(--paper);border-radius:8px;padding:8px 10px}
+.seg{display:flex;background:var(--sunk);border-radius:8px;padding:3px;gap:2px}
+.seg button{flex:1;border:0;background:transparent;border-radius:6px;padding:5px 0;cursor:pointer;color:var(--ink-2);font-size:13px;font-weight:500}
+.seg button[aria-pressed="true"]{background:var(--sheet);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+
+.runlist{flex:1;overflow:auto;padding:4px 8px 12px;border-top:1px solid var(--rule)}
+.group-label{font-size:12px;color:var(--ink-3);padding:12px 10px 4px;font-weight:500}
+.runrow{display:grid;grid-template-columns:12px 1fr auto;gap:2px 10px;align-items:start;padding:9px 10px;border-radius:8px;
+  cursor:pointer;text-decoration:none;color:inherit}
+.runrow:hover{background:var(--paper)}
+.runrow[aria-current="true"]{background:var(--blue-soft)}
+.runrow .t{font-weight:500;line-height:1.3;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.runrow .m{grid-column:2/4;font-size:12.5px;color:var(--ink-3);display:flex;gap:8px;flex-wrap:wrap}
+.runrow .s{font-size:12.5px;color:var(--ink-2)}
+.runrow.child{margin-left:18px;padding-top:6px;padding-bottom:6px}
+.runrow.child .t{font-weight:400;font-size:14px}
+.dot{width:9px;height:9px;border-radius:50%;margin-top:6px;background:var(--queued)}
+.dot.running{background:var(--working);box-shadow:0 0 0 3px var(--working-soft)}
+.dot.delivered{background:var(--done)}.dot.failed{background:var(--blocked)}.dot.incomplete{background:var(--blocked)}
+.dot.stopped{background:var(--ink-3)}
+@media (prefers-reduced-motion:no-preference){.dot.running{animation:pulse 2s ease-in-out infinite}}
+@keyframes pulse{50%{box-shadow:0 0 0 6px transparent}}
+
+.me{border-top:1px solid var(--rule);padding:12px 18px;display:flex;align-items:center;gap:10px;font-size:13px}
+.me .who{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── page ────────────────────────────────────────────── */
+.page{max-width:1240px;margin:0 auto;padding:28px 36px 64px}
+.crumb{font-size:13px;color:var(--ink-3);margin-bottom:6px}
+.crumb a{color:var(--ink-2);text-decoration:none}.crumb a:hover{text-decoration:underline}
+.head{display:flex;gap:20px;align-items:flex-start}
+.head h1{font-size:26px;line-height:1.2;font-weight:600;letter-spacing:-.015em;margin:0;flex:1;max-width:30em;text-wrap:balance;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+details.brief{margin-top:12px;max-width:52em}
+details.brief summary{cursor:pointer;color:var(--ink-2);font-size:14px}
+details.brief div{white-space:pre-wrap;margin-top:8px;color:var(--ink-2);font-size:14px;line-height:1.6}
+.head .acts{display:flex;gap:8px;flex:none}
+.meta{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;margin-top:10px;color:var(--ink-2);font-size:13.5px}
+.badge{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px 2px 8px;font-size:13px;font-weight:500;background:var(--queued-soft);color:var(--ink-2)}
+.badge::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.badge.running{background:var(--working-soft);color:var(--working)}
+.badge.delivered{background:var(--done-soft);color:var(--done)}
+.badge.failed,.badge.incomplete{background:var(--blocked-soft);color:var(--blocked)}
+.copy{background:none;border:0;padding:0;cursor:pointer;color:var(--ink-3)}
+.copy:hover{color:var(--ink)}
+
+.readout{display:grid;grid-template-columns:1.4fr 1.4fr 1fr 1fr;margin-top:22px;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+.readout>div{padding:14px 18px 14px 0;min-width:0}
+.readout>div+div{padding-left:18px;border-left:1px solid var(--rule)}
+.readout .k{font-size:13px;color:var(--ink-3)}
+.readout .v{font-size:20px;font-weight:600;margin-top:2px}
+.readout .v small{font-size:14px;font-weight:400;color:var(--ink-3)}
+.readout .alert .v{color:var(--blocked)}
+.meter{height:6px;border-radius:3px;background:var(--sunk);overflow:hidden;margin-top:8px}
+.meter i{display:block;height:100%;background:var(--done);border-radius:3px;transition:width .4s}
+.meter.spend i{background:var(--blue)}.meter.warn i{background:var(--working)}.meter.over i{background:var(--blocked)}
+.phase{margin-top:14px;color:var(--ink-2)}
+
+/* ── rank strip: the program's shape ───────────────── */
+.strip-wrap{margin-top:26px}
+.strip-title{display:flex;align-items:baseline;gap:12px;margin-bottom:10px}
+.strip-title h2{font-size:15px;font-weight:600;margin:0}
+.strip{display:flex;align-items:stretch;gap:0;overflow-x:auto;padding:2px 2px 8px}
+.rank{display:flex;flex-direction:column;gap:10px;min-width:150px;flex:1 1 0}
+.rank-label{font-size:12px;color:var(--ink-3)}
+.link{flex:none;width:22px;display:flex;align-items:center;justify-content:center;color:var(--rule-strong);padding-top:20px}
+.team{background:var(--sheet);border:1px solid var(--rule);border-radius:10px;padding:12px 12px 10px;cursor:pointer;text-align:left;width:100%;display:block;color:inherit}
+.team:hover{border-color:var(--rule-strong);box-shadow:var(--shadow)}
+.team.pending{background:transparent;border-style:dashed;cursor:default}
+.team.pending:hover{box-shadow:none;border-color:var(--rule)}
+.team .row1{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.team .name{font-weight:600}
+.team .tag{font-size:12px;color:var(--ink-3)}
+.team .st{font-size:12.5px;margin-top:2px}
+.team .st.delivered{color:var(--done)}.team .st.incomplete{color:var(--blocked)}.team .st.running{color:var(--working)}.team .st.pending{color:var(--ink-3)}
+.cells{display:flex;flex-wrap:wrap;gap:3px;margin-top:9px}
+.cell{width:14px;height:14px;border-radius:3px;background:var(--queued-soft);border:1px solid var(--rule)}
+.cell.done{background:var(--done);border-color:var(--done)}
+.cell.review{background:var(--review);border-color:var(--review)}
+.cell.in_progress{background:var(--working);border-color:var(--working)}
+.cell.reopened{background:var(--reopened);border-color:var(--reopened)}
+.cell.blocked{background:var(--blocked);border-color:var(--blocked)}
+.cell.ready{background:var(--queued);border-color:var(--queued)}
+button.cell{padding:0;cursor:pointer}
+button.cell:hover{transform:scale(1.25)}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-size:12.5px;color:var(--ink-3)}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.legend .cell{width:10px;height:10px}
+
+/* ── tabs ────────────────────────────────────────────── */
+.tabs{display:flex;gap:4px;margin-top:30px;border-bottom:1px solid var(--rule)}
+.tabs button{border:0;background:none;padding:10px 12px;cursor:pointer;color:var(--ink-2);font-weight:500;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--ink)}
+.tabs .n{display:inline-block;min-width:20px;padding:0 6px;border-radius:999px;background:var(--sunk);font-size:12px;margin-left:6px;text-align:center}
+.tabs .n.hot{background:var(--blocked);color:#fff}
+.panel{padding-top:20px}
+
+.two{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:32px}
+.two>div{min-width:0}
+h3{font-size:14px;font-weight:600;margin:0 0 10px}
+.agent{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--rule)}
+.agent .spark{width:8px;height:8px;border-radius:50%;background:var(--working)}
+@media (prefers-reduced-motion:no-preference){.agent .spark{animation:blink 1.4s ease-in-out infinite}}
+@keyframes blink{50%{opacity:.25}}
+.agent .what{font-size:13px;color:var(--ink-2)}
+.agent .ago{font-size:12.5px;color:var(--ink-3)}
+.empty{color:var(--ink-3);padding:14px 0}
+.feed{list-style:none;margin:0;padding:0}
+.feed li{display:grid;grid-template-columns:64px 1fr;gap:12px;padding:8px 0;border-bottom:1px solid var(--rule);font-size:14px}
+.feed li>div{overflow-wrap:anywhere;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;cursor:pointer}
+.feed li>div.open{-webkit-line-clamp:unset}
+.feed time{color:var(--ink-3);font-size:12.5px;padding-top:1px}
+.feed .kind{display:inline-block;font-size:12px;color:var(--ink-3);margin-right:6px}
+
+.composer{background:var(--sheet);border:1px solid var(--rule);border-radius:12px;padding:14px}
+.composer textarea{width:100%;min-height:96px;resize:vertical;border:1px solid var(--rule);border-radius:8px;padding:10px;background:var(--paper)}
+.composer .hint{font-size:12.5px;color:var(--ink-3);margin:6px 0 10px}
+.composer .bar{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.thread{display:flex;flex-direction:column;gap:12px;margin-top:14px}
+.thread:empty{display:none}
+.q{align-self:flex-end;max-width:90%;background:var(--sunk);border-radius:10px 10px 2px 10px;padding:8px 12px;font-size:14px;white-space:pre-wrap}
+.a{align-self:flex-start;max-width:100%;background:var(--blue-soft);border-radius:10px 10px 10px 2px;padding:10px 12px;font-size:14px;line-height:1.55;overflow-wrap:anywhere}
+.a p{margin:0 0 8px}.a p:last-child{margin:0}.a ul{margin:4px 0 8px;padding-left:18px}.a code{font-family:var(--mono);font-size:.88em;background:var(--sheet);padding:0 4px;border-radius:4px}
+.a.pending{color:var(--ink-2)}.a.err{background:var(--blocked-soft)}
+@media (prefers-reduced-motion:no-preference){.a.pending::after{content:"";display:inline-block;width:6px;height:6px;margin-left:8px;border-radius:50%;background:var(--ink-3);animation:blink 1s infinite}}
+.failure{margin-top:20px;border:1px solid color-mix(in srgb,var(--blocked) 40%,var(--rule));background:var(--blocked-soft);border-radius:10px;padding:14px 16px}
+.failure h3{margin:0 0 6px;color:var(--blocked)}
+.failure pre{margin:8px 0 0;white-space:pre-wrap;font-family:var(--mono);font-size:12.5px;color:var(--ink);overflow-wrap:anywhere}
+.failure .d{color:var(--ink-2);font-size:14px}
+.result{margin-top:20px;border:1px solid var(--rule);border-left:3px solid var(--done);background:var(--sheet);border-radius:10px;padding:16px 18px}
+.result.merged{border-left-color:var(--blue)}.result.none{border-left-color:var(--queued)}
+.result h3{margin:0;font-size:16px;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.result h3 code{font-family:var(--mono);font-size:14px;font-weight:500;background:var(--sunk);border-radius:6px;padding:2px 8px;overflow-wrap:anywhere}
+.result .d{color:var(--ink-2);font-size:14px;margin-top:6px}
+.result .d .add{color:var(--done)}.result .d .del{color:var(--blocked)}
+.result .row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;align-items:center}
+.result .pr a{color:var(--blue);font-weight:500}
+.result details{margin-top:12px}.result summary{cursor:pointer;color:var(--ink-2);font-size:13.5px}
+.result pre{margin:8px 0 0;background:var(--sunk);border-radius:8px;padding:10px 12px;font-family:var(--mono);font-size:12.5px;white-space:pre-wrap;overflow-wrap:anywhere}
+.lineage{font-size:13.5px;color:var(--ink-3);margin-top:8px}.lineage a{color:var(--ink-2)}
+.launch-note{background:var(--sunk);border-radius:8px;padding:10px 12px;font-size:14px;color:var(--ink-2);margin-bottom:14px}
+.launch-note code{font-family:var(--mono);font-size:13px}
+.retro{margin-top:24px;padding:16px;border-left:3px solid var(--done);background:var(--sheet);border-radius:0 8px 8px 0}
+
+/* board */
+.kanban{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(220px,1fr);gap:14px;overflow-x:auto;padding-bottom:12px}
+.col h4{margin:0 0 8px;font-size:13px;font-weight:600;display:flex;gap:8px;align-items:center}
+.col h4 .c{color:var(--ink-3);font-weight:400}
+.col h4 i{width:8px;height:8px;border-radius:2px;display:inline-block}
+.card{background:var(--sheet);border:1px solid var(--rule);border-radius:8px;padding:10px 11px;margin-bottom:8px;cursor:pointer;display:block;width:100%;text-align:left;color:inherit}
+.card:hover{border-color:var(--rule-strong)}
+.card .id{font-weight:600;font-size:14px}
+.card .d{font-size:13px;color:var(--ink-2);margin-top:3px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
+.card .f{font-size:12px;color:var(--ink-3);margin-top:6px;display:flex;gap:8px}
+
+/* lists */
+.list{list-style:none;margin:0;padding:0;max-width:52em}
+.clamp{overflow:hidden;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;cursor:pointer;overflow-wrap:anywhere}
+.clamp.open{-webkit-line-clamp:unset}
+.list li{padding:14px 0;border-bottom:1px solid var(--rule)}
+.list .t{font-weight:600}
+.list .d{color:var(--ink-2);font-size:14px;margin-top:3px;overflow-wrap:anywhere}
+.esc{border-left:3px solid var(--blocked);padding-left:14px}
+.chip{display:inline-block;font-size:12px;padding:1px 8px;border-radius:999px;background:var(--sunk);color:var(--ink-2)}
+.chip.human{background:var(--blue-soft);color:var(--blue)}
+
+/* drawer */
+.scrim{position:fixed;inset:0;background:rgba(14,20,27,.32);opacity:0;pointer-events:none;transition:opacity .18s}
+.scrim.open{opacity:1;pointer-events:auto}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(520px,100vw);background:var(--sheet);border-left:1px solid var(--rule);
+  transform:translateX(100%);transition:transform .2s ease,visibility 0s .2s;display:flex;flex-direction:column;visibility:hidden}
+.drawer.open{transform:none;box-shadow:var(--shadow);visibility:visible;transition:transform .2s ease}
+@media (prefers-reduced-motion:reduce){.drawer,.scrim{transition:none}}
+.drawer header{padding:20px 22px 14px;border-bottom:1px solid var(--rule);display:flex;gap:12px;align-items:flex-start}
+.drawer header h2{margin:0;font-size:19px;flex:1}
+.drawer .body{padding:18px 22px;overflow:auto;flex:1;overflow-wrap:anywhere}
+.drawer section+section{margin-top:22px}
+.drawer .files{font-family:var(--mono);font-size:12.5px;color:var(--ink-2);line-height:1.7}
+.timeline{list-style:none;margin:0;padding:0;border-left:2px solid var(--rule);margin-left:4px}
+.timeline li{position:relative;padding:0 0 14px 16px;font-size:14px}
+.timeline li::before{content:"";position:absolute;left:-6px;top:6px;width:10px;height:10px;border-radius:50%;background:var(--sheet);border:2px solid var(--rule-strong)}
+.timeline .when{font-size:12px;color:var(--ink-3)}
+.steer textarea{width:100%;min-height:80px;border:1px solid var(--rule);border-radius:8px;padding:10px;background:var(--paper);resize:vertical}
+.steer .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+
+/* dialogs */
+dialog{border:0;border-radius:14px;padding:0;background:var(--sheet);color:var(--ink);box-shadow:var(--shadow);width:min(640px,calc(100vw - 32px));max-height:calc(100vh - 48px)}
+dialog::backdrop{background:rgba(14,20,27,.4)}
+dialog form{display:flex;flex-direction:column;max-height:calc(100vh - 48px)}
+dialog header{padding:22px 24px 6px}
+dialog header h2{margin:0;font-size:20px}
+dialog header p{margin:6px 0 0;color:var(--ink-2)}
+dialog .body{padding:14px 24px;overflow:auto}
+dialog .body:focus{outline:none}
+dialog footer{padding:14px 24px 20px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid var(--rule)}
+.choices{display:grid;gap:10px}
+.choice{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;padding:14px;border:1px solid var(--rule);border-radius:10px;cursor:pointer}
+.choice:has(input:checked){border-color:var(--blue);background:var(--blue-soft)}
+.choice input{margin-top:4px}
+.choice b{font-weight:600}.choice span{grid-column:2;color:var(--ink-2);font-size:14px}
+.field{margin-top:16px}
+.field label{display:block;font-weight:500;margin-bottom:5px}
+.field .help{font-size:12.5px;color:var(--ink-3);margin-top:4px}
+.field input[type=text],.field input[type=number],.field select,.field textarea,.dialog-input{width:100%;border:1px solid var(--rule-strong);border-radius:8px;padding:9px 10px;background:var(--paper)}
+.field textarea{min-height:140px;resize:vertical}
+.field.check{display:flex;gap:10px;align-items:flex-start}
+.field.check label{margin:0}
+.field.check input{margin-top:4px}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
+details.adv{margin-top:20px;border-top:1px solid var(--rule);padding-top:12px}
+details.adv summary{cursor:pointer;color:var(--ink-2);font-weight:500}
+/* settings */
+.settings h1{margin:0 0 4px;font-size:26px}
+.settings .lede{color:var(--ink-2);max-width:46em;margin:0 0 18px}
+.settings .seg{display:inline-flex;margin-bottom:22px}.settings .seg a{padding:6px 14px;border-radius:6px;text-decoration:none;color:var(--ink-2);font-weight:500;font-size:14px}
+.settings .seg a[aria-current="true"]{background:var(--sheet);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.prof{background:var(--sheet);border:1px solid var(--rule);border-radius:12px;margin-bottom:16px}
+.prof>header{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--rule)}
+.prof>header h3{margin:0;font-size:16px;font-family:var(--mono);font-weight:500}
+.roles{display:grid;grid-template-columns:minmax(120px,170px) minmax(96px,130px) 1fr auto;gap:0;align-items:center}
+.roles{align-items:stretch}.roles>div{padding:8px 18px;border-bottom:1px solid var(--rule);display:flex;flex-direction:column;justify-content:center;align-items:flex-start}
+.roles>div:has(select),.roles>div:has(input){align-items:stretch}
+.me a{text-decoration:none}
+.roles>.h{font-size:12.5px;color:var(--ink-3);padding-top:10px;padding-bottom:6px}
+.roles .rn b{font-weight:600}.roles .rn small{display:block;color:var(--ink-3);font-size:12.5px}
+.roles select,.roles input,.prices input,.tpl-ed input:not([type=checkbox]),.tpl-ed textarea,.settings select{width:100%;border:1px solid var(--rule-strong);border-radius:7px;padding:6px 8px;background:var(--paper)}
+.roles input{font-family:var(--mono);font-size:13.5px}
+.roles .x{padding-left:0}
+.prof footer{display:flex;gap:8px;flex-wrap:wrap;padding:12px 18px;align-items:center}
+.prof footer select{width:auto}
+.prices{display:grid;grid-template-columns:1fr 110px 110px auto;gap:6px 10px;align-items:center;max-width:620px}
+.prices .h{font-size:12.5px;color:var(--ink-3)}.prices code{font-family:var(--mono);font-size:13.5px}
+.savebar{position:sticky;bottom:0;margin:22px -4px 0;padding:12px 4px;background:color-mix(in srgb,var(--paper) 92%,transparent);backdrop-filter:blur(6px);display:flex;gap:10px;align-items:center;border-top:1px solid var(--rule)}
+.savebar .state{margin-right:auto;font-size:14px;color:var(--ink-2)}.savebar .state.dirty{color:var(--working)}
+.problems{border:1px solid color-mix(in srgb,var(--blocked) 40%,var(--rule));background:var(--blocked-soft);border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:14px}
+.json-ed textarea{width:100%;min-height:360px;font-family:var(--mono);font-size:12.5px;border:1px solid var(--rule-strong);border-radius:8px;padding:10px;background:var(--paper)}
+.tpl{display:grid;grid-template-columns:260px 1fr;gap:22px;align-items:start}
+.tpl-list{background:var(--sheet);border:1px solid var(--rule);border-radius:12px;overflow:hidden}
+.tpl-list a{display:block;padding:11px 14px;border-bottom:1px solid var(--rule);text-decoration:none;color:inherit}
+.tpl-list a[aria-current="true"]{background:var(--blue-soft)}
+.tpl-list a small{display:block;color:var(--ink-3);font-size:12.5px;margin-top:2px}
+.tpl-list .new{padding:10px 14px}
+.tpl-group{padding:10px 14px 6px;font-size:12.5px;color:var(--ink-3);border-top:1px solid var(--rule)}
+.tpl-list{max-height:calc(100vh - 220px);overflow:auto}
+.tpl-ed textarea[readonly]{color:var(--ink-2)}
+.tpl-ed{background:var(--sheet);border:1px solid var(--rule);border-radius:12px;padding:6px 20px 20px}
+.tpl-ed textarea.body{min-height:380px;font-family:var(--mono);font-size:13px;line-height:1.55}
+.checks{display:flex;flex-wrap:wrap;gap:6px}
+.checks label{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--rule);border-radius:999px;padding:4px 11px;font-size:13.5px;cursor:pointer;font-weight:400;margin:0}
+.checks label:has(input:checked){border-color:var(--blue);background:var(--blue-soft);color:var(--blue)}
+.checks input{margin:0}
+@media (max-width:860px){.tpl{grid-template-columns:1fr}.roles{grid-template-columns:minmax(0,1fr) minmax(0,1.6fr)}.roles>div{min-width:0}.roles input,.roles select{min-width:0}.prof{min-width:0}.roles>.h{display:none}.roles .rn{grid-column:1/-1;border-bottom:0;padding-bottom:0}.roles .x{grid-column:1/-1}.prices{grid-template-columns:minmax(0,1fr) 72px 72px auto}.prices code{overflow-wrap:anywhere}}
+.formerr{color:var(--blocked);font-size:14px;margin-right:auto;align-self:center}
+
+/* home */
+.hero{padding:56px 0 28px;max-width:44em}
+.hero h1{font-size:34px;font-weight:600;letter-spacing:-.02em;margin:0;line-height:1.15}
+.hero p{color:var(--ink-2);font-size:17px;margin:12px 0 22px}
+.active-runs{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;margin-top:10px}
+.active-runs a{display:block;padding:16px;background:var(--sheet);border:1px solid var(--rule);border-radius:10px;text-decoration:none;color:inherit}
+.active-runs a:hover{border-color:var(--rule-strong)}
+
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:10px;
+  box-shadow:var(--shadow);font-size:14px;opacity:0;pointer-events:none;transition:opacity .18s;max-width:calc(100vw - 32px)}
+.toast.show{opacity:1}
+.banner{background:var(--working-soft);color:var(--ink);border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:14px}
+
+.menu-toggle{display:none}
+@media (max-width:900px){
+  .shell{grid-template-columns:minmax(0,1fr)}
+  .tabs{overflow-x:auto}
+  .tabs button{flex:none}
+  .head .acts{width:100%}
+  .rail{position:fixed;inset:0 auto 0 0;width:min(320px,88vw);z-index:20;transform:translateX(-100%);transition:transform .2s,visibility 0s .2s;visibility:hidden}
+  .rail.open{visibility:visible;transition:transform .2s}
+  .rail.open{transform:none;box-shadow:var(--shadow)}
+  .menu-toggle{display:inline-flex;margin-bottom:12px}
+  .page{padding:16px 16px 48px}
+  .head{flex-direction:column}
+  .readout{grid-template-columns:1fr 1fr}
+  .readout>div:nth-child(3){border-left:0;padding-left:0}
+  .readout>div{border-top:1px solid var(--rule)}
+  .two{grid-template-columns:1fr}
+  .pair{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav class="rail" id="rail" aria-label="Runs">
+    <div class="brand">
+      <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
+        <rect x="1" y="1" width="7" height="7" rx="2" fill="var(--done)"/><rect x="10" y="1" width="7" height="7" rx="2" fill="var(--done)"/>
+        <rect x="19" y="1" width="6" height="7" rx="2" fill="var(--review)"/><rect x="1" y="10" width="7" height="7" rx="2" fill="var(--done)"/>
+        <rect x="10" y="10" width="7" height="7" rx="2" fill="var(--working)"/><rect x="19" y="10" width="6" height="7" rx="2" fill="var(--queued)"/>
+        <rect x="1" y="19" width="7" height="6" rx="2" fill="var(--working)"/><rect x="10" y="19" width="7" height="6" rx="2" fill="var(--queued)"/>
+        <rect x="19" y="19" width="6" height="6" rx="2" fill="var(--queued)"/>
+      </svg>
+      <div><b>Swarm</b> <span>console</span></div>
+    </div>
+    <div class="rail-actions">
+      <button class="btn primary" id="newRun" type="button">
+        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        New run</button>
+      <input class="search" id="search" type="search" placeholder="Find a run" aria-label="Find a run">
+      <div class="seg" role="group" aria-label="Show">
+        <button type="button" data-filter="active" aria-pressed="true">Active</button>
+        <button type="button" data-filter="all" aria-pressed="false">All runs</button>
+      </div>
+    </div>
+    <div class="runlist" id="runlist" aria-live="polite"></div>
+    <div class="me"><a class="btn quiet sm" href="#/settings/models" id="settingsLink">Settings</a><span class="who" id="who">Not signed in</span><button class="btn quiet sm" id="signIn" type="button">Sign in</button></div>
+  </nav>
+
+  <main class="main" id="main"><div class="page" id="page"></div></main>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-label="Work item" aria-hidden="true"></aside>
+
+<dialog id="launchDlg"><form method="dialog" id="launchForm" novalidate></form></dialog>
+<dialog id="tokenDlg">
+  <form method="dialog" id="tokenForm">
+    <header><h2>Sign in to steer</h2>
+      <p>Reading is open to everyone. Starting, messaging and stopping runs are signed with your actor token, so every change on the board shows who made it.</p></header>
+    <div class="body">
+      <div class="field"><label for="tokenInput">Actor token</label>
+        <input class="dialog-input mono" id="tokenInput" type="password" autocomplete="off">
+        <div class="help">No token yet? Run <span class="mono">make console-actor EMAIL=you@example.com</span> in the coding harness; it prints one. The token stays in this browser.</div></div>
+    </div>
+    <footer><span class="formerr" id="tokenErr"></span><button class="btn quiet" value="cancel" type="submit" formnovalidate>Cancel</button><button class="btn primary" value="ok" type="submit" id="tokenOk">Sign in</button></footer>
+  </form>
+</dialog>
+<dialog id="stopDlg">
+  <form method="dialog" id="stopForm">
+    <header><h2>Stop this run?</h2>
+      <p>Every agent working on it stops now, and its retrospective records what was learned. Work already merged stays on the run's branch.</p></header>
+    <div class="body"><div class="field"><label for="stopReason">Why (optional)</label>
+      <textarea class="dialog-input" id="stopReason" rows="3" placeholder="Shown in the run's history and its retrospective"></textarea></div></div>
+    <footer><button class="btn quiet" value="cancel" type="submit">Keep running</button><button class="btn danger" value="stop" type="submit">Stop run</button></footer>
+  </form>
+</dialog>
+<dialog id="mergeDlg">
+  <form method="dialog" id="mergeForm">
+    <header><h2 id="mergeTitle">Merge this work</h2><p id="mergeText"></p></header>
+    <footer><span class="formerr" id="mergeErr"></span><button class="btn quiet" type="submit" value="cancel">Cancel</button><button class="btn primary" type="submit" value="go" id="mergeGo">Merge</button></footer>
+  </form>
+</dialog>
+<dialog id="tplDelDlg">
+  <form method="dialog" id="tplDelForm">
+    <header><h2 id="tplDelTitle">Delete this template?</h2><p>The file is removed from your template library. Runs already started keep the prompt they took.</p></header>
+    <footer><button class="btn quiet" type="submit" value="cancel">Cancel</button><button class="btn danger" type="submit" value="go">Delete</button></footer>
+  </form>
+</dialog>
+<dialog id="overDlg">
+  <form method="dialog" id="overForm">
+    <header><h2>Start over?</h2>
+      <p>This starts a new run with the same request and settings, from the beginning, with a fresh budget. This run stays as it is, so you can compare them.</p></header>
+    <footer><button class="btn quiet" value="cancel" type="submit">Cancel</button><button class="btn primary" value="go" type="submit">Start over</button></footer>
+  </form>
+</dialog>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+const STATES = [
+  ["in_progress","Working"],["review","In review"],["reopened","Reopened"],["ready","Ready"],
+  ["backlog","Queued"],["blocked","Blocked"],["done","Done"]];
+const STATE_LABEL = Object.fromEntries(STATES);
+const CELL_ORDER = ["done","review","in_progress","reopened","ready","backlog","blocked"];
+const KIND_LABEL = {cc_program:"Program", team_build:"Team", sdlc_intake:"Request"};
+
+let TOKEN = ""; try { TOKEN = localStorage.getItem("swarmToken") || ""; } catch (e) {}
+let RUNS = [], FILTER = "active", QUERY = "", CURRENT = null, VIEW = null, TAB = "activity", TIMER = null;
+let LAUNCHERS = null, DRAWER_ITEM = null, PENDING_AFTER_SIGNIN = null;
+const THREADS = {};  // run id -> [{q, a, pending, error}]: the conversation survives every refresh
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+const toMs = v => v==null||v==="" ? 0 : typeof v==="number" ? v : (Date.parse(v) || Number(v) || 0);
+function ago(ms){ ms=toMs(ms); if(!ms) return ""; const s=Math.max(0,(Date.now()-ms)/1000);
+  if(s<60) return "just now"; if(s<3600) return Math.round(s/60)+" min ago"; if(s<86400) return Math.round(s/3600)+" h ago";
+  return new Date(ms).toLocaleDateString(undefined,{month:"short",day:"numeric"}); }
+function dur(a,b){ a=toMs(a); b=toMs(b); if(!a) return ""; const s=Math.max(0,((b||Date.now())-a)/1000); const h=Math.floor(s/3600), m=Math.round((s%3600)/60);
+  return h? `${h} h ${m} min` : `${m} min`; }
+function money(v){ const n=Number(v); return v==null||v===""||!isFinite(n) ? "–" : "$"+n.toFixed(2); }
+function clock(ts){ return new Date(ts*1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}); }
+
+function runState(r){
+  const st=(r.status||"").toUpperCase(), v=(r.verdict||"").toUpperCase();
+  if(st==="RUNNING"||st==="PAUSED") return ["running", st==="PAUSED"?"Paused":"Running"];
+  if(st==="COMPLETED"){
+    if(v==="DELIVERED_UNTESTED") return ["incomplete","Not tested"];
+    if(v==="TESTS_FAILED") return ["incomplete","Tests failed"];
+    return v.includes("DELIVERED")&&!v.includes("INCOMPLETE") ? ["delivered","Delivered"] : ["incomplete", v? "Incomplete":"Finished"]; }
+  if(st==="FAILED"||st==="TIMED_OUT") return ["failed","Failed"];
+  if(st==="TERMINATED") return ["stopped","Stopped"];
+  return ["", "Unknown"];
+}
+
+function toast(msg){ const t=$("#toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove("show"),3200); }
+
+async function api(path, opts={}){
+  const headers = {"Content-Type":"application/json", ...(TOKEN? {"Authorization":"Bearer "+TOKEN}:{})};
+  const r = await fetch(path, {...opts, headers});
+  let body = {}; try { body = await r.json(); } catch(e) {}
+  return {status:r.status, ok:r.ok, body};
+}
+function needToken(then){ PENDING_AFTER_SIGNIN = then; openToken("Sign in to do that: paste your actor token."); }
+async function write(path, payload){
+  if(!TOKEN){ return new Promise(res => needToken(async()=>res(await write(path,payload)))); }
+  const r = await api(path, {method:"POST", body:JSON.stringify(payload)});
+  if(r.status===401){ TOKEN=""; return new Promise(res => needToken(async()=>res(await write(path,payload)))); }
+  return r;
+}
+
+/* ── sign in ─────────────────────────────── */
+function openToken(msg){ $("#tokenErr").textContent = msg||""; $("#tokenInput").value = TOKEN; $("#tokenDlg").showModal(); $("#tokenInput").focus(); }
+$("#signIn").onclick = () => TOKEN ? signOut() : openToken();
+function signOut(){ TOKEN=""; try{localStorage.removeItem("swarmToken")}catch(e){} renderWho(null); toast("Signed out"); }
+$("#tokenForm").addEventListener("submit", async e => {
+  if(e.submitter && e.submitter.value!=="ok"){ PENDING_AFTER_SIGNIN=null; return; }
+  e.preventDefault();
+  const t = $("#tokenInput").value.trim(); if(!t){ $("#tokenErr").textContent="Paste a token first."; return; }
+  const r = await fetch("/api/whoami",{headers:{"Authorization":"Bearer "+t}}); const who = await r.json().catch(()=>({}));
+  if(!r.ok){ $("#tokenErr").textContent="That token is not in the actors file."; return; }
+  TOKEN=t; try{localStorage.setItem("swarmToken",t)}catch(x){} $("#tokenDlg").close(); renderWho(who); toast("Signed in as "+(who.name||who.email));
+  const then = PENDING_AFTER_SIGNIN; PENDING_AFTER_SIGNIN=null; if(then) then();
+});
+function renderWho(who){ $("#who").innerHTML = who ? `Signed in as <b>${esc(who.name||who.email)}</b>` : "Not signed in";
+  $("#signIn").textContent = who ? "Sign out" : "Sign in"; }
+async function loadWho(){ if(!TOKEN) return renderWho(null); const r=await api("/api/whoami"); renderWho(r.ok? r.body : null); if(!r.ok) TOKEN=""; }
+
+/* ── run list ────────────────────────────── */
+async function loadRuns(){
+  const r = await api("/api/swarm-runs"); RUNS = r.body.items || [];
+  renderRuns(r.body.error);
+  if(!CURRENT && !SETTINGS_TAB) renderHome(r.body.error);
+}
+function matches(x){ if(!QUERY) return true; const q=QUERY.toLowerCase();
+  return [x.title,x.repoName,x.id,x.subsystem].some(v=>String(v||"").toLowerCase().includes(q)); }
+function renderRuns(error){
+  const byId = Object.fromEntries(RUNS.map(r=>[r.id,r]));
+  const tops = RUNS.filter(r => !r.parent || !byId[r.parent]);
+  const kids = {}; RUNS.filter(r=>r.parent && byId[r.parent]).forEach(r=>(kids[r.parent] ||= []).push(r));
+  let shown = tops.filter(r => FILTER==="all" || runState(r)[0]==="running" || r.id===CURRENT || (kids[r.id]||[]).some(k=>k.id===CURRENT));
+  shown = shown.filter(r => matches(r) || (kids[r.id]||[]).some(matches));
+  const row = (r, child) => { const [cls,label] = runState(r);
+    const spend = r.spendUsd!=null && isFinite(Number(r.spendUsd)) ? money(r.spendUsd) : "";
+    return `<a class="runrow${child?" child":""}" href="#/run/${encodeURIComponent(r.id)}" aria-current="${r.id===CURRENT}">
+      <span class="dot ${cls}" title="${label}"></span>
+      <span class="t">${esc(child ? (r.subsystem||r.title) : r.title)}</span><span class="s">${spend}</span>
+      ${child ? "" : `<span class="m"><span>${r.continues ? "Follow-up" : KIND_LABEL[r.workflow]||esc(r.workflow)}</span>${r.repoName?`<span>${esc(r.repoName)}</span>`:""}<span>${label==="Running"?"started "+ago(r.startTime):ago(r.endTime||r.startTime)}</span></span>`}
+    </a>`; };
+  let html = error ? `<div class="banner">${esc(error)}</div>` : "";
+  if(!shown.length) html += `<div class="empty" style="padding:16px 10px">${FILTER==="active" ? "No run is active. Start one with New run, or show all runs." : "No runs match."}</div>`;
+  for(const r of shown){
+    html += row(r,false);
+    const ks = (kids[r.id]||[]); const open = r.id===CURRENT || ks.some(k=>k.id===CURRENT);
+    if(open) html += ks.slice().sort((a,b)=>toMs(a.startTime)-toMs(b.startTime)).map(k=>row(k,true)).join("");
+  }
+  $("#runlist").innerHTML = html;
+}
+$("#search").addEventListener("input", e => { QUERY = e.target.value.trim(); renderRuns(); });
+document.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
+  FILTER = b.dataset.filter; document.querySelectorAll(".seg button").forEach(x=>x.setAttribute("aria-pressed", x===b)); renderRuns(); });
+
+/* ── home ────────────────────────────────── */
+function renderHome(error){
+  const active = RUNS.filter(r=>runState(r)[0]==="running" && !r.parent);
+  $("#page").innerHTML = `
+    <button class="btn menu-toggle" type="button" onclick="toggleRail()">Runs</button>
+    <div class="hero">
+      <h1>${active.length ? (active.length===1 ? "One run is building." : active.length+" runs are building.") : "No run is building right now."}</h1>
+      <p>Describe what to build and a team of agents plans it, writes the tests first, builds it in parallel, reviews each other's work and reports back here. You watch, message them and stop them; nothing waits for your approval.</p>
+      <button class="btn primary" type="button" onclick="openLaunch()">Start a run</button>
+    </div>
+    ${error ? `<div class="banner">${esc(error)}</div>` : ""}
+    ${active.length ? `<h3>Building now</h3><div class="active-runs">${active.map(r=>`
+      <a href="#/run/${encodeURIComponent(r.id)}"><span class="badge running">Running</span>
+        <div style="font-weight:600;margin-top:10px">${esc(r.title)}</div>
+        <div class="dim" style="font-size:13.5px;margin-top:4px">${KIND_LABEL[r.workflow]||""} in ${esc(r.repoName||"?")}, started ${ago(r.startTime)}, ${money(r.spendUsd)} spent${r.ceilingUsd?" of "+money(r.ceilingUsd):""}</div></a>`).join("")}</div>` : ""}`;
+}
+
+/* ── run page ────────────────────────────── */
+async function loadRun(){
+  if(!CURRENT) return;
+  const id = CURRENT;
+  const r = await api("/api/run?run="+encodeURIComponent(id));
+  if(id!==CURRENT) return;
+  VIEW = r.body; renderRun();
+  if(DRAWER_ITEM) renderDrawerState();
+}
+function renderRun(){
+  const v = VIEW; if(!v) return;
+  const run = v.run, snap = v.snapshot||{}, board = v.board||{}, roll = board.rollup||{};
+  const [cls,label] = runState(run);
+  const running = cls==="running";
+  const parent = v.parent ? RUNS.find(r=>r.id===v.parent) : null;
+  const spend = snap.spend?.usd ?? run.spendUsd ?? 0, ceil = snap.spend?.ceilingUsd ?? run.ceilingUsd;
+  const pctDone = roll.total ? Math.round(100*roll.done/roll.total) : 0;
+  const pctSpend = ceil ? Math.min(100, 100*spend/ceil) : 0;
+  const agents = snap.activeAgents||[], escs = board.exceptions||[], cons = board.constraints||[];
+  const brief = v.input?.description || v.input?.request || "";
+  const page = $("#page");
+  const keepComposer = page.querySelector("#msg")?.value || "";
+  const focusMsg = document.activeElement?.id === "msg";
+  page.innerHTML = `
+    <button class="btn menu-toggle" type="button" onclick="toggleRail()">Runs</button>
+    ${v.parent ? `<div class="crumb"><a href="#/run/${encodeURIComponent(v.parent)}">${esc(parent ? parent.title : "Parent program")}</a> / ${esc(run.subsystem||"team")}</div>` : ""}
+    ${v.conductor ? `<div class="banner">${esc(v.conductor)}</div>` : ""}
+    <div class="head">
+      <h1>${esc(run.title)}</h1>
+      <div class="acts">
+        <button class="btn" type="button" onclick="focusComposer()">${running ? "Message the team" : "Ask about this run"}</button>
+        ${running ? `<button class="btn danger" type="button" onclick="askStop()">Stop run</button>` : ""}
+        ${!snap.failure && v.actions?.editAndRun ? `<button class="btn" type="button" onclick="editAndRun()">Edit and run again</button>` : ""}
+        ${!snap.failure && v.actions?.startOver ? `<button class="btn" type="button" onclick="askStartOver()">Start over</button>` : ""}
+      </div>
+    </div>
+    <div class="meta">
+      <span class="badge ${cls}">${label}</span>
+      <span>${KIND_LABEL[run.workflow]||esc(run.workflow||"")}</span>
+      ${run.repo ? `<span class="mono" title="${esc(run.repo)}">${esc(run.repoName)}</span>` : ""}
+      ${running && v.result?.branch ? `<span title="The branch this run commits to">on <span class="mono">${esc(v.result.branch)}</span></span>` : ""}
+      ${run.startTime ? `<span>${running ? "running for "+dur(run.startTime) : "took "+dur(run.startTime, run.endTime)}</span>` : ""}
+      <span><span class="mono">${esc(String(run.id).slice(0,8))}</span> <button class="copy" type="button" title="Copy run id" onclick="copyId('${esc(run.id)}')"><svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.5 9.5V3a1 1 0 0 1 1-1h6" fill="none" stroke="currentColor" stroke-width="1.4"/></svg><span class="sr">Copy run id</span></button></span>
+    </div>
+    <div class="readout">
+      <div><div class="k">Progress</div><div class="v">${roll.done||0} <small>of ${roll.total||0} ${v.ranks?.length ? "subsystems" : "items"} done</small></div>
+        <div class="meter"><i style="width:${pctDone}%"></i></div></div>
+      <div><div class="k">Spend</div><div class="v">${money(spend)} <small>${ceil ? "of "+money(ceil)+" ceiling" : "no ceiling set"}</small></div>
+        <div class="meter spend ${pctSpend>=100?"over":pctSpend>=80?"warn":""}"><i style="width:${pctSpend}%"></i></div></div>
+      <div><div class="k">Agents working</div><div class="v">${agents.length}</div></div>
+      <div class="${escs.length?"alert":""}"><div class="k">Escalations</div><div class="v">${escs.length}</div></div>
+    </div>
+    ${running && snap.phase ? `<div class="phase">${esc(capital(snap.phase))}</div>` : ""}
+    ${brief && brief.length > (run.title||"").length + 4 ? `<details class="brief"><summary>Show the full brief</summary><div>${esc(brief)}</div></details>` : ""}
+    ${failurePanel(snap.failure, v.actions)}
+    ${running ? "" : resultPanel(v.result)}
+    ${renderStrip(v)}
+    <div class="tabs" role="tablist">
+      ${tab("activity","Activity")}${tab("board","Board", (board.items||[]).length)}
+      ${tab("escalations","Escalations", escs.length, escs.length>0)}${tab("constraints","Constraints", cons.length)}${tab("learnings","Lessons", (board.lessons||[]).length)}
+    </div>
+    <div class="panel" role="tabpanel">${renderTab(v)}</div>`;
+  if(page.querySelector("#msg")){ page.querySelector("#msg").value = keepComposer; if(focusMsg) page.querySelector("#msg").focus(); }
+  document.title = run.title + " · Swarm Console";
+}
+const capital = s => s ? s[0].toUpperCase()+s.slice(1) : s;
+const plural = (n, w) => `${Number(n||0).toLocaleString()} ${w}${n===1?"":"s"}`;
+function resultPanel(r){
+  if(!r) return "";
+  if(r.error) return `<div class="result none"><h3>Where the work is</h3><div class="d">${esc(r.error)}</div></div>`;
+  const a = r.actions||{}, pr = r.pullRequest||{};
+  const lineage = (r.lineage||[]).length ? `<div class="lineage">Continues ${r.lineage.map(x=>`<a href="#/run/${encodeURIComponent(x.id)}">${esc(x.title)}</a>`).join(", which continues ")}</div>` : "";
+  const branch = `<code>${esc(r.branch)}</code><button class="copy" type="button" title="Copy branch name" onclick="copyText('${esc(r.branch)}','Branch name copied')"><svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.5 9.5V3a1 1 0 0 1 1-1h6" fill="none" stroke="currentColor" stroke-width="1.4"/></svg><span class="sr">Copy branch name</span></button>`;
+  if(!r.exists) return `<div class="result none"><h3>Branch ${branch} is gone</h3><div class="d">It was deleted or renamed in ${esc(r.repo)}.</div>${lineage}</div>`;
+  const delta = r.inPlace ? `Committed straight onto your branch in ${esc(r.repo)}.`
+    : r.commits ? `${plural(r.commits,"commit")} over <span class="mono">${esc(r.base)}</span>: ${plural(r.files,"file")} changed, <span class="add">+${Number(r.insertions).toLocaleString()}</span> <span class="del">−${Number(r.deletions).toLocaleString()}</span>.`
+    : `No commits over <span class="mono">${esc(r.base)}</span>; the run changed nothing.`;
+  const prLine = pr.url ? `<div class="d pr">Pull request <a href="${esc(pr.url)}" target="_blank" rel="noopener">#${esc(pr.number)}</a> is open against <span class="mono">${esc(r.prBase)}</span>.</div>`
+    : pr.status==="RUNNING" ? `<div class="d pr">Pushing the branch and opening the pull request…</div>`
+    : pr.status && pr.status!=="COMPLETED" ? `<div class="d pr">Opening the pull request ${esc(pr.status.toLowerCase())}: ${esc(pr.reason||"see the ship run")}.</div>`
+    : pr.state && pr.state!=="published" ? `<div class="d pr">The pull request was not opened: ${esc(pr.reason||pr.state)}.</div>` : "";
+  // Commands that work whether or not a checkout still holds the branch (a branch is checked out in one place only).
+  const cmds = r.inPlace ? "" : [`cd ${r.repo}`, `git log --oneline ${r.base}..${r.branch}`, `git diff ${r.base}...${r.branch}`,
+    `git merge ${r.branch}`, ...(r.remote ? [`git push ${r.remote.name} ${r.branch}`] : [])].join("\n");
+  return `<div class="result${r.merged?" merged":r.commits||r.inPlace?"":" none"}">
+    <h3>${r.merged ? "Merged into <span class=\"mono\">"+esc(r.base)+"</span> from" : "The work is on"} ${branch}</h3>
+    <div class="d">${r.merged ? `Everything on the branch is in <span class="mono">${esc(r.base)}</span>.` : delta}</div>
+    ${prLine}${lineage}
+    ${a.continue || a.pullRequest || a.merge ? `<div class="row">
+      ${a.continue ? `<button class="btn primary sm" type="button" onclick="continueRun()">Continue this work</button>` : ""}
+      ${a.pullRequest ? `<button class="btn sm" type="button" onclick="openPullRequest()">Open pull request into ${esc(r.prBase)}</button>` : ""}
+      ${a.merge ? `<button class="btn sm" type="button" onclick="askMerge()">Merge into ${esc(r.base)}</button>` : ""}
+      ${!r.remote && !r.merged && !r.inPlace ? `<span class="faint" style="font-size:13px">No remote is configured, so the branch stays local.</span>` : ""}</div>` : ""}
+    ${cmds ? `<details><summary>Work with the branch yourself</summary><pre>${esc(cmds)}</pre></details>` : ""}
+  </div>`;
+}
+function failurePanel(f, actions){
+  if(!f) return "";
+  const t = (f.failedTasks||[])[0];
+  const cause = (t ? t.reason : f.reason) || "Conductor recorded no reason.";
+  const where = t ? `${t.task}${t.attempts>1?`, tried ${t.attempts} times`:""}` : "";
+  return `<div class="failure"><h3>${f.status==="TERMINATED"?"This run was stopped":"This run failed"}</h3>
+    <div class="d">${where ? `In ${esc(where)}. ` : ""}Nothing after that step ran.${actions?.retry ? " Retry resumes from that step and keeps everything that finished; start over begins a new run with the same request." : " Ask below for more."}</div>
+    <pre>${esc(cause.trim())}</pre>
+    ${actions?.retry || actions?.startOver ? `<div class="row" style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+      ${actions.retry ? `<button class="btn primary sm" type="button" onclick="retryRun()">Retry from ${esc(t ? t.task.replace(/__\d+$/,"") : "the failed step")}</button>` : ""}
+      ${actions.startOver ? `<button class="btn sm" type="button" onclick="askStartOver()">Start over</button>` : ""}
+      ${actions.editAndRun ? `<button class="btn sm" type="button" onclick="editAndRun()">Edit and run again</button>` : ""}</div>` : ""}</div>`;
+}
+function tab(id, label, n, hot){ return `<button role="tab" type="button" aria-selected="${TAB===id}" onclick="setTab('${id}')">${label}${n!=null?`<span class="n${hot?" hot":""}">${n}</span>`:""}</button>`; }
+function setTab(id){ TAB=id; history.replaceState(null,"",`#/run/${encodeURIComponent(CURRENT)}/${id}`); renderRun(); }
+
+function cellsFor(counts, planned){
+  const out=[]; let n=0;
+  for(const s of CELL_ORDER){ for(let i=0;i<(counts?.[s]||0);i++){ out.push(`<span class="cell ${s}" title="${STATE_LABEL[s]}"></span>`); n++; } }
+  for(let i=n;i<(planned||0);i++) out.push(`<span class="cell" title="Not started"></span>`);
+  return out.join("");
+}
+function renderStrip(v){
+  const children = v.board?.children||[];
+  if(v.ranks?.length){
+    const byName = Object.fromEntries(children.map(c=>[c.subsystem,c]));
+    const ranks = v.ranks.map((rank,i)=>`
+      ${i? `<div class="link" aria-hidden="true"><svg width="18" height="12" viewBox="0 0 18 12"><path d="M1 6h14M11 1l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></div>`:""}
+      <div class="rank"><div class="rank-label">${i===0?"Builds first":"Then"}</div>
+        ${rank.map(s=>{ const c=byName[s.id];
+          if(!c) return `<div class="team pending"><div class="row1"><span class="name">${esc(s.id)}</span><span class="tag">${s.deliverable==="docs"?"documents":"code"}</span></div>
+            <div class="st pending">Waits for the rank before it</div><div class="cells">${cellsFor({}, s.planned)}</div></div>`;
+          const r=c.rollup||{}; const verdict=(c.verdict||"").toUpperCase();
+          const st = verdict==="DELIVERED" ? ["delivered","Delivered"] : verdict ? ["incomplete", capital(verdict.toLowerCase())] : ["running", `${r.done||0} of ${r.total||0} done`];
+          return `<button class="team" type="button" onclick="go('${esc(c.run)}')"><div class="row1"><span class="name">${esc(s.id)}</span><span class="tag">${s.deliverable==="docs"?"documents":"code"}</span></div>
+            <div class="st ${st[0]}">${st[1]}${c.openExceptions?` · ${c.openExceptions} escalation${c.openExceptions>1?"s":""}`:""}</div>
+            <div class="cells">${cellsFor(r.counts, Math.max(r.total||0, s.planned))}</div></button>`; }).join("")}
+      </div>`).join("");
+    return `<div class="strip-wrap"><div class="strip-title"><h2>Teams</h2>${legend()}</div><div class="strip">${ranks}</div></div>`;
+  }
+  const items = v.board?.items||[];
+  if(!items.length) return "";
+  const sorted = items.slice().sort((a,b)=>CELL_ORDER.indexOf(a.state)-CELL_ORDER.indexOf(b.state));
+  return `<div class="strip-wrap"><div class="strip-title"><h2>Work items</h2>${legend()}</div>
+    <div class="cells" style="gap:5px">${sorted.map(it=>`<button class="cell ${esc(it.state)}" style="width:22px;height:22px" type="button" title="${esc(it.id)}: ${STATE_LABEL[it.state]||it.state}" onclick="openItem('${esc(it.id)}')"><span class="sr">${esc(it.id)}</span></button>`).join("")}</div></div>`;
+}
+function legend(){ return `<div class="legend">${["done","review","in_progress","reopened","blocked"].map(s=>`<span><i class="cell ${s}"></i>${STATE_LABEL[s]}</span>`).join("")}<span><i class="cell"></i>Not started</span></div>`; }
+
+function renderTab(v){
+  const snap=v.snapshot||{}, board=v.board||{};
+  if(TAB==="activity"){
+    const agents = snap.activeAgents||[], events=(snap.recentEvents||[]).slice().reverse();
+    const runs = Object.fromEntries((board.children||[]).map(c=>[c.run,c.subsystem]));
+    return `<div class="two"><div>
+      <h3>Working now</h3>
+      ${agents.length ? agents.map(a=>`<div class="agent"><span class="spark"></span>
+         <div><b>${esc(a.item)}</b>${runs[a.run]?` <span class="faint">in ${esc(runs[a.run])}</span>`:""}<div class="what">${esc(a.tool||"thinking")}${a.toolCalls?`, ${a.toolCalls} tool calls so far`:""}</div></div>
+         <span class="ago">${a.secondsAgo<5?"now":a.secondsAgo+"s ago"}</span></div>`).join("")
+       : `<div class="empty">${runState(v.run)[0]==="running" ? "No agent is mid-task this moment. The team is between steps: planning, integrating or reviewing." : "Nobody is working; this run has finished."}</div>`}
+      <h3 style="margin-top:28px">What happened</h3>
+      ${events.length ? `<ul class="feed">${events.map(e=>`<li><time>${clock(e.ts)}</time><div onclick="this.classList.toggle('open')"><span class="kind">${esc(e.kind)}</span>${esc(e.summary)}${runs[e.run]?` <span class="faint">(${esc(runs[e.run])})</span>`:""}</div></li>`).join("")}</ul>` : `<div class="empty">Nothing yet.</div>`}
+      ${snap.retrospective && (snap.retrospective.summary || snap.retrospective.recorded) ? `<div class="retro"><h3>Retrospective</h3><div>${esc(snap.retrospective.summary)}</div>
+        <div class="faint" style="margin-top:6px;font-size:13px">${snap.retrospective.recorded} learning${snap.retrospective.recorded===1?"":"s"} recorded for future runs</div></div>` : ""}
+    </div><div>
+      <div class="composer">
+        ${runState(v.run)[0]==="running" ? `<h3>Tell or ask the team</h3>
+        <textarea id="msg" placeholder="For example: use the standard library only. Or: why is the store team blocked?"></textarea>
+        <div class="hint">Instructions go to the right agent or the whole team at their next step. Questions are answered from the live state.</div>` : `<h3>Ask about this run</h3>
+        <textarea id="msg" placeholder="For example: which items needed review rework, and why?"></textarea>
+        <div class="hint">Answered from the run's board and history.</div>`}
+        <div class="bar"><span class="faint" style="font-size:12.5px">Enter to send, Shift+Enter for a new line</span><button class="btn primary" type="button" id="sendMsg" onclick="sendMessage()">Send</button></div>
+        <div class="thread" id="thread" aria-live="polite">${threadHtml()}</div>
+      </div>
+    </div></div>`;
+  }
+  if(TAB==="board"){
+    const items = board.items||[];
+    if(!items.length) return `<div class="empty">The board fills in once the plan is cut into work items.</div>`;
+    const by = {}; items.forEach(it=>(by[it.state] ||= []).push(it));
+    const live = runState(v.run)[0]==="running";
+    return `<div class="kanban">${STATES.filter(([s])=>by[s]?.length || (live && ["in_progress","review","done"].includes(s))).map(([s,label])=>`
+      <div class="col"><h4><i style="background:var(--${{in_progress:"working",review:"review",reopened:"reopened",ready:"queued",backlog:"queued",blocked:"blocked",done:"done"}[s]})"></i>${label}<span class="c">${(by[s]||[]).length}</span></h4>
+        ${(by[s]||[]).map(it=>`<button class="card" type="button" onclick="openItem('${esc(it.id)}')"><div class="id">${esc(it.id)}</div>
+          <div class="d">${esc(it.title||it.description||"")}</div>
+          <div class="f">${it.deliverable==="docs"?"<span>documents</span>":""}${it.attempt?`<span>attempt ${it.attempt+1}</span>`:""}${(it.files||[]).length?`<span>${it.files.length} file${it.files.length>1?"s":""}</span>`:""}</div></button>`).join("")}
+      </div>`).join("")}</div>`;
+  }
+  if(TAB==="escalations"){
+    const escs = board.exceptions||[];
+    return escs.length ? `<p class="dim" style="margin-top:0">For your awareness. The team decides these itself; message it if you want a different call.</p><ul class="list">${escs.map(e=>`
+      <li class="esc"><div class="t">${esc(capital(String(e.kind||"").replace(/_/g," ")))} on ${esc(e.item)}</div><div class="d clamp" onclick="this.classList.toggle('open')">${esc(e.detail)}</div></li>`).join("")}</ul>`
+      : `<div class="empty">No open escalations. The team is handling everything.</div>`;
+  }
+  if(TAB==="constraints"){
+    const cons = board.constraints||[], live = runState(v.run)[0]==="running";
+    return cons.length ? `<ul class="list">${cons.map(c=>`<li><div style="display:flex;gap:10px;align-items:flex-start">
+      <div style="flex:1;min-width:0"><div class="clamp" onclick="this.classList.toggle('open')">${esc(c.text)}</div><div class="d"><span class="chip ${c.authority==="human"?"human":""}">${esc(c.by||c.authority)}</span> applies to ${esc(c.target==="team"?"the whole team":c.target)}</div></div>
+      ${live ? `<button class="btn sm" type="button" onclick="liftConstraint('${esc(c.id)}')">Lift</button>` : ""}</div></li>`).join("")}</ul>`
+      : `<div class="empty">No constraints in force. Anything you tell the team becomes one here.</div>`;
+  }
+  const lessons = (board.lessons||[]).slice().reverse();
+  return lessons.length ? `<ul class="list">${lessons.slice(0,60).map(l=>`<li><div class="clamp" onclick="this.classList.toggle('open')">${esc(l.text)}</div><div class="d"><span class="chip">${esc(l.kind||l.confidence||"")}</span> ${esc(l.provenance||l.by||"")}</div></li>`).join("")}</ul>`
+    : `<div class="empty">No lessons shared yet. Agents post what they learn about the code as they work.</div>`;
+}
+
+/* ── actions ─────────────────────────────── */
+function go(id){ location.hash = "#/run/"+encodeURIComponent(id); }
+function copyId(id){ copyText(id, "Run id copied"); }
+function copyText(t, msg){ navigator.clipboard?.writeText(t).then(()=>toast(msg)); }
+let CONTINUE_FROM = null;
+function continueRun(){ if(!VIEW?.result) return; CONTINUE_FROM = {run: CURRENT, title: VIEW.run.title, branch: VIEW.result.branch};
+  openLaunch(LAUNCHERS_HAS(VIEW.run.workflow) ? VIEW.run.workflow : "sdlc_intake", {repoPath: VIEW.result.repo}); }
+const LAUNCHERS_HAS = w => ["cc_program","sdlc_intake"].includes(w);
+async function openPullRequest(){
+  const r = await write("/api/ship", {run:CURRENT, how:"pr"});
+  if(r.ok){ toast("Pushing the branch and opening the pull request."); loadRun(); }
+  else toast(r.body.error || "The pull request was not started.");
+}
+function askMerge(){ const r=VIEW?.result; if(!r) return;
+  $("#mergeTitle").textContent = `Merge into ${r.base}?`;
+  $("#mergeText").textContent = `${r.branch} is merged into ${r.base} in ${r.repo}: a fast-forward when ${r.base} has not moved, otherwise a merge commit. If ${r.base} is checked out with uncommitted changes, or the merge conflicts, nothing is changed and you are told why.`;
+  $("#mergeErr").textContent=""; $("#mergeDlg").showModal(); }
+$("#mergeForm").addEventListener("submit", async e => {
+  if(e.submitter?.value!=="go") return;
+  e.preventDefault(); $("#mergeGo").disabled = true;
+  const r = await write("/api/ship", {run:CURRENT, how:"merge"});
+  $("#mergeGo").disabled = false;
+  if(!r.ok){ $("#mergeErr").textContent = r.body.error || "Not merged."; return; }
+  $("#mergeDlg").close(); toast(r.body.already ? "Already merged." : `Merged into ${r.body.into}${r.body.fastForward?" (fast-forward)":""}.`); loadRun();
+});
+function focusComposer(){ if(TAB!=="activity"){ TAB="activity"; renderRun(); } const m=$("#msg"); m?.scrollIntoView({behavior:"smooth",block:"center"}); m?.focus(); }
+function md(t){  // the answerer writes light markdown: paragraphs, bullets, **bold**, `code`
+  const inline = s => esc(s).replace(/\*\*(.+?)\*\*/g,"<b>$1</b>").replace(/`([^`]+)`/g,"<code>$1</code>");
+  return String(t||"").trim().split(/\n{2,}/).map(block => {
+    const lines = block.split("\n");
+    if(lines.every(l=>/^\s*[-*•]\s+/.test(l))) return "<ul>"+lines.map(l=>"<li>"+inline(l.replace(/^\s*[-*•]\s+/,""))+"</li>").join("")+"</ul>";
+    return "<p>"+lines.map(inline).join("<br>")+"</p>"; }).join("");
+}
+function threadHtml(){
+  return (THREADS[CURRENT]||[]).slice(-8).map(m => `<div class="q">${esc(m.q)}</div>` +
+    (m.pending ? `<div class="a pending">${esc(m.pending)}</div>` : `<div class="a${m.error?" err":""}">${m.error ? esc(m.error) : md(m.a)}</div>`)).join("");
+}
+function renderThread(){ const t=$("#thread"); if(t){ t.innerHTML = threadHtml(); t.lastElementChild?.scrollIntoView({block:"nearest"}); } }
+async function sendMessage(){
+  const box=$("#msg"), text=box?.value.trim(); if(!text) return;
+  const run = CURRENT, entry = {q:text, pending: /\?\s*$/.test(text) ? "Looking at the run…" : "Sending to the team…"};
+  (THREADS[run] ||= []).push(entry); box.value=""; renderThread();
+  // A finished run has no team to instruct: everything typed is a question about it.
+  const finished = VIEW && runState(VIEW.run)[0] !== "running";
+  if(finished) entry.pending = "Looking at the run…", renderThread();
+  const r = finished ? await write("/api/ask", {run, question:text})
+                     : await write("/api/steer", {run, action:"message", text});
+  delete entry.pending;
+  if(r.ok){ entry.a = r.body.answer || r.body.reply || "Sent to the team.";
+    const sent = (r.body.actions||[]).filter(a=>a.ok && !a.duplicate);
+    if(!r.body.answer && sent.length) entry.a += "\n\n" + sent.map(a=>`- ${a.action==="nudge"?"Note for":a.action==="stop"?"Stopped":a.action==="reopen"?"Reopened":a.action} ${a.item==="team"?"the whole team":"**"+a.item+"**"}`).join("\n");
+    loadRun(); }
+  else entry.error = r.body.error || "Not sent.";
+  if(run===CURRENT) renderThread();
+}
+document.addEventListener("keydown", e => {
+  if(e.target.id==="msg" && e.key==="Enter" && !e.shiftKey){ e.preventDefault(); sendMessage(); }
+  if(e.key==="Escape" && DRAWER_ITEM) closeDrawer();
+});
+function askStop(){ $("#stopReason").value=""; $("#stopDlg").showModal(); }
+$("#stopForm").addEventListener("submit", async e => {
+  if(e.submitter?.value!=="stop") return;
+  const r = await write("/api/steer", {run:CURRENT, action:"terminate", text:$("#stopReason").value.trim()||"stopped from the console"});
+  if(r.ok){ toast("Run stopped. Its retrospective is recording what was learned."); loadRun(); loadRuns(); }
+  else toast(r.body.error || "The run was not stopped.");
+});
+async function retryRun(){
+  const r = await write("/api/retry", {run:CURRENT});
+  if(r.ok){ toast("Retrying from the step that failed. Finished work is kept."); loadRun(); loadRuns(); }
+  else toast(r.body.error || "The run was not retried.");
+}
+function askStartOver(){ $("#overDlg").showModal(); }
+$("#overForm").addEventListener("submit", async e => {
+  if(e.submitter?.value!=="go") return;
+  const r = await write("/api/start-over", {run:CURRENT});
+  if(r.ok){ toast("New run started with the same request."); FILTER="active"; await loadRuns(); go(r.body.run); }
+  else toast(r.body.error || "The new run did not start.");
+});
+function editAndRun(){ if(!VIEW) return; openLaunch(VIEW.run.workflow, VIEW.workflowInput || {}); }
+async function liftConstraint(id){
+  const r = await write("/api/steer", {run:CURRENT, action:"lift", directive:id, text:"lifted from the console"});
+  toast(r.ok ? "Constraint lifted" : (r.body.error||"Not lifted")); loadRun();
+}
+
+/* ── item drawer ─────────────────────────── */
+async function openItem(id){
+  DRAWER_ITEM = id; $("#drawer").classList.add("open"); $("#scrim").classList.add("open"); $("#drawer").setAttribute("aria-hidden","false");
+  renderDrawerState(); const t = await api(`/api/trace?run=${encodeURIComponent(CURRENT)}&item=${encodeURIComponent(id)}`);
+  if(DRAWER_ITEM!==id) return; DRAWER_ITEM_TRACE = t.body.timeline||[]; renderDrawerState();
+}
+let DRAWER_ITEM_TRACE = null;
+function renderDrawerState(){
+  const it = (VIEW?.board?.items||[]).find(x=>x.id===DRAWER_ITEM) || {id:DRAWER_ITEM};
+  const keep = $("#drawer").querySelector("#steerText")?.value || "";
+  const st = it.state;
+  $("#drawer").innerHTML = `<header><div style="flex:1"><h2>${esc(it.id)}</h2>
+      <div style="margin-top:6px"><span class="badge ${st==="done"?"delivered":st==="blocked"?"failed":st==="in_progress"?"running":""}">${STATE_LABEL[st]||esc(st||"")}</span>
+      ${it.attempt?` <span class="faint" style="font-size:13px">attempt ${it.attempt+1}</span>`:""}</div></div>
+      <button class="btn quiet" type="button" onclick="closeDrawer()" aria-label="Close">Close</button></header>
+    <div class="body">
+      ${it.description||it.title ? `<section><div>${esc(it.description||it.title)}</div></section>`:""}
+      ${it.reason ? `<section><h3>Latest</h3><div class="dim">${esc(it.reason)}</div></section>`:""}
+      ${(it.acceptanceCriteria||[]).length ? `<section><h3>Done when</h3><ul style="margin:0;padding-left:18px">${it.acceptanceCriteria.map(c=>`<li>${esc(c)}</li>`).join("")}</ul></section>`:""}
+      ${(it.files||[]).length ? `<section><h3>Files</h3><div class="files">${it.files.map(esc).join("<br>")}</div></section>`:""}
+      ${(it.acceptanceTests||[]).length ? `<section><h3>Acceptance tests</h3><div class="files">${it.acceptanceTests.map(esc).join("<br>")}</div></section>`:""}
+      <section class="steer"><h3>Steer this item</h3>
+        <textarea id="steerText" placeholder="What should the agent on ${esc(it.id)} do differently?"></textarea>
+        <div class="row">
+          <button class="btn primary sm" type="button" onclick="steerItem('nudge')">Send note</button>
+          <button class="btn sm" type="button" onclick="steerItem('stop')" title="Stops the agent at its next step and re-runs the item with your note">Stop and redo</button>
+          ${st==="done"||st==="blocked" ? `<button class="btn sm" type="button" onclick="steerItem('reopen')">Reopen</button>`:""}
+        </div></section>
+      <section><h3>History</h3>${DRAWER_ITEM_TRACE===null ? `<div class="empty">Loading…</div>` : DRAWER_ITEM_TRACE.length ?
+        `<ol class="timeline">${DRAWER_ITEM_TRACE.map(e=>`<li><div class="when">${clock(e.ts)} · ${esc(e.kind)}</div><div>${esc(e.summary)}</div></li>`).join("")}</ol>` : `<div class="empty">No history yet.</div>`}</section>
+    </div>`;
+  $("#steerText").value = keep;
+}
+function closeDrawer(){ DRAWER_ITEM=null; DRAWER_ITEM_TRACE=null; $("#drawer").classList.remove("open"); $("#scrim").classList.remove("open"); $("#drawer").setAttribute("aria-hidden","true"); }
+$("#scrim").onclick = closeDrawer;
+async function steerItem(action){
+  const text = $("#steerText").value.trim();
+  if(action==="nudge" && !text){ $("#steerText").focus(); return toast("Write the note first."); }
+  const r = await write("/api/steer", {run:CURRENT, action, item:DRAWER_ITEM, text});
+  if(r.ok){ $("#steerText").value=""; toast({nudge:"Note sent. The agent reads it at its next step.", stop:"Stopping the agent. The item re-runs with your note.", reopen:"Item reopened"}[action]); loadRun(); }
+  else toast(r.body.error || "Not sent.");
+}
+
+/* ── launch ──────────────────────────────── */
+let LAUNCH_PICK = "cc_program", PREFILL = null;
+async function openLaunch(workflow, values){
+  if(!LAUNCHERS){ const r = await api("/api/launchers"); LAUNCHERS = r.body.launchers||[]; }
+  PREFILL = (typeof workflow === "string" && values) ? values : null;
+  if(!PREFILL) CONTINUE_FROM = null;
+  if(PREFILL) LAUNCH_PICK = workflow;
+  renderLaunch(); $("#launchDlg").showModal(); const first=$("#f_repoPath"); if(first){ first.focus(); if(first.value) $("#f_description, #f_request")?.focus(); }
+}
+$("#newRun").onclick = () => openLaunch();
+function fieldHtml(f){
+  let saved=null; try{ if(f.name==="repoPath") saved=localStorage.getItem("swarmRepo"); }catch(e){}
+  const pre = PREFILL && f.name in PREFILL && PREFILL[f.name]!=null && PREFILL[f.name]!=="" ? PREFILL[f.name] : undefined;
+  const val = pre ?? saved ?? f.default; const id="f_"+f.name;
+  const help = f.help ? `<div class="help">${esc(capital(f.help))}</div>` : "";
+  if(f.kind==="bool") return `<div class="field check"><input type="checkbox" id="${id}" name="${f.name}" ${val?"checked":""}><div><label for="${id}">${esc(f.label)}</label>${help}</div></div>`;
+  const ph = CONTINUE_FROM && (f.name==="description"||f.name==="request") ? "What to add on top of what was delivered. For example: write user docs for the wire protocol, add EXPLAIN support, and cover both with tests." : {description:"What should exist when the run is done: the language and libraries, the scope, and how to tell it works. For example: a Redis-compatible cache server in Go, standard library only, RESP2 protocol, with integration tests over TCP.", request:"Describe the change: what to build or fix, and how to tell it is done."}[f.name]||"";
+  if(f.kind==="multiline") return `<div class="field"><label for="${id}">${esc(f.label)}</label><textarea id="${id}" name="${f.name}" placeholder="${esc(ph)}" ${f.required?"required":""}>${esc(Array.isArray(val)?val.join("\n"):val??"")}</textarea>${help}</div>`;
+  if(f.kind==="enum"||f.kind==="bool_choice") return `<div class="field"><label for="${id}">${esc(f.label)}</label><select id="${id}" name="${f.name}">${(f.choices.length?f.choices:["true","false"]).map(c=>`<option ${String(c)===String(val)?"selected":""}>${esc(c)}</option>`).join("")}</select>${help}</div>`;
+  const num = f.kind==="int"||f.kind==="float";
+  if(f.name==="repoPath" && CONTINUE_FROM) return `<div class="field"><label for="${id}">${esc(f.label)}</label><input type="text" id="${id}" name="${f.name}" value="${esc(val??"")}" class="mono" readonly><div class="help">The follow-up runs in a checkout of the branch inside this repository.</div></div>`;
+  return `<div class="field"><label for="${id}">${esc(f.label)}</label><input type="${num?"number":"text"}" ${f.kind==="float"?'step="any"':""} id="${id}" name="${f.name}" value="${esc(val??"")}" ${f.name==="repoPath"?'class="mono" spellcheck="false" placeholder="/path/to/your/repo"':""} ${f.required?"required":""}>${help}</div>`;
+}
+function renderLaunch(){
+  const spec = LAUNCHERS.find(l=>l.workflow===LAUNCH_PICK) || LAUNCHERS[0];
+  const main = spec.fields.filter(f=>!f.advanced), adv = spec.fields.filter(f=>f.advanced);
+  const order = ["repoPath","description","request"];
+  main.sort((a,b)=>(order.indexOf(a.name)+1||99)-(order.indexOf(b.name)+1||99));
+  const text = main.filter(f=>["repoPath","description","request"].includes(f.name));
+  const nums = main.filter(f=>!text.includes(f) && f.kind!=="bool"), bools = main.filter(f=>f.kind==="bool");
+  $("#launchForm").innerHTML = `
+    <header><h2>${CONTINUE_FROM ? "Continue this work" : PREFILL ? "Run again" : "Start a run"}</h2><p>${CONTINUE_FROM ? "A follow-up run starts from everything the last one delivered and builds on it: more features, documentation, fixes." : PREFILL ? "The request and settings of the run you were looking at. Change what you need and start a new run." : "Point the swarm at a repository and say what to build."}</p></header>
+    <div class="body">
+      ${CONTINUE_FROM ? `<div class="launch-note">Builds on <b>${esc(CONTINUE_FROM.title)}</b>, starting from branch <code>${esc(CONTINUE_FROM.branch)}</code>. The new work lands on a branch of its own.</div>` : ""}
+      <div class="choices" role="radiogroup" aria-label="Kind of run">${LAUNCHERS.map(l=>`
+        <label class="choice"><input type="radio" name="__kind" value="${l.workflow}" ${l.workflow===spec.workflow?"checked":""}>
+          <b>${l.workflow==="cc_program"?"Build a program":"Handle a request"}</b>
+          <span>${l.workflow==="cc_program" ? "Something large: plan subsystems, design first, then one team per subsystem in dependency order." : "Anything from a bug fix to a feature: the swarm sizes it and picks one agent, parallel agents or a team."}</span></label>`).join("")}</div>
+      ${text.map(fieldHtml).join("")}
+      <div class="pair">${nums.map(fieldHtml).join("")}</div>
+      ${bools.map(fieldHtml).join("")}
+      ${adv.length ? `<details class="adv"><summary>Advanced settings</summary><div class="pair">${adv.filter(f=>f.kind!=="bool").map(fieldHtml).join("")}</div>${adv.filter(f=>f.kind==="bool").map(fieldHtml).join("")}</details>`:""}
+    </div>
+    <footer><span class="formerr" id="launchErr"></span><button class="btn quiet" type="submit" value="cancel" formnovalidate>Cancel</button><button class="btn primary" type="submit" value="go" id="launchGo">Start run</button></footer>`;
+  $("#launchForm").querySelectorAll('input[name="__kind"]').forEach(r=>r.onchange=()=>{ LAUNCH_PICK=r.value; if(!CONTINUE_FROM) PREFILL=null; renderLaunch(); });
+}
+$("#launchForm").addEventListener("submit", async e => {
+  if(e.submitter?.value!=="go") return;
+  e.preventDefault();
+  const spec = LAUNCHERS.find(l=>l.workflow===LAUNCH_PICK) || LAUNCHERS[0];
+  const values = {};
+  for(const f of spec.fields){ const el = $("#launchForm").elements[f.name]; if(!el) continue;
+    if(f.kind==="bool") values[f.name]=el.checked;
+    else if(f.kind==="int") values[f.name]= el.value===""? f.default : parseInt(el.value,10);
+    else if(f.kind==="float") values[f.name]= el.value===""? f.default : parseFloat(el.value);
+    else if(f.kind==="bool_choice") values[f.name]= el.value==="true";
+    else values[f.name]=el.value; }
+  const missing = spec.fields.filter(f=>f.required && !String(values[f.name]??"").trim()).map(f=>f.label);
+  if(missing.length){ $("#launchErr").textContent = "Fill in "+missing.join(", ")+"."; return; }
+  $("#launchGo").disabled = true; $("#launchErr").textContent="";
+  const r = await write("/api/launch", {workflow:spec.workflow, values, ...(CONTINUE_FROM ? {continueFrom: CONTINUE_FROM.run} : {})});
+  $("#launchGo") && ($("#launchGo").disabled=false);
+  if(!r.ok){ $("#launchErr").textContent = r.body.error || "The run did not start."; return; }
+  if(!CONTINUE_FROM) try{ localStorage.setItem("swarmRepo", values.repoPath||""); }catch(x){}
+  $("#launchDlg").close(); toast(CONTINUE_FROM ? "Follow-up run started on the last run's work." : "Run started. Planning comes first; the board fills in after it."); FILTER="active"; CONTINUE_FROM=null;
+  await loadRuns(); go(r.body.run);
+});
+
+/* ── settings: models and prompt templates ─ */
+let SETTINGS_TAB = null, SETTINGS = null, DRAFT = null, DIRTY = false, SAVE_ERR = "", TPL_SEL = null, TPL_DRAFT = null;
+const ROLE_HELP = {design:"Writes design documents", plan:"Plans and breaks work into items", code:"Writes the code",
+  review:"Reviews each item", judge:"Decides between candidates", scribe:"Summaries and reports"};
+const clone = o => JSON.parse(JSON.stringify(o));
+async function openSettings(){
+  if(!SETTINGS || !DIRTY){ const r = await api("/api/settings"); SETTINGS = r.body; if(!DIRTY) DRAFT = SETTINGS.models.data ? clone(SETTINGS.models.data) : null; }
+  renderSettings();
+}
+function renderSettings(){
+  if(!SETTINGS_TAB) return;
+  document.title = "Settings · Swarm Console";
+  const t = SETTINGS_TAB;
+  $("#page").innerHTML = `<div class="settings">
+    <button class="btn menu-toggle" type="button" onclick="toggleRail()">Runs</button>
+    <h1>Settings</h1>
+    <p class="lede">${t==="models" ? "Which agent and model each role of the swarm uses. Every new run, from this console or the TUI, takes a copy of this policy when it starts; runs already going keep the copy they took."
+      : "Your own prompts for the review and coding workflows the TUI launches. A template replaces the built-in prompt of the fields it names, for the workflows and repositories it is scoped to."}</p>
+    <div class="seg" role="tablist"><a href="#/settings/models" aria-current="${t==="models"}">Models</a><a href="#/settings/templates" aria-current="${t==="templates"}">Prompt templates</a></div>
+    <div id="settingsBody">${t==="models" ? modelsHtml() : templatesHtml()}</div></div>`;
+}
+/* models */
+function modelsHtml(){
+  const m = SETTINGS.models, d = DRAFT;
+  if(!d) return `<div class="problems">${esc((m.problems||[]).join(" "))}</div>${jsonEditor(m.text||"")}${saveBar()}`;
+  const profiles = Object.keys(d.profiles||{});
+  const opts = (list, val) => list.map(x=>`<option ${x===val?"selected":""}>${esc(x)}</option>`).join("");
+  const models = `<datalist id="knownModels">${(SETTINGS.knownModels||[]).map(x=>`<option value="${esc(x)}">`).join("")}</datalist>`;
+  const prof = name => { const roles = d.profiles[name].roles || {};
+    const rows = [];
+    for(const role of Object.keys(roles).sort()){ const cfg = roles[role];
+      const tiers = Array.isArray(cfg.tiers) ? cfg.tiers : null;
+      (tiers || [cfg]).forEach((tier, i) => {
+        const at = `'${esc(name)}','${esc(role)}',${tiers? i : "null"}`;
+        rows.push(`<div class="rn">${i===0?`<b>${esc(role)}</b><small>${esc(ROLE_HELP[role]||"")}</small>`:""}${tiers?`<small>${i===0?"First try":"Rescue "+i+": a stronger teammate takes over a stuck item"}</small>`:""}</div>
+          <div><select aria-label="${esc(role)} agent" onchange="setRole(${at},'agent',this.value)">${opts(SETTINGS.backends, String(tier.agent||""))}</select></div>
+          <div><input list="knownModels" aria-label="${esc(role)} model" value="${esc(tier.model||"")}" spellcheck="false" onchange="setRole(${at},'model',this.value.trim())"></div>
+          <div class="x">${tiers ? `<button class="btn quiet sm" type="button" title="Remove this tier" onclick="dropTier(${at})" ${tiers.length<2?"disabled":""}>Remove</button>` : `<button class="btn quiet sm" type="button" onclick="dropRole('${esc(name)}','${esc(role)}')">Remove</button>`}</div>`); });
+      if(tiers) rows.push(`<div></div><div class="x" style="grid-column:2/-1"><button class="btn quiet sm" type="button" onclick="addTier('${esc(name)}','${esc(role)}')">Add a rescue tier</button></div>`);
+    }
+    const missing = (SETTINGS.roles||[]).filter(r=>!roles[r]);
+    return `<section class="prof"><header><h3>${esc(name)}</h3>${d.defaultProfile===name?`<span class="chip human">default</span>`:`<button class="btn quiet sm" type="button" onclick="setDefault('${esc(name)}')">Make default</button>`}</header>
+      <div class="roles"><div class="h">Role</div><div class="h">Agent</div><div class="h">Model</div><div class="h"></div>${rows.join("")}</div>
+      <footer>${missing.length ? `<select id="add_${esc(name)}" aria-label="Role to add">${opts(missing)}</select><button class="btn sm" type="button" onclick="addRole('${esc(name)}')">Add role</button>
+        <span class="faint" style="font-size:13px">A role left out uses the built-in default.</span>` : ""}</footer></section>`; };
+  const prices = d.prices || {};
+  return `${models}
+    ${SAVE_ERR ? `<div class="problems">${esc(SAVE_ERR)}</div>` : ""}
+    <div class="field" style="margin-top:0;max-width:340px"><label for="defProf">Profile new runs use</label><select id="defProf" onchange="setDefault(this.value)">${opts(profiles, d.defaultProfile)}</select>
+      <div class="help">A run can still name another profile in its advanced settings.</div></div>
+    <h3 style="margin-top:26px">Profiles</h3>
+    ${profiles.map(prof).join("")}
+    <h3 style="margin-top:26px">Prices</h3><p class="dim" style="margin-top:0;font-size:14px">Dollars per million tokens, used to count spend against a run's ceiling.</p>
+    <div class="prices"><span class="h">Model</span><span class="h">Input</span><span class="h">Output</span><span></span>
+      ${Object.keys(prices).sort().map(k=>`<code>${esc(k)}</code>
+        <input type="number" step="any" min="0" aria-label="${esc(k)} input price" value="${esc(prices[k].input)}" onchange="setPrice('${esc(k)}','input',this.value)">
+        <input type="number" step="any" min="0" aria-label="${esc(k)} output price" value="${esc(prices[k].output)}" onchange="setPrice('${esc(k)}','output',this.value)">
+        <button class="btn quiet sm" type="button" onclick="dropPrice('${esc(k)}')">Remove</button>`).join("")}
+      <input list="knownModels" id="newPrice" placeholder="Add a model" spellcheck="false" style="font-family:var(--mono)"><span></span><span></span><button class="btn sm" type="button" onclick="addPrice()">Add</button></div>
+    <details class="json-ed" style="margin-top:26px"><summary class="dim">Edit as JSON</summary><p class="faint" style="font-size:13px">For fields the form does not show (budgets, review loop, scoping to workflows or repositories). Applied when you save.</p>
+      <textarea id="policyJson" spellcheck="false" oninput="markDirty()">${esc(JSON.stringify(d,null,2))}</textarea></details>
+    <p class="faint" style="font-size:13px">Stored in <span class="mono">${esc(SETTINGS.models.path)}</span>, shared with the TUI's models screen.</p>
+    ${saveBar()}`;
+}
+function jsonEditor(text){ return `<div class="json-ed"><textarea id="policyJson" spellcheck="false" oninput="markDirty()">${esc(text)}</textarea></div>`; }
+function saveBar(){ return `<div class="savebar"><span class="state ${DIRTY?"dirty":""}">${DIRTY?"Unsaved changes":"All changes saved"}</span>
+  <button class="btn" type="button" onclick="discardModels()" ${DIRTY?"":"disabled"}>Discard</button>
+  <button class="btn primary" type="button" id="saveModels" onclick="saveModelsNow()" ${DIRTY?"":"disabled"}>Save changes</button></div>`; }
+function markDirty(){ if(!DIRTY){ DIRTY=true; const b=$(".savebar"); if(b) b.outerHTML = saveBar(); } }
+function edited(fn){ fn(DRAFT); DIRTY=true; SAVE_ERR=""; renderSettings(); }
+function roleAt(d, p, r, t){ const cfg = d.profiles[p].roles[r]; return t===null ? cfg : cfg.tiers[t]; }
+function setRole(p, r, t, k, v){ edited(d => { roleAt(d,p,r,t)[k] = v; }); }
+function addTier(p, r){ edited(d => { const ts = d.profiles[p].roles[r].tiers; ts.push(clone(ts[ts.length-1])); }); }
+function dropTier(p, r, t){ edited(d => { d.profiles[p].roles[r].tiers.splice(t,1); }); }
+function dropRole(p, r){ edited(d => { delete d.profiles[p].roles[r]; }); }
+function addRole(p){ const r = $("#add_"+CSS.escape(p)).value; edited(d => { const base = d.profiles[p].roles.code?.tiers?.[0] || {agent:"claude", model:""};
+  d.profiles[p].roles[r] = {agent: base.agent, model: base.model}; }); }
+function setDefault(p){ edited(d => { d.defaultProfile = p; }); }
+function setPrice(k, side, v){ edited(d => { d.prices[k][side] = v==="" ? 0 : Number(v); }); }
+function dropPrice(k){ edited(d => { delete d.prices[k]; }); }
+function addPrice(){ const k = $("#newPrice").value.trim(); if(!k) return; edited(d => { (d.prices ||= {})[k] ||= {input:0, output:0}; }); }
+function discardModels(){ DIRTY=false; SAVE_ERR=""; DRAFT = SETTINGS.models.data ? clone(SETTINGS.models.data) : null; renderSettings(); }
+async function saveModelsNow(){
+  let data = DRAFT; const box = $("#policyJson");
+  if(box && (!DRAFT || box.value.trim() !== JSON.stringify(DRAFT,null,2))){
+    try{ data = JSON.parse(box.value); }catch(e){ SAVE_ERR = "The JSON does not parse: "+e.message; return renderSettings(); } }
+  const r = await write("/api/models", {data, sha256: SETTINGS.models.sha256});
+  if(!r.ok){ SAVE_ERR = r.body.error || "Not saved."; return renderSettings(); }
+  SETTINGS.models = r.body.models; DRAFT = clone(r.body.models.data); DIRTY=false; SAVE_ERR="";
+  toast("Model settings saved. New runs use them."); renderSettings();
+}
+/* templates */
+function templatesHtml(){
+  const list = SETTINGS.templates || [], targets = SETTINGS.templateTargets || {};
+  const builtin = (TPL_SEL||"").startsWith("builtin:") ? (SETTINGS.builtins||[]).find(b=>"builtin:"+b.key===TPL_SEL) : null;
+  if(TPL_SEL && TPL_SEL!=="new" && !builtin && !list.some(t=>t.file===TPL_SEL)) TPL_SEL = null;
+  if(!TPL_SEL && list.length) TPL_SEL = list[0].file;
+  const cur = TPL_SEL==="new" ? null : list.find(t=>t.file===TPL_SEL);
+  if(builtin) TPL_DRAFT = null;
+  else if(!TPL_DRAFT || TPL_DRAFT.key !== TPL_SEL) TPL_DRAFT = cur ? {key:TPL_SEL, ...clone(cur)} : TPL_SEL==="new" ? {key:"new", name:"", description:"", workflows:[], fields:[], repos:[], body:""} : null;
+  const t = TPL_DRAFT;
+  const scope = x => x.workflows.length ? x.workflows.map(w=>targets[w]?.label||w).join(", ") : "Every workflow";
+  const fieldsFor = t ? [...new Set((t.workflows.length ? t.workflows : Object.keys(targets)).flatMap(w=>targets[w]?.fields||[]))] : [];
+  const label = f => f.replace(/PromptTemplate$/,"").replace(/([A-Z])/g," $1").toLowerCase().trim()+" prompt";
+  return `<div class="tpl"><div class="tpl-list">
+      ${list.map(x=>`<a href="#/settings/templates/${encodeURIComponent(x.file)}" aria-current="${x.file===TPL_SEL}">${esc(x.name)}<small>${esc(scope(x))}${x.repos.length?" in "+esc(x.repos.join(", ")):""}</small></a>`).join("")}
+      ${list.length ? "" : `<div class="empty" style="padding:14px">No templates yet. Every workflow uses its built-in prompts.</div>`}
+      <div class="new"><a class="btn sm" style="display:inline-flex" href="#/settings/templates/new">New template</a></div>
+      <div class="tpl-group">Built-in prompts</div>
+      ${(SETTINGS.builtins||[]).map(b=>`<a href="#/settings/templates/${encodeURIComponent("builtin:"+b.key)}" aria-current="${"builtin:"+b.key===TPL_SEL}">${esc(b.key.replace(/[-_]/g," "))}<small>${esc(b.usedBy.join(", ")||"Unused")}</small></a>`).join("")}</div>
+    ${builtin ? builtinHtml(builtin) : t ? `<div class="tpl-ed">
+      ${SAVE_ERR ? `<div class="problems" style="margin-top:14px">${esc(SAVE_ERR)}</div>` : ""}
+      <div class="field"><label for="t_name">Name</label><input id="t_name" value="${esc(t.name)}" placeholder="Security-focused review"></div>
+      <div class="field"><label for="t_desc">Description</label><input id="t_desc" value="${esc(t.description)}" placeholder="What this prompt emphasizes"></div>
+      <div class="field"><label>Workflows</label><div class="checks">${Object.entries(targets).map(([w,x])=>`<label><input type="checkbox" value="${esc(w)}" ${t.workflows.includes(w)?"checked":""} onchange="tplScope()">${esc(x.label)}</label>`).join("")}</div>
+        <div class="help">None checked applies it to every workflow below.</div></div>
+      <div class="field"><label>Replaces</label><div class="checks" id="t_fields">${fieldsFor.map(f=>`<label><input type="checkbox" value="${esc(f)}" ${t.fields.includes(f)?"checked":""}>${esc(label(f))}</label>`).join("")}</div>
+        <div class="help">None checked replaces each workflow's main prompt.</div></div>
+      <div class="field"><label for="t_repos">Repositories</label><input id="t_repos" value="${esc(t.repos.join(", "))}" placeholder="owner/name, owner/other; empty for any repository"></div>
+      <div class="field"><label for="t_body" style="display:flex;align-items:center;gap:10px">Prompt <button class="btn quiet sm" type="button" onclick="tplSeed()">Start from the built-in prompt</button></label>
+        <textarea id="t_body" class="body" spellcheck="false" placeholder="Use {{diff}}, {{feedback}}, {{instruction}} or {{subtask}} where the run's context goes; anything left out is appended.">${esc(t.body)}</textarea></div>
+      <div class="savebar" style="margin:18px 0 0;padding:12px 0 0;position:static;background:none;backdrop-filter:none">
+        <span class="state faint">${cur ? esc(cur.file) : "A new file in "+esc(SETTINGS.templatesDir)}</span>
+        ${cur ? `<button class="btn danger" type="button" onclick="tplDelete()">Delete</button>` : ""}
+        <button class="btn primary" type="button" onclick="tplSave()">${cur ? "Save template" : "Create template"}</button></div>
+    </div>` : `<div class="empty">Pick a template or create one.</div>`}</div>`;
+}
+function builtinHtml(b){ return `<div class="tpl-ed"><h3 style="margin:16px 0 4px;font-family:var(--mono);font-weight:500">${esc(b.key)}</h3>
+  <p class="dim" style="margin:0;font-size:14px">${b.usedBy.length ? "Runs in "+esc(b.usedBy.join(", "))+"." : "No workflow runs this prompt."} ${b.copyable ? "Copy it to a new template to replace it at launch, or commit" : "To change it for one repository, commit"} <span class="mono">${esc(b.repoOverride)}</span>${b.copyable ? " to change it for one repository" : ""}.</p>
+  <div class="field"><textarea class="body" readonly spellcheck="false" aria-label="Built-in prompt">${esc(b.body)}</textarea></div>
+  ${b.copyable ? `<div class="savebar" style="margin:12px 0 0;padding:12px 0 0;position:static;background:none;backdrop-filter:none"><span class="state"></span><button class="btn primary" type="button" onclick="tplCopy('${esc(b.key)}')">Copy to a new template</button></div>` : ""}</div>`; }
+function tplCopy(key){ const b = SETTINGS.builtins.find(x=>x.key===key); TPL_SEL="new"; TPL_DRAFT={key:"new", name:key.replace(/[-_]/g," ")+" (custom)", description:"", workflows:[], fields:[], repos:[], body:b.body};
+  history.replaceState(null,"","#/settings/templates/new"); renderSettings(); }
+function tplRead(){ const t = TPL_DRAFT; if(!t || !$("#t_name")) return t;
+  t.name=$("#t_name").value; t.description=$("#t_desc").value; t.body=$("#t_body").value;
+  t.repos=$("#t_repos").value.split(/[,\s]+/).filter(Boolean);
+  t.workflows=[...document.querySelectorAll('.tpl-ed .checks:not(#t_fields) input:checked')].map(i=>i.value);
+  t.fields=[...document.querySelectorAll('#t_fields input:checked')].map(i=>i.value); return t; }
+function tplScope(){ tplRead(); renderSettings(); }
+async function tplSeed(){ const t = tplRead(); const tg = SETTINGS.templateTargets;
+  const wf = t.workflows[0] || Object.keys(tg)[0]; const field = t.fields[0] || tg[wf].primary;
+  if(t.body.trim() && !t._seedOk){ t._seedOk = true; return toast("The prompt box has text. Click again to replace it with the built-in prompt."); }
+  const r = await api(`/api/template-default?workflow=${encodeURIComponent(wf)}&field=${encodeURIComponent(field)}`);
+  t.body = r.body.body || ""; t._seedOk=false; renderSettings(); toast(r.body.body ? "Loaded the built-in prompt; edit it from here." : "That field has no built-in prompt."); }
+async function tplSave(){ const t = tplRead();
+  const r = await write("/api/templates", {action:"save", path: t.key==="new" ? "" : t.path, name:t.name, description:t.description,
+    workflows:t.workflows, fields:t.fields, repos:t.repos, body:t.body});
+  if(!r.ok){ SAVE_ERR = r.body.error || "Not saved."; return renderSettings(); }
+  SAVE_ERR=""; const file = r.body.path.split("/").pop(); TPL_DRAFT=null; SETTINGS=null; toast(t.key==="new" ? "Template created." : "Template saved.");
+  location.hash = "#/settings/templates/"+encodeURIComponent(file); if(TPL_SEL===file) openSettings(); }
+function tplDelete(){ $("#tplDelTitle").textContent = `Delete ${TPL_DRAFT.name}?`; $("#tplDelDlg").showModal(); }
+$("#tplDelForm").addEventListener("submit", async e => { if(e.submitter?.value!=="go") return;
+  const r = await write("/api/templates", {action:"delete", path: TPL_DRAFT.path});
+  if(!r.ok) return toast(r.body.error || "Not deleted.");
+  toast("Template deleted."); TPL_DRAFT=null; TPL_SEL=null; SETTINGS=null; location.hash="#/settings/templates"; openSettings(); });
+
+/* ── routing & polling ───────────────────── */
+function toggleRail(){ $("#rail").classList.toggle("open"); }
+function route(){
+  const st = location.hash.match(/^#\/settings(?:\/(models|templates))?(?:\/(.+))?$/);
+  if(st){ CURRENT=null; VIEW=null; closeDrawer(); $("#rail").classList.remove("open"); SETTINGS_TAB = st[1]||"models";
+    if(st[2]) TPL_SEL = decodeURIComponent(st[2]); renderRuns(); openSettings(); return; }
+  SETTINGS_TAB = null;
+  if(location.hash==="#/new"){ history.replaceState(null,"",CURRENT?`#/run/${encodeURIComponent(CURRENT)}`:"#/"); openLaunch(); return; }
+  const m = location.hash.match(/^#\/run\/([^/]+)(?:\/([a-z]+))?(?:\/(.+))?$/);
+  const next = m ? decodeURIComponent(m[1]) : null;
+  if(next!==CURRENT){ CURRENT=next; VIEW=null; closeDrawer(); TAB="activity"; $("#rail").classList.remove("open"); }
+  if(m && m[2] && ["activity","board","escalations","constraints","learnings"].includes(m[2])) TAB=m[2];
+  renderRuns();
+  if(CURRENT){ if(!VIEW) $("#page").innerHTML = `<div class="empty">Loading the run…</div>`; loadRun().then(()=>{ if(m && m[3]) openItem(decodeURIComponent(m[3])); }); }
+  else { document.title="Swarm Console"; renderHome(); }
+}
+window.addEventListener("hashchange", route);
+async function tick(){
+  if(!document.hidden){ await loadRuns().catch(()=>{}); if(CURRENT) await loadRun().catch(()=>{}); }
+  TIMER = setTimeout(tick, 4000);
+}
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden){ clearTimeout(TIMER); tick(); } });
+(async () => { await loadWho(); await loadRuns(); route(); TIMER = setTimeout(tick, 4000); })();
+</script>
+</body>
+</html>

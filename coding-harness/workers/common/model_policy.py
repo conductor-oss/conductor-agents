@@ -253,7 +253,15 @@ def select_role_tier(inputs: dict, *, role: str, worktree: str | None = None) ->
     tiers = ((resolution.get("roles", {}).get(role) or {}).get("tiers") or [])
     if not tiers or not isinstance(tiers[0], dict):
         raise ModelPolicyError(f"model resolution has no tier for role {role!r}")
-    tier = deepcopy(tiers[0])
+    # ``modelTier`` escalates within the role's ordered tiers (0 = the first): a teammate brought in to
+    # help a stuck item runs a stronger tier than the agents that got stuck. Clamped to the last tier.
+    try:
+        index = min(max(int(inputs.get("modelTier") or 0), 0), len(tiers) - 1)
+    except (TypeError, ValueError):
+        index = 0
+    while index > 0 and not isinstance(tiers[index], dict):
+        index -= 1
+    tier = deepcopy(tiers[index])
     model = str(inputs.get("model") or tier.get("model") or "").strip()
     agent = str(tier.get("agent") or "").strip().lower()
     if inputs.get("model") not in (None, ""):

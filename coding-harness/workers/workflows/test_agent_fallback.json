@@ -329,6 +329,11 @@
                     }
                   }
                 }
+              },
+              "templateKey": "test_propose_commands",
+              "promptContext": {
+                "discoveryReason": "${workflow.input.discoveryReason}",
+                "changedPaths": "${workflow.input.changedPaths}"
               }
             }
           },
@@ -392,7 +397,11 @@
                     "modelOverrides": "${workflow.input.modelOverrides}",
                     "modelResolution": "${model_policy.output}",
                     "failSoft": true,
-                    "prompt": "No existing test (by filename or content) covers this candidate's changes -- a read-only search already ran and found nothing. Changed paths: ${workflow.input.changedPaths}. Author exactly ONE new test file that exercises this change. First, Grep/Glob the repository to find where and how existing tests for this language/build system are organized (naming convention, directory, test framework, assertion style) and mirror that convention exactly -- do not invent a location or convention of your own. Do not modify, rename, move, or delete any other file; create only the one new test file. You cannot run anything -- a separate, independent step will discover and verify your test."
+                    "prompt": "No existing test (by filename or content) covers this candidate's changes -- a read-only search already ran and found nothing. Changed paths: ${workflow.input.changedPaths}. Author exactly ONE new test file that exercises this change. First, Grep/Glob the repository to find where and how existing tests for this language/build system are organized (naming convention, directory, test framework, assertion style) and mirror that convention exactly -- do not invent a location or convention of your own. Do not modify, rename, move, or delete any other file; create only the one new test file. You cannot run anything -- a separate, independent step will discover and verify your test.",
+                    "templateKey": "test_author_missing",
+                    "promptContext": {
+                      "changedPaths": "${workflow.input.changedPaths}"
+                    }
                   }
                 },
                 {

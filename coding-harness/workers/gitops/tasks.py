@@ -16,8 +16,8 @@ from pathlib import Path
 
 from conductor.client.worker.worker_task import worker_task
 
-from common import (code_subtask, gate_decision, git, github, issue_to_pr, pr_description,
-                    pr_review, pr_reply, publish_salvage)
+from common import (code_subtask, conductor_status, gate_decision, git, github, issue_to_pr,
+                    pr_description, pr_review, pr_reply, publish_salvage)
 from common.results import fail, ok
 
 
@@ -96,19 +96,45 @@ def delivery_audit(task):
     try:
         repo = str(i["repoPath"])
         planned = _repo_paths(i.get("plannedPaths"))
+        # A path the subtask MAY write but need not — its frozen acceptance test, writable only so a
+        # wrong assertion can be amended — is never "missing": every item with a frozen test was audited
+        # incomplete_delivery and ran three no-op repair agents per fork (run a33d7061, 15 of 16 forks).
+        optional = _repo_paths(i.get("optionalPaths"))
         classified = git.vetted_changes(repo)
         actual = sorted(set(classified["changed"]))
-        missing = sorted(set(planned) - set(actual))
+        # A planned path already in HEAD's tree was delivered before this session — by an earlier
+        # attempt of a re-dispatched item, or it is a file the item modifies — so leaving it alone is
+        # not a missing delivery: store-hashes' review re-dispatch changed only hashes_test.go and ran
+        # three no-op repair agents for the hashes.go it had delivered a wave earlier (run ec0fb6dc).
+        present = sorted(set(git.tracked_at_head(repo, planned)) - set(actual))
+        missing = sorted(set(planned) - set(actual) - set(optional) - set(present))
         rejected = sorted(set(classified["rejected"]))
         denials = [str(value) for value in (report.get("denials") or []) if str(value)]
         command_failures = _command_failures(report)
         complete = not missing and not rejected
-        state = "passed" if complete else "incomplete_delivery"
+        # A session stopped by blocking feedback (closure plan WP2) is not an incomplete delivery to
+        # repair: a repair agent would finish exactly what a human said to stop.
+        interrupted = str(report.get("status") or "") == "interrupted"
+        # An implementer that pushed back on a directive (H16) made its case instead of the change; the
+        # Lead decides at integration. A repair agent would do the very work the pushback declined
+        # (resp-reader: one $0.57 repair agent rewrote reader.go after the implementer's pushback, and
+        # the Lead then discarded the fork, run ec0fb6dc).
+        structured = report.get("structured") if isinstance(report.get("structured"), dict) else {}
+        pushback = bool(structured.get("pushback"))
+        # An implementer that changed nothing because the shared branch already satisfies the item
+        # (a sibling delivered it) is not an incomplete delivery to repair: six repair agents re-verified
+        # cmd-dispatch's claim and created nothing, then the item blocked (run 90e5e3aa). The peer
+        # reviewer judges the claim at integration.
+        satisfied = bool(structured.get("alreadySatisfied")) and not actual
+        state = ("interrupted" if interrupted else "pushback" if pushback else "satisfied" if satisfied
+                 else "passed" if complete else "incomplete_delivery")
         out = {
             "auditAvailable": True,
             "state": state,
             "complete": complete,
             "plannedPaths": planned,
+            "optionalPaths": optional,
+            "presentPaths": present,
             "actualPaths": actual,
             "missingPaths": missing,
             "rejectedPaths": rejected,
@@ -138,6 +164,8 @@ def delivery_audit(task):
             "state": "audit_unavailable",
             "complete": False,
             "plannedPaths": [],
+            "optionalPaths": [],
+            "presentPaths": [],
             "actualPaths": [],
             "missingPaths": [],
             "rejectedPaths": [],
@@ -250,7 +278,7 @@ def workspace_prepare(task):
                          or getattr(task, "task_id", "workspace"))
             prepared = git.prepare_inplace(
                 i.get("repoPath") or "", run_id=run_id,
-                branch_name=str(i.get("branch") or ""))
+                branch_name=str(i.get("branch") or i.get("branchDefault") or ""))
             git.exclude_worktrees(prepared["repoPath"])
             return ok(task, {
                 "sourceRepoPath": prepared["repoPath"],
@@ -347,20 +375,25 @@ def workspace_prepare(task):
             source_ref = github.clone_url(fetch_source) if fetch_source else "origin"
             git.fetch_source(source, source_ref, fetch_refspec)
 
+        run_id = str(i.get("branchRunId") or i.get("workflowId")
+                     or getattr(task, "workflow_instance_id", "")
+                     or getattr(task, "task_id", "workspace"))
         snapshot = git.snapshot_worktree(
             source,
-            run_id=str(i.get("branchRunId") or i.get("workflowId")
-                       or getattr(task, "workflow_instance_id", "")
-                       or getattr(task, "task_id", "workspace")),
+            run_id=run_id,
             original_branch=prepared["branch"],
             original_head=prepared["head"],
         )
+        # Finished runs leave their checkouts behind; their branches hold the work. Every registered
+        # worktree costs sandbox deny paths in every agent's Bash, and past a few dozen no agent can run
+        # a command at all (E2BIG, run ec0fb6dc) — so a new run first removes the worktrees of runs
+        # the server says are over (an unanswerable run is kept).
+        pruned = git.prune_finished_runs(source, keep_run_id=run_id,
+                                         is_running=conductor_status.workflow_running)
         out = git.workspace_add(
             source,
-            str(i.get("branchRunId") or i.get("workflowId")
-                or getattr(task, "workflow_instance_id", "")
-                or getattr(task, "task_id", "workspace")),
-            branch_name=str(i.get("branch") or "").strip() or None,
+            run_id,
+            branch_name=str(i.get("branch") or i.get("branchDefault") or "").strip() or None,
             start_point=snapshot["baselineCommit"],
             preserve_existing=_bool(i.get("preserveExisting"), True),
         )
@@ -382,11 +415,14 @@ def workspace_prepare(task):
             "sourceCloned": source_cloned,
             "sourceHead": prepared["head"],
             "inPlace": False,
+            "prunedRuns": pruned["removed"],
         }
         return ok(task, output, [
             f"[workspace_prepare] {source} -> {out['worktreePath']} branch={out['branch']}",
             f"[workspace_prepare] included source changes={len(snapshot['includedPaths'])} "
             f"materialized={len(materialized)} resumed={out['resumed']}",
+            f"[workspace_prepare] pruned finished runs={len(pruned['removed'])} "
+            f"kept={len(pruned['kept'])}",
         ])
     except Exception as e:  # noqa: BLE001
         return fail(task, "workspace_prepare", e)
@@ -438,7 +474,7 @@ def prepare_repo(task):
                          or getattr(task, "task_id", "code"))
             out = git.prepare_inplace(
                 i["repoPath"], run_id=run_id,
-                branch_name=str(i.get("branch") or ""))
+                branch_name=str(i.get("branch") or i.get("branchDefault") or ""))
             git.exclude_worktrees(out["repoPath"])
             return ok(task, out, [f"[prepare_repo] in-place branch={out['branch']} "
                                  f"baseline={out['baselineCommit'][:12]} created={out['baselineCreated']}"])
@@ -491,8 +527,15 @@ def inplace_guard(task):
 def commit(task):
     i = task.input_data or {}
     try:
-        out = git.commit(i["repoPath"], i.get("message", "conductor-code change"))
-        return ok(task, out, [f"[commit] HEAD={out['commit']} msg={i.get('message','')}"])
+        from common.shapes import listed
+        # The item's write roots (plus its frozen acceptance tests, writable so a wrong assertion can be
+        # amended) confine what a fork commits: Bash can write any file of the worktree, and an edit to a
+        # sibling's file must be refused here as the guard refuses it at the tool (run ba2491ff).
+        roots = [str(p) for p in listed(i.get("allowedWriteRoots")) + listed(i.get("acceptanceTests"))
+                 if str(p).strip()]
+        out = git.commit(i["repoPath"], i.get("message", "conductor-code change"), write_roots=roots)
+        return ok(task, out, [f"[commit] HEAD={out['commit']} msg={i.get('message','')}"
+                              + (f" outsideScope={out['outsideScope']}" if out.get("outsideScope") else "")])
     except Exception as e:  # noqa: BLE001
         return fail(task, "commit", e)
 
@@ -509,11 +552,9 @@ def _resolve_conflict_with_agent(repo: str, conflicted: list[str], *, source_lab
     """
     from common.claude import run_agent
     total_tokens, total_cost = 0, 0.0
-    prompt = (
-        f"Resolve ALL git merge conflicts in these files: {', '.join(conflicted)}. "
-        "Keep both sides' changes where possible. Remove every conflict marker "
-        "(<<<<<<<, =======, >>>>>>>). Edit only the conflicted files."
-    )
+    from common import templating
+    prompt = templating.resolve_prompt("", template="", template_key="merge_conflict",
+                                       context={"files": ", ".join(conflicted)}, worktree=repo)
     for attempt in range(1, max_attempts + 1):
         res = run_agent(prompt, cwd=repo, model=model, write=True, max_budget_usd=max_budget_usd)
         total_tokens += res["tokens"]
@@ -563,7 +604,7 @@ def merge_worktrees(task):
             trial = git.worktree_add(repo, name)
             try:
                 for gid in ids:
-                    branch = git.GROUP_BRANCH.format(name=gid)
+                    branch = git.group_branch(repo, gid)
                     probe = git.git(trial["worktreePath"], "merge", "--no-edit", branch, check=False)
                     if probe.code != 0:
                         git.git(trial["worktreePath"], "merge", "--abort", check=False)
@@ -573,7 +614,7 @@ def merge_worktrees(task):
             finally:
                 git.worktree_remove(repo, name)
         for gid in ids:
-            br = git.GROUP_BRANCH.format(name=gid)
+            br = git.group_branch(repo, gid)
             try:
                 git.git(repo, "merge", "--no-edit", br)
                 merged.append(br)
@@ -970,36 +1011,6 @@ def pr_branch_guard(task):
                          "reason": reason}, [f"[pr_branch_guard] BLOCKED: {reason}"])
 
 
-@worker_task(task_definition_name="pr_commit_checks")
-def pr_commit_checks(task):
-    """Return the aggregate state of every reported GitHub check for one SHA."""
-    i = task.input_data or {}
-    try:
-        if "pushed" in i and not _bool(i.get("pushed")):
-            state = str(i.get("publicationState") or "publication_blocked")
-            return ok(task, {"sha": str(i.get("sha") or ""), "checks": [], "links": [],
-                             "checkCount": 0, "verificationState": state,
-                             "reason": str(i.get("publicationReason") or
-                                           "candidate branch was not published")},
-                      [f"[pr_commit_checks] skipped: publication state={state}"])
-        out = github.commit_checks(i["repo"], str(i["sha"]))
-        # A blank or "empty" state means CI has not reported yet, which is a
-        # pending poll rather than a verdict. Naming it here removes the jq task
-        # that used to normalize it before the poll loop could read it.
-        reported = str(out.get("verificationState") or "").strip()
-        out["ciState"] = "pending" if not reported or reported == "empty" else reported
-        return ok(task, out, [f"[pr_commit_checks] sha={out['sha'][:12]} checks={out['checkCount']} state={out['verificationState']}"])
-    except Exception as e:  # noqa: BLE001
-        # CI observability is evidence gathering.  An exhausted GitHub retry is
-        # not proof that a candidate passed, but it also must not bypass the
-        # workflow's CI-blocked checkpoint by failing the worker outright.
-        sha = str(i.get("sha") or "")
-        reason = f"GitHub exact-SHA check lookup failed: {e}"
-        return ok(task, {"sha": sha, "checks": [], "links": [], "checkCount": 0,
-                         "verificationState": "unknown", "reason": reason},
-                  [f"[pr_commit_checks] BLOCKED: {reason}"])
-
-
 @worker_task(task_definition_name="pr_comment")
 def pr_comment(task):
     """Post a comment on a PR. Input: repoPath, number, body, repo?."""
@@ -1232,5 +1243,5 @@ def code_subtask_delivery_outcome(task):
     out = code_subtask.resolve_delivery_outcome(
         planned_paths=i.get("plannedPaths"), commit=i.get("commit"), audit=i.get("audit"),
         agent=i.get("agent"), tested=i.get("tested"), test_state=i.get("testState"),
-        tests_passed=i.get("testsPassed"))
+        tests_passed=i.get("testsPassed"), optional_paths=i.get("optionalPaths"))
     return ok(task, out, [f"[code_subtask_delivery_outcome] state={out['state']} passed={out['passed']}"])

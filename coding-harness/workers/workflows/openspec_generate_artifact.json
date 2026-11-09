@@ -88,7 +88,9 @@
         "modelPolicySha256": "${workflow.input.modelPolicySha256}",
         "modelsConfig": "${workflow.input.modelsConfig}",
         "modelOverrides": "${workflow.input.modelOverrides}",
-        "modelResolution": "${model_policy.output}"
+        "modelResolution": "${model_policy.output}",
+        "templateKey": "openspec_artifact",
+        "promptContext": "${build_prompt.output.promptContext}"
       }
     }
   ],

@@ -1,0 +1,733 @@
+{
+  "name": "team_build",
+  "description": "Roadmap Phase 2 team cycle for construction: a collaborating agent team builds a multi-item feature on one shared branch. Generalizes the proven convergence_spike wave loop into standup -> fan out -> implement || review -> integrate -> learn -> re-plan (a DO_WHILE over a mutable tracking board). The Lead sizes each wave from dependency-ready work and injects the live board + teammates' lessons + directives into each implementer; shared-file ownership gates dispatch (H1); a different agent peer-reviews each item mid-run (H8/H13) and 'changes' reopens it with the findings; the budget gate halts on spend (H5). Trivial single-item work degrades to plain code_parallel with zero board overhead (H9). Reuses code_subtask, coding_agent, test_cycle, budget_gate_check, workspace_prepare.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "restartable": true,
+  "variables": {
+    "drained": false,
+    "dispatchNewWork": false,
+    "budgetState": "ok",
+    "finalHead": "",
+    "acceptanceCommands": [],
+    "testWriteRoots": [],
+    "starved": false,
+    "teamGateCommands": []
+  },
+  "inputParameters": [
+    "repoPath",
+    "subtasks",
+    "contractPaths",
+    "instruction",
+    "forceSingle",
+    "forceTeam",
+    "enablePeerReview",
+    "ceilingUsd",
+    "warnFraction",
+    "maxWaves",
+    "maxWidth",
+    "maxAttempts",
+    "maxReviewRounds",
+    "stallAttempts",
+    "qualityChanges",
+    "maxReviewAttempts",
+    "maxContractEvents",
+    "planUsage",
+    "feedbackEveryTurns",
+    "checkpointEveryTurns",
+    "bestOf",
+    "authorAcceptanceTests",
+    "acceptanceTestPattern",
+    "parentCorrelationId",
+    "subsystemId",
+    "maxHumanConstraints",
+    "sandboxChecks",
+    "codeModel",
+    "maxTurns",
+    "maxBudgetUsd",
+    "reviewMaxTurns",
+    "reviewMaxBudgetUsd",
+    "maxFixAttempts",
+    "branchRunId",
+    "inPlace",
+    "workspacePath",
+    "allowAgentTestPlan",
+    "allowAgentAuthoredTests",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides",
+    "maxRescues",
+    "baseModelTier",
+    "branchName"
+  ],
+  "inputTemplate": {
+    "subtasks": [],
+    "contractPaths": [],
+    "instruction": "",
+    "forceSingle": false,
+    "forceTeam": false,
+    "enablePeerReview": true,
+    "ceilingUsd": 40,
+    "warnFraction": 0.8,
+    "maxWaves": 12,
+    "maxWidth": 6,
+    "maxAttempts": 2,
+    "maxReviewRounds": 2,
+    "stallAttempts": 2,
+    "qualityChanges": 2,
+    "codeModel": "",
+    "maxTurns": 250,
+    "maxBudgetUsd": 10,
+    "reviewMaxTurns": 60,
+    "reviewMaxBudgetUsd": 3,
+    "maxFixAttempts": 2,
+    "branchRunId": "",
+    "inPlace": false,
+    "workspacePath": "",
+    "allowAgentTestPlan": true,
+    "allowAgentAuthoredTests": true,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {},
+    "maxReviewAttempts": 2,
+    "maxContractEvents": 2,
+    "planUsage": {},
+    "feedbackEveryTurns": 1,
+    "checkpointEveryTurns": 10,
+    "bestOf": 1,
+    "authorAcceptanceTests": true,
+    "acceptanceTestPattern": "tests/acceptance/test_accept_{id}.py",
+    "parentCorrelationId": "",
+    "subsystemId": "",
+    "maxHumanConstraints": 3,
+    "sandboxChecks": true,
+    "maxRescues": 2,
+    "baseModelTier": 0,
+    "branchName": "team-build"
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "team_route",
+      "taskReferenceName": "route",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "subtasks": "${workflow.input.subtasks}",
+        "instruction": "${workflow.input.instruction}",
+        "forceSingle": "${workflow.input.forceSingle}",
+        "forceTeam": "${workflow.input.forceTeam}"
+      }
+    },
+    {
+      "name": "mode_gate",
+      "taskReferenceName": "mode_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "mode",
+      "inputParameters": {
+        "mode": "${route.output.mode}"
+      },
+      "decisionCases": {
+        "single": [
+          {
+            "name": "code_parallel",
+            "taskReferenceName": "single_build",
+            "type": "SUB_WORKFLOW",
+            "subWorkflowParam": {
+              "name": "code_parallel"
+            },
+            "inputParameters": {
+              "repoPath": "${workflow.input.repoPath}",
+              "instruction": "${route.output.instruction}",
+              "callerWorkflow": "team_build",
+              "branchRunId": "${workflow.input.branchRunId}",
+              "codeModel": "${workflow.input.codeModel}",
+              "maxTurns": "${workflow.input.maxTurns}",
+              "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+              "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+              "inPlace": "${workflow.input.inPlace}",
+              "workspacePath": "${workflow.input.workspacePath}",
+              "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
+              "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}"
+            }
+          },
+          {
+            "name": "terminate_single",
+            "taskReferenceName": "terminate_single",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "COMPLETED",
+              "workflowOutput": {
+                "mode": "single",
+                "delivered": "${single_build.output.verified}",
+                "verdict": "single-agent (code_parallel), no team boards",
+                "report": "Routed to plain code_parallel (one small piece, H9 graceful degradation). deliveryOutcome=${single_build.output.deliveryOutcome}",
+                "branch": "${single_build.output.branch}",
+                "finalHead": "${single_build.output.verificationCommit}",
+                "testCycleState": "${single_build.output.testCycleState}",
+                "testsPassed": "${single_build.output.testsPassed}",
+                "sourceHandoff": "${single_build.output.sourceHandoff}",
+                "spendUsd": "${single_build.output.totalCostUsd}"
+              }
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "workspace_prepare",
+      "taskReferenceName": "workspace",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "branch": "${workflow.input.branchName}",
+        "branchRunId": "${workflow.input.branchRunId}",
+        "inPlace": "${workflow.input.inPlace}",
+        "preserveExisting": true,
+        "workflowId": "${workflow.workflowId}",
+        "workspacePath": "${workflow.input.workspacePath}",
+        "branchDefault": "team-build"
+      }
+    },
+    {
+      "name": "budget_gate_check",
+      "taskReferenceName": "budget",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.workflowId}",
+        "ceilingUsd": "${workflow.input.ceilingUsd}",
+        "warnFraction": "${workflow.input.warnFraction}",
+        "swarmMode": true
+      }
+    },
+    {
+      "name": "startable_gate",
+      "taskReferenceName": "startable_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "startable",
+      "inputParameters": {
+        "startable": "${budget.output.startable}"
+      },
+      "decisionCases": {
+        "false": [
+          {
+            "name": "run_retrospective",
+            "taskReferenceName": "retrospective_not_startable",
+            "type": "SUB_WORKFLOW",
+            "optional": true,
+            "subWorkflowParam": {
+              "name": "run_retrospective"
+            },
+            "inputParameters": {
+              "correlationId": "${workflow.workflowId}",
+              "repoPath": "${workflow.input.repoPath}",
+              "parentCorrelationId": "${workflow.input.parentCorrelationId}",
+              "verdict": "INCOMPLETE",
+              "report": "INCOMPLETE: swarm-mode team_build has no enforceable spend ceiling (roadmap H5 not-startable rule). Provide ceilingUsd > 0.",
+              "codeModel": "${workflow.input.codeModel}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}",
+              "workspacePath": "${workspace.output.worktreePath}"
+            }
+          },
+          {
+            "name": "terminate_not_startable",
+            "taskReferenceName": "terminate_not_startable",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "COMPLETED",
+              "workflowOutput": {
+                "mode": "team",
+                "delivered": false,
+                "verdict": "INCOMPLETE",
+                "report": "INCOMPLETE: swarm-mode team_build has no enforceable spend ceiling (roadmap H5 not-startable rule). Provide ceilingUsd > 0.",
+                "branch": "${workspace.output.branch}",
+                "startable": false,
+                "finalHead": "",
+                "testCycleState": "not_run",
+                "testsPassed": false
+              }
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "team_plan_init",
+      "taskReferenceName": "plan_init",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.workflowId}",
+        "subtasks": "${workflow.input.subtasks}",
+        "contractPaths": "${workflow.input.contractPaths}",
+        "planUsage": "${workflow.input.planUsage}",
+        "parentCorrelationId": "${workflow.input.parentCorrelationId}",
+        "subsystemId": "${workflow.input.subsystemId}"
+      }
+    },
+    {
+      "name": "team_acceptance_build",
+      "taskReferenceName": "acceptance_build",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.workflowId}",
+        "repoPath": "${workspace.output.worktreePath}",
+        "authorAcceptanceTests": "${workflow.input.authorAcceptanceTests}",
+        "acceptanceTestPattern": "${workflow.input.acceptanceTestPattern}",
+        "codeModel": "${workflow.input.codeModel}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "acceptance_gate",
+      "taskReferenceName": "acceptance_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "gate",
+      "inputParameters": {
+        "gate": "${acceptance_build.output.gate}"
+      },
+      "decisionCases": {
+        "author": [
+          {
+            "name": "acceptance_fan_out",
+            "taskReferenceName": "acceptance_fan_out",
+            "type": "FORK_JOIN_DYNAMIC",
+            "optional": true,
+            "inputParameters": {
+              "dynamicTasks": "${acceptance_build.output.dynamicTasks}",
+              "dynamicTasksInput": "${acceptance_build.output.dynamicTasksInput}"
+            },
+            "dynamicForkTasksParam": "dynamicTasks",
+            "dynamicForkTasksInputParamName": "dynamicTasksInput"
+          },
+          {
+            "name": "acceptance_join",
+            "taskReferenceName": "acceptance_join",
+            "type": "JOIN",
+            "optional": true
+          },
+          {
+            "name": "team_acceptance_collect",
+            "taskReferenceName": "acceptance_tests_commit",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "repoPath": "${workspace.output.worktreePath}",
+              "authored": "${acceptance_build.output.authored}"
+            }
+          },
+          {
+            "name": "test_discover",
+            "taskReferenceName": "acceptance_discover",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "repoPath": "${workspace.output.worktreePath}",
+              "candidateCommit": "${acceptance_tests_commit.output.commit}",
+              "testMode": "targeted",
+              "allowHeavySuites": false,
+              "includeBrowserTests": false
+            }
+          },
+          {
+            "name": "test_plan_resolve",
+            "taskReferenceName": "acceptance_plan",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "discovered": "${acceptance_discover.output.candidates}",
+              "discoveryOutcome": "${acceptance_discover.output.executionOutcome}",
+              "discoveryReason": "${acceptance_discover.output.reason}",
+              "selection": "${acceptance_discover.output.selection}"
+            }
+          },
+          {
+            "name": "test_run",
+            "taskReferenceName": "acceptance_red_run",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "repoPath": "${workspace.output.worktreePath}",
+              "candidateCommit": "${acceptance_tests_commit.output.commit}",
+              "commands": "${acceptance_plan.output.commands}",
+              "discoveryOutcome": "${acceptance_plan.output.discoveryOutcome}",
+              "discoveryReason": "${acceptance_plan.output.discoveryReason}",
+              "testMode": "targeted",
+              "allowHeavySuites": false,
+              "sandboxChecks": "${workflow.input.sandboxChecks}"
+            }
+          },
+          {
+            "name": "team_acceptance_commit",
+            "taskReferenceName": "acceptance_commit",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "correlationId": "${workflow.workflowId}",
+              "repoPath": "${workspace.output.worktreePath}",
+              "authored": "${acceptance_build.output.authored}",
+              "run": "${acceptance_red_run.output}",
+              "joined": "${acceptance_join.output}"
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "loop_init",
+      "taskReferenceName": "loop_init",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "drained": false,
+        "dispatchNewWork": "${budget.output.dispatchNewWork}",
+        "budgetState": "${budget.output.state}",
+        "finalHead": "${workspace.output.baseCommit}",
+        "acceptanceCommands": [],
+        "testWriteRoots": [],
+        "starved": false,
+        "teamGateCommands": []
+      }
+    },
+    {
+      "name": "wave_loop",
+      "taskReferenceName": "wave_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ return $.wave_loop['iteration'] < $.max_waves && $.drained === false && $.dispatch === true && $.starved === false; })();",
+      "inputParameters": {
+        "max_waves": "${workflow.input.maxWaves}",
+        "drained": "${workflow.variables.drained}",
+        "dispatch": "${workflow.variables.dispatchNewWork}",
+        "wave_loop": "${wave_loop.output}",
+        "starved": "${workflow.variables.starved}"
+      },
+      "loopOver": [
+        {
+          "name": "team_standup",
+          "taskReferenceName": "standup",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "repoPath": "${workspace.output.worktreePath}",
+            "correlationId": "${workflow.workflowId}",
+            "contractPaths": "${workflow.input.contractPaths}",
+            "maxWidth": "${workflow.input.maxWidth}",
+            "budgetState": "${workflow.variables.budgetState}",
+            "codeModel": "${workflow.input.codeModel}",
+            "maxTurns": "${workflow.input.maxTurns}",
+            "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+            "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
+            "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}",
+            "feedbackEveryTurns": "${workflow.input.feedbackEveryTurns}",
+            "checkpointEveryTurns": "${workflow.input.checkpointEveryTurns}",
+            "bestOf": "${workflow.input.bestOf}",
+            "parentCorrelationId": "${workflow.input.parentCorrelationId}",
+            "subsystemId": "${workflow.input.subsystemId}",
+            "sandboxChecks": "${workflow.input.sandboxChecks}",
+            "baseModelTier": "${workflow.input.baseModelTier}"
+          }
+        },
+        {
+          "name": "fan_out",
+          "taskReferenceName": "fan_out",
+          "type": "FORK_JOIN_DYNAMIC",
+          "optional": true,
+          "inputParameters": {
+            "dynamicTasks": "${standup.output.dynamicTasks}",
+            "dynamicTasksInput": "${standup.output.dynamicTasksInput}"
+          },
+          "dynamicForkTasksParam": "dynamicTasks",
+          "dynamicForkTasksInputParamName": "dynamicTasksInput"
+        },
+        {
+          "name": "fan_join",
+          "taskReferenceName": "fan_join",
+          "type": "JOIN",
+          "optional": true
+        },
+        {
+          "name": "team_integrate",
+          "taskReferenceName": "integrate",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "sharedRepo": "${workspace.output.worktreePath}",
+            "sharedBranch": "${workspace.output.branch}",
+            "correlationId": "${workflow.workflowId}",
+            "contractPaths": "${standup.output.contractPaths}",
+            "groupIds": "${standup.output.groupIds}",
+            "dispatched": "${standup.output.dispatched}",
+            "maxAttempts": "${workflow.input.maxAttempts}",
+            "enablePeerReview": "${workflow.input.enablePeerReview}",
+            "joined": "${fan_join.output}",
+            "maxContractEvents": "${workflow.input.maxContractEvents}",
+            "parentCorrelationId": "${workflow.input.parentCorrelationId}",
+            "subsystemId": "${workflow.input.subsystemId}",
+            "sandboxChecks": "${workflow.input.sandboxChecks}",
+            "maxRescues": "${workflow.input.maxRescues}"
+          }
+        },
+        {
+          "name": "team_review_build",
+          "taskReferenceName": "review_build",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "sharedRepo": "${workspace.output.worktreePath}",
+            "correlationId": "${workflow.workflowId}",
+            "reviewing": "${integrate.output.reviewing}",
+            "waveBase": "${standup.output.waveBase}",
+            "finalHead": "${integrate.output.final_head}",
+            "maxReviewRounds": "${workflow.input.maxReviewRounds}",
+            "codeModel": "${workflow.input.codeModel}",
+            "reviewMaxTurns": "${workflow.input.reviewMaxTurns}",
+            "reviewMaxBudgetUsd": "${workflow.input.reviewMaxBudgetUsd}",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}",
+            "parentCorrelationId": "${workflow.input.parentCorrelationId}",
+            "subsystemId": "${workflow.input.subsystemId}"
+          }
+        },
+        {
+          "name": "review_fan_out",
+          "taskReferenceName": "review_fan_out",
+          "type": "FORK_JOIN_DYNAMIC",
+          "optional": true,
+          "inputParameters": {
+            "dynamicTasks": "${review_build.output.dynamicTasks}",
+            "dynamicTasksInput": "${review_build.output.dynamicTasksInput}"
+          },
+          "dynamicForkTasksParam": "dynamicTasks",
+          "dynamicForkTasksInputParamName": "dynamicTasksInput"
+        },
+        {
+          "name": "review_fan_join",
+          "taskReferenceName": "review_fan_join",
+          "type": "JOIN",
+          "optional": true
+        },
+        {
+          "name": "team_apply_reviews",
+          "taskReferenceName": "replan",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "correlationId": "${workflow.workflowId}",
+            "sharedRepo": "${workspace.output.worktreePath}",
+            "sharedBranch": "${workspace.output.branch}",
+            "reviewed": "${review_build.output.reviewed}",
+            "maxReviewRounds": "${workflow.input.maxReviewRounds}",
+            "joined": "${review_fan_join.output}",
+            "maxReviewAttempts": "${workflow.input.maxReviewAttempts}",
+            "parentCorrelationId": "${workflow.input.parentCorrelationId}",
+            "maxRescues": "${workflow.input.maxRescues}"
+          }
+        },
+        {
+          "name": "team_monitor",
+          "taskReferenceName": "monitor",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "correlationId": "${workflow.workflowId}",
+            "ceilingUsd": "${workflow.input.ceilingUsd}",
+            "stallAttempts": "${workflow.input.stallAttempts}",
+            "qualityChanges": "${workflow.input.qualityChanges}",
+            "maxHumanConstraints": "${workflow.input.maxHumanConstraints}",
+            "dispatchedCount": "${standup.output.dispatchedCount}",
+            "scopeWaits": "${standup.output.scopeWaits}"
+          }
+        },
+        {
+          "name": "budget_gate_check",
+          "taskReferenceName": "wave_budget",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "correlationId": "${workflow.workflowId}",
+            "ceilingUsd": "${workflow.input.ceilingUsd}",
+            "warnFraction": "${workflow.input.warnFraction}",
+            "swarmMode": true
+          }
+        },
+        {
+          "name": "capture_round",
+          "taskReferenceName": "capture_round",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "drained": "${replan.output.drained}",
+            "dispatchNewWork": "${wave_budget.output.dispatchNewWork}",
+            "budgetState": "${wave_budget.output.state}",
+            "finalHead": "${replan.output.finalHead}",
+            "acceptanceCommands": "${replan.output.acceptanceCommands}",
+            "testWriteRoots": "${replan.output.writeRoots}",
+            "starved": "${monitor.output.starved}",
+            "teamGateCommands": "${replan.output.gateCommands}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "worktree_add",
+      "taskReferenceName": "tests_fork",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "name": "tests"
+      }
+    },
+    {
+      "name": "test_cycle",
+      "taskReferenceName": "tests",
+      "type": "SUB_WORKFLOW",
+      "optional": true,
+      "subWorkflowParam": {
+        "name": "test_cycle"
+      },
+      "inputParameters": {
+        "repoPath": "${tests_fork.output.worktreePath}",
+        "candidateCommit": "${tests_fork.output.initialCommit}",
+        "testMode": "full",
+        "priorVerification": {
+          "commands": "${workflow.variables.acceptanceCommands}"
+        },
+        "allowedWriteRoots": "${workflow.variables.testWriteRoots}",
+        "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
+        "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
+        "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+        "model": "${workflow.input.codeModel}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "sandboxChecks": "${workflow.input.sandboxChecks}",
+        "testCommands": "${workflow.variables.teamGateCommands}"
+      }
+    },
+    {
+      "name": "team_outcome",
+      "taskReferenceName": "outcome",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.workflowId}",
+        "finalHead": "${workflow.variables.finalHead}",
+        "testCycleState": "${tests.output.testCycleState}",
+        "testsPassed": "${tests.output.testsPassed}",
+        "testCommandsRan": "${tests.output.commands}",
+        "testRepairReports": "${tests.output.repairReports}",
+        "budgetState": "${workflow.variables.budgetState}",
+        "repoPath": "${workspace.output.worktreePath}",
+        "sharedRepo": "${workspace.output.worktreePath}",
+        "sharedBranch": "${workspace.output.branch}",
+        "testsWorktree": "${tests_fork.output.worktreePath}",
+        "testsBranch": "${tests_fork.output.branch}"
+      }
+    },
+    {
+      "name": "run_retrospective",
+      "taskReferenceName": "retrospective",
+      "type": "SUB_WORKFLOW",
+      "optional": true,
+      "subWorkflowParam": {
+        "name": "run_retrospective"
+      },
+      "inputParameters": {
+        "correlationId": "${workflow.workflowId}",
+        "repoPath": "${workflow.input.repoPath}",
+        "parentCorrelationId": "${workflow.input.parentCorrelationId}",
+        "verdict": "${outcome.output.verdict}",
+        "report": "${outcome.output.report}",
+        "codeModel": "${workflow.input.codeModel}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "workspacePath": "${workspace.output.worktreePath}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "mode": "team",
+    "sourceHandoff": {
+      "sourceRepoPath": "${workspace.output.sourceRepoPath}",
+      "repoPath": "${workspace.output.worktreePath}",
+      "branch": "${workspace.output.branch}",
+      "commit": "${outcome.output.finalHead}",
+      "originalBranch": "${workspace.output.originalBranch}",
+      "originalHead": "${workspace.output.originalHead}",
+      "baselineCommit": "${workspace.output.baselineCommit}",
+      "includedSourcePaths": "${workspace.output.baselineIncludedPaths}",
+      "presented": "${outcome.output.delivered}"
+    },
+    "delivered": "${outcome.output.delivered}",
+    "verdict": "${outcome.output.verdict}",
+    "report": "${outcome.output.report}",
+    "finalHead": "${outcome.output.finalHead}",
+    "total": "${outcome.output.total}",
+    "doneCount": "${outcome.output.doneCount}",
+    "blockedCount": "${outcome.output.blockedCount}",
+    "openCount": "${outcome.output.openCount}",
+    "blocked": "${outcome.output.blocked}",
+    "openExceptions": "${outcome.output.openExceptions}",
+    "exceptions": "${outcome.output.exceptions}",
+    "rollup": "${outcome.output.rollup}",
+    "bigBangMerge": "${outcome.output.bigBangMerge}",
+    "testCycleState": "${outcome.output.testCycleState}",
+    "testsPassed": "${outcome.output.testsPassed}",
+    "branch": "${workspace.output.branch}",
+    "startable": "${budget.output.startable}",
+    "spendUsd": "${outcome.output.spendUsd}",
+    "spendByRole": "${outcome.output.spendByRole}",
+    "starvedBy": "${outcome.output.starvedBy}",
+    "retrospective": "${retrospective.output}"
+  },
+  "enforceSchema": false,
+  "failureWorkflow": "run_retrospective"
+}

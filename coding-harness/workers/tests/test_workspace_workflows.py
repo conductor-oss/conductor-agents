@@ -5,16 +5,25 @@ from pathlib import Path
 
 
 WF = Path(__file__).resolve().parents[1] / "workflows"
-LOCAL_BRANCH_OWNERS = {"code_parallel", "feature_campaign", "openspec_development"}
-REMOTE_BRANCH_OWNERS = {"github_demo", "issue_to_pr", "publish_salvage"}
+LOCAL_BRANCH_OWNERS = {"code_parallel", "convergence_spike", "feature_campaign", "openspec_development", "team_build", "bug_fix", "project_bootstrap"}
+REMOTE_BRANCH_OWNERS = {"github_demo", "issue_to_pr", "publish_salvage", "ship_run"}
 EXISTING_PR_BRANCH_UPDATERS = {"address_pr", "address_pr_repair", "address_pr_approval", "publish_verified_pr"}
-READ_ONLY = {"local_review", "pr_review", "document_plan", "openspec_plan", "runtime_health"}
+# run_retrospective reads the repository and writes only to the learnings board.
+READ_ONLY = {"local_review", "pr_review", "document_plan", "openspec_plan", "runtime_health", "run_retrospective"}
 ORCHESTRATORS = {
     "automation_dispatch", "automation_reset", "issue_resolution_sweep",
     "pr_address_sweep", "pr_review_sweep",
+    # sdlc_intake owns no branch: it classifies a raw request and routes to a
+    # stage workflow (bug_fix / team_build / code_parallel), each of which owns
+    # its own workspace/branch. intake itself only reads the repo to classify.
+    "sdlc_intake",
+    # cc_program owns no feature branch: it plans subsystems and builds them
+    # through team_build (which owns the program workspace/branch); it only
+    # reads/commits the repo_memory metadata file on the base repo.
+    "cc_program",
 }
 NESTED_BRANCH_CONSUMERS = {
-    "campaign_subtask", "code_revision_loop", "code_subtask", "design_docs",
+    "campaign_subtask", "code_subtask", "design_docs",
     "merge_remediation", "openspec_artifact_drain", "openspec_generate_artifact",
     # test_cycle owns no branch: it commits its fixes to whatever branch the
     # caller's repoPath is already on, exactly like the loop it replaces.

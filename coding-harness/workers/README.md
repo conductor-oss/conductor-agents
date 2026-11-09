@@ -503,7 +503,7 @@ CONDUCTOR_SERVER_URL=http://localhost:8080/api workers/.venv/bin/python workers/
 ```
 
 `WORKER_MODULES` (comma-separated, default
-`coding_agent,gitops,campaign,openspec,openspecops,automation,model_policy,revision,planning`) selects
+`coding_agent,gitops,campaign,openspec,openspecops,automation,model_policy,planning`) selects
 which task modules load; the default covers every workflow. `coding_agent` is the async agent driver
 (`thread_count=8` = 8 concurrent sessions on one event loop); `gitops` holds the git/GitHub
 tasks; `openspec`/`openspecops` shell out to the `openspec` CLI (must be installed on that host —
@@ -514,7 +514,9 @@ volume).
 `main.py` refuses an overlapping deployment for the same Conductor URL, so a broad default worker
 cannot duplicate a separately started `coding_agent` worker. Worker task types use one poller each;
 `CONDUCTOR_POLL_TIMEOUT_MS` (default `5000`) controls server long
-polling and `CONDUCTOR_POLL_INTERVAL_MS` (default `500`) controls empty-queue backoff.
+polling and `CONDUCTOR_POLL_INTERVAL_MS` (default `500`) controls empty-queue backoff. Each poll
+waits at most the long-poll timeout plus 30 s for its response, then polls again — a lost response
+otherwise parks that task type's only poller forever.
 
 ## Layout
 

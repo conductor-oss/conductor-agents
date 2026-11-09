@@ -1,0 +1,55 @@
+{
+  "name": "team_integrate",
+  "description": "Team cycle (roadmap Phase 2, §4.3 integrate): continuous-rebase integrator (H1, no big-bang merge). Clean deliveries advance to the 'review' state (peer review gates 'done', H13); a fork with no commit (empty_delivery) or a rebase conflict is re-queued as 'reopened' under the attempt cap or terminally 'blocked'; a frozen-contract edit is a controlled event. Releases the wave's file ownership and records each agent's real spend (H5).",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "team_integrate_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "sharedRepo": {"type": "string", "description": "The shared run worktree."},
+        "sharedBranch": {"type": "string", "description": "The shared branch each wave rebases onto."},
+        "correlationId": {"type": "string"},
+        "contractPaths": {"type": ["array", "string"]},
+        "groupIds": {"type": "string", "description": "Comma-separated ids dispatched this wave."},
+        "dispatched": {"type": ["array", "string"], "description": "Items dispatched this wave [{id, files, attempt}]."},
+        "maxAttempts": {"type": ["integer", "string"], "description": "Retry cap for transient (empty/conflict) deliveries."},
+        "enablePeerReview": {"type": ["boolean", "string"], "description": "When true, integrated items go to 'review'; when false, straight to 'done'."},
+        "joined": {"type": ["object", "string"], "description": "The FORK_JOIN_DYNAMIC join output, used to record per-agent spend."},
+        "sandboxChecks": {"type": ["boolean", "string"], "description": "Run the integration oracle (every integrated item's frozen acceptance tests at the integrated head) OS-sandboxed, as the test cycles do."}
+      },
+      "required": ["sharedRepo", "sharedBranch"]
+    }
+  },
+  "outputSchema": {
+    "name": "team_integrate_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "reviewing": {"type": "array", "items": {"type": "string"}, "description": "Ids integrated this wave now awaiting peer review."},
+        "doneNow": {"type": "array", "items": {"type": "string"}, "description": "Ids marked done directly (peer review disabled)."},
+        "retry": {"type": "array", "description": "Transient failures re-queued with attempt+1."},
+        "blocked": {"type": "array", "description": "Terminal reopen records (blocked items)."},
+        "integratedCount": {"type": "integer"},
+        "reviewingCount": {"type": "integer"},
+        "retryCount": {"type": "integer"},
+        "blockedCount": {"type": "integer"},
+        "releasedFiles": {"type": "integer"},
+        "spendRecorded": {"type": "integer"},
+        "big_bang_merge": {"type": "boolean", "description": "Always false — the H1 invariant."},
+        "final_head": {"type": "string", "description": "Shared branch head after this wave."},
+        "oracle": {"type": "object", "description": "The integration oracle: {state: passed|failed|blocked|skipped, checked: [item ids whose frozen tests ran at final_head], red: {item: failing output tail}, reason}. A red item is re-opened (integration_oracle_red) with the failure as its directive."}
+      },
+      "required": ["reviewing", "retry", "blocked", "final_head", "big_bang_merge"]
+    }
+  }
+}

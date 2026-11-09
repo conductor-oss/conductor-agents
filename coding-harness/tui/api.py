@@ -645,9 +645,14 @@ class ConductorClient:
         return approvals
 
     # -- mutations -----------------------------------------------------------
-    async def start(self, name: str, payload: dict) -> str:
-        # Never pass a version: the server starts whatever version is registered.
-        r = await self._request("POST", f"/workflow/{name}", json=payload)
+    async def start(self, name: str, payload: dict, *, correlation_id: str = "") -> str:
+        # Never pass a version: the server starts whatever version is registered. A correlation id
+        # (a follow-up run names the run it continues) needs the start-request form.
+        if correlation_id:
+            r = await self._request("POST", "/workflow",
+                                    json={"name": name, "input": payload, "correlationId": correlation_id})
+        else:
+            r = await self._request("POST", f"/workflow/{name}", json=payload)
         if r.status_code >= 400:
             raise ConductorError(f"start {name}: HTTP {r.status_code} {r.text[:200]}")
         return r.text.strip().strip('"')

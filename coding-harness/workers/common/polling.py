@@ -3,6 +3,17 @@
 The pinned SDK currently sends ``timeout=100`` for every batch poll regardless
 of the worker's ``poll_timeout`` setting.  Override that transport argument in
 one place so a task type still has one poller, while idle queues use long polls.
+
+The same patch bounds how long the poller waits for the poll *response*. The
+server answers a batch poll within its ``timeout`` (a task arrived, or the long
+poll expired), so a response that has not arrived well after that is a lost
+one, not a slow one. conductor-python 1.3.11 passes ``timeout=None`` to httpx
+for every request, which disables the client's 120 s default rather than
+applying it; the ``coding_agent`` poller (pid 60595, 2026-11-07) sat in
+``recv`` on a never-answered poll for over an hour with its queue holding a
+SCHEDULED task, and nothing in the fleet noticed. A poll is a queue-polling
+interval, not an execution deadline: when the bound trips the SDK logs the
+failure, backs off and polls again; no running task is touched.
 """
 
 from __future__ import annotations
@@ -41,6 +52,20 @@ def poll_interval_ms() -> int:
         return 500
 
 
+POLL_RESPONSE_GRACE_S = 30.0
+POLL_CONNECT_BOUND_S = 10.0
+
+
+def poll_response_bound() -> tuple[float, float]:
+    """``(connect, read)`` seconds the poller waits for one batch-poll response.
+
+    The read bound is the server's own long-poll timeout plus a grace period,
+    so a healthy long poll can never trip it; only a response that is not
+    coming does. The value is a ``_request_timeout`` for the poll call alone.
+    """
+    return (POLL_CONNECT_BOUND_S, poll_timeout_ms() / 1000.0 + POLL_RESPONSE_GRACE_S)
+
+
 def worker_thread_count(task_name: str, current: int) -> int:
     """Resolve an operator concurrency floor for one task type.
 
@@ -72,6 +97,7 @@ def configure_sdk_polling() -> None:
 
         def batch_poll(self, tasktype, **kwargs):
             kwargs["timeout"] = poll_timeout_ms()
+            kwargs["_request_timeout"] = poll_response_bound()
             return original_sync(self, tasktype, **kwargs)
 
         TaskResourceApi.batch_poll = batch_poll
@@ -82,6 +108,7 @@ def configure_sdk_polling() -> None:
 
         async def batch_poll(self, tasktype, **kwargs):
             kwargs["timeout"] = poll_timeout_ms()
+            kwargs["_request_timeout"] = poll_response_bound()
             return await original_async(self, tasktype, **kwargs)
 
         AsyncTaskResourceApi.batch_poll = batch_poll

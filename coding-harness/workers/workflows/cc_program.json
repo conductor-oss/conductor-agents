@@ -1,0 +1,689 @@
+{
+  "name": "cc_program",
+  "description": "Roadmap Phase 6 (G4) program build as TEAMS OF TEAMS (H3, closure plan WP5) + (G5) lasting memory. Plans the program into subsystems (each optionally split into its team's items), gates the decomposition (bounded replan, H14), seeds a PROGRAM board with one item per subsystem, and builds the subsystems rank by rank: every subsystem of a rank is built CONCURRENTLY by its own child team_build (its own board, Lead, monitor, reviewers) on the shared program branch, with program-scoped file ownership and serialized continuous integration; a subsystem that is itself a program recurses into a child cc_program (bounded by maxDepth). The program Lead folds only subsystem items and child rollups. Cross-subsystem integration is gated green by test_cycle (full); repo_memory is read before planning and written after.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "restartable": true,
+  "enforceSchema": false,
+  "inputParameters": [
+    "repoPath",
+    "description",
+    "subsystems",
+    "contractPaths",
+    "ceilingUsd",
+    "maxWidth",
+    "maxWaves",
+    "maxReplan",
+    "maxDepth",
+    "depth",
+    "parentCorrelationId",
+    "subsystemId",
+    "bestOf",
+    "authorAcceptanceTests",
+    "codeModel",
+    "maxTurns",
+    "maxBudgetUsd",
+    "maxFixAttempts",
+    "branchRunId",
+    "inPlace",
+    "workspacePath",
+    "allowAgentTestPlan",
+    "allowAgentAuthoredTests",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides",
+    "maxTeamAttempts",
+    "branchName"
+  ],
+  "inputTemplate": {
+    "description": "",
+    "subsystems": [],
+    "contractPaths": [],
+    "ceilingUsd": 60,
+    "maxWidth": 6,
+    "maxWaves": 16,
+    "maxReplan": 2,
+    "maxDepth": 2,
+    "depth": 0,
+    "parentCorrelationId": "",
+    "subsystemId": "",
+    "bestOf": 1,
+    "authorAcceptanceTests": true,
+    "codeModel": "",
+    "maxTurns": 250,
+    "maxBudgetUsd": 10,
+    "maxFixAttempts": 2,
+    "branchRunId": "",
+    "inPlace": false,
+    "workspacePath": "",
+    "allowAgentTestPlan": true,
+    "allowAgentAuthoredTests": true,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {},
+    "maxTeamAttempts": 2,
+    "branchName": "program"
+  },
+  "variables": {
+    "replanFeedback": "",
+    "programPlan": {},
+    "planUsage": {},
+    "continue": true,
+    "programHead": "",
+    "planRoute": "",
+    "breakdown": {}
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "repo_memory_read",
+      "taskReferenceName": "memory_read",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "plan_source",
+      "taskReferenceName": "plan_source",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "(function(){ return ($.given && $.given.length > 0) ? 'given' : 'plan'; })();",
+      "inputParameters": {
+        "given": "${workflow.input.subsystems}"
+      },
+      "decisionCases": {
+        "given": [
+          {
+            "name": "use_given_plan",
+            "taskReferenceName": "use_given_plan",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "programPlan": {
+                "subtasks": "${workflow.input.subsystems}",
+                "contractPaths": "${workflow.input.contractPaths}",
+                "route": "given"
+              }
+            }
+          }
+        ],
+        "plan": [
+          {
+            "name": "plan_loop",
+            "taskReferenceName": "plan_loop",
+            "type": "DO_WHILE",
+            "evaluatorType": "graaljs",
+            "loopCondition": "(function(){ var cur = $.plan_loop[String($.plan_loop['iteration'])] || {}; var r = (cur['program_parse'] || {})['route']; return $.plan_loop['iteration'] <= $.max_replan && r === 'replan'; })();",
+            "inputParameters": {
+              "max_replan": "${workflow.input.maxReplan}",
+              "plan_loop": "${plan_loop.output}"
+            },
+            "loopOver": [
+              {
+                "name": "coding_agent",
+                "taskReferenceName": "program_plan",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "worktreePath": "${workflow.input.repoPath}",
+                  "tools": [
+                    "Read",
+                    "Grep",
+                    "Glob"
+                  ],
+                  "templateKey": "program_plan",
+                  "modelRole": "plan",
+                  "modelResolution": "${model_policy.output}",
+                  "model": "${workflow.input.codeModel}",
+                  "maxTurns": 80,
+                  "maxBudgetUsd": 4,
+                  "prompt": "You are the program planner for a software-construction harness. Read the repository and decompose this PROGRAM into subsystems, each of which will be built by its OWN team of agents (teams of teams):\n\n${workflow.input.description}\n\nReturn 'subtasks' as a list of subsystems {id, description, deliverable, files, dependsOn, acceptanceCriteria, items}. 'deliverable' is 'code' (source and tests) or 'docs' (design documents, specs, ADRs, research notes written as Markdown files, no code) — a design or research step is a 'docs' subsystem. 'dependsOn' lists subsystem ids that must be built first (a DAG). 'files' is EVERY repository-relative file the subsystem's team will edit. 'items' (optional) splits the subsystem into its team's work items {id, description, deliverable, files, dependsOn, acceptanceCriteria} (ids unique within the subsystem, dependsOn within the subsystem). Independent subsystems are built concurrently, so subsystems that are not ordered by dependsOn should not edit the same file. Also list contractPaths — ONLY pre-existing files that must NOT change (frozen interfaces or integration tests). NEVER list a file that any subsystem edits as a contract path. Subsystems that depend (directly or through others) on a 'docs' subsystem are re-sliced from those documents once they are written: give them files, dependsOn and acceptanceCriteria, and only provisional items.\n\nPrior knowledge about this repository (trust these; stale lessons were already dropped):\n${memory_read.output.digest}\n\n${workflow.variables.replanFeedback}",
+                  "promptContext": {
+                    "description": "${workflow.input.description}",
+                    "digest": "${memory_read.output.digest}",
+                    "replanFeedback": "${workflow.variables.replanFeedback}"
+                  },
+                  "promptTemplate": "",
+                  "promptTemplateSource": "",
+                  "modelProfile": "${workflow.input.modelProfile}",
+                  "modelPolicy": "${workflow.input.modelPolicy}",
+                  "modelPolicySource": "${workflow.input.modelPolicySource}",
+                  "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                  "modelsConfig": "${workflow.input.modelsConfig}",
+                  "modelOverrides": "${workflow.input.modelOverrides}",
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "subtasks": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "deliverable": {
+                              "type": "string",
+                              "enum": [
+                                "code",
+                                "docs"
+                              ]
+                            },
+                            "files": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "dependsOn": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "acceptanceCriteria": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "reviewCriteria": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "items": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "description": {
+                                    "type": "string"
+                                  },
+                                  "deliverable": {
+                                    "type": "string",
+                                    "enum": [
+                                      "code",
+                                      "docs"
+                                    ]
+                                  },
+                                  "files": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "dependsOn": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "acceptanceCriteria": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "reviewCriteria": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string"
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "description",
+                                  "files",
+                                  "acceptanceCriteria"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "description",
+                            "files",
+                            "acceptanceCriteria"
+                          ]
+                        }
+                      },
+                      "contractPaths": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "summary": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "subtasks"
+                    ]
+                  }
+                }
+              },
+              {
+                "name": "intake_route",
+                "taskReferenceName": "program_parse",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "classification": "${program_plan.output}",
+                  "forceTeam": true,
+                  "requireCode": true,
+                  "priorPlanUsage": "${workflow.variables.planUsage}"
+                }
+              },
+              {
+                "name": "capture_program_plan",
+                "taskReferenceName": "capture_program_plan",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "replanFeedback": "${program_parse.output.replanPrompt}",
+                  "programPlan": "${program_parse.output}",
+                  "planUsage": "${program_parse.output.planUsage}",
+                  "planRoute": "${program_parse.output.route}"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "workspace_prepare",
+      "taskReferenceName": "workspace",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "branch": "${workflow.input.branchName}",
+        "branchRunId": "${workflow.input.branchRunId}",
+        "inPlace": "${workflow.input.inPlace}",
+        "preserveExisting": true,
+        "workflowId": "${workflow.workflowId}",
+        "workspacePath": "${workflow.input.workspacePath}",
+        "branchDefault": "program"
+      }
+    },
+    {
+      "name": "program_rank_init",
+      "taskReferenceName": "rank_init",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.workflowId}",
+        "plan": "${workflow.variables.programPlan}",
+        "planUsage": "${workflow.variables.planUsage}",
+        "depth": "${workflow.input.depth}",
+        "parentCorrelationId": "${workflow.input.parentCorrelationId}",
+        "subsystemId": "${workflow.input.subsystemId}",
+        "maxTeamAttempts": "${workflow.input.maxTeamAttempts}"
+      }
+    },
+    {
+      "name": "program_gate",
+      "taskReferenceName": "program_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "gate",
+      "inputParameters": {
+        "gate": "${rank_init.output.gate}"
+      },
+      "decisionCases": {
+        "rejected": [
+          {
+            "name": "run_retrospective",
+            "taskReferenceName": "retrospective_program_rejected",
+            "type": "SUB_WORKFLOW",
+            "optional": true,
+            "subWorkflowParam": {
+              "name": "run_retrospective"
+            },
+            "inputParameters": {
+              "correlationId": "${workflow.workflowId}",
+              "repoPath": "${workflow.input.repoPath}",
+              "parentCorrelationId": "${workflow.input.parentCorrelationId}",
+              "verdict": "PROGRAM_PLAN_REJECTED",
+              "report": "The decomposition gate rejected the program plan (after maxReplan rounds); no team was spawned.",
+              "codeModel": "${workflow.input.codeModel}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}",
+              "workspacePath": "${workspace.output.worktreePath}"
+            }
+          },
+          {
+            "name": "terminate_program_rejected",
+            "taskReferenceName": "terminate_program_rejected",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "COMPLETED",
+              "workflowOutput": {
+                "programDelivered": false,
+                "delivered": false,
+                "verdict": "PROGRAM_PLAN_REJECTED",
+                "report": "The decomposition gate rejected the program plan (after maxReplan rounds); no team was spawned.",
+                "reasons": "${rank_init.output.reasons}"
+              }
+            }
+          }
+        ],
+        "cyclic": [
+          {
+            "name": "run_retrospective",
+            "taskReferenceName": "retrospective_program_cyclic",
+            "type": "SUB_WORKFLOW",
+            "optional": true,
+            "subWorkflowParam": {
+              "name": "run_retrospective"
+            },
+            "inputParameters": {
+              "correlationId": "${workflow.workflowId}",
+              "repoPath": "${workflow.input.repoPath}",
+              "parentCorrelationId": "${workflow.input.parentCorrelationId}",
+              "verdict": "PROGRAM_PLAN_CYCLIC",
+              "report": "The subsystem dependencies do not form a DAG; no team was spawned.",
+              "codeModel": "${workflow.input.codeModel}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}",
+              "workspacePath": "${workspace.output.worktreePath}"
+            }
+          },
+          {
+            "name": "terminate_program_cyclic",
+            "taskReferenceName": "terminate_program_cyclic",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "COMPLETED",
+              "workflowOutput": {
+                "programDelivered": false,
+                "delivered": false,
+                "verdict": "PROGRAM_PLAN_CYCLIC",
+                "report": "The subsystem dependencies do not form a DAG; no team was spawned.",
+                "cyclic": "${rank_init.output.cyclic}"
+              }
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "rank_loop_init",
+      "taskReferenceName": "rank_loop_init",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "continue": true,
+        "programHead": "${workspace.output.baseCommit}",
+        "breakdown": {}
+      }
+    },
+    {
+      "name": "rank_loop",
+      "taskReferenceName": "rank_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ var cur = $.rank_loop[String($.rank_loop['iteration'])] || {}; var go = (cur['apply_rank'] || {})['continue']; return $.rank_loop['iteration'] < $.max_iterations && go === true; })();",
+      "inputParameters": {
+        "rank_count": "${rank_init.output.rankCount}",
+        "rank_loop": "${rank_loop.output}",
+        "max_iterations": "${rank_init.output.maxRankIterations}"
+      },
+      "loopOver": [
+        {
+          "name": "program_rank_build",
+          "taskReferenceName": "rank_build",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "correlationId": "${workflow.workflowId}",
+            "repoPath": "${workflow.input.repoPath}",
+            "workspacePath": "${workspace.output.worktreePath}",
+            "ceilingUsd": "${workflow.input.ceilingUsd}",
+            "maxDepth": "${workflow.input.maxDepth}",
+            "maxWidth": "${workflow.input.maxWidth}",
+            "maxWaves": "${workflow.input.maxWaves}",
+            "bestOf": "${workflow.input.bestOf}",
+            "authorAcceptanceTests": "${workflow.input.authorAcceptanceTests}",
+            "codeModel": "${workflow.input.codeModel}",
+            "maxTurns": "${workflow.input.maxTurns}",
+            "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+            "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+            "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
+            "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}",
+            "breakdown": "${workflow.variables.breakdown}"
+          }
+        },
+        {
+          "name": "rank_fan_out",
+          "taskReferenceName": "rank_fan_out",
+          "type": "FORK_JOIN_DYNAMIC",
+          "optional": true,
+          "inputParameters": {
+            "dynamicTasks": "${rank_build.output.dynamicTasks}",
+            "dynamicTasksInput": "${rank_build.output.dynamicTasksInput}"
+          },
+          "dynamicForkTasksParam": "dynamicTasks",
+          "dynamicForkTasksInputParamName": "dynamicTasksInput"
+        },
+        {
+          "name": "rank_join",
+          "taskReferenceName": "rank_join",
+          "type": "JOIN",
+          "optional": true
+        },
+        {
+          "name": "program_apply_rank",
+          "taskReferenceName": "apply_rank",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "correlationId": "${workflow.workflowId}",
+            "repoPath": "${workspace.output.worktreePath}",
+            "rank": "${rank_build.output.rank}",
+            "joined": "${rank_join.output}",
+            "description": "${workflow.input.description}",
+            "memoryDigest": "${memory_read.output.digest}",
+            "maxTeamAttempts": "${workflow.input.maxTeamAttempts}"
+          }
+        },
+        {
+          "name": "breakdown_gate",
+          "taskReferenceName": "breakdown_gate",
+          "type": "SWITCH",
+          "evaluatorType": "value-param",
+          "expression": "breakdown",
+          "inputParameters": {
+            "breakdown": "${apply_rank.output.breakdown}"
+          },
+          "decisionCases": {
+            "yes": [
+              {
+                "name": "coding_agent",
+                "taskReferenceName": "rank_breakdown",
+                "type": "SIMPLE",
+                "optional": true,
+                "inputParameters": {
+                  "worktreePath": "${workspace.output.worktreePath}",
+                  "tools": [
+                    "Read",
+                    "Grep",
+                    "Glob"
+                  ],
+                  "templateKey": "program_breakdown",
+                  "modelRole": "plan",
+                  "modelResolution": "${model_policy.output}",
+                  "model": "${workflow.input.codeModel}",
+                  "modelProfile": "${workflow.input.modelProfile}",
+                  "modelPolicy": "${workflow.input.modelPolicy}",
+                  "modelPolicySource": "${workflow.input.modelPolicySource}",
+                  "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                  "modelsConfig": "${workflow.input.modelsConfig}",
+                  "modelOverrides": "${workflow.input.modelOverrides}",
+                  "maxTurns": 60,
+                  "maxBudgetUsd": 4,
+                  "prompt": "${apply_rank.output.breakdownPrompt}",
+                  "schema": "${apply_rank.output.breakdownSchema}",
+                  "promptContext": "${apply_rank.output.breakdownContext}",
+                  "promptTemplate": "",
+                  "promptTemplateSource": ""
+                }
+              }
+            ]
+          },
+          "defaultCase": []
+        },
+        {
+          "name": "capture_rank",
+          "taskReferenceName": "capture_rank",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "continue": "${apply_rank.output.continue}",
+            "programHead": "${apply_rank.output.head}",
+            "breakdown": "${rank_breakdown.output}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "test_cycle",
+      "taskReferenceName": "tests",
+      "type": "SUB_WORKFLOW",
+      "optional": true,
+      "subWorkflowParam": {
+        "name": "test_cycle"
+      },
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "candidateCommit": "${workflow.variables.programHead}",
+        "testMode": "full",
+        "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
+        "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
+        "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+        "model": "${workflow.input.codeModel}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "program_outcome",
+      "taskReferenceName": "outcome",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.workflowId}",
+        "subsystems": "${rank_init.output.subsystems}",
+        "testsPassed": "${tests.output.testsPassed}",
+        "finalHead": "${workflow.variables.programHead}"
+      }
+    },
+    {
+      "name": "repo_memory_write",
+      "taskReferenceName": "memory_write",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "lessons": "${outcome.output.lessons}"
+      }
+    },
+    {
+      "name": "run_retrospective",
+      "taskReferenceName": "retrospective",
+      "type": "SUB_WORKFLOW",
+      "optional": true,
+      "subWorkflowParam": {
+        "name": "run_retrospective"
+      },
+      "inputParameters": {
+        "correlationId": "${workflow.workflowId}",
+        "repoPath": "${workflow.input.repoPath}",
+        "parentCorrelationId": "${workflow.input.parentCorrelationId}",
+        "verdict": "${outcome.output.verdict}",
+        "report": "${outcome.output.report}",
+        "codeModel": "${workflow.input.codeModel}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "workspacePath": "${workspace.output.worktreePath}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "programDelivered": "${outcome.output.programDelivered}",
+    "delivered": "${outcome.output.programDelivered}",
+    "verdict": "${outcome.output.verdict}",
+    "report": "${outcome.output.report}",
+    "ranks": "${outcome.output.ranks}",
+    "cyclic": "${outcome.output.cyclic}",
+    "children": "${outcome.output.children}",
+    "spendUsd": "${outcome.output.spendUsd}",
+    "split": "${rank_init.output.split}",
+    "testsPassed": "${tests.output.testsPassed}",
+    "testCycleState": "${tests.output.testCycleState}",
+    "finalHead": "${workflow.variables.programHead}",
+    "sourceHandoff": {
+      "sourceRepoPath": "${workspace.output.sourceRepoPath}",
+      "repoPath": "${workspace.output.worktreePath}",
+      "branch": "${workspace.output.branch}",
+      "commit": "${workflow.variables.programHead}",
+      "originalBranch": "${workspace.output.originalBranch}",
+      "originalHead": "${workspace.output.originalHead}",
+      "baselineCommit": "${workspace.output.baselineCommit}",
+      "includedSourcePaths": "${workspace.output.baselineIncludedPaths}",
+      "presented": "${outcome.output.programDelivered}"
+    },
+    "memoryWritten": "${memory_write.output}",
+    "branch": "${workspace.output.branch}",
+    "retrospective": "${retrospective.output}"
+  },
+  "failureWorkflow": "run_retrospective"
+}

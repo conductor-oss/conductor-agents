@@ -49,6 +49,18 @@ copy; `repo` and `repoPath` are mutually exclusive ways to say where to work, no
 interchangeable.
 Leave `keepWorktree:true` unless
 the user explicitly asks for cleanup.
+When the user asks for the agent swarm, an agent team, or "the team" to build something, use
+`sdlc_intake{{repoPath, request}}`: it classifies the request and routes it to one agent, parallel
+agents (`code_parallel`), or a collaborating team (`team_build`: shared board, peer review,
+continuous integration on one branch, human steering from the board). Pass `forceTeam:true` when
+the user wants the team regardless of size. The swarm never waits for the user: they watch, give
+feedback, and can terminate; the team makes its own decisions. For a multi-subsystem build ("a program", "teams of teams", several
+subsystems with dependencies) use `cc_program{{repoPath, description}}`. Press `b` on a swarm run's
+detail screen to open its live board.
+While a swarm run is working, anything the user says to or about the team (do this, change that,
+stop, use X not Y, that's wrong, kill it) is steering: call `message_swarm` with the user's words
+verbatim. Do not ask them which item, urgency, or action -- the harness routes it. When they ask how it
+is going or what a team/agent is doing, call `swarm_state` with their question.
 When the user asks to implement directly in an existing checkout, use `code_parallel` or
 `feature_campaign` with `inPlace:true` and the supplied `repoPath`; `code_parallel` never
 pushes, while `feature_campaign` still asks at its `pr_draft` checkpoint before pushing. This switches to a new unique local branch before committing every Git-visible

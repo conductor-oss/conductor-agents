@@ -28,7 +28,17 @@
     "specContextPath",
     "templateKey",
     "allowAgentTestPlan",
-    "allowAgentAuthoredTests"
+    "allowAgentAuthoredTests",
+    "feedbackCorrelationId",
+    "feedbackItem",
+    "feedbackSince",
+    "feedbackEveryTurns",
+    "checkpointEveryTurns",
+    "testCommands",
+    "acceptanceTests",
+    "outputSchema",
+    "sandboxChecks",
+    "modelTier"
   ],
   "inputSchema": {
     "name": "code_subtask_input",
@@ -145,7 +155,15 @@
             "type": "string"
           },
           "default": [],
-          "description": "Repository-relative path prefixes this subtask is authorized to write to; also used as the planned-paths set for delivery auditing."
+          "description": "Repository-relative path prefixes this subtask is authorized to write to; also used as the planned-paths set for delivery auditing (minus acceptanceTests)."
+        },
+        "acceptanceTests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "The item's frozen acceptance tests inside allowedWriteRoots: writable only so a wrong assertion can be amended, so the delivery audit never counts one left untouched as missing."
         },
         "contextPaths": {
           "type": "array",
@@ -164,6 +182,57 @@
           "type": "boolean",
           "default": true,
           "description": "Forwarded to this subtask's own test_cycle sub-workflow: when true and allowAgentTestPlan's search also finds nothing, lets a coding agent author exactly one new test file, accepted only after a red/green check (fails against the pre-candidate baseline, passes against the real candidate change)."
+        },
+        "feedbackCorrelationId": {
+          "type": "string",
+          "description": "Board run id whose new directives the implementer session takes after each tool call (closure plan WP2). Empty disables."
+        },
+        "feedbackItem": {
+          "type": "string",
+          "description": "Work-item id whose directives are injected into the running session."
+        },
+        "feedbackSince": {
+          "type": [
+            "number",
+            "string"
+          ],
+          "description": "Epoch seconds when the prompt was built; older directives are already in it."
+        },
+        "feedbackEveryTurns": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "Poll the board every N tool calls (0 disables)."
+        },
+        "checkpointEveryTurns": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "Snapshot the worktree every N tool calls (0 disables, H17)."
+        },
+        "testCommands": {
+          "type": "array",
+          "items": {},
+          "description": "Explicit commands for this subtask's own test gate (e.g. its frozen acceptance tests, closure plan WP6); empty uses discovery."
+        },
+        "outputSchema": {
+          "type": "object",
+          "description": "Optional JSON schema for the implementer's structured end-of-session report (e.g. team lessons and constraint pushback, closure plan WP7/WP8). Empty means free text."
+        },
+        "sandboxChecks": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run the repository's check commands inside the OS sandbox (macOS sandbox-exec / Linux bwrap): writes confined to the disposable checkout and caches, no network except loopback (closure plan WP9, H17). A missing sandbox tool blocks the check as sandbox_unavailable."
+        },
+        "modelTier": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "default": 0,
+          "description": "Index into the code role's ordered model tiers (0 = first). A rescue dispatch of a stuck item runs a higher tier."
         }
       },
       "required": [
@@ -360,6 +429,41 @@
             "null"
           ],
           "description": "Human-readable summary from the subtask's test_cycle sub-workflow; null if that sub-workflow never produced output."
+        },
+        "feedbackInjections": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Directives injected into the implementer session while it worked."
+        },
+        "interruptedBy": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Blocking directive that stopped the session, or null."
+        },
+        "checkpoints": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Worktree snapshots taken during the session."
+        },
+        "restoredCheckpoint": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Checkpoint restored at session start, or null."
+        },
+        "structured": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "The implementer's structured report when outputSchema was given."
         }
       },
       "required": [
@@ -406,7 +510,17 @@
     "allowedWriteRoots": [],
     "contextPaths": [],
     "allowAgentTestPlan": true,
-    "allowAgentAuthoredTests": true
+    "allowAgentAuthoredTests": true,
+    "feedbackCorrelationId": "",
+    "feedbackItem": "",
+    "feedbackSince": 0,
+    "feedbackEveryTurns": 1,
+    "checkpointEveryTurns": 0,
+    "testCommands": [],
+    "acceptanceTests": [],
+    "outputSchema": {},
+    "sandboxChecks": false,
+    "modelTier": 0
   },
   "variables": {
     "deliveryState": "pending",
@@ -468,7 +582,14 @@
         "modelsConfig": "${workflow.input.modelsConfig}",
         "modelOverrides": "${workflow.input.modelOverrides}",
         "modelResolution": "${model_policy.output}",
-        "failSoft": true
+        "failSoft": true,
+        "feedbackCorrelationId": "${workflow.input.feedbackCorrelationId}",
+        "feedbackItem": "${workflow.input.feedbackItem}",
+        "feedbackSince": "${workflow.input.feedbackSince}",
+        "feedbackEveryTurns": "${workflow.input.feedbackEveryTurns}",
+        "checkpointEveryTurns": "${workflow.input.checkpointEveryTurns}",
+        "schema": "${workflow.input.outputSchema}",
+        "modelTier": "${workflow.input.modelTier}"
       }
     },
     {
@@ -478,6 +599,7 @@
       "inputParameters": {
         "repoPath": "${wt.output.worktreePath}",
         "plannedPaths": "${workflow.input.allowedWriteRoots}",
+        "optionalPaths": "${workflow.input.acceptanceTests}",
         "agentReport": "${code.output}"
       }
     },
@@ -505,6 +627,39 @@
           {
             "name": "skip_delivery_repairs",
             "taskReferenceName": "skip_delivery_repairs",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "repairAttempts": 0,
+              "repairHistory": {}
+            }
+          }
+        ],
+        "interrupted": [
+          {
+            "name": "skip_delivery_repairs",
+            "taskReferenceName": "skip_delivery_repairs_interrupted",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "repairAttempts": 0,
+              "repairHistory": {}
+            }
+          }
+        ],
+        "pushback": [
+          {
+            "name": "skip_delivery_repairs",
+            "taskReferenceName": "skip_delivery_repairs_pushback",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "repairAttempts": 0,
+              "repairHistory": {}
+            }
+          }
+        ],
+        "satisfied": [
+          {
+            "name": "skip_delivery_repairs",
+            "taskReferenceName": "skip_delivery_repairs_satisfied",
             "type": "SET_VARIABLE",
             "inputParameters": {
               "repairAttempts": 0,
@@ -549,11 +704,20 @@
                   "${workflow.input.specContextPath}"
                 ],
                 "contextPaths": "${workflow.input.contextPaths}",
-                "prompt": "Repair only the incomplete delivery for this subtask. Create or update every exact missing planned path, correct rejected artifacts without fabricating replacements, and address structured command failures or sandbox denials when possible within the authorized tools. Do not infer success from the prior prose report.\n\nSubtask: ${workflow.input.prompt}\n\nExact missing paths: ${delivery_repair_context.output.missingPathsJson}\nRejected paths: ${delivery_repair_context.output.rejectedPathsJson}\nCommand failures: ${delivery_repair_context.output.commandFailuresJson}\nSandbox denials: ${delivery_repair_context.output.sandboxDenialsJson}\nPrevious structured agent report: ${delivery_repair_context.output.previousStructuredReportJson}\nPrevious status: ${workflow.variables.lastAgentReport.status}\nPrevious error: ${workflow.variables.lastAgentReport.error}",
-                "promptTemplate": "${workflow.input.promptTemplate}",
+                "prompt": "This delivery is INCOMPLETE. These planned paths do not exist in the worktree and MUST be created, with real content, before anything else counts: ${delivery_repair_context.output.missingPathsJson}\nRejected paths (correct them without fabricating replacements): ${delivery_repair_context.output.rejectedPathsJson}\nCommand failures: ${delivery_repair_context.output.commandFailuresJson}\nSandbox denials: ${delivery_repair_context.output.sandboxDenialsJson}\n\nRepair only this incomplete delivery, within the authorized tools. Do not infer success from the prior prose report; do not stop because the files that already exist look complete, or because tests outside this subtask fail: the delivery is complete only when every missing path above exists.\n\nSubtask: ${workflow.input.prompt}\n\nPrevious structured agent report: ${delivery_repair_context.output.previousStructuredReportJson}\nPrevious status: ${workflow.variables.lastAgentReport.status}\nPrevious error: ${workflow.variables.lastAgentReport.error}",
+                "promptTemplate": "",
                 "promptTemplateSource": "${workflow.input.promptTemplateSource}",
-                "templateKey": "${workflow.input.templateKey}",
-                "promptContext": "${workflow.input.promptContext}",
+                "templateKey": "delivery_repair",
+                "promptContext": {
+                  "missingPathsJson": "${delivery_repair_context.output.missingPathsJson}",
+                  "rejectedPathsJson": "${delivery_repair_context.output.rejectedPathsJson}",
+                  "commandFailuresJson": "${delivery_repair_context.output.commandFailuresJson}",
+                  "sandboxDenialsJson": "${delivery_repair_context.output.sandboxDenialsJson}",
+                  "prompt": "${workflow.input.prompt}",
+                  "previousStructuredReportJson": "${delivery_repair_context.output.previousStructuredReportJson}",
+                  "status": "${workflow.variables.lastAgentReport.status}",
+                  "error": "${workflow.variables.lastAgentReport.error}"
+                },
                 "model": "${workflow.input.model}",
                 "maxTurns": "${workflow.input.maxTurns}",
                 "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
@@ -567,7 +731,8 @@
                 "modelsConfig": "${workflow.input.modelsConfig}",
                 "modelOverrides": "${workflow.input.modelOverrides}",
                 "modelResolution": "${model_policy.output}",
-                "failSoft": true
+                "failSoft": true,
+                "modelTier": "${workflow.input.modelTier}"
               }
             },
             {
@@ -577,6 +742,7 @@
               "inputParameters": {
                 "repoPath": "${wt.output.worktreePath}",
                 "plannedPaths": "${workflow.input.allowedWriteRoots}",
+                "optionalPaths": "${workflow.input.acceptanceTests}",
                 "agentReport": "${delivery_repair.output}"
               }
             },
@@ -610,7 +776,9 @@
       "optional": true,
       "inputParameters": {
         "repoPath": "${wt.output.worktreePath}",
-        "message": "code_subtask ${workflow.input.name}"
+        "message": "code_subtask ${workflow.input.name}",
+        "allowedWriteRoots": "${workflow.input.allowedWriteRoots}",
+        "acceptanceTests": "${workflow.input.acceptanceTests}"
       }
     },
     {
@@ -639,7 +807,9 @@
         "modelPolicySource": "${workflow.input.modelPolicySource}",
         "modelPolicySha256": "${workflow.input.modelPolicySha256}",
         "modelsConfig": "${workflow.input.modelsConfig}",
-        "modelOverrides": "${workflow.input.modelOverrides}"
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "testCommands": "${workflow.input.testCommands}",
+        "sandboxChecks": "${workflow.input.sandboxChecks}"
       }
     },
     {
@@ -649,6 +819,7 @@
       "optional": true,
       "inputParameters": {
         "plannedPaths": "${workflow.input.allowedWriteRoots}",
+        "optionalPaths": "${workflow.input.acceptanceTests}",
         "commit": "${cmt.output}",
         "audit": "${workflow.variables.lastAudit}",
         "agent": "${workflow.variables.lastAgentReport}",
@@ -680,7 +851,14 @@
     "commit": "${delivery_outcome.output.commit}",
     "testCycleState": "${delivery_outcome.output.testCycleState}",
     "testsPassed": "${delivery_outcome.output.testsPassed}",
-    "testReport": "${subtask_tests.output.testReport}"
+    "testReport": "${subtask_tests.output.testReport}",
+    "feedbackInjections": "${code.output.feedbackInjections}",
+    "interruptedBy": "${code.output.interruptedBy}",
+    "checkpoints": "${code.output.checkpoints}",
+    "restoredCheckpoint": "${code.output.restoredCheckpoint}",
+    "deniedWrites": "${workflow.variables.lastAgentReport.deniedWrites}",
+    "outsideScope": "${cmt.output.outsideScope}",
+    "structured": "${code.output.structured}"
   },
   "enforceSchema": false
 }

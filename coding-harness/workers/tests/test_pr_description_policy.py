@@ -73,7 +73,7 @@ def test_every_pr_producer_supplies_an_explicit_summary():
         producers.extend(node for node in _walk(workflow)
                          if node.get("type") == "SIMPLE" and node.get("name") == "pr_create")
 
-    assert len(producers) == 6
+    assert len(producers) == 7  # ship_run (console "Open pull request") is the seventh
     assert all("summary" in node.get("inputParameters", {}) for node in producers)
 
 

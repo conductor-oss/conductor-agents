@@ -8,34 +8,15 @@ from pathlib import Path
 
 from conductor.client.worker.worker_task import worker_task
 
-from common import feature_campaign, git
+from common import budget_gate, continuous_integrate, contract_freeze, feature_campaign, file_ownership, git, templating
+from common.shapes import (iter_joined as _iter_joined, listed as _list, mapping as _mapping,  # noqa: E402
+                           num as _num, subtask_worktree as _subtask_worktree, truth as _truth)
+from common.code_parallel import CODE_SUBTASK_TOOLS
 from common.results import fail, ok
 from .checks import ChecksConfigError, load_config, run_profile
 from .model import aggregate_usage, select_wave, validate_checkpoint, validate_plan
 
 
-def _list(value):
-    if isinstance(value, list):
-        return value
-    if isinstance(value, str) and value.strip():
-        try:
-            parsed = json.loads(value)
-            return parsed if isinstance(parsed, list) else [x.strip() for x in value.split(",") if x.strip()]
-        except ValueError:
-            return [x.strip() for x in value.split(",") if x.strip()]
-    return []
-
-
-def _mapping(value):
-    if isinstance(value, dict):
-        return {str(key): item for key, item in value.items()}
-    if isinstance(value, str) and value.strip():
-        try:
-            parsed = json.loads(value)
-        except ValueError:
-            return {}
-        return _mapping(parsed)
-    return {}
 
 
 def _reject_directory_write_roots(result: dict, repo_path: object) -> dict:
@@ -52,13 +33,6 @@ def _reject_directory_write_roots(result: dict, repo_path: object) -> dict:
         result = {**result, "valid": False, "errors": errors}
     return result
 
-
-def _truth(value, default=True):
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in ("1", "true", "yes", "on", "success", "completed")
 
 
 @worker_task(task_definition_name="campaign_validate_plan")
@@ -354,3 +328,297 @@ def campaign_publication_plan(task):
         issue_title=i.get("issueTitle"), instruction=i.get("instruction"))
     return ok(task, out, [f"[campaign_publication_plan] draft={out['draft']} outcome={out['outcome']} "
                           f"titleChars={len(out['prTitle'])} bodyChars={len(out['prBody'])}"])
+
+
+
+@worker_task(task_definition_name="budget_gate_check")
+def budget_gate_check(task):
+    """Aggregate per-run spend gate (roadmap H5). Folds the board's spend facts, decides
+    ok/warn/halt, and enforces the not-startable rule for swarm-mode runs. The halt is caused only by
+    accumulated spend, never by elapsed time (AGENTS.md timeout policy). Pure logic lives in
+    common/budget_gate.py; this is the thin worker wrapper."""
+    i = task.input_data or {}
+    ceiling = _num(i.get("ceilingUsd"))
+    warn_fraction = _num(i.get("warnFraction"))
+    if warn_fraction is None:
+        warn_fraction = budget_gate.DEFAULT_WARN_FRACTION
+    swarm_mode = i.get("swarmMode", True)
+    if isinstance(swarm_mode, str):
+        swarm_mode = swarm_mode.strip().lower() not in ("false", "0", "no", "")
+    startable = budget_gate.is_startable(ceiling, swarm_mode=bool(swarm_mode))
+    out = budget_gate.evaluate(i.get("correlationId"), ceiling_usd=ceiling, warn_fraction=warn_fraction)
+    out["startable"] = startable
+    # Clean-halt semantics (the caller branches on this): dispatch new work only while below the
+    # ceiling AND the run is startable. 'halt' or 'unbounded' => no new work; let in-flight finish.
+    out["dispatchNewWork"] = out["state"] in ("ok", "warn") and startable
+    return ok(task, out,
+              [f"[budget_gate_check] state={out['state']} spend=${out['report']['usd']} "
+               f"ceiling={out['report']['ceiling_usd']} startable={startable} "
+               f"dispatchNewWork={out['dispatchNewWork']}"])
+
+
+# ─────────────────────── convergence spike (roadmap Phase 1, H1/H4) ───────────────────────
+# The convergence spike proves (or disproves) H1/H4: can ≥3 agents modify OVERLAPPING code behind a
+# frozen contract and converge to a green shared branch without a big-bang merge? These workers are the
+# live glue over the pure-logic primitives (common/contract_freeze.py, common/file_ownership.py,
+# common/continuous_integrate.py). code_parallel's own fan-out is not reusable: it partitions
+# file-DISJOINT work and does a big-bang merge_worktrees fan-in — the opposite premise (design.md D3).
+#
+# Dispatch is driven in WAVES by the workflow's DO_WHILE: each wave, convergence_build_forks dispatches
+# only the items whose shared files are free (ownership GATES dispatch — two agents never hold the same
+# file concurrently); convergence_integrate rebases that wave onto the moving shared head, RELEASES the
+# wave's files so blocked items become dispatchable next wave, and RECORDS each agent's real spend on
+# the board; the reused budget_gate_check then decides whether the next wave may dispatch. Items that do
+# not fit this wave stay in ``remaining`` for the next one; the loop ends when nothing remains or the
+# budget gate halts.
+
+
+
+@worker_task(task_definition_name="convergence_build_forks")
+def convergence_build_forks(task):
+    """One wave of ownership-GATED dispatch. From the pending items, dispatch only those whose shared
+    files are all free (``file_ownership.can_dispatch``), claiming each dispatched item's files so no two
+    agents hold the same file concurrently; items blocked by a live owner stay in ``remaining`` for the
+    next wave. Each dispatched fork reuses code_subtask, is rooted at the moving shared head, and is told
+    the contract is frozen. Pure logic lives in common/{contract_freeze,file_ownership}.py."""
+    i = task.input_data or {}
+    try:
+        shared_repo = str(i.get("repoPath") or "").strip()
+        correlation_id = str(i.get("correlationId") or "").strip() or None
+        subtasks = _list(i.get("subtasks"))
+        contract_paths = [str(p).strip() for p in _list(i.get("contractPaths")) if str(p).strip()]
+
+        # Record the frozen contract once per run (append-only; skip if already present).
+        if correlation_id and not file_ownership.bb.read_facts(correlation_id, kind="contract"):
+            file_ownership.bb.post_fact(correlation_id, "integrator", "contract",
+                                        {"paths": contract_paths, "frozen": True})
+
+        dynamic_tasks, dynamic_inputs, group_ids = [], {}, []
+        dispatched, remaining = [], []
+        for entry in subtasks:
+            entry = _mapping(entry)
+            sid = str(entry.get("id") or "").strip()
+            if not sid:
+                continue
+            files = [str(p).strip() for p in _list(entry.get("files")) if str(p).strip()]
+            attempt = int(entry.get("attempt") or 0)
+            # Ownership gate: dispatch only if every shared file this item needs is free.
+            if correlation_id:
+                guard = file_ownership.can_dispatch(correlation_id, sid, files)
+                if not guard["dispatchable"]:
+                    remaining.append(entry)
+                    continue
+                for path in files:
+                    file_ownership.claim(correlation_id, sid, path)
+            # Carry the full item (+ attempt) so the integrator can re-queue it on failure.
+            dispatched.append({"id": sid, "description": entry.get("description") or "",
+                               "files": files, "attempt": attempt})
+            group_ids.append(sid)
+            prompt_context = {"description": entry.get("description") or "",
+                              "files": ", ".join(files) or "(none)",
+                              "contractPaths": ", ".join(contract_paths) or "(none)"}
+            prompt = templating.render_default("convergence_subtask", prompt_context)
+            dynamic_tasks.append({
+                "name": "code_subtask", "taskReferenceName": sid, "type": "SUB_WORKFLOW",
+                "optional": True, "subWorkflowParam": {"name": "code_subtask"},
+            })
+            dynamic_inputs[sid] = {
+                "repoPath": shared_repo, "name": sid, "model": i.get("codeModel") or "",
+                "maxTurns": i.get("maxTurns") or 250, "maxBudgetUsd": i.get("maxBudgetUsd") or 10,
+                "prompt": prompt, "promptTemplate": "", "promptTemplateSource": "",
+                "templateKey": "convergence_subtask", "promptContext": prompt_context,
+                "specContextPath": "", "contextPaths": [],
+                "allowedTools": CODE_SUBTASK_TOOLS, "allowedWriteRoots": files,
+                "modelProfile": i.get("modelProfile") or "", "modelPolicy": i.get("modelPolicy") or {},
+                "modelPolicySource": i.get("modelPolicySource") or "",
+                "modelPolicySha256": i.get("modelPolicySha256") or "",
+                "modelsConfig": i.get("modelsConfig") or "",
+                "modelOverrides": i.get("modelOverrides") or {},
+                "allowAgentTestPlan": _truth(i.get("allowAgentTestPlan"), True),
+                "allowAgentAuthoredTests": _truth(i.get("allowAgentAuthoredTests"), True),
+            }
+        return ok(task, {
+            "dynamicTasks": dynamic_tasks, "dynamicTasksInput": dynamic_inputs,
+            "groupIds": ",".join(group_ids), "contractPaths": contract_paths,
+            "dispatched": dispatched, "remaining": remaining,
+            "forkCount": len(group_ids), "remainingCount": len(remaining),
+        }, [f"[convergence_build_forks] wave dispatched={len(group_ids)} "
+            f"blocked/remaining={len(remaining)} ids={','.join(group_ids)}"])
+    except Exception as e:  # noqa: BLE001
+        return fail(task, "convergence_build_forks", e)
+
+
+from common.continuous_integrate import RETRYABLE_REOPEN as _RETRYABLE_REOPEN  # noqa: E402
+
+
+@worker_task(task_definition_name="convergence_integrate")
+def convergence_integrate(task):
+    """Finalize one wave and compute the next wave's pending set. For each dispatched fork: a fork that
+    delivered no commit is an ``empty_delivery`` (never counted as integrated — the honest fix for a
+    failed/no-op agent); one that edited the frozen contract is a ``contract_controlled_event`` (terminal,
+    needs re-plan); the rest are rebased onto the moving shared head (NO big-bang merge) and a conflict is
+    a ``rebase_conflict``. Retryable failures (empty_delivery / rebase_conflict) under the attempt cap are
+    **re-queued** for a later wave — the moving head is exactly what lets a retry land cleanly — and only
+    terminal failures post a ``reopen`` fact. The wave's file ownership is released (so re-queued and
+    blocked items can dispatch next wave) and each agent's real spend is recorded so budget_gate_check can
+    halt. Pure logic lives in common/{continuous_integrate,contract_freeze}.py, common/cost.py."""
+    i = task.input_data or {}
+    try:
+        shared_repo = str(i.get("sharedRepo") or "").strip()
+        shared_branch = str(i.get("sharedBranch") or "").strip()
+        correlation_id = str(i.get("correlationId") or "").strip() or None
+        contract_paths = [str(p).strip() for p in _list(i.get("contractPaths")) if str(p).strip()]
+        group_ids = [g.strip() for g in str(i.get("groupIds") or "").split(",") if g.strip()]
+        dispatched = _list(i.get("dispatched"))
+        remaining = _list(i.get("remaining"))
+        max_attempts = max(int(i.get("maxAttempts") or 2), 1)
+        by_id = {str(_mapping(d).get("id")): _mapping(d) for d in dispatched}
+
+        eligible, failures = [], []  # failures: (gid, reason, mechanism, conflicts)
+        for idx, gid in enumerate(group_ids):
+            worktree = _subtask_worktree(shared_repo, gid)
+            branch = git.group_branch(shared_repo, gid)
+            ahead = "0"
+            changed = []
+            if os.path.isdir(worktree):
+                ahead = git.git(worktree, "rev-list", "--count", f"{shared_branch}..{branch}",
+                                check=False).stdout.strip() or "0"
+                names = git.git(worktree, "diff", "--name-only", f"{shared_branch}...{branch}",
+                                check=False).stdout
+                changed = [n for n in names.split("\n") if n.strip()]
+            if ahead == "0" or not changed:
+                failures.append((gid, "empty_delivery",
+                                 f"fork {gid} produced no commit on {branch} (agent delivered nothing or "
+                                 f"its code_subtask failed); not counted as integrated", []))
+            elif contract_paths and not contract_freeze.is_integration_eligible(changed, contract_paths):
+                failures.append((gid, "contract_controlled_event",
+                                 f"fork {gid} edited the frozen contract; routed as a controlled event "
+                                 f"(own board item + re-plan), not an ambient merge",
+                                 contract_freeze.contract_paths_touched(changed, contract_paths)))
+            else:
+                eligible.append({"id": gid, "worktree": worktree, "branch": branch, "readyAt": idx})
+
+        # Rebase the clean deliveries onto the moving head. Pass no correlation_id so we — not
+        # integrate_ready — decide whether each conflict becomes a retry or a terminal reopen fact.
+        result = continuous_integrate.integrate_ready(shared_repo, shared_branch, eligible)
+        for rec in result.get("reopened", []):
+            failures.append((str(rec.get("item")), "rebase_conflict",
+                             str(rec.get("mechanism") or "rebase conflict"), _list(rec.get("conflicts"))))
+
+        # Classify every failure into a bounded retry or a terminal reopen.
+        retry, terminal, controlled = [], [], []
+        for gid, reason, mechanism, conflicts in failures:
+            rec = {"op": "reopen", "item": gid, "reason": reason,
+                   "mechanism": mechanism, "conflicts": conflicts}
+            item = by_id.get(gid, {"id": gid})
+            attempt = int(item.get("attempt") or 0)
+            if reason in _RETRYABLE_REOPEN and (attempt + 1) < max_attempts:
+                retry.append({**item, "attempt": attempt + 1})
+                if correlation_id:
+                    file_ownership.bb.post_fact(correlation_id, gid, "retry",
+                                                {**rec, "op": "retry", "nextAttempt": attempt + 1})
+            else:
+                terminal.append(rec)
+                if reason == "contract_controlled_event":
+                    controlled.append(rec)
+                if correlation_id:
+                    file_ownership.bb.post_fact(correlation_id, gid, "reopen", rec)
+
+        # Release this wave's ownership so re-queued and blocked items can dispatch next wave.
+        released = 0
+        if correlation_id:
+            for item in dispatched:
+                item = _mapping(item)
+                sid = str(item.get("id") or "")
+                for path in _list(item.get("files")):
+                    file_ownership.release(correlation_id, sid, str(path))
+                    released += 1
+
+        # Record each agent's real spend on the board (lock-free, per-author) so the reused
+        # budget_gate_check sees accumulated spend and can halt the next wave.
+        recorded = 0
+        if correlation_id:
+            for ref, out in _iter_joined(i.get("joined")):
+                usd = out.get("costUsd")
+                tok = out.get("tokenUsed")
+                budget_gate.record_spend(
+                    correlation_id, ref,
+                    usd=float(usd) if isinstance(usd, (int, float)) and not isinstance(usd, bool) else None,
+                    tokens=int(tok) if isinstance(tok, (int, float)) and not isinstance(tok, bool) else None,
+                    model=out.get("model") or "")
+                recorded += 1
+
+        result["reopened"] = terminal          # only terminal failures count as reopened
+        result["controlledEvents"] = controlled
+        result["retry"] = retry
+        result["nextPending"] = remaining + retry
+        result["releasedFiles"] = released
+        result["spendRecorded"] = recorded
+        return ok(task, result,
+                  [f"[convergence_integrate] integrated={len(result['integrated'])} "
+                   f"retry={len(retry)} terminalReopen={len(terminal)} released={released} "
+                   f"spendRecorded={recorded} bigBang={result['big_bang_merge']} "
+                   f"head={result['final_head'][:12]}"])
+    except Exception as e:  # noqa: BLE001
+        return fail(task, "convergence_integrate", e)
+
+
+@worker_task(task_definition_name="convergence_outcome")
+def convergence_outcome(task):
+    """Fold the whole run into an honest GO/NO-GO verdict against the pre-registered bar (design.md
+    Decision 4): GO iff every item integrated onto one shared branch (zero big-bang merge), nothing was
+    reopened, nothing was left undispatched by a budget halt, and the branch is green. Counts come from
+    the durable board (reopen facts) + the final pending set, so the verdict is an audit, not a tally
+    threaded through the loop. A NO-GO names the precise mechanism; neither outcome is massaged."""
+    i = task.input_data or {}
+    try:
+        correlation_id = str(i.get("correlationId") or "").strip() or None
+        total = len(_list(i.get("subtasks")))
+        remaining = _list(i.get("pendingRemaining"))
+        undispatched = len(remaining)
+        final_head = str(i.get("finalHead") or "")
+        tests_passed = _truth(i.get("testsPassed"), False)
+        test_state = str(i.get("testCycleState") or "not_run")
+        big_bang = False  # the integrator never does a big-bang merge; this is the H1 invariant.
+
+        reopen_facts = file_ownership.bb.read_facts(correlation_id, kind="reopen") if correlation_id else []
+        reopened = [f.get("data") or {} for f in reopen_facts]
+        reopened_count = len(reopened)
+        spend_usd = budget_gate.read_spend(correlation_id)["usd"] if correlation_id else 0.0
+        integrated_count = total - reopened_count - undispatched
+        if integrated_count < 0:
+            integrated_count = 0
+
+        converged = (total > 0 and reopened_count == 0 and undispatched == 0
+                     and integrated_count == total and tests_passed and not big_bang)
+        verdict = "GO" if converged else "NO-GO"
+
+        if converged:
+            report = (f"GO: {integrated_count}/{total} overlapping items converged onto the shared "
+                      f"branch (zero big-bang merge); branch green (test_cycle={test_state}). "
+                      f"Shared head {final_head[:12]}.")
+        else:
+            reasons = []
+            if undispatched:
+                ids = ", ".join(str(_mapping(r).get("id")) for r in remaining)
+                reasons.append(f"{undispatched} item(s) left unresolved — the run ended (budget halt or "
+                               f"max waves) before they integrated ({ids})")
+            if reopened_count:
+                mechs = "; ".join(str(r.get("mechanism") or r.get("reason")) for r in reopened)
+                reasons.append(f"{reopened_count} reopened ({mechs})")
+            if integrated_count != total and not undispatched and not reopened_count:
+                reasons.append(f"only {integrated_count}/{total} items integrated")
+            if not tests_passed:
+                reasons.append(f"shared branch not green (test_cycle={test_state})")
+            report = "NO-GO: " + "; ".join(reasons or ["did not meet the GO bar"]) + \
+                     f". Shared head {final_head[:12]}."
+
+        return ok(task, {
+            "converged": converged, "verdict": verdict, "bigBangMerge": big_bang,
+            "finalHead": final_head, "integratedCount": integrated_count, "forkCount": total,
+            "reopenedCount": reopened_count, "undispatchedCount": undispatched, "reopened": reopened,
+            "testCycleState": test_state, "testsPassed": tests_passed, "spendUsd": spend_usd,
+            "report": report,
+        }, [f"[convergence_outcome] {verdict} — {report} spend=${spend_usd}"])
+    except Exception as e:  # noqa: BLE001
+        return fail(task, "convergence_outcome", e)

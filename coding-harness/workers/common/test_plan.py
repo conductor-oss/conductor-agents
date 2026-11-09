@@ -10,7 +10,6 @@ returned and always produces a well-formed result.
 from __future__ import annotations
 
 import json
-from typing import Any
 
 # test_run emits six outcomes: verify_candidate's four plus the two the task
 # layer adds. Anything else means the verifier itself did not report.
@@ -183,6 +182,10 @@ def record_repair(*, current_candidate: object, agent: object, commit: object) -
         "candidate": candidate,
         "report": {
             "agentStatus": agent_report.get("status") or "unavailable",
+            # Repair agents spend real money; callers fold this into their run budget (H5).
+            "costUsd": agent_report.get("costUsd") if isinstance(agent_report.get("costUsd"), (int, float)) else 0.0,
+            "tokenUsed": agent_report.get("tokenUsed") if isinstance(agent_report.get("tokenUsed"), int) else 0,
+            "model": str(agent_report.get("model") or ""),
             "agentCompleted": agent_report.get("agentCompleted") is True,
             "stagedPaths": staged, "rejectedPaths": rejected,
             "sandboxDenials": denials, "commandFailures": failures,

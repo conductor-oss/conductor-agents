@@ -52,6 +52,13 @@
           "type": "boolean",
           "default": false,
           "description": "Opts into heavy/expensive suites. Only takes effect when testMode is 'full'."
+        },
+        "sandboxChecks": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "Run the repository's check commands inside the OS sandbox (macOS sandbox-exec / Linux bwrap): writes confined to the disposable checkout and caches, no network except loopback (closure plan WP9, H17). A missing sandbox tool blocks the check as sandbox_unavailable."
         }
       },
       "required": [
