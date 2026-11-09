@@ -1,7 +1,7 @@
 """Shared-file ownership on the board (roadmap H1, Phase 1).
 
 File-disjoint partitioning collapses the moment two agents touch the same shared file. So the spike
-records **who holds which shared file** as facts on the shared ``swarm_substrate`` blackboard, and an
+records **who holds which shared file** as facts on the shared blackboard, and an
 item is dispatched against a shared file only when no live owner holds it — two agents never hold the
 same file open concurrently.
 
@@ -17,7 +17,7 @@ Pure-ish logic (the fold is pure; claim/release/map read and write the board). T
 
 from __future__ import annotations
 
-from swarm_substrate import blackboard as bb
+from common import blackboard as bb
 
 OWNERSHIP_KIND = "ownership"
 

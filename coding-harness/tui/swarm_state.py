@@ -73,7 +73,7 @@ def _phase(wf: dict, view: dict) -> str:
 
 
 def _activity(runs: list[str]) -> list[dict]:
-    from swarm_substrate import blackboard as bb
+    from common import blackboard as bb
     now, latest = time.time(), {}
     for run in runs:
         for f in bb.read_facts(run, kind="activity", since=now - ACTIVE_WINDOW_S):
@@ -89,7 +89,7 @@ def _activity(runs: list[str]) -> list[dict]:
 
 
 def _recent(runs: list[str], limit: int = 12) -> list[dict]:
-    from swarm_substrate import blackboard as bb
+    from common import blackboard as bb
     trace = _trace()
     events = []
     for run in runs:
@@ -104,7 +104,7 @@ def _recent(runs: list[str], limit: int = 12) -> list[dict]:
 def _retrospective(run: str) -> dict | None:
     """What the run's retrospective concluded, once it ran: the summary and how many learnings it
     recorded on the shared learning board (``_swarm_learnings``)."""
-    from swarm_substrate import blackboard as bb
+    from common import blackboard as bb
     facts = bb.read_facts(run, kind="retrospective")
     if not facts:
         return None

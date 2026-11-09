@@ -4,7 +4,6 @@ These cover the pure fold + standup/sizing/termination logic in ``common/team_bo
 that turns append-only facts into a team's shared kanban. The thin ``@worker_task`` wrappers over
 this module (the team cycle) have their own workflow-shape tests in ``test_team_cycle.py``.
 """
-import common  # noqa: F401 -- sys.path shim for swarm_substrate
 
 from common import team_board as tb
 

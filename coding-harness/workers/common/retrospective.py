@@ -89,7 +89,7 @@ def host() -> str:
 # ─────────────────────────────── evidence ─────────────────────────────────────
 def evidence(correlation_id: str, *, verdict: str = "", report: str = "", status: str = "") -> dict:
     """What actually happened in the run (and its child teams), compact enough for one prompt."""
-    from swarm_substrate import blackboard as bb
+    from common import blackboard as bb
     runs = [correlation_id] + [str(_mapping(f.get("data")).get("childRun"))
                                for f in bb.read_facts(correlation_id, kind="child")
                                if _mapping(f.get("data")).get("childRun")]
@@ -189,7 +189,7 @@ def _norm(text: str) -> str:
 def record(learnings: list, *, repo: str, languages: list[str], host_name: str, run: str,
            backend=None) -> list[dict]:
     """Append each learning to the shared store under its scope key; skip exact repeats."""
-    from swarm_substrate import blackboard as bb
+    from common import blackboard as bb
     existing = {(_mapping(f.get("data")).get("scope"), _mapping(f.get("data")).get("key"),
                  _norm(_mapping(f.get("data")).get("text")))
                 for f in bb.read_facts(LEARNINGS_RUN, kind=LEARNING_KIND, backend=backend)}
@@ -213,14 +213,14 @@ def record(learnings: list, *, repo: str, languages: list[str], host_name: str, 
 
 def retract(text: str, *, by: str, backend=None) -> str:
     """Withdraw a learning everywhere (a later run or a human found it wrong)."""
-    from swarm_substrate import blackboard as bb
+    from common import blackboard as bb
     return bb.post_fact(LEARNINGS_RUN, by, LEARNING_KIND, {"op": "retract", "text": str(text)}, backend=backend)
 
 
 def everything(*, backend=None) -> list[dict]:
     """Every live learning, newest first — retracted and duplicate texts dropped. This is the learning
     board the console shows for ``LEARNINGS_RUN``; ``relevant`` narrows it to one run's scopes."""
-    from swarm_substrate import blackboard as bb
+    from common import blackboard as bb
     facts = [_mapping(f.get("data")) | {"ts": f.get("ts")}
              for f in bb.read_facts(LEARNINGS_RUN, kind=LEARNING_KIND, backend=backend)]
     retracted = {_norm(f.get("text")) for f in facts if f.get("op") == "retract"}

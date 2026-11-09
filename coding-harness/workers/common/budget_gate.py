@@ -4,7 +4,7 @@ The existing caps (`maxTurns`, `maxBudgetUsd`) are **per-agent**. A swarm multip
 reviewers over days, so a run needs an **aggregate** ceiling it cannot exceed. This module:
 
   * records each agent's real-cost spend as a lock-free, append-only fact on the shared
-    ``swarm_substrate`` blackboard (per-author-unique keys — hundreds of concurrent writers, no lock,
+    blackboard (per-author-unique keys — hundreds of concurrent writers, no lock,
     no lost update), pricing it from token usage via ``common.cost``;
   * folds those facts into a truthful run-level report (total, per-author, per-model, percent of
     ceiling);
@@ -22,7 +22,7 @@ Pure logic only, so it is unit-testable; the thin ``@worker_task`` wrapper lives
 from __future__ import annotations
 
 from common import cost
-from swarm_substrate import blackboard as bb
+from common import blackboard as bb
 
 SPEND_KIND = "spend"
 DEFAULT_WARN_FRACTION = 0.8

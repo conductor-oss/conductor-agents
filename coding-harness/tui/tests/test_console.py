@@ -135,7 +135,7 @@ def test_terminate_ends_the_run_and_starts_its_retrospective():
 
 def test_program_run_shows_child_team_tree(monkeypatch, tmp_path):
     bb_dir, cid = _seed(monkeypatch, tmp_path)
-    from swarm_substrate import blackboard as sbb
+    from common import blackboard as sbb
     tb.post_item("child-1", "lead", {"id": "x", "files": ["x.py"]})
     sbb.post_fact(cid, "child-1", "child", {"subsystem": "store", "childRun": "child-1"})
     sbb.post_fact(cid, "program", "rollup", {"subsystem": "store", "childRun": "child-1", "verdict": "DELIVERED",
@@ -174,7 +174,7 @@ def test_steering_requires_a_registered_actor_and_supports_lifecycle(monkeypatch
 
 def test_item_trace_links_dispatch_inputs_to_outcomes(monkeypatch, tmp_path):
     bb_dir, cid = _seed(monkeypatch, tmp_path)
-    from swarm_substrate import blackboard as sbb
+    from common import blackboard as sbb
     sbb.post_fact(cid, "lead", "dispatch", {"item": "email", "candidate": "email", "attempt": 0,
                                             "waveBase": "abc123", "contractRevision": 1, "promptSha256": "f00",
                                             "lessons": [{"text": "registry is append-only"}],

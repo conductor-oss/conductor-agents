@@ -7,7 +7,6 @@ the honest DELIVERED/INCOMPLETE outcome folded from the board.
 """
 import os
 
-import common  # noqa: F401 -- sys.path shim for swarm_substrate
 
 from team.tasks import (team_apply_reviews, team_integrate, team_outcome,
                         team_plan_init, team_review_build, team_route, team_standup)
@@ -647,7 +646,7 @@ def test_outcome_refuses_delivery_when_acceptance_test_was_tampered(monkeypatch,
     _commit_all(shared, "acceptance")
     frozen = git.head(shared)
     team_plan_init(fake_task_input(correlationId=cid, subtasks=[_ITEMS[2]], contractPaths=[]))
-    from swarm_substrate import blackboard as bbx
+    from common import blackboard as bbx
     bbx.post_fact(cid, "lead", "contract", {"paths": ["tests/test_acc.py"], "frozen": True, "revision": 1,
                                             "acceptanceTests": ["tests/test_acc.py"], "acceptanceCommit": frozen})
     tb.set_state(cid, "i", "gamma", tb.DONE)
@@ -867,7 +866,7 @@ def test_apply_reviews_reports_the_head_after_an_approved_amendment(monkeypatch,
     program blocked cmd and integration on a delivered subsystem (run ec0fb6dc). The wave's finalHead is
     now read after apply_reviews, and a decided fork's worktree is removed."""
     _isolate_board(monkeypatch, tmp_path)
-    from swarm_substrate import blackboard as bbx
+    from common import blackboard as bbx
     cid = "run-amend-head"
     shared = str(tmp_path / "shared")
     git.ensure_ready(shared)
@@ -1022,7 +1021,7 @@ def test_integrate_oracle_skips_a_fork_held_for_an_amendment_and_items_without_a
     """A fork held unmerged for the reviewer's amendment decision is red at the head by construction and
     must not be re-opened for it; an item with no frozen test is not checked."""
     _isolate_board(monkeypatch, tmp_path)
-    from swarm_substrate import blackboard as bbx
+    from common import blackboard as bbx
     cid = "run-oracle-held"
     shared, branch = _oracle_repo(tmp_path, cid, fake_task_input)
     tb.set_state(cid, "lead", "beta", tb.REVIEW)  # integrated earlier, still awaiting its reviewer
@@ -1051,7 +1050,7 @@ def test_outcome_refuses_delivery_when_the_final_cycle_ran_no_frozen_test(monkey
     _commit_all(shared, "acceptance")
     frozen = git.head(shared)
     team_plan_init(fake_task_input(correlationId=cid, subtasks=[_ITEMS[2]], contractPaths=[]))
-    from swarm_substrate import blackboard as bbx
+    from common import blackboard as bbx
     bbx.post_fact(cid, "lead", "contract", {"paths": ["tests/test_acc.py"], "frozen": True, "revision": 1,
                                             "acceptanceTests": ["tests/test_acc.py"], "acceptanceCommit": frozen})
     tb.post_item(cid, "lead", {**_ITEMS[2], "acceptanceTests": ["tests/test_acc.py"],
@@ -1212,7 +1211,7 @@ def test_apply_reviews_survives_a_failed_amendment_merge(monkeypatch, tmp_path, 
     worktree) and the exception ended the whole resp team as a FAILED task (run a4f1ff1f). A merge
     failure is a decided amendment that did not land: the item is rebuilt against the current head."""
     _isolate_board(monkeypatch, tmp_path)
-    from swarm_substrate import blackboard as bbx
+    from common import blackboard as bbx
     import team.tasks as tt
     cid = "run-amend-fail"
     shared = str(tmp_path / "shared")
@@ -1255,7 +1254,7 @@ def test_integrate_sends_a_satisfied_claim_to_the_peer_reviewer_who_decides(monk
     blocked as an empty delivery and starved the server subsystem (run 90e5e3aa). A structured claim is
     judged by the peer reviewer on the current tree: lgtm → done; changes → re-opened with findings."""
     _isolate_board(monkeypatch, tmp_path)
-    from swarm_substrate import blackboard as bbx
+    from common import blackboard as bbx
     cid = "run-claim"
     shared = str(tmp_path / "shared")
     git.ensure_ready(shared)
@@ -1371,7 +1370,7 @@ def test_integrate_treats_a_pushback_with_a_refused_edit_as_a_scope_gap(monkeypa
     constraint_pushback at the attempt cap — the server subsystem ended there (run ba2491ff). A pushback
     whose refused edits lie inside the team's span is a scope gap: the item is re-opened at the same
     attempt, the notice is resolved, and the next standup widens it from the refusal."""
-    from swarm_substrate import blackboard as bbx
+    from common import blackboard as bbx
     cid = "run-scope-push"
     shared = _scope_run(monkeypatch, tmp_path, fake_task_input, cid)
     branch = git._current_branch(shared)

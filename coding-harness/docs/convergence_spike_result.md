@@ -5,7 +5,7 @@ converged to a green, coherent shared branch assembled by continuous rebase — 
 merge**. The result below is from a real Conductor execution, independently re-verified by hand.
 
 This is the decisive experiment pre-registered in
-[`openspec/changes/swarm-substrate-and-convergence-spike/design.md`](../../openspec/changes/swarm-substrate-and-convergence-spike/design.md)
+the `swarm-substrate-and-convergence-spike` OpenSpec change
 Decision 4. Neither outcome was massaged; the bar and the measurement were fixed before the run.
 
 ## The pre-registered bar (design.md Decision 4)

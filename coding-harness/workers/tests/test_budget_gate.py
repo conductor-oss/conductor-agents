@@ -1,9 +1,8 @@
 """Phase 0 groups 4-5: aggregate per-run spend gate — accumulation, the ok/warn/halt decision, the
 truthful report, the not-startable rule, and the no-wall-clock-deadline guarantee."""
-import common  # noqa: F401  -- triggers the sys.path shim for swarm_substrate
 
 from common import budget_gate as bg
-from swarm_substrate import blackboard as bb
+from common import blackboard as bb
 
 
 def _be(tmp_path):

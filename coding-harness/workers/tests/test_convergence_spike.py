@@ -11,12 +11,11 @@ tests; this covers the three workers that wire them into the wave-looped workflo
 """
 import os
 
-import common  # noqa: F401 -- sys.path shim for swarm_substrate
 
 from campaign.tasks import (convergence_build_forks, convergence_integrate,
                             convergence_outcome)
 from common import budget_gate, file_ownership, git
-from swarm_substrate import blackboard as bb
+from common import blackboard as bb
 
 
 def _isolate_board(monkeypatch, tmp_path):

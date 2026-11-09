@@ -203,7 +203,7 @@ ownership log **once** per standup and simulates claims on the in-memory owner m
 precision, body bytea)`, index `(cid, kind, ts)` and a `text_pattern_ops` index on `key` for prefix
 listing. Keys/records byte-identical to the file backend.
 
-**Code.** `swarm_substrate/blackboard.py` (`_FactCache`, `read_facts(..., since=None)`,
+**Code.** `workers/common/blackboard.py` (`_FactCache`, `read_facts(..., since=None)`,
 `_LocalBackend.list` scandir fast-path, `_PostgresBackend`, `clear_cache()`), `common/file_ownership.py`
 (`events`, `plan_claims`), `team/tasks.py` standup. `requirements.txt`: `psycopg[binary]` as an optional
 extra. Security-harness behavior unchanged (its tests remain the regression gate, as in Phase 0).

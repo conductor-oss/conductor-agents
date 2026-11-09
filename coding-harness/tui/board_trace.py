@@ -15,7 +15,7 @@ _WORKERS = Path(__file__).resolve().parents[1] / "workers"
 if str(_WORKERS) not in sys.path:
     sys.path.insert(0, str(_WORKERS))
 
-from swarm_substrate import blackboard as bb  # noqa: E402
+from common import blackboard as bb  # noqa: E402
 
 _KINDS = ("item", "state", "dispatch", "session", "delivery", "review", "directive", "lesson",
           "exception", "contract_proposal", "contract_event", "contract", "spend")

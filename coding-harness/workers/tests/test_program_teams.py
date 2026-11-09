@@ -7,7 +7,7 @@ import common  # noqa: F401
 from common import continuous_integrate, file_ownership, git, program, team_board as tb
 from stages.tasks import program_apply_rank, program_outcome, program_rank_build, program_rank_init
 from team.tasks import team_plan_init, team_standup
-from swarm_substrate import blackboard as bb
+from common import blackboard as bb
 
 
 def _iso(monkeypatch, tmp_path):

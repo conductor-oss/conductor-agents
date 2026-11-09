@@ -1,6 +1,6 @@
 """The construction read model — the tracking / learning / review boards (roadmap Phase 2, §4.2).
 
-``swarm_substrate/blackboard.py`` holds only the generic append-log mechanics and deliberately
+``common/blackboard.py`` holds only the generic append-log mechanics and deliberately
 encodes **no** construction semantics ("the construction read model is built later (roadmap Phase
 2)"). This module is that read model: it names the construction fact kinds, provides thin writers for
 them, and — the part that makes a pile of append-only facts into *a team's shared state* — **folds**
@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import uuid
 
-from swarm_substrate import blackboard as bb
+from common import blackboard as bb
 
 # ─────────────────────────── fact kinds (the three boards) ────────────────────
 ITEM_KIND = "item"          # tracking board: a work-item definition

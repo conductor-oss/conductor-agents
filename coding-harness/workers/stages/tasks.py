@@ -16,7 +16,7 @@ from conductor.client.worker.worker_task import worker_task
 
 from common import (bootstrap, budget_gate, bug_fix, git, intake, program, repo_memory, retrospective,
                     team_board)
-from swarm_substrate import blackboard as bb
+from common import blackboard as bb
 from common.results import fail, ok
 
 

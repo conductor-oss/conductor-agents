@@ -292,7 +292,7 @@ def _no_conductor(req):
 
 
 def test_snapshot_reports_phase_progress_live_agents_and_escalations(monkeypatch, tmp_path):
-    from swarm_substrate import blackboard as bbx
+    from common import blackboard as bbx
     bb = _isolate(monkeypatch, tmp_path)
     cid = "run-state"
     _seed_routing_board(cid)
@@ -369,7 +369,7 @@ async def test_chat_swarm_state_answers_for_the_one_active_swarm(monkeypatch, tm
 
 
 def test_snapshot_carries_the_runs_retrospective_once_it_ran(monkeypatch, tmp_path):
-    from swarm_substrate import blackboard as bbx
+    from common import blackboard as bbx
     bb = _isolate(monkeypatch, tmp_path)
     cid = "run-retro"
     _seed_routing_board(cid)

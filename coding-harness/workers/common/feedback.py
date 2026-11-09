@@ -101,7 +101,7 @@ class FeedbackWatcher:
     def _facts(self) -> list:
         if self._read is not None:
             return self._read(self.cid)
-        from swarm_substrate import blackboard as bb
+        from common import blackboard as bb
         return bb.read_facts(self.cid, kind="directive", since=self.since)
 
     # Live activity (state on demand): what this agent is doing right now, posted to the board at most
@@ -114,7 +114,7 @@ class FeedbackWatcher:
             return
         self._activity_ts = now
         try:
-            from swarm_substrate import blackboard as bb
+            from common import blackboard as bb
             bb.post_fact(self.cid, f"implementer:{self.item}", "activity",
                          {"item": self.item, "toolCalls": self.calls, "tool": str(tool)[:200]})
         except Exception:  # noqa: BLE001 - a missed heartbeat never costs the session

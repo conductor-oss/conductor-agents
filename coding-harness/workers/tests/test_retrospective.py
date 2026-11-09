@@ -5,7 +5,7 @@ import os
 import common  # noqa: F401
 from common import feedback, git, retrospective as retro, team_board as tb
 from stages.tasks import repo_memory_read, retro_evidence, retro_record
-from swarm_substrate import blackboard as bb
+from common import blackboard as bb
 from team.tasks import team_acceptance_build, team_plan_init, team_review_build, team_standup
 
 WF = os.path.join(os.path.dirname(__file__), "..", "workflows")

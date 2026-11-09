@@ -56,7 +56,7 @@ These were not reported by anyone; the review found them by looking at the runni
 | Poll load | 127 long polls / 5 s per host | `common/polling.py` | 100 hosts ≈ 2,500 polls/s on a SQLite server. |
 | Conductor backend | SQLite via `conductor server start` | `run.sh:75`; jstack shows `SqliteQueueDAO` | Postgres compose exists (`docker-compose.postgres.yml`); Orkes Conductor is the enterprise answer. |
 | Shared state between tasks | absolute paths on one filesystem (`worktreePath`, `sharedRepo`, `.cc-worktrees`) | `common/git.py:23,571`, `gitops/tasks.py:260,291,372`, `team/tasks.py:544,861,970` | Tasks of one run cannot spread across hosts. **The** scale-out blocker. |
-| Blackboard | Postgres optional (`SWARM_BLACKBOARD_PG_DSN`), default local files; `fold_board` re-reads 6 kinds and re-folds every call | `swarm_substrate/blackboard.py:88-241`, `common/team_board.py:342-355` | Fine to ~100 runs; the per-process LRU and whole-prefix listing become the hot path past that. |
+| Blackboard | Postgres optional (`SWARM_BLACKBOARD_PG_DSN`), default local files; `fold_board` re-reads 6 kinds and re-folds every call | `workers/common/blackboard.py:88-241`, `common/team_board.py:342-355` | Fine to ~100 runs; the per-process LRU and whole-prefix listing become the hot path past that. |
 | Wave width | `maxWidth` 6 per team, `maxWaves` 12/16, `maxDepth` 2, no cap on teams per rank | `team_build.json:73-74`, `cc_program.json:47-48`, `stages/tasks.py:254` | Fan-out is fine; the planner is the limit (next row). |
 | Planner input | file tree primer 400 files / 8,000 chars; guide 24k; diff 24k; whole plan in one JSON reply with "EVERY file" listed | `common/coding_agent.py:50`, `common/templating.py:35`, `team/tasks.py:70`, planner prompt in `cc_program.json` | A kernel tree (~80k files) cannot be planned this way at all. |
 | Cross-team knowledge | contracts frozen once (`stages/tasks.py:227`); children receive directives only; no change requests between teams | `team/tasks.py:159-168,316-341` | Rank N cannot consume rank N-1's delivered API as a contract, nor ask for a change. |
@@ -65,7 +65,7 @@ These were not reported by anyone; the review found them by looking at the runni
 | Identity | token file `~/.conductor-code/actors.json`; TUI without a token writes as `human`; no run owner recorded | `workers/common/actors.py`, `tui/board.py:30-35`, `tui/api.py:648-653` | Any credential holder can terminate any run. |
 | Secrets | worker env (model keys, `GH_TOKEN`, Conductor secret, PG DSN) inherited into every agent sandbox; stderr/turn log returned unredacted | `common/coding_agent.py:596-599`, `check_execution.py:158-164`, `codex.py:341`, `gemini.py:117`, `coding_agent/tasks.py:706` | Not deployable to a shared enterprise fleet as is. |
 | Alerting | desktop notification only; nothing pushes an alert when a run needs attention | `tui/notify.py`, `tui/console.py:212-222` | Nobody is paged when 1,000 agents stall or overspend. |
-| Packaging | bash supervisor over a local venv; no image, Helm, systemd/launchd; `swarm_substrate` copied by path | `run_workers.sh`, `common/__init__.py:12` | No way to run 60 hosts reproducibly. |
+| Packaging | bash supervisor over a local venv; no image, Helm, systemd/launchd | `run_workers.sh` | No way to run 60 hosts reproducibly. |
 
 ## 4. Gap analysis by target
 

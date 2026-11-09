@@ -45,7 +45,7 @@ def _bb_dir(blackboard_dir: str | None) -> str:
 def list_runs(blackboard_dir: str | None = None) -> list[str]:
     """Run ids present on the board, newest first — from whichever backend the workers use (a local
     directory, or Postgres when ``SWARM_BLACKBOARD_PG_DSN`` is set, roadmap H6)."""
-    from swarm_substrate import blackboard as bb
+    from common import blackboard as bb
     if os.environ.get("SWARM_BLACKBOARD_PG_DSN"):
         return bb.list_runs()
     return bb.list_runs(backend=bb._LocalBackend(_bb_dir(blackboard_dir)))
@@ -69,7 +69,7 @@ def board_json(run: str, *, ceiling_usd: float | None = None, blackboard_dir: st
                     "percent": (spend / ceiling_usd * 100) if ceiling_usd else None}
     # Teams of teams (H3): a program run lists its child team runs with their latest rollup, so a human
     # reads team-level status and drills into one team's board on demand — never the whole firehose.
-    from swarm_substrate import blackboard as bb
+    from common import blackboard as bb
     rollups = {}
     for f in bb.read_facts(run, kind="rollup"):
         rollups[str((f.get("data") or {}).get("childRun"))] = f.get("data") or {}

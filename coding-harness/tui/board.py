@@ -1,7 +1,7 @@
 """Board-aware TUI layer (roadmap Phase 2, §4.8) — a view + editor over the team's shared boards.
 
 The TUI is otherwise a read-mostly Conductor REST client, but the team cycle's shared state does not
-live in Conductor — it lives on the append-only blackboard (``swarm_substrate``). §4.8's principle is
+live in Conductor — it lives on the append-only blackboard (``common.blackboard``). §4.8's principle is
 that *the boards are the single source of truth and every UI is a view + editor over them*: a human
 action in any surface is a **board write, the exact write a monitor or agent makes**. So this module
 reuses the workers' pure board read-model (``common.team_board``) rather than reimplementing it, and
@@ -17,9 +17,8 @@ import os
 import sys
 from pathlib import Path
 
-# The board read-model and substrate live in the workers package. Add it to the path (the workers'
-# own ``common/__init__`` then resolves ``swarm_substrate`` by its upward search), so the TUI reuses
-# exactly the fold the Lead/monitor use — no divergent second implementation.
+# The board read-model and blackboard live in the workers package. Add it to the path, so the TUI
+# reuses exactly the fold the Lead/monitor use — no divergent second implementation.
 _WORKERS = Path(__file__).resolve().parents[1] / "workers"
 if str(_WORKERS) not in sys.path:
     sys.path.insert(0, str(_WORKERS))

@@ -3,11 +3,10 @@ that overlapping short-lived worktrees converge onto a moving shared head with n
 that a conflict re-opens its item with a named mechanism instead of being dropped."""
 import os
 
-import common  # noqa: F401  -- sys.path shim for swarm_substrate
 
 from common import continuous_integrate as ci
 from common import git
-from swarm_substrate import blackboard as bb
+from common import blackboard as bb
 
 
 # ─────────────────────────── pure logic ──────────────────────────────────────

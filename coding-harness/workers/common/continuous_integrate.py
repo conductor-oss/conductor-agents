@@ -119,7 +119,7 @@ def integrate_ready(shared_repo: str, shared_branch: str, items, *, correlation_
             rec = reopen_record(item_id, shared_branch, res["conflicts"],
                                 touched=last_change(shared_repo, shared_branch, res["conflicts"]))
             if correlation_id is not None:
-                from swarm_substrate import blackboard as bb
+                from common import blackboard as bb
                 bb.post_fact(correlation_id, item_id, "reopen", rec, backend=backend)
             reopened.append(rec)
     return {

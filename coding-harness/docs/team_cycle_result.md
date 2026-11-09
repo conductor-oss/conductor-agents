@@ -9,7 +9,7 @@ real Conductor executions, independently re-verified.
 ## What shipped
 
 - **The construction read model** (`workers/common/team_board.py`): the three boards (§4.2) as kinds
-  on the one append-only `swarm_substrate` log — `item` / `state` (tracking), `lesson` (learning),
+  on the one append-only blackboard log — `item` / `state` (tracking), `lesson` (learning),
   `review` / `directive` (review+steering). `fold_board` reconstructs the live kanban (latest state
   per item wins), `ready_items` respects dependencies, `size_wave` is the concrete team-sizing
   formula (open question #1), and `board_rollup` is the human-digestible summary (H7). `blackboard.py`

@@ -74,7 +74,7 @@ def test_pushback_is_decided_by_the_lead_and_lessons_are_opinions(monkeypatch, t
     cid = "run-push"
     team_plan_init(fake_task_input(correlationId=cid, contractPaths=[], subtasks=[
         {"id": "p", "files": ["p.py"]}, {"id": "q", "files": ["q.py"]}]))
-    from swarm_substrate import blackboard as bbx
+    from common import blackboard as bbx
     tb.post_directive(cid, "human:ops@example.com", "team", "Do not use the stdlib json module", authority="human")
     d1 = tb.fold_board(cid)["directives"][-1]["id"]
     bbx.post_fact(cid, "lead", "dispatch", {"item": "p", "candidate": "p", "directives": [

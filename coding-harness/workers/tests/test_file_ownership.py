@@ -1,9 +1,8 @@
 """Phase 1 group 7: shared-file ownership on the board — exclusive live ownership resolved lock-free
 from the append-only log, release-and-promote, and the dispatch guard."""
-import common  # noqa: F401  -- sys.path shim for swarm_substrate
 
 from common import file_ownership as fo
-from swarm_substrate import blackboard as bb
+from common import blackboard as bb
 
 
 def _be(tmp_path):
