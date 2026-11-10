@@ -1456,7 +1456,10 @@ def team_apply_reviews(task):
                     file_ownership.bb.post_fact(cid, f"reviewer_{gid}", "session", {
                         "item": gid, "candidate": gid, "source": "review",
                         "deniedWrites": [x["file"] for x in out_of_scope]})
-            findings = findings + [f"in {x['file']}: {x['change']}" for x in out_of_scope if x.get("change")]
+            # A file named without detail is still a change the item needs: with no finding the item
+            # fell through to done and the file was never applied (the ba2491ff mechanism, by another door).
+            findings = findings + [f"in {x['file']}: {x.get('change') or 'a change this item still needs there'}"
+                                   for x in out_of_scope if x.get("file")]
             item = _mapping(items.get(gid))
             amend = _pending_amendment(cid, gid) if verdict != "unavailable" else {}
             if amend and cid:
@@ -1702,8 +1705,14 @@ def team_acceptance_build(task):
         if reused and cid:
             for gid, path in reused.items():
                 cur = team_board.fold_board(cid)["items"].get(gid, {"id": gid})
-                team_board.post_item(cid, "acceptance", {**cur, "acceptanceTests": [path],
-                                                         "testCommands": [{"argv": ["pytest", path]}]})
+                # The command comes from the repository's own test tooling for that file, as a fresh
+                # test's does; a hard-coded pytest ran Go acceptance tests under pytest (review 2).
+                commands = verification.commands_for_test_paths(repo, [path])
+                if not commands:
+                    team_board.post_exception(cid, "acceptance", gid, "acceptance_command",
+                                              f"no test tooling of this repository runs the reused acceptance "
+                                              f"test {path}; the item cannot be proven by it", severity="high")
+                team_board.post_item(cid, "acceptance", {**cur, "acceptanceTests": [path], "testCommands": commands})
             cur = contract_event.current_contract(file_ownership.bb.read_facts(cid, kind=contract_event.CONTRACT_KIND))
             frozen = sorted(set(reused.values()))
             file_ownership.bb.post_fact(cid, "lead", contract_event.CONTRACT_KIND, {
@@ -1917,7 +1926,7 @@ def team_monitor(task):
                                       held=held)
         # A deadlock is the Lead's to break, never a reason to stop: someone is assigned to each item at
         # its root, and an item waiting on work that can never land stops waiting for it.
-        max_rescues = int(i.get("maxRescues") or 0)
+        max_rescues = max(int(i.get("maxRescues") if i.get("maxRescues") not in (None, "") else 2), 0)
         if stuck["starved"] and max_rescues > 0:
             roots = [h.split(" waits for ", 1)[0] for h in held] if stuck["starvedBy"] == "scope_wait" else []
             roots = roots or sorted(g for g, it in after["items"].items() if it.get("state") == team_board.BLOCKED)

@@ -275,6 +275,43 @@ def test_breakdown_prompt_asks_for_each_source_files_test_file():
     assert "a source file's test file alongside it" in p and "foo_test.go" in p
 
 
+def test_a_team_is_not_re_run_once_the_programs_budget_is_spent(monkeypatch, tmp_path, fake_task_input):
+    """With the program's ceiling spent, a re-run team would get a zero share and end at its not-startable
+    gate — up to four times, each with a retrospective. The program blocks the subsystem naming the
+    budget instead."""
+    _iso(monkeypatch, tmp_path)
+    pid = "prog-broke"
+    program_rank_init(fake_task_input(correlationId=pid, plan={"subtasks": SUBS, "contractPaths": []},
+                                      maxTeamAttempts=5))
+    program_rank_build(fake_task_input(correlationId=pid, ceilingUsd=10))
+    ap = program_apply_rank(fake_task_input(correlationId=pid, rank=["model"], ceilingUsd=10, joined={
+        "team_model__1": {"output": {"delivered": False, "verdict": "INCOMPLETE", "report": "one item blocked",
+                                     "spendUsd": 10.0}}})).output_data
+    assert ap["retrying"] == [] and ap["continue"] is False and ap["results"][0]["budgetExhausted"] is True
+    item = tb.fold_board(pid)["items"]["model"]
+    assert item["state"] == tb.BLOCKED and "budget exhausted ($10.00 of $10.00" in item["reason"]
+    assert [e["kind"] for e in tb.open_exceptions(tb.fold_board(pid)["exceptions"])] == ["budget"]
+    # Budget left: the same outcome is re-run as before.
+    pid = "prog-flush"
+    program_rank_init(fake_task_input(correlationId=pid, plan={"subtasks": SUBS, "contractPaths": []},
+                                      maxTeamAttempts=5))
+    program_rank_build(fake_task_input(correlationId=pid, ceilingUsd=10))
+    ap = program_apply_rank(fake_task_input(correlationId=pid, rank=["model"], ceilingUsd=10, joined={
+        "team_model__1": {"output": {"delivered": False, "verdict": "INCOMPLETE", "report": "r", "spendUsd": 4.0}}})).output_data
+    assert ap["retrying"] == ["model"]
+    import json as _j
+    wf = _j.load(open(os.path.join(os.path.dirname(__file__), "..", "workflows", "cc_program.json")))
+
+    def walk(ts):
+        for t in ts:
+            yield t
+            yield from walk(t.get("loopOver") or [])
+            for c in (t.get("decisionCases") or {}).values():
+                yield from walk(c)
+    apply = next(t for t in walk(wf["tasks"]) if t["taskReferenceName"] == "apply_rank")
+    assert apply["inputParameters"]["ceilingUsd"] == "${workflow.input.ceilingUsd}"
+
+
 def test_an_incomplete_team_is_re_run_once_with_its_diagnosis(monkeypatch, tmp_path, fake_task_input):
     """pgtype delivered both items but was refused at its final gate for the parser team's tests, still
     being built in the same rank; its repair agent said so, and the program simply ended at 2/9 (run

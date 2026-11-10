@@ -241,17 +241,19 @@ def test_workspace_prepare_prunes_the_worktrees_of_finished_runs(tmp_git_repo, f
     git.worktree_add(done["worktreePath"], "st-core")  # a nested fork worktree of the finished run
     live = git.workspace_add(repo, "wf-live", branch_name="team-build")
     unknown = git.workspace_add(repo, "wf-unknown", branch_name="team-build")
-    assert len(git.run_worktrees(repo)) == 3
-    status = {"wf-done": False, "wf-live": True, "wf-unknown": None}
+    failed = git.workspace_add(repo, "wf-failed", branch_name="team-build")  # Conductor's retry resumes here
+    assert len(git.run_worktrees(repo)) == 4
+    status = {"wf-done": "COMPLETED", "wf-live": "RUNNING", "wf-failed": "FAILED", "wf-unknown": None}
     from common import conductor_status
-    monkeypatch.setattr(conductor_status, "workflow_running", lambda wid: status.get(wid))
+    monkeypatch.setattr(conductor_status, "workflow_status", lambda wid: status.get(wid))
 
     out = workspace_prepare(fake_task_input(repoPath=repo, workflowId="wf-new", branch="team-build")).output_data
 
     assert out["prunedRuns"] == ["wf-done"]
-    assert sorted(git.run_worktrees(repo)) == ["wf-live", "wf-new", "wf-unknown"]
+    assert sorted(git.run_worktrees(repo)) == ["wf-failed", "wf-live", "wf-new", "wf-unknown"]
     assert not Path(done["worktreePath"]).exists()
     assert Path(live["worktreePath"]).exists() and Path(unknown["worktreePath"]).exists()
+    assert Path(failed["worktreePath"]).exists()  # retryable: its checkout must survive
     assert git.WORKTREES + "/run-wf-done/" not in git.git(repo, "worktree", "list", "--porcelain").stdout
     # The finished run's branch, and everything it delivered, is still there.
     assert git.git(repo, "rev-parse", "--verify", done["branch"], check=False).code == 0

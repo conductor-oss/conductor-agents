@@ -102,6 +102,9 @@ def resolve_campaign_publication_plan(*, outcome: object, requested_draft: objec
         "draft": outcome != "verified" or requested_draft is True or tests_passed is not True or authored,
         "outcome": outcome if isinstance(outcome, str) and outcome else "incomplete",
         "head": head,
+        # A draft to approve exists only when something was committed and the campaign ran to its end:
+        # a campaign stopped before implementation has no PR to park a human gate on.
+        "publish": "yes" if not _blank(_text(head)) and outcome in ("verified", "incomplete") else "no",
         "testCycleState": test_state if isinstance(test_state, str) else "not_run",
         "testsPassed": tests_passed is True,
         "agentAuthoredTest": authored,

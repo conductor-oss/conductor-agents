@@ -15,6 +15,7 @@ import pytest
 
 from common import git
 from gitops.tasks import (
+    commit as commit_task,
     create_branch,
     git_push,
     inplace_guard,
@@ -590,3 +591,43 @@ def test_commit_confines_staging_to_the_write_roots(tmp_git_repo):
                 yield from walk(case)
     repair = [t for t in walk(tc["tasks"]) if t.get("taskReferenceName") == "repair_commit"][0]
     assert repair["inputParameters"]["allowedWriteRoots"] == "${workflow.input.allowedWriteRoots}"
+
+
+def test_commit_with_no_write_roots_is_not_confined_to_its_frozen_test(fake_task_input, tmp_git_repo):
+    """Help for a stuck item is dispatched unscoped (allowedWriteRoots empty) but still names its frozen
+    acceptance test; confining the commit to that test alone dropped every source change the helper made
+    (review of PR 16). No roots means nothing is confined; with roots the test stays writable."""
+    repo = str(tmp_git_repo)
+    Path(repo, "src").mkdir()
+    Path(repo, "tests", "acceptance").mkdir(parents=True)
+    Path(repo, "src", "x.go").write_text("package x\n")
+    Path(repo, "tests", "acceptance", "test_x.py").write_text("def test_x():\n    assert True\n")
+    out = commit_task(fake_task_input(repoPath=repo, message="help", allowedWriteRoots=[],
+                                      acceptanceTests=["tests/acceptance/test_x.py"])).output_data
+    assert "src/x.go" in out["stagedPaths"] and not out.get("outsideScope")
+    Path(repo, "src", "y.go").write_text("package x\n")
+    Path(repo, "tests", "acceptance", "test_x.py").write_text("def test_x():\n    assert 1\n")
+    out = commit_task(fake_task_input(repoPath=repo, message="scoped", allowedWriteRoots=["src/x.go"],
+                                      acceptanceTests=["tests/acceptance/test_x.py"])).output_data
+    assert "tests/acceptance/test_x.py" in out["stagedPaths"] and "src/y.go" in out["outsideScope"]
+
+
+def test_only_a_completed_run_loses_its_checkout(tmp_git_repo):
+    """A failed or stopped run is resumed by Conductor's retry in its own checkout; pruning it made every
+    resumed step fail on a deleted path (review of PR 16)."""
+    repo = str(tmp_git_repo)
+    for run in ("aaa", "bbb", "ccc"):
+        git.git(repo, "worktree", "add", "-b", f"run-{run}", str(Path(repo, git.WORKTREES, f"run-{run}")))
+    status = {"aaa": True, "bbb": False}  # completed; failed (retryable); ccc: the server cannot say
+    out = git.prune_finished_runs(repo, keep_run_id="", prunable=lambda run: status.get(run))
+    assert out["removed"] == ["aaa"] and out["kept"] == ["bbb", "ccc"]
+    assert sorted(git.run_worktrees(repo)) == ["bbb", "ccc"]
+
+
+def test_within_write_roots_normalizes_like_the_agent_guard():
+    assert git.within_write_roots("src/a.py", ["./src/a.py"])
+    assert git.within_write_roots("src/a.py", ["."])
+    assert git.within_write_roots("src/a.py", ["src/"])
+    assert git.within_write_roots("./src/a.py", ["src"])
+    assert not git.within_write_roots("srcx/a.py", ["src"])
+    assert not git.within_write_roots("src/a.py", ["../src"])

@@ -389,7 +389,7 @@ def workspace_prepare(task):
         # a command at all (E2BIG, run ec0fb6dc) — so a new run first removes the worktrees of runs
         # the server says are over (an unanswerable run is kept).
         pruned = git.prune_finished_runs(source, keep_run_id=run_id,
-                                         is_running=conductor_status.workflow_running)
+                                         prunable=conductor_status.workflow_prunable)
         out = git.workspace_add(
             source,
             run_id,
@@ -531,8 +531,11 @@ def commit(task):
         # The item's write roots (plus its frozen acceptance tests, writable so a wrong assertion can be
         # amended) confine what a fork commits: Bash can write any file of the worktree, and an edit to a
         # sibling's file must be refused here as the guard refuses it at the tool (run ba2491ff).
-        roots = [str(p) for p in listed(i.get("allowedWriteRoots")) + listed(i.get("acceptanceTests"))
-                 if str(p).strip()]
+        # No write roots means an unscoped fork (help for a stuck item may change any file): nothing is
+        # confined, not even to its frozen test — which alone would drop every source change (review 2).
+        roots = [str(p) for p in listed(i.get("allowedWriteRoots")) if str(p).strip()]
+        if roots:
+            roots += [str(p) for p in listed(i.get("acceptanceTests")) if str(p).strip() and str(p) not in roots]
         out = git.commit(i["repoPath"], i.get("message", "conductor-code change"), write_roots=roots)
         return ok(task, out, [f"[commit] HEAD={out['commit']} msg={i.get('message','')}"
                               + (f" outsideScope={out['outsideScope']}" if out.get("outsideScope") else "")])

@@ -2233,6 +2233,24 @@ def _discovery_result(*, candidates: list[dict], source_paths: list[str], requir
     }
 
 
+def commands_for_test_paths(repo_path: str, paths: list[str]) -> list[dict]:
+    """The repository's own commands that run exactly these test files (``[{"argv": [...]}]``), from the
+    same per-language planners targeted discovery uses; empty when no tooling of the repository maps
+    them. Used for acceptance tests that already exist on the branch (an earlier team froze them)."""
+    root = Path(repo_path)
+    out, seen = [], set()
+    try:
+        candidates = _changed_scope_candidates(root, [str(p) for p in paths])
+    except VerificationBlocked:  # no planner maps the file: the caller reports it, never guesses a command
+        return []
+    for candidate in candidates:
+        argv = [str(a) for a in candidate.get("argv") or []]
+        if argv and tuple(argv) not in seen:
+            seen.add(tuple(argv))
+            out.append({"argv": argv})
+    return out
+
+
 def _changed_scope_candidates(root: Path, changed_paths: list[str],
                               rejected: list[dict] | None = None) -> list[dict]:
     planners = (

@@ -108,13 +108,26 @@ def integrate_ready(shared_repo: str, shared_branch: str, items, *, correlation_
         # integration sees the head the previous one left: the branch only ever moves forward, linearly.
         with git._repo_lock(shared_repo):
             res = rebase_onto(worktree, shared_branch)
+            refused = ""
             if res["status"] == "integrated":
                 # --ff-only guarantees the head only moves forward onto work that already contains the
-                # prior shared head (no merge commit).
-                git.git(shared_repo, "merge", "--ff-only", branch)
+                # prior shared head (no merge commit). A refusal (an untracked file in the shared
+                # worktree in the way of the fork's commit, run a4f1ff1f) re-opens this one item; it
+                # must not end the whole wave's integration with every claim still held.
+                ff = git.git(shared_repo, "merge", "--ff-only", branch, check=False)
+                if ff.code != 0:
+                    git.git(shared_repo, "merge", "--abort", check=False)
+                    refused = (ff.stderr or ff.stdout or "").strip()[-600:] or f"exit {ff.code}"
                 head = git.head(shared_repo)
-        if res["status"] == "integrated":
+        if res["status"] == "integrated" and not refused:
             integrated.append({"item": item_id, "branch": branch, "head": head})
+        elif refused:
+            rec = {**reopen_record(item_id, shared_branch, []),
+                   "mechanism": f"fast-forward of item {item_id} ({branch}) onto {shared_branch} refused: {refused}"}
+            if correlation_id is not None:
+                from common import blackboard as bb
+                bb.post_fact(correlation_id, item_id, "reopen", rec, backend=backend)
+            reopened.append(rec)
         else:
             rec = reopen_record(item_id, shared_branch, res["conflicts"],
                                 touched=last_change(shared_repo, shared_branch, res["conflicts"]))

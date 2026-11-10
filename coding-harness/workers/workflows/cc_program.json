@@ -525,7 +525,8 @@
             "joined": "${rank_join.output}",
             "description": "${workflow.input.description}",
             "memoryDigest": "${memory_read.output.digest}",
-            "maxTeamAttempts": "${workflow.input.maxTeamAttempts}"
+            "maxTeamAttempts": "${workflow.input.maxTeamAttempts}",
+            "ceilingUsd": "${workflow.input.ceilingUsd}"
           }
         },
         {

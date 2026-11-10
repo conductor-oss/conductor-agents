@@ -349,6 +349,7 @@ def program_apply_rank(task):
         repo = str(i.get("repoPath") or "").strip()
         rank = [str(x) for x in _list(i.get("rank"))]
         max_attempts = max(int(i.get("maxTeamAttempts") or 2), 1)
+        ceiling = float(i.get("ceilingUsd") or 0) or 0.0
         prior = team_board.fold_board(cid)["items"]
         joined = {}
         for ref, wrapper in _mapping(i.get("joined")).items():
@@ -368,6 +369,22 @@ def program_apply_rank(task):
                 continue  # delivered on an earlier attempt of this rank; not re-forked this time
             attempt = int(_mapping(prior.get(sid)).get("attempt") or 0)
             report = str(out.get("report") or "")
+            if spend:
+                budget_gate.record_spend(cid, f"child:{sid}", usd=spend)
+            spent = budget_gate.read_spend(cid)["usd"]
+            if not delivered and ceiling and spent >= ceiling and attempt + 1 < max_attempts:
+                # Nothing left to re-run it with: a re-run team would get a zero share and end at its
+                # not-startable gate, five times over, each with a retrospective (maxTeamAttempts 5).
+                mech = (f"program budget exhausted (${spent:.2f} of ${ceiling:.2f} spent) after child team "
+                        f"{child_run[:8]} ended {verdict}; not re-run — {report[:300]}")
+                team_board.set_state(cid, "program", sid, team_board.BLOCKED, reason=mech)
+                team_board.post_exception(cid, "program", sid, "budget", mech, severity="high")
+                bb.post_fact(cid, "program", _ROLLUP_KIND, {"subsystem": sid, "childRun": child_run, "verdict": verdict,
+                                                           "rollup": _mapping(out.get("rollup")), "spendUsd": spend,
+                                                           "delivered": False})
+                results.append({"subsystem": sid, "childRun": child_run, "delivered": False, "verdict": verdict,
+                                "budgetExhausted": True})
+                continue
             if not delivered and attempt + 1 < max_attempts:
                 # The program recovers instead of ending: the team is re-run once its whole rank has
                 # finished, with its own diagnosis as a directive. pgtype was refused at its final gate
@@ -390,8 +407,6 @@ def program_apply_rank(task):
                 bb.post_fact(cid, "program", _ROLLUP_KIND, {"subsystem": sid, "childRun": child_run, "verdict": verdict,
                                                            "rollup": _mapping(out.get("rollup")), "spendUsd": spend,
                                                            "delivered": False, "retrying": True})
-                if spend:
-                    budget_gate.record_spend(cid, f"child:{sid}", usd=spend)
                 results.append({"subsystem": sid, "childRun": child_run, "delivered": False, "verdict": verdict,
                                 "retrying": True})
                 continue
@@ -401,8 +416,6 @@ def program_apply_rank(task):
             bb.post_fact(cid, "program", _ROLLUP_KIND, {"subsystem": sid, "childRun": child_run,
                                                        "verdict": verdict, "rollup": _mapping(out.get("rollup")),
                                                        "spendUsd": spend, "delivered": delivered})
-            if spend:
-                budget_gate.record_spend(cid, f"child:{sid}", usd=spend)
             results.append({"subsystem": sid, "childRun": child_run, "delivered": delivered, "verdict": verdict})
         prog = _program(cid)
         board = team_board.fold_board(cid)
@@ -491,8 +504,7 @@ def bug_adopt(task):
         head = git.head(repo)
         adopted = res.code == 0
         try:
-            import os
-            git.worktree_remove(repo, os.path.join(git.WORKTREES, gid))
+            git.worktree_remove(repo, gid)  # worktree_remove prefixes the worktrees directory itself
         except Exception:  # noqa: BLE001
             pass
         return ok(task, {"adopted": adopted, "head": head, "branch": branch},

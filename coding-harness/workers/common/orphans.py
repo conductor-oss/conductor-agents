@@ -73,14 +73,17 @@ def _call(method: str, path: str, body: dict | None = None, *, session: tuple[st
 
 
 def _running_workflow_ids(session=None) -> list[str]:
-    ids, start = [], 0
-    while True:
-        query = urllib.parse.urlencode({"query": "status=RUNNING", "size": _PAGE, "start": start})
-        results = (_call("GET", f"/workflow/search?{query}", session=session) or {}).get("results") or []
-        ids += [str(r.get("workflowId")) for r in results]
-        if len(results) < _PAGE:
-            return ids
-        start += _PAGE
+    ids = []
+    for status in ("RUNNING", "PAUSED"):
+        start = 0
+        while True:
+            query = urllib.parse.urlencode({"query": f"status={status}", "size": _PAGE, "start": start})
+            results = (_call("GET", f"/workflow/search?{query}", session=session) or {}).get("results") or []
+            ids += [str(r.get("workflowId")) for r in results if str(r.get("workflowId")) not in ids]
+            if len(results) < _PAGE:
+                break
+            start += _PAGE
+    return ids
 
 
 def reclaim(task_names: Iterable[str], *, identity: str, before_ms: int) -> list[str]:

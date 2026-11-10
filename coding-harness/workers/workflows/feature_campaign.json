@@ -777,52 +777,76 @@
       }
     },
     {
-      "name": "pr_draft_approval",
-      "taskReferenceName": "campaign_pr_approval",
-      "type": "SUB_WORKFLOW",
-      "subWorkflowParam": {
-        "name": "pr_draft_approval"
+      "name": "campaign_publish_needed_gate",
+      "taskReferenceName": "campaign_publish_needed_gate",
+      "inputParameters": {
+        "publish": "${campaign_publication_plan.output.publish}"
       },
-      "inputParameters": {
-        "callerWorkflow": "feature_campaign",
-        "repoPath": "${campaign_workspace.output.worktreePath}",
-        "workspacePath": "${campaign_workspace.output.worktreePath}",
-        "branch": "${campaign_workspace.output.branch}",
-        "title": "${campaign_publication_plan.output.prTitle}",
-        "body": "${campaign_publication_plan.output.prBody}",
-        "summary": "${campaign_publication_plan.output.prSummary}",
-        "base": "${workflow.input.prBase}",
-        "issueNumber": "${workflow.input.issueNumber}",
-        "candidateCommit": "${campaign_publication_plan.output.head}",
-        "verificationState": "${campaign_tests.output.testCycleState}",
-        "originalContext": "${workflow.variables.effectiveInstruction}",
-        "maxApprovalRevisions": "${workflow.input.maxApprovalRevisions}",
-        "agent": "${workflow.input.codeAgent}",
-        "maxTurns": "${workflow.input.maxTurns}",
-        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-        "maxSubtasks": "${workflow.input.maxParallelism}",
-        "codePromptTemplate": "${workflow.input.codePromptTemplate}",
-        "codePromptTemplateSource": "${workflow.input.codePromptTemplateSource}",
-        "modelProfile": "${workflow.input.modelProfile}",
-        "modelPolicy": "${workflow.input.modelPolicy}",
-        "modelPolicySource": "${workflow.input.modelPolicySource}",
-        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
-        "modelsConfig": "${workflow.input.modelsConfig}",
-        "modelOverrides": "${workflow.input.modelOverrides}"
-      }
-    },
-    {
-      "name": "record_campaign_pr_approval",
-      "taskReferenceName": "record_campaign_pr_approval",
-      "type": "SET_VARIABLE",
-      "inputParameters": {
-        "prApprovalState": "${campaign_pr_approval.output.approvalState}",
-        "publishBranch": "${campaign_pr_approval.output.branch}",
-        "publishWorkspacePath": "${campaign_pr_approval.output.workspacePath}",
-        "publishCandidateCommit": "${campaign_pr_approval.output.candidateCommit}",
-        "publishTitle": "${campaign_pr_approval.output.title}",
-        "publishBody": "${campaign_pr_approval.output.body}"
-      }
+      "type": "SWITCH",
+      "decisionCases": {
+        "yes": [
+          {
+            "name": "pr_draft_approval",
+            "taskReferenceName": "campaign_pr_approval",
+            "type": "SUB_WORKFLOW",
+            "subWorkflowParam": {
+              "name": "pr_draft_approval"
+            },
+            "inputParameters": {
+              "callerWorkflow": "feature_campaign",
+              "repoPath": "${campaign_workspace.output.worktreePath}",
+              "workspacePath": "${campaign_workspace.output.worktreePath}",
+              "branch": "${campaign_workspace.output.branch}",
+              "title": "${campaign_publication_plan.output.prTitle}",
+              "body": "${campaign_publication_plan.output.prBody}",
+              "summary": "${campaign_publication_plan.output.prSummary}",
+              "base": "${workflow.input.prBase}",
+              "issueNumber": "${workflow.input.issueNumber}",
+              "candidateCommit": "${campaign_publication_plan.output.head}",
+              "verificationState": "${campaign_tests.output.testCycleState}",
+              "originalContext": "${workflow.variables.effectiveInstruction}",
+              "maxApprovalRevisions": "${workflow.input.maxApprovalRevisions}",
+              "agent": "${workflow.input.codeAgent}",
+              "maxTurns": "${workflow.input.maxTurns}",
+              "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+              "maxSubtasks": "${workflow.input.maxParallelism}",
+              "codePromptTemplate": "${workflow.input.codePromptTemplate}",
+              "codePromptTemplateSource": "${workflow.input.codePromptTemplateSource}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}"
+            }
+          },
+          {
+            "name": "record_campaign_pr_approval",
+            "taskReferenceName": "record_campaign_pr_approval",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "prApprovalState": "${campaign_pr_approval.output.approvalState}",
+              "publishBranch": "${campaign_pr_approval.output.branch}",
+              "publishWorkspacePath": "${campaign_pr_approval.output.workspacePath}",
+              "publishCandidateCommit": "${campaign_pr_approval.output.candidateCommit}",
+              "publishTitle": "${campaign_pr_approval.output.title}",
+              "publishBody": "${campaign_pr_approval.output.body}"
+            }
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "campaign_nothing_to_publish",
+          "taskReferenceName": "campaign_nothing_to_publish",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "prApprovalState": "suppressed"
+          }
+        }
+      ],
+      "evaluatorType": "value-param",
+      "expression": "publish"
     },
     {
       "name": "campaign_publish_gate",

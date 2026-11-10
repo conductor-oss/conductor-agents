@@ -216,3 +216,23 @@ def test_a_project_is_not_bootstrapped_unless_its_own_tests_pass_on_the_final_co
     assert unproven["verdict"] == "FEATURE_INCOMPLETE" and unproven["bootstrapped"] is False
     assert "tests_failed" in unproven["report"]
     assert bootstrap_outcome(fake_task_input(**delivered, featureTestsPassed=True)).output_data["verdict"] == "BOOTSTRAPPED"
+
+
+def test_bug_adopt_removes_the_fork_it_adopted(tmp_path, fake_task_input):
+    """worktree_remove already prefixes the worktrees directory; passing it prefixed left every bug_fix
+    run's fork registered (review of PR 16)."""
+    from common import git
+    repo = str(tmp_path / "repo")
+    git.ensure_ready(repo)
+    with open(os.path.join(repo, "a.py"), "w") as fh:
+        fh.write("x = 1\n")
+    git.git(repo, "add", "-A")
+    git.git(repo, "commit", "-m", "base")
+    wt = git.worktree_add(repo, "fix")["worktreePath"]
+    with open(os.path.join(wt, "b.py"), "w") as fh:
+        fh.write("y = 2\n")
+    git.git(wt, "add", "-A")
+    git.git(wt, "commit", "-m", "fix")
+    out = bug_adopt(fake_task_input(sharedRepo=repo, groupId="fix")).output_data
+    assert out["adopted"] is True and os.path.exists(os.path.join(repo, "b.py"))
+    assert not os.path.isdir(wt) and git.WORKTREES not in git.git(repo, "worktree", "list", "--porcelain").stdout

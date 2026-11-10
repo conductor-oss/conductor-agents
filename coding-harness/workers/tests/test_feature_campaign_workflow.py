@@ -623,11 +623,17 @@ def test_campaign_commits_locally_and_only_publishes_once_a_human_approves():
     assert "draft" in feature_campaign_logic.resolve_campaign_publication_plan(
         outcome="incomplete", requested_draft=False, test_state=None,
         tests_passed=None, tested=None, committed="c")
-    # The approval gate is a plain task on the main path, not a case of a
-    # SWITCH: nothing skips it.
+    # The approval gate runs whenever there is a draft to approve, and only then: a campaign that
+    # stopped before implementation has no PR to park a human gate on, so its approval state resolves to
+    # suppressed and nothing is pushed.
     refs = [task["taskReferenceName"] for task in wf["tasks"]]
-    assert refs.index("campaign_publication_plan") < refs.index("campaign_pr_approval") \
-        < refs.index("record_campaign_pr_approval") < refs.index("campaign_publish_gate")
+    assert refs.index("campaign_publication_plan") < refs.index("campaign_publish_needed_gate") \
+        < refs.index("campaign_publish_gate")
+    needed = next(x for x in _walk(wf) if x.get("taskReferenceName") == "campaign_publish_needed_gate")
+    assert needed["inputParameters"] == {"publish": "${campaign_publication_plan.output.publish}"}
+    assert [t["taskReferenceName"] for t in needed["decisionCases"]["yes"]] == [
+        "campaign_pr_approval", "record_campaign_pr_approval"]
+    assert needed["defaultCase"][0]["inputParameters"] == {"prApprovalState": "suppressed"}
     approval = next(x for x in _walk(wf) if x.get("taskReferenceName") == "campaign_pr_approval")
     recorded = next(x for x in _walk(wf)
                     if x.get("taskReferenceName") == "record_campaign_pr_approval")

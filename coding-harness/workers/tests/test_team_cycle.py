@@ -462,10 +462,10 @@ def test_starvation_names_why_and_never_waits_for_a_human(monkeypatch, tmp_path,
     team_plan_init(fake_task_input(correlationId=cid, subtasks=items, contractPaths=[]))
     tb.set_state(cid, "i", "a", tb.BLOCKED, reason="empty delivery")
     # The monitor escalates 'a' (a notice) and the run is starved — it exits, it does not wait.
-    m = team_monitor(fake_task_input(correlationId=cid, ceilingUsd=10)).output_data
+    m = team_monitor(fake_task_input(correlationId=cid, maxRescues=0, ceilingUsd=10)).output_data
     assert m["starved"] is True and m["starvedBy"] == "exceptions" and "gate" not in m
     tb.resolve_exception(cid, "lead", "a", "blocked", "noted")
-    m = team_monitor(fake_task_input(correlationId=cid, ceilingUsd=10)).output_data
+    m = team_monitor(fake_task_input(correlationId=cid, maxRescues=0, ceilingUsd=10)).output_data
     assert m["starved"] is True and m["starvedBy"] == "dependency" and "b depends on a" in m["starvedDetail"]
     out = team_outcome(fake_task_input(correlationId=cid, testsPassed=False)).output_data
     assert "dependency-starved" in out["report"] and out["starvedBy"] == "dependency"
@@ -1274,7 +1274,7 @@ def test_the_lead_breaks_a_deadlock_instead_of_ending_the_run(monkeypatch, tmp_p
 
 def test_monitor_ends_the_run_when_ready_work_is_held_and_nothing_is_in_flight(monkeypatch, tmp_path,
                                                                                   fake_task_input):
-    """Ready work the Lead could not dispatch (held for a file an open item owns) with nothing in flight
+    """(With help off, maxRescues=0: with help on, the Lead breaks the deadlock instead.) Ready work the Lead could not dispatch (held for a file an open item owns) with nothing in flight
     is the same wave again next time: 14 empty waves in 80 s to maxWaves, reported as "max waves
     reached" (run a4f1ff1f). The monitor ends the run at once, naming each hold as a scope_wait
     escalation."""
@@ -1284,7 +1284,7 @@ def test_monitor_ends_the_run_when_ready_work_is_held_and_nothing_is_in_flight(m
     team_plan_init(fake_task_input(correlationId=cid, subtasks=_ITEMS[:2], contractPaths=[]))
     tb.set_state(cid, "lead", "alpha", tb.REOPENED)
     held = ["alpha waits for beta to land registry.py"]
-    m = team_monitor(fake_task_input(correlationId=cid, ceilingUsd=10, dispatchedCount=0, scopeWaits=held)).output_data
+    m = team_monitor(fake_task_input(correlationId=cid, maxRescues=0, ceilingUsd=10, dispatchedCount=0, scopeWaits=held)).output_data
     assert m["starved"] is True and m["starvedBy"] == "scope_wait" and "alpha waits for beta" in m["starvedDetail"]
     exc = [e for e in tb.fold_board(cid)["exceptions"] if e["kind"] == "scope_wait"]
     assert exc and exc[-1]["item"] == "alpha" and not exc[-1].get("resolved")
@@ -1595,6 +1595,79 @@ def test_a_program_team_is_gated_on_its_own_frozen_tests(monkeypatch, tmp_path, 
     in_loop = {t["taskReferenceName"]: t for t in loop["loopOver"]}
     assert in_loop["replan"]["inputParameters"]["parentCorrelationId"] == "${workflow.input.parentCorrelationId}"
     assert in_loop["capture_round"]["inputParameters"]["teamGateCommands"] == "${replan.output.gateCommands}"
+
+
+def test_a_reviewer_naming_a_file_without_detail_still_blocks_done(monkeypatch, tmp_path, fake_task_input):
+    """lgtm plus an outOfScope entry with an empty change flipped the verdict to changes but left no
+    finding, so the item fell through to done and the file was never applied (review of PR 16)."""
+    _isolate_board(monkeypatch, tmp_path)
+    cid = "run-oos-blank"
+    shared = str(tmp_path / "shared")
+    git.ensure_ready(shared)
+    branch = git._current_branch(shared)
+    team_plan_init(fake_task_input(correlationId=cid, subtasks=[_ITEMS[2]], contractPaths=[]))
+    tb.set_state(cid, "lead", "gamma", tb.REVIEW)
+    out = team_apply_reviews(fake_task_input(correlationId=cid, sharedRepo=shared, sharedBranch=branch,
+                                             reviewed=["gamma"], maxReviewRounds=2, joined={
+        "review_gamma": {"output": {"verdict": "lgtm", "findings": [], "outOfScope": [{"file": "echo.go", "change": ""}]}}})).output_data
+    assert out["doneCount"] == 0 and out["changes"] == ["gamma"]
+    assert tb.fold_board(cid)["items"]["gamma"]["state"] == tb.REOPENED
+    assert any("echo.go" in d["text"] for d in tb.fold_board(cid)["directives"] if d.get("target") == "gamma")
+
+
+def test_a_refused_fast_forward_reopens_one_item_not_the_wave(monkeypatch, tmp_path, fake_task_input):
+    """An untracked file in the shared worktree in the way of a fork's commit made `merge --ff-only`
+    raise out of integrate_ready, failing the whole integration task with every claim held."""
+    from common import continuous_integrate as ci
+    shared = str(tmp_path / "shared")
+    git.ensure_ready(shared)
+    with open(os.path.join(shared, "seed.py"), "w") as fh:
+        fh.write("x = 1\n")
+    _commit_all(shared, "base")
+    branch = git._current_branch(shared)
+    base = git.head(shared)
+    wt_g = _fork_worktree(shared, "gamma", branch, edit=("gamma.py", "G = 1\n"))
+    wt_a = _fork_worktree(shared, "alpha", branch, edit=("alpha.py", "A = 1\n"))
+    with open(os.path.join(shared, "gamma.py"), "w") as fh:  # untracked, collides with gamma's commit
+        fh.write("stale\n")
+    out = ci.integrate_ready(shared, branch, [
+        {"id": "gamma", "worktree": wt_g, "branch": git.group_branch(shared, "gamma"), "readyAt": 0},
+        {"id": "alpha", "worktree": wt_a, "branch": git.group_branch(shared, "alpha"), "readyAt": 1}])
+    assert [r["item"] for r in out["integrated"]] == ["alpha"]
+    assert [r["item"] for r in out["reopened"]] == ["gamma"] and "fast-forward" in out["reopened"][0]["mechanism"]
+    assert git.head(shared) != base and open(os.path.join(shared, "gamma.py")).read() == "stale\n"
+
+
+def test_a_reused_acceptance_test_gets_the_repositorys_own_command(monkeypatch, tmp_path, fake_task_input):
+    """A re-run Go team's reused acceptance test was recorded with `pytest <file>` (review of PR 16)."""
+    from team.tasks import team_acceptance_build
+    _isolate_board(monkeypatch, tmp_path)
+    cid = "run-reuse-go"
+    shared = str(tmp_path / "shared")
+    git.ensure_ready(shared)
+    os.makedirs(os.path.join(shared, "tests", "acceptance"))
+    with open(os.path.join(shared, "go.mod"), "w") as fh:
+        fh.write("module example.com/x\n\ngo 1.22\n")
+    with open(os.path.join(shared, "tests", "acceptance", "accept_alpha_test.go"), "w") as fh:
+        fh.write("package acceptance\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\n")
+    with open(os.path.join(shared, "tests", "acceptance", "accept_gamma.feature"), "w") as fh:
+        fh.write("Feature: nothing runs this\n")
+    _commit_all(shared, "previous attempt's frozen tests")
+    team_plan_init(fake_task_input(correlationId=cid, contractPaths=[], subtasks=[
+        {**_ITEMS[0], "acceptanceCriteria": ["a"]}]))
+    ab = team_acceptance_build(fake_task_input(correlationId=cid, repoPath=shared,
+                                               acceptanceTestPattern="tests/acceptance/accept_{id}_test.go")).output_data
+    assert ab["reused"] == {"alpha": "tests/acceptance/accept_alpha_test.go"}
+    cmds = tb.fold_board(cid)["items"]["alpha"]["testCommands"]
+    assert cmds and cmds[0]["argv"][0] == "go" and "pytest" not in " ".join(cmds[0]["argv"])
+    # No tooling of the repository runs the file: no command, and a visible notice rather than a wrong one.
+    cid = "run-reuse-none"
+    team_plan_init(fake_task_input(correlationId=cid, contractPaths=[], subtasks=[
+        {**_ITEMS[2], "acceptanceCriteria": ["g"]}]))
+    team_acceptance_build(fake_task_input(correlationId=cid, repoPath=shared,
+                                          acceptanceTestPattern="tests/acceptance/accept_{id}.feature"))
+    assert tb.fold_board(cid)["items"]["gamma"]["testCommands"] == []
+    assert [e["kind"] for e in tb.open_exceptions(tb.fold_board(cid)["exceptions"])] == ["acceptance_command"]
 
 
 def test_a_re_run_team_reuses_the_frozen_tests_already_on_the_branch(monkeypatch, tmp_path, fake_task_input):

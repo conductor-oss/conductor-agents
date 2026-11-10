@@ -46,9 +46,15 @@ def test_reclaim_requeues_without_spending_a_retry_and_survives_a_bad_workflow(m
 
 def test_search_is_paged(monkeypatch):
     pages = [[{"workflowId": str(i)} for i in range(orphans._PAGE)], [{"workflowId": "last"}]]
-    monkeypatch.setattr(orphans, "_call", lambda *_a, **_k: {"results": pages.pop(0)})
+    seen = []
+
+    def fake(method, path, body=None, session=None):
+        seen.append(path)
+        return {"results": pages.pop(0) if pages else []}
+    monkeypatch.setattr(orphans, "_call", fake)
     monkeypatch.setattr(orphans, "_session", lambda: ("http://c/api", {}))
     assert len(orphans._running_workflow_ids()) == orphans._PAGE + 1
+    assert any("PAUSED" in p for p in seen)  # a paused run's tasks were claimed too
 
 
 def test_every_generation_polls_under_its_identity_and_reclaims_after_its_pollers_start():

@@ -456,10 +456,14 @@ def vetted_changes(repo: str) -> dict[str, list[str]]:
 def within_write_roots(path: str, write_roots) -> bool:
     """Whether ``path`` is one of ``write_roots`` or under one of them (a root is a file or a directory
     prefix). Empty roots confine nothing."""
-    roots = [str(r).strip().rstrip("/") for r in (write_roots or []) if str(r).strip()]
-    if not roots:
+    given = [os.path.normpath(str(r).strip()).replace(os.sep, "/") for r in (write_roots or []) if str(r).strip()]
+    if not given:
         return True
-    return any(path == r or path.startswith(r + "/") for r in roots)
+    roots = [r for r in given if r not in ("", "..") and not r.startswith("../")]  # a root escaping the repo confines to nothing
+    if not roots:
+        return False
+    path = os.path.normpath(str(path).strip()).replace(os.sep, "/")
+    return any(r == "." or path == r or path.startswith(r + "/") for r in roots)
 
 
 def stage_vetted_changes(repo: str, *, force_add_paths: list[str] | tuple[str, ...] | None = None,
@@ -684,10 +688,11 @@ def run_worktrees(repo: str) -> dict[str, str]:
     return out
 
 
-def prune_finished_runs(repo: str, *, keep_run_id: str, is_running) -> dict:
-    """Remove the run worktrees (with their nested fork and review worktrees) of runs that are no
-    longer running. ``is_running(run_id)`` answers True or False, or None when it cannot tell — an
-    unknown run is kept. Only the checkout goes: the run's branch, and everything it delivered, stays.
+def prune_finished_runs(repo: str, *, keep_run_id: str, prunable) -> dict:
+    """Remove the run worktrees (with their nested fork and review worktrees) of runs that are over for
+    good. ``prunable(run_id)`` answers True for a run that completed, False for one still running or
+    one that failed or was stopped (its retry resumes in this checkout), or None when it cannot tell —
+    an unknown run is kept. Only the checkout goes: the run's branch, and everything it delivered, stays.
 
     Registered worktrees are not free. Claude Code's Bash sandbox adds filesystem deny paths for every
     worktree registered on the repository, and at 171 such paths the sandbox profile exceeded the OS
@@ -699,7 +704,7 @@ def prune_finished_runs(repo: str, *, keep_run_id: str, is_running) -> dict:
     for run_id, path in sorted(run_worktrees(repo).items()):
         if run_id == keep:
             continue
-        if is_running(run_id) is False:
+        if prunable(run_id) is True:
             worktree_remove_path(repo, path, remove_nested=True)
             removed.append(run_id)
         else:

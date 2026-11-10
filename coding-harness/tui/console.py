@@ -309,7 +309,7 @@ def lifecycle_actions(wf: dict) -> dict:
             "editAndRun": top and finished and name in LAUNCH_TYPES}
 
 
-def retry_run(run: str, *, opener=None, server_url: str | None = None) -> dict:
+def retry_run(run: str, *, author: str = "", opener=None, server_url: str | None = None) -> dict:
     """Resume a failed, timed-out or stopped run from the step that ended it, or retry a run that
     finished without delivering as a new run on its branch."""
     status, wf = _conductor("GET", f"/workflow/{run}?includeTasks=true", opener=opener, server_url=server_url)
@@ -317,7 +317,7 @@ def retry_run(run: str, *, opener=None, server_url: str | None = None) -> dict:
         return {"ok": False, "error": f"Conductor does not know run {run}."}
     actions = lifecycle_actions(wf)
     if actions["retryUnfinished"]:
-        return _retry_unfinished(run, wf, opener=opener, server_url=server_url)
+        return _retry_unfinished(run, wf, author=author, opener=opener, server_url=server_url)
     if not actions["retry"]:
         return {"ok": False, "error": f"Only a run that failed, was stopped or did not deliver can be retried "
                                       f"(this one is {str(wf.get('status') or 'unknown').lower()})."}
@@ -330,27 +330,31 @@ def retry_run(run: str, *, opener=None, server_url: str | None = None) -> dict:
     return {"ok": True, "run": run}
 
 
-def _retry_unfinished(run: str, wf: dict, *, opener=None, server_url: str | None = None) -> dict:
-    """A new run on the branch of one that finished without delivering: same request and settings, a
-    fresh budget, and the run's own report of what is left. With no branch there is nothing to keep."""
+def _retry_unfinished(run: str, wf: dict, *, author: str, opener=None, server_url: str | None = None) -> dict:
+    """A new run on the branch of one that finished without delivering: the same launch form filled from
+    the prior run's input, its own report of what is left added to the request, and a fresh budget. It
+    goes through ``launch`` like a hand-filled continuation, so it takes only the form's fields (never a
+    stale workspace or branch bookkeeping), the model policy as it stands now, and a result branch of its
+    own. With no branch there is nothing to keep."""
     if not _handoff(wf).get("branch"):
         return start_over(run, opener=opener, server_url=server_url)
+    import catalog
     name = str(wf.get("workflowName") or wf.get("workflowType"))
+    inp = wf.get("input") or {}
+    values = {}
+    for f in catalog.CATALOG[name].fields:
+        given = next((inp[k] for k in (f.name, *f.targets) if inp.get(k) not in (None, "")), None)
+        if given is not None:
+            values[f.name] = given
     field, report = _TEXT_FIELD[name], str((wf.get("output") or {}).get("report") or "").strip()
-    values = dict(wf.get("input") or {})
     values[field] = (str(values.get(field) or "").strip()
                      + (f"\n\nThe previous attempt did not finish. Its report:\n{report}" if report else "")
                      + "\n\nFinish everything this request still needs.")
-    try:
-        values = prepare_continuation(run, values, name, opener=opener, server_url=server_url)
-    except Exception as e:  # noqa: BLE001 - tell the human exactly what stands in the way
-        return {"ok": False, "error": str(e)}
-    start = {"name": name, "input": values, "correlationId": CONTINUE_PREFIX + run}
-    status, wid = _conductor("POST", "/workflow", start, opener=opener, server_url=server_url)
-    if status != 200 or not isinstance(wid, str) or not wid:
-        detail = wid.get("message") or wid.get("error") if isinstance(wid, dict) else wid
-        return {"ok": False, "error": f"Conductor refused the start: {detail or status}"}
-    return {"ok": True, "run": wid, "from": run, "workflow": name}
+    out = launch({"workflow": name, "values": values, "continueFrom": run}, author=author,
+                 opener=opener, server_url=server_url)
+    if not out.get("ok"):
+        return out
+    return {"ok": True, "run": out["run"], "from": run, "workflow": name}
 
 
 def start_over(run: str, *, opener=None, server_url: str | None = None) -> dict:
@@ -657,6 +661,17 @@ def _json(status: int, obj) -> tuple[int, str, bytes]:
     return status, "application/json", json.dumps(obj, default=str).encode("utf-8")
 
 
+def _guarded(handler, *args, **kwargs) -> tuple[int, str, bytes]:
+    """A failing handler answers with the error as JSON instead of a dropped connection and a traceback
+    the page never sees; the traceback goes to the server log."""
+    try:
+        return handler(*args, **kwargs)
+    except Exception as e:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        return _json(500, {"error": f"{type(e).__name__}: {e}"})
+
+
 def _actor(headers: dict | None) -> dict | None:
     auth = str((headers or {}).get("Authorization") or "")
     return actors.resolve(auth[7:] if auth.lower().startswith("bearer ") else "")
@@ -738,7 +753,7 @@ def handle_post(path: str, body: bytes, blackboard_dir: str | None = None,
         run = str(payload.get("run") or "").strip()
         if not run:
             return _json(400, {"error": "run required"})
-        result = retry_run(run) if path == "/api/retry" else start_over(run)
+        result = retry_run(run, author=actor["author"]) if path == "/api/retry" else start_over(run)
         return _json(200 if result.get("ok") else 400, {**result, "author": actor["author"]})
     if path in ("/api/models", "/api/templates"):
         result = save_models(payload) if path == "/api/models" else save_template(payload)
@@ -773,14 +788,14 @@ def make_handler(blackboard_dir: str | None = None):
 
         def do_GET(self):  # noqa: N802
             parsed = urlparse(self.path)
-            self._send(*handle_get(parsed.path, parse_qs(parsed.query), blackboard_dir,
-                                   headers={"Authorization": self.headers.get("Authorization") or ""}))
+            self._send(*_guarded(handle_get, parsed.path, parse_qs(parsed.query), blackboard_dir,
+                                 headers={"Authorization": self.headers.get("Authorization") or ""}))
 
         def do_POST(self):  # noqa: N802
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length) if length else b""
-            self._send(*handle_post(urlparse(self.path).path, body, blackboard_dir,
-                                    headers={"Authorization": self.headers.get("Authorization") or ""}))
+            self._send(*_guarded(handle_post, urlparse(self.path).path, body, blackboard_dir,
+                                 headers={"Authorization": self.headers.get("Authorization") or ""}))
 
         def log_message(self, *a):  # quiet
             pass
