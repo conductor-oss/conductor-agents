@@ -29,7 +29,7 @@ Measured against the full roadmap (a fresh read of the code on 2026-11-06, not t
 | H10 lesson decay | 🟡 | file-existence only | WP8 |
 | H11 feedback latency | ❌ | one opaque `code_subtask` per item; feedback reaches an item at the *next standup* | WP2 |
 | H12 three modes | ❌ | two modes: `team` iff `item_count > 1` (`intake.py:49`); no parallel-independent route; no best-of-N | WP3 |
-| H13 gameable oracle | 🟡 | reviewer≠author, hidden criteria, bug-fix tamper guard; implementer still authors the item's tests | WP6 |
+| H13 gameable check | 🟡 | reviewer≠author, hidden criteria, bug-fix tamper guard; implementer still authors the item's tests | WP6 |
 | H14 decomposition gate | ❌ | none; overlap discovered at dispatch (ownership serialization) | WP3 |
 | H15 shared error | 🟡 | provenance yes; lessons are templated status lines; no retraction | WP8 |
 | H16 constraint lifecycle | ❌ | `authority` is a self-declared string; no identity; sticky forever; no pushback | WP7 |
@@ -326,7 +326,7 @@ task: two candidates per item on the board, winner chosen by the rule, losers di
 
 ---
 
-### WP6 — Separate the test author from the oracle (H13)
+### WP6 — Separate the test author from the check (H13)
 
 **Mechanism.** Reuse the Phase-1 contract shape ("an interface file plus the shared tests that pin
 it") and the `bug_fix` repro-first pattern: **acceptance tests are authored before implementation by a
@@ -358,7 +358,7 @@ extended; standup emits per-item `testCommands`; reviewer prompt contains the te
 green → `DELIVERED`. An implementer prompted to "fix the test instead" lands in `contract_change_pending`
 (controlled event), never `done`.
 
-**Exit criterion:** H13 ✅ structurally (author ≠ oracle enforced by the contract mechanism).
+**Exit criterion:** H13 ✅ structurally (author ≠ check enforced by the contract mechanism).
 
 ---
 
@@ -538,13 +538,13 @@ External limit: Linux hosts need `bubblewrap` installed (§5).
 
 ```
 WP1 (defects) ─▶ WP4 (substrate) ─▶ WP2 (feedback+checkpoints) ─▶ WP3 (modes+gate)
-      ─▶ WP6 (oracle) ─▶ WP5 (hierarchy+scale 30) ─▶ WP7 (identity) ─▶ WP8 (lessons)
+      ─▶ WP6 (check) ─▶ WP5 (hierarchy+scale 30) ─▶ WP7 (identity) ─▶ WP8 (lessons)
       ─▶ WP9 (sandboxed checks) ─▶ WP10 (trace, closure)
 ```
 
 Why this order: WP1 fixes verdict correctness (everything after it is proven against honest verdicts);
 WP4 makes folds cheap before WP2 polls per turn and WP5 runs 30-wide; WP2 before WP3 so best-of-N
-candidates already checkpoint and take feedback; WP6 before WP5 so child teams inherit the oracle;
+candidates already checkpoint and take feedback; WP6 before WP5 so child teams inherit the check;
 WP7/WP8 need WP7's `outputSchema` pass-through; WP9 is independent and last among the mechanisms.
 
 Every WP ends with: `make test` green → `register.sh` → the named live runs → a section in

@@ -29,6 +29,41 @@ There are **two dimensions** to the evolution:
 
 ---
 
+## 0. First principle — the swarm finds a way, never a reason to stop
+
+Two corollaries, both enforced in code (2026-11-10):
+
+- **A learning is a way to make something work.** The retrospective never records "X is not
+  installed / the sandbox denies Y / treat this check as unrunnable" as a fact for later planners
+  (`retrospective.defeatist` drops such a text); it records the install, path, flag or approach that
+  got past the obstacle, or nothing. The "Chromium is not installed, treat browser checks as
+  unrunnable" learning that told four planners in a row to stop at the wall was retracted.
+- **Cut for maximum parallelism.** The Architect receives the width cap and cuts the program into as
+  many file-disjoint, interface-pinned items as the work splits into efficiently (each a focused
+  unit of roughly 60–150 lines plus its tests); `dependsOn` is for a genuine read-before-write
+  dependency only. Wall time is set by the largest item, not the number of items: one implementer
+  spent 93 of 160 s emitting a whole app as one patch (run 16bf133c). The independent acceptance
+  tests are authored beside the first wave, never before it (two authors held the first
+  implementer 142 s, run e8bc7c2a).
+- **What the sandbox cannot host, the harness provides as a service.** The agent sandbox cannot
+  launch a browser, so the browser is a Playwright server on the host, reachable over loopback
+  (`common/browser_service`): every session and check run gets `PLAYWRIGHT_WS_ENDPOINT` and
+  `PLAYWRIGHT_MODULE`, scenarios connect instead of launching, and the implementer runs the frozen
+  scenario itself like any other command. Scenarios drive the browser only through the harness's
+  helper (`PLAYWRIGHT_SCENARIO`, `common/browser_scenario.mjs`), which owns the connection and always
+  closes it: a scenario that connected itself and left the connection open never exited once the app
+  worked, and the delivery audit waited on it for 8 hours (run 8064c234). The helper also starts the
+  app, waits for an HTTP answer (never text on the page: a heading that matched twice made a working
+  app look "not ready" for three hours, run 3e3991fc) and stops it. Everything a check run or an agent
+  session starts carries a launch marker (`CONDUCTOR_LAUNCH_ID`), and whatever still carries it when
+  the launch ends is stopped, whatever process group it moved to. The item-level `delivery_audit` does not run the program's scenario: an item's repair agents may
+  write only that item's files, so a whole-app red there landed on whichever item finished last (six
+  repairs of a launcher for a frontend defect, run 4dd8b865). The program evaluation runs it on the
+  integrated head and sends a red to the files that cause it. The helper gives each scenario run its
+  own free ports (`ports`), so concurrent runs never collide.
+
+The swarm is not a system that reports why it could not finish. Every gate it faces has an escalation ladder that leads back to work: a stronger tier, a different approach, an independent judgment, an amendment of the definition of done by procedure, human steer taken asynchronously. A program's only terminal verdict is `PROGRAM_DELIVERED`; `PROGRAM_NEEDS` is not an ending but a precisely named request (budget, a credential, an owner decision) the run pauses on, with its state kept, until a continuation resumes it at the same rung. Scores and thresholds exist to measure progress and drive escalation, never to justify stopping. Humans stay passive: they monitor, steer and terminate; nothing waits on them.
+
 ## 1. Scope — what "full SDLC" means here
 
 For this harness, "SDLC" is the **software-construction lifecycle**: the loop a real team runs to
@@ -127,7 +162,7 @@ into a shared library (see §6), not forked. **But the hardest construction prob
 exist in the security swarm and does not port:** security findings are *independent and
 append-only* (two exploiters never edit the same file; the board just accumulates facts), whereas
 construction's central act is **concurrent writes to one shared, mutable codebase**. The
-security-specific logic — `swarm_standup` credit-scoring, `oracle_router`, the attempt-lesson
+security-specific logic — `swarm_standup` credit-scoring, `check_router`, the attempt-lesson
 shapes — is rebuilt for construction, not reused. **Write-concurrency over shared code is the
 problem this model must actually solve; §4.7 is about why that is hard and what it forces.**
 
@@ -140,7 +175,7 @@ team from **1 agent** (a trivial change) to **hundreds** (a kernel-scale rewrite
 | Role | Does | Built from |
 |---|---|---|
 | **Lead / Coordinator** | Owns the tracking board; re-plans, re-prioritizes, assigns ready work, sizes the next wave | `feature_campaign` planner + `swarm_standup` |
-| **Architect** | Design + cross-component contracts | `design_docs` |
+| **Architect** | Owns the whole-system view from the request to the delivered branch: defines done (the outcome contract: the teams' acceptance tests, the integration suite, and external checks scouts find and red-prove), plans the ranks, scores every integrated rank and the final head (the weighted share of checks passing), files items for cross-team gaps, signs off, and drives the convergence ladder (rework → change of approach → second opinion → a named need). Never implements. Built: `cc_program`'s `program_plan` session, `check_scout_build`, `contract_fold`, `contract_run`, `architect_fold`, `opinion_fold` (`common/architect.py`) | `design_docs` + the planner |
 | **Implementer** (the bulk; 1→100s) | Takes a work item, codes in an isolated worktree, reads the board before/while working, posts progress + lessons | `code_parallel`/`campaign_subtask` + `swarm_read_board` |
 | **Reviewer** | Peer-reviews teammates' output *mid-flight*, posts findings to the review board | `code_review`/`pr_review` |
 | **Tester / Verifier** | Runs `test_cycle`, posts the verdict | `test_cycle` (unchanged) |
@@ -364,12 +399,12 @@ so "read the board and steer" is not an interface. **Response:** the **monitor's
 a continuously-maintained, human-digestible rollup + an exception queue** (what needs a decision),
 and steering is done against that summary. The human drives by exception, not by watching.
 
-**H8 — Peer review has no oracle and can become theater.** Security review has ground truth (the
-exploit fires or it doesn't); construction review's only oracle is tests. N same-model agents
+**H8 — Peer review has no check and can become theater.** Security review has ground truth (the
+exploit fires or it doesn't); construction review's only check is tests. N same-model agents
 reviewing each other risk rubber-stamping or looping while doubling cost. **Response:** peer review
 must earn its place by catching what tests cannot (contract/design violations, acceptance-criteria
 drift, security/perf smells) — scoped to that, bounded in rounds, and never a substitute for
-`test_cycle` as the correctness oracle. If a review round adds no actionable change, it is dropped,
+`test_cycle` as the correctness check. If a review round adds no actionable change, it is dropped,
 not repeated.
 
 **H9 — Graceful degradation.** The board/standup/monitor machinery is pure overhead for a trivial
@@ -426,13 +461,13 @@ question (Gate 0) is therefore not "does the swarm beat best-of-N" but "is the b
 correctly — does swarm-routed work genuinely resist best-of-N, and does the swarm succeed where
 best-of-N structurally can't."
 
-**H13 — The correctness oracle is gameable.** If items are marked done on "tests green" and
+**H13 — The correctness check is gameable.** If items are marked done on "tests green" and
 `test_cycle` is the sole arbiter, agents are incentivized to write tautological or teach-to-the-test
 cases to clear the gate — green ≠ correct, and at swarm scale this reward-hacking compounds.
 **Response:** tests cannot be *both* authored by the implementer *and* the sole done-gate for the
-same item — separate the author from the oracle (independent test authorship / review of the tests
+same item — separate the author from the check (independent test authorship / review of the tests
 themselves against the acceptance criteria), and keep human/acceptance spot-checks on a sample.
-This is why H8's peer review earns its place: catching a gamed oracle is exactly what tests can't.
+This is why H8's peer review earns its place: catching a gamed check is exactly what tests can't.
 
 **H14 — Decomposition is the bottleneck, and it is under-designed.** The swarm's entire value rides
 on the Lead cutting clean, low-coupling, well-contracted items; bad boundaries produce thrash no
@@ -444,7 +479,7 @@ discovered through failed merges.
 
 **H15 — Shared memory amplifies shared error.** One wrong lesson on the learning board ("auth uses
 JWT" when it is sessions) is read by every agent → *correlated* failure, faster than isolated agents
-would err. The security swarm filters false facts with an oracle; construction lessons are often
+would err. The security swarm filters false facts with a check; construction lessons are often
 unverifiable opinion. **Response:** lessons carry provenance + confidence (H10), unverified opinion
 is marked as such and never promoted to a constraint, and a lesson contradicted by a later verified
 outcome is retracted swarm-wide. Prefer verifiable facts (a contract, a passing test, a file that
@@ -566,7 +601,7 @@ Each phase is independently shippable, leaves the harness strictly more capable,
 ### Phase 0 — Substrate + budget (prerequisites)
 - Lift **only the generic substrate** into a shared library both harnesses use: the blackboard
   fact store, the `inbox`/`send` message bus, dedup, and the cross-run-learning plumbing. The
-  security-specific logic (`swarm_standup` scoring, `oracle_router`, attempt-lesson *shapes*) stays
+  security-specific logic (`swarm_standup` scoring, `check_router`, attempt-lesson *shapes*) stays
   in `security-harness`; construction rebuilds its own (H1 reuse caveat).
 - Land **real-cost pricing + a hard per-run budget gate** (`IMPROVEMENTS.md` §3.3) — H5 says a
   swarm that cannot stop itself on spend must not be startable.
@@ -605,7 +640,7 @@ Each phase is independently shippable, leaves the harness strictly more capable,
 - Replace the static DAG with the **tracking board** (**hierarchy-ready** from the start, H3: a
   board can hold sub-boards); add the **learning** and **review** boards; turn the wave scheduler
   into the **standup → fan out → implement ∥ review → integrate → learn → re-plan** cycle with
-  **dynamic team sizing**, **mid-run peer review** (bounded, oracle-aware, H8), and **live lesson
+  **dynamic team sizing**, **mid-run peer review** (bounded, check-aware, H8), and **live lesson
   sharing**. Keep the fixed checkpoints. Enforce **graceful degradation** (H9): below a size
   threshold `sdlc_intake` routes to plain `code_parallel` — no boards, no ceremony.
 - Make the existing **TUI board-aware** (§4.8) — the tracking board, agent view, and basic steering
@@ -632,7 +667,7 @@ Each phase is independently shippable, leaves the harness strictly more capable,
   `11d5e604-58e2-4553-b8f0-af63ca2e6294` routed to `code_parallel` with **zero blackboard facts**
   (graceful degradation). The full **peer-review `changes → reopen → revise → green` loop** is proven
   live (`cf79c731`): a real reviewer returned `changes` on a **hidden `reviewCriteria`** (the reviewer's
-  oracle, not shown to the implementer — H8/H13), the item reopened, the re-dispatched agent made the
+  check, not shown to the implementer — H8/H13), the item reopened, the re-dispatched agent made the
   fix, review passed, DELIVERED. **Scale** past the demonstrated 3–4 is proven live too: an **8-wide
   single wave** (`c11cf2a5`) converged DELIVERED 8/8, green. Full write-up:
   [`team_cycle_result.md`](team_cycle_result.md). **Phase 3 is unblocked.**

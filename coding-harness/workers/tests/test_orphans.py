@@ -4,14 +4,19 @@ import pathlib
 from common import orphans
 
 HOST, BEFORE = "worker-1", 1000
-ME = orphans.generation_identity(HOST, BEFORE)
+ME = orphans.generation_identity(HOST, BEFORE, 4242)
+assert ME == "worker-1/1000/4242" and orphans.generation_identity(HOST, BEFORE) == "worker-1/1000"
 LEFT = {"taskId": "t1", "taskDefName": "test_plan_resolve", "status": "IN_PROGRESS", "workerId": "worker-1/400",
         "startTime": 500, "referenceTaskName": "initial_plan"}
 
 
 def test_only_a_task_an_earlier_generation_of_this_host_claimed_is_orphaned():
-    pick = lambda task: orphans.orphaned({"tasks": [task]}, ["test_plan_resolve"], identity=ME, before_ms=BEFORE)  # noqa: E731
-    assert pick(LEFT) == [LEFT]
+    pick = lambda task: orphans.orphaned({"tasks": [task]}, ["test_plan_resolve"], identity=ME, before_ms=BEFORE,  # noqa: E731
+                                         alive=lambda pid: pid == 4242)
+    assert pick(LEFT) == [LEFT]                                       # an identity without a pid: by start time
+    assert pick({**LEFT, "startTime": 1500}) == []
+    assert pick({**LEFT, "workerId": "worker-1/400/9"}) == [{**LEFT, "workerId": "worker-1/400/9"}]  # its leader is gone
+    assert pick({**LEFT, "workerId": "worker-1/400/4242", "startTime": 1500}) == []  # its leader still runs
     assert pick({**LEFT, "workerId": ME}) == []                       # claimed by this generation
     assert pick({**LEFT, "workerId": ME, "startTime": 1}) == []       # ...whatever the clocks say
     assert pick({**LEFT, "workerId": "worker-2/400"}) == []           # another host may still be running it

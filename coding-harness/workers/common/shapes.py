@@ -16,7 +16,7 @@ def lines(value) -> list[str]:
     """Non-blank strings: a list's entries, or a text split on newlines with bullet/number markers
     stripped; a single-line text is one entry. A planner wrote each item's acceptance criteria as one
     paragraph, the board kept ``[]`` for a non-list, and no team of that run had a frozen test — an item
-    whose work a sibling had absorbed then had no oracle to prove it done (run 90e5e3aa)."""
+    whose work a sibling had absorbed then had no check to prove it done (run 90e5e3aa)."""
     if isinstance(value, list):
         return [str(x).strip() for x in value if str(x).strip()]
     if isinstance(value, str):

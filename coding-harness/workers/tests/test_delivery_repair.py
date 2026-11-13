@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from gitops.tasks import delivery_audit
@@ -269,3 +270,120 @@ def test_delivery_audit_treats_a_satisfied_claim_as_no_delivery_to_repair(tmp_gi
     changed = delivery_audit(fake_task_input(
         repoPath=str(tmp_git_repo), plannedPaths=["internal/command/command.go"], agentReport=report)).output_data
     assert changed["state"] == "passed"
+
+
+def test_delivery_audit_keeps_a_planned_dotfile(tmp_git_repo, fake_task_input):
+    """`.gitignore` was normalised to `gitignore` (str.lstrip strips characters), so the audit never
+    found it and three repair agents each created a bogus `gitignore` file (run f83293f5)."""
+    from gitops.tasks import _repo_paths, delivery_audit
+    assert _repo_paths([".gitignore", "./src/a.py", "././b"]) == [".gitignore", "b", "src/a.py"]
+    with open(os.path.join(tmp_git_repo, ".gitignore"), "w") as fh:
+        fh.write("node_modules\n")
+    out = delivery_audit(fake_task_input(repoPath=tmp_git_repo, plannedPaths=[".gitignore"], agentReport={})).output_data
+    assert out["state"] == "passed" and out["missingPaths"] == [] and out["actualPaths"] == [".gitignore"]
+
+
+# --- run a87e9ddb: a truncated `git status` hid six written files from the commit and the audit ---------
+
+def test_harness_parsed_output_is_never_cut(tmp_path):
+    """The check runner keeps a 1 MB tail of a check's log. The harness's own commands are parsed, so
+    they are kept whole: a 2.8 MB `git status` cut to its tail lost every backend path (run a87e9ddb)."""
+    from common import exec as exec_mod
+    from common.check_execution import execute, inherited_environment
+    script = "import sys; sys.stdout.write('x' * 2_500_000)"
+    assert len(exec_mod.run(["python3", "-c", script], cwd=str(tmp_path)).stdout) == 2_500_000
+    logged = execute(["python3", "-c", script], cwd=str(tmp_path), env=inherited_environment())
+    assert logged.output_truncated and len(logged.stdout) == 1_000_000
+
+
+def test_generated_directories_stay_out_of_gits_view(tmp_git_repo):
+    """An empty frontend/.gitignore and a team's `npm install` put 15,000 untracked node_modules files in
+    a shared tree (run a87e9ddb). The harness excludes generated directories itself; a tracked file under
+    such a directory stays tracked."""
+    from common import git
+    (tmp_git_repo / "build").mkdir()
+    (tmp_git_repo / "build" / "kept.txt").write_text("v1\n")
+    git.git(str(tmp_git_repo), "add", "-f", "build/kept.txt")
+    git.git(str(tmp_git_repo), "commit", "-m", "tracked build file")
+    (tmp_git_repo / "frontend" / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_git_repo / "frontend" / "node_modules" / "pkg" / "index.js").write_text("x\n")
+    (tmp_git_repo / "backend").mkdir()
+    (tmp_git_repo / "backend" / "pom.xml").write_text("<project/>\n")
+    (tmp_git_repo / "build" / "kept.txt").write_text("v2\n")
+    git.exclude_generated(str(tmp_git_repo))
+    assert git.status_files(str(tmp_git_repo)) == {"backend/pom.xml", "build/kept.txt"}
+
+
+def test_rejected_paths_travel_as_a_count_and_a_sample(tmp_git_repo):
+    """15,000 rejected node_modules paths rode in every attempt's output, joins copied them, and the team
+    workflow passed Conductor's 10 MB payload limit (run a87e9ddb)."""
+    from common import git
+    from common.results import FIELD_BYTES_LIMIT, oversized_fields
+    nm = tmp_git_repo / "node_modules"
+    nm.mkdir()
+    for n in range(50):
+        (nm / f"f{n}.js").write_text("x\n")
+    out = git.commit(str(tmp_git_repo), "nothing real")
+    assert out["noOp"] and out["rejectedCount"] == 50 and len(out["rejectedPaths"]) == git.PATH_SAMPLE
+    assert oversized_fields({"small": [1, 2], "big": "y" * (FIELD_BYTES_LIMIT + 1)}) == [
+        {"field": "big", "bytes": FIELD_BYTES_LIMIT + 3}]
+
+
+def test_files_on_disk_git_does_not_report_are_a_staging_fault_not_a_missing_delivery(
+        tmp_git_repo, fake_task_input, monkeypatch):
+    """The backend scaffold wrote its six files; a truncated status hid them, the audit called them
+    missing, and eight agents in turn were sent to write them (run a87e9ddb). Files on disk that git does
+    not report are named as the harness's fault, and no repair runs."""
+    from common import code_subtask, git
+    (tmp_git_repo / "backend").mkdir()
+    (tmp_git_repo / "backend" / "pom.xml").write_text("<project/>\n")
+    monkeypatch.setattr(git, "vetted_changes", lambda repo: {"changed": [], "allowed": [], "rejected": []})
+    out = delivery_audit(fake_task_input(
+        repoPath=str(tmp_git_repo), plannedPaths=["backend/pom.xml"],
+        agentReport={"status": "success", "agentCompleted": True})).output_data
+    assert out["state"] == "staging_fault" and out["stagingFault"] == ["backend/pom.xml"]
+    outcome = code_subtask.resolve_delivery_outcome(
+        planned_paths=["backend/pom.xml"], commit={"stagedPaths": []}, audit=out, agent={"agentCompleted": True},
+        tested="", test_state="not_run", tests_passed=False)
+    assert outcome["state"] == "staging_fault" and outcome["passed"] is False
+
+
+def test_a_planned_file_the_repository_ignores_is_named_with_its_rule(tmp_git_repo, fake_task_input):
+    """A planned file hidden by the repository's own ignore rules is fixable by the item: the audit says
+    which rule, and the repair agent gets it as a failure to fix."""
+    (tmp_git_repo / ".gitignore").write_text("*.properties\n")
+    (tmp_git_repo / "app.properties").write_text("port=1\n")
+    out = delivery_audit(fake_task_input(
+        repoPath=str(tmp_git_repo), plannedPaths=["app.properties"],
+        agentReport={"status": "success", "agentCompleted": True})).output_data
+    assert out["state"] == "incomplete_delivery" and out["stagingFault"] == []
+    assert out["ignoredPlanned"][0]["path"] == "app.properties" and "*.properties" in out["ignoredPlanned"][0]["rule"]
+    assert any("ignored by" in f["stderr"] for f in out["commandFailures"])
+
+
+def test_code_subtask_carries_the_audit_fields_the_outcome_reads():
+    """The outcome reads presentPaths (files an earlier attempt committed) and stagingFault from the
+    audit, so the workflow variable must carry both; presentPaths had been dropped, the same wiring
+    defect as actualPaths in run 07808701."""
+    wf = json.loads((Path(__file__).resolve().parents[1] / "workflows" / "code_subtask.json").read_text())
+    text = json.dumps(wf)
+    for prefix in ("initial_delivery_audit", "repair_delivery_audit"):
+        for field in ("presentPaths", "stagingFault", "actualPaths"):
+            assert f'"{field}": "${{{prefix}.output.{field}}}"' in text, (prefix, field)
+    assert wf["outputParameters"]["stagingFault"] == "${delivery_outcome.output.stagingFault}"
+
+
+def test_every_registered_worker_task_runs_the_function_its_name_says():
+    """A helper inserted between `@worker_task(task_definition_name="delivery_audit")` and
+    `def delivery_audit` became the registered worker: every audit of proof run e8293d55 failed with
+    "unexpected keyword argument 'repo'", while tests that called delivery_audit directly passed. A
+    worker's registered function must take the task, and an audit's name must be the function's."""
+    import inspect
+    import gitops.tasks  # noqa: F401  (registers its workers)
+    from conductor.client.automator.task_handler import _decorated_functions
+    for (name, _domain), record in _decorated_functions.items():
+        fn = inspect.unwrap(record["func"])
+        params = list(inspect.signature(fn).parameters)
+        assert params[:1] == ["task"] or len(params) == 1, (name, fn.__name__, params)
+    audit = next(r for (n, _d), r in _decorated_functions.items() if n == "delivery_audit")
+    assert inspect.unwrap(audit["func"]).__name__ == "delivery_audit"

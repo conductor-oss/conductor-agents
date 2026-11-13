@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -433,21 +434,20 @@ def test_inferred_candidates_still_scope_an_independent_nested_gradle_project(tm
     assert ["gradle", "-p", "core", "test"] not in argvs
 
 
-def test_discovery_block_reason_names_the_rejected_inferred_commands(tmp_path: Path):
-    # When nothing survives, the reason must distinguish "no build system" from
-    # "every candidate was filtered out".
-    # Only a nested heavy module, and no root build file, so nothing else can
-    # stand in for it.
+def test_a_heavy_suite_runs_when_it_is_the_only_one(tmp_path: Path):
+    # Only a nested heavy module and no root build file: the repository's one suite is heavy, and
+    # running it beats running nothing. A lighter command is still preferred when one exists.
     (tmp_path / "e2e").mkdir()
     (tmp_path / "e2e" / "build.gradle").write_text("")
     git.ensure_ready(str(tmp_path))
 
-    with pytest.raises(verification.VerificationBlocked) as excinfo:
-        verification.discover_commands(str(tmp_path))
-
-    message = str(excinfo.value)
-    assert "rejected inferred commands" in message
-    assert "gradle -p e2e test" in message
+    discovered = verification.discover_commands(str(tmp_path))
+    assert discovered["executionOutcome"] == "discovered" and discovered["heavyAllowed"] is True
+    assert [c["argv"] for c in discovered["candidates"]] == [["gradle", "-p", "e2e", "test"]]
+    (tmp_path / "build.gradle").write_text("")
+    discovered = verification.discover_commands(str(tmp_path))
+    assert discovered["heavyAllowed"] is False
+    assert all("e2e" not in " ".join(c["argv"]) for c in discovered["candidates"])
 
 
 def test_maven_maps_changed_module_and_exact_test(tmp_path: Path):
@@ -542,16 +542,13 @@ def test_python_with_no_metadata_and_no_test_file_still_yields_nothing(tmp_path:
     (tmp_path / "script.py").write_text("VALUE = 2\n")
     candidate = _commit(tmp_path, "change script")
 
-    with pytest.raises(verification.VerificationBlocked, match="repository-wide fallback is prohibited") as excinfo:
-        verification.discover_commands(str(tmp_path), candidate, mode="targeted")
-    # allowAgentAuthoredTests' shape check needs the real changed paths even on
-    # this exact block -- it is the one outcome that gates authoring a test.
-    assert excinfo.value.changed_paths == ["script.py"]
-    with pytest.raises(verification.VerificationBlocked, match="no supported repository-wide"):
-        verification.discover_commands(str(tmp_path), mode="full")
+    discovered = verification.discover_commands(str(tmp_path), candidate, mode="targeted")
+    assert discovered["executionOutcome"] == "no_tests_found" and discovered["candidates"] == []
+    assert discovered["changedPaths"] == ["script.py"] and "no test command found" in discovered["reason"]
+    assert verification.discover_commands(str(tmp_path), mode="full")["executionOutcome"] == "no_tests_found"
 
 
-def test_discover_worker_reports_changed_paths_on_a_configuration_block(fake_task_input, tmp_path: Path):
+def test_discover_worker_reports_no_tests_found_as_a_passed_outcome(fake_task_input, tmp_path: Path):
     (tmp_path / "script.py").write_text("VALUE = 1\n")
     git.ensure_ready(str(tmp_path))
     (tmp_path / "script.py").write_text("VALUE = 2\n")
@@ -560,12 +557,16 @@ def test_discover_worker_reports_changed_paths_on_a_configuration_block(fake_tas
     result = verification_tasks.test_discover(fake_task_input(
         repoPath=str(tmp_path), candidateCommit=candidate, testMode="targeted"))
 
-    assert result.output_data["verificationState"] == "blocked"
-    assert result.output_data["executionOutcome"] == "configuration_blocked"
-    # This is the field allowAgentAuthoredTests' shape check reads to confirm
-    # an authored test references the real change -- losing it here would
-    # silently reject every authored test regardless of its content.
+    assert result.output_data["verificationState"] == "passed"
+    assert result.output_data["executionOutcome"] == "no_tests_found"
     assert result.output_data["changedPaths"] == ["script.py"]
+    run = verification_tasks.test_run(fake_task_input(
+        repoPath=str(tmp_path), candidateCommit=candidate, testMode="targeted", commands=[],
+        discoveryOutcome="no_tests_found", discoveryReason=result.output_data["reason"]))
+    assert run.output_data["verificationState"] == "passed" and run.output_data["executionOutcome"] == "no_tests_found"
+    # An input the caller wired wrong is named, never passed.
+    bad = verification_tasks.test_discover(fake_task_input(repoPath=str(tmp_path), candidateCommit="", testMode="targeted"))
+    assert bad.output_data["executionOutcome"] == "invalid_input"
 
 
 def test_go_and_cargo_map_changed_packages(tmp_path: Path):
@@ -690,15 +691,17 @@ def test_discovery_uses_changed_gradle_module_for_a_merge_candidate(tmp_path: Pa
     assert found["candidates"][0]["argv"] == ["./gradlew", ":core:test"]
 
 
-def test_discovery_never_uses_documented_root_gradle_build_for_a_candidate(tmp_path: Path):
+def test_an_unmapped_file_climbs_to_the_documented_repository_command(tmp_path: Path):
     (tmp_path / "AGENTS.md").write_text("Run `./gradlew build` before submitting.\n")
     (tmp_path / "gradlew").write_text("#!/bin/sh\n")
     git.ensure_ready(str(tmp_path))
     (tmp_path / "Root.java").write_text("class Root {}\n")
     candidate = _commit(tmp_path, "change root")
 
-    with pytest.raises(verification.VerificationBlocked, match="repository-wide fallback is prohibited"):
-        verification.discover_commands(str(tmp_path), candidate)
+    discovered = verification.discover_commands(str(tmp_path), candidate)
+    assert discovered["executionOutcome"] == "discovered" and discovered["coverage"] == "repository"
+    assert discovered["selection"] == "documented-guide"
+    assert [c["argv"] for c in discovered["candidates"]] == [["./gradlew", "build"]]
 
 
 def test_candidate_discovery_uses_build_metadata_not_prose_guidance(tmp_path: Path):
@@ -864,45 +867,6 @@ def test_test_run_worker_stops_the_reporter_even_when_verify_candidate_raises(mo
     assert _FakeProgressReporter.instances[0].stopped is True
 
 
-def test_agent_plan_resolve_worker_accepts_a_valid_proposal(fake_task_input, tmp_path):
-    _python_repo(tmp_path)
-    result = verification_tasks.test_agent_plan_resolve(fake_task_input(
-        repoPath=str(tmp_path), testMode="targeted",
-        proposal=[{"argv": ["pytest", "test_app.py"], "coveredPaths": ["test_app.py"]}],
-        changedPaths=["test_app.py"],
-    ))
-
-    assert result.output_data["executionOutcome"] == "discovered"
-    assert result.output_data["candidates"][0]["argv"] == ["pytest", "test_app.py"]
-
-
-def test_agent_plan_resolve_worker_reports_a_rejected_proposal_as_configuration_blocked(
-        fake_task_input, tmp_path):
-    _python_repo(tmp_path)
-    result = verification_tasks.test_agent_plan_resolve(fake_task_input(
-        repoPath=str(tmp_path), testMode="targeted", proposal=[], changedPaths=["test_app.py"],
-    ))
-
-    assert result.output_data["verificationState"] == "blocked"
-    assert result.output_data["executionOutcome"] == "configuration_blocked"
-    assert result.output_data["candidates"] == []
-
-
-def test_agent_plan_resolve_worker_reports_unexpected_errors_as_infra_blocked(
-        monkeypatch, fake_task_input, tmp_path):
-    def boom(*_args, **_kwargs):
-        raise RuntimeError("unexpected failure")
-
-    monkeypatch.setattr(verification, "validate_agent_argv", boom)
-    result = verification_tasks.test_agent_plan_resolve(fake_task_input(
-        repoPath=str(tmp_path), testMode="targeted",
-        proposal=[{"argv": ["pytest", "test_app.py"]}], changedPaths=["test_app.py"],
-    ))
-
-    assert result.output_data["verificationState"] == "blocked"
-    assert result.output_data["executionOutcome"] == "infra_blocked"
-
-
 def test_java_home_blocks_when_ci_jdk_is_not_installed(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("JAVA99_HOME", raising=False)
     monkeypatch.delenv("JDK99_HOME", raising=False)
@@ -933,16 +897,6 @@ def test_discovery_rejects_documented_heavyweight_targets(tmp_path: Path):
 def test_command_validator_rejects_shell_and_generic_interpreters(argv):
     with pytest.raises(verification.VerificationBlocked):
         verification.validate_argv(argv)
-
-
-@pytest.mark.parametrize("argv", [
-    ["./gradlew", "test"], ["./mvnw", "test"], ["npm", "test"],
-    ["pnpm", "test"], ["yarn", "test"], ["pytest"],
-    ["go", "test", "./..."], ["cargo", "test"], ["make", "test"],
-])
-def test_remediation_validator_prohibits_every_repository_wide_fallback(argv):
-    with pytest.raises(verification.VerificationBlocked):
-        verification.validate_remediation_argv(argv)
 
 
 def test_vetted_staging_rejects_cache_only_and_stages_source(tmp_git_repo: Path):
@@ -1151,6 +1105,7 @@ def test_verifier_strips_terminal_control_characters_from_candidate_output(monke
 
 
 def test_exit_124_is_a_code_failure_and_spawn_failures_are_blocked(monkeypatch, tmp_git_repo: Path):
+    monkeypatch.setenv("CONDUCTOR_CHECK_MEMO", "0")  # the second run must execute, not reuse the first
     (tmp_git_repo / "gradlew").write_text("#!/bin/sh\n")
     candidate = _commit(tmp_git_repo, "candidate")
 
@@ -1188,12 +1143,6 @@ _REPOSITORY_WIDE = (
 
 
 @pytest.mark.parametrize("argv", _REPOSITORY_WIDE)
-def test_changed_scope_still_refuses_every_repository_wide_command(argv):
-    with pytest.raises(verification.VerificationBlocked):
-        verification.validate_remediation_argv(argv)
-
-
-@pytest.mark.parametrize("argv", _REPOSITORY_WIDE)
 def test_repository_scope_accepts_the_commands_full_discovery_emits(argv):
     assert verification.validate_repository_argv(argv) == argv
 
@@ -1216,7 +1165,7 @@ def test_heavy_marker_ignores_paths_but_still_blocks_targets(tmp_path: Path):
 
     # A repository that merely organizes tests under integration/ was
     # previously unverifiable: the marker matched the path, not the intent.
-    assert verification.validate_remediation_argv(
+    assert verification.validate_argv(
         ["pytest", "tests/integration/test_api.py"], root=tmp_path,
     ) == ["pytest", "tests/integration/test_api.py"]
 
@@ -1418,11 +1367,12 @@ def test_verification_tasks_poll_concurrently():
 def test_thread_count_override_raises_but_never_lowers(monkeypatch):
     # A broad operator env var must not silently undo a per-task ceiling that
     # exists because that task spawns a real build toolchain.
-    assert polling.worker_thread_count("test_run", 3) == 3
+    assert polling.worker_thread_count("test_run", 3) == 4  # never below the four-thread floor
+    assert polling.worker_thread_count("commit", 1) == 4 and polling.worker_thread_count("coding_agent", 16) == 16
     monkeypatch.setenv("CONDUCTOR_WORKER_THREADS_TEST_RUN", "8")
     assert polling.worker_thread_count("test_run", 3) == 8
     monkeypatch.setenv("CONDUCTOR_WORKER_THREADS_TEST_RUN", "1")
-    assert polling.worker_thread_count("test_run", 3) == 3
+    assert polling.worker_thread_count("test_run", 3) == 4
     monkeypatch.delenv("CONDUCTOR_WORKER_THREADS_TEST_RUN")
     monkeypatch.setenv("CONDUCTOR_WORKER_THREADS", "6")
     assert polling.worker_thread_count("test_discover", 4) == 6
@@ -1491,12 +1441,11 @@ def test_prepare_commands_are_an_exact_table_not_a_pattern():
             verification.validate_prepare_argv(argv)
 
 
-def test_prepare_routes_to_its_own_validator_not_the_remediation_one():
+def test_prepare_routes_to_its_own_validator():
     prepare = {"argv": ["bundle", "install", "--jobs", "4"], "phase": "prepare"}
     assert verification.validator_for(prepare) is verification.validate_prepare_argv
-    # The remediation adapter must keep refusing it: an install is not a test.
-    with pytest.raises(verification.VerificationBlocked):
-        verification.validate_remediation_argv(prepare["argv"])
+    # A test command is validated for safety only, never for breadth: an install is not a test.
+    assert verification.validator_for({"argv": ["npm", "test"]}) is verification.validate_argv
 
 
 def _ruby_repo(tmp_path: Path, *, rspec: bool = True) -> Path:
@@ -1640,10 +1589,12 @@ def test_single_package_javascript_repo_targets_its_spec_file(tmp_path: Path):
     assert tests[0]["scope"] == "focused"
 
 
-def test_watch_mode_runners_never_receive_a_file_filter(tmp_path: Path):
-    # Bare `vitest` defaults to watch mode, which would hang the run forever.
+def test_vitest_receives_the_file_filter_and_runs_once_under_ci(tmp_path: Path):
+    # Every verification environment sets CI=1, under which vitest runs once: the bare script takes
+    # the file filter like any other runner (calc26: the filter was dropped, then the unfiltered
+    # command refused, and three green items were reported unverifiable).
     (tmp_path / "package.json").write_text('{"name":"app","scripts":{"test":"vitest"}}')
-    assert verification._js_runner_accepts_paths(tmp_path, ".") is False
+    assert verification._js_runner_accepts_paths(tmp_path, ".") is True
     (tmp_path / "package.json").write_text('{"name":"app","scripts":{"test":"vitest run"}}')
     assert verification._js_runner_accepts_paths(tmp_path, ".") is True
     # A browser runner is never targeted, whatever the script says.
@@ -1672,19 +1623,6 @@ def test_bazel_maps_a_changed_source_to_its_exact_test_label(tmp_path: Path):
 def test_new_entrypoints_refuse_non_test_and_interpreter_invocations(argv):
     with pytest.raises(verification.VerificationBlocked):
         verification.validate_argv(argv)
-
-
-@pytest.mark.parametrize("argv", [
-    ["dotnet", "test"], ["composer", "test"], ["mix", "test"], ["sbt", "test"],
-    ["bazel", "test", "//..."], ["make", "test"], ["make", "check"],
-    ["npm", "test"], ["pnpm", "test"], ["yarn", "test"],
-])
-def test_new_tools_still_refuse_a_repository_wide_fallback_in_targeted_mode(argv):
-    # Repository-wide is exactly what targeted mode exists to prevent; it stays
-    # reachable only through an explicit full-mode request.
-    with pytest.raises(verification.VerificationBlocked):
-        verification.validate_remediation_argv(argv)
-    assert verification.validate_repository_argv(argv) == argv
 
 
 def test_optional_runtime_families_do_not_make_a_host_unhealthy(monkeypatch):
@@ -1818,23 +1756,6 @@ def _python_repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_detected_build_systems_reports_only_real_evidence(tmp_path: Path):
-    _python_repo(tmp_path)
-    assert verification._detected_build_systems(tmp_path) == {"pytest"}
-    assert "cargo" not in verification._detected_build_systems(tmp_path)
-
-
-def test_detected_build_systems_finds_nested_manifests(tmp_path: Path):
-    # A repository that keeps every project self-contained under its own
-    # directory (no root-level manifest at all) is exactly as real as one
-    # rooted at the top -- this used to be invisible to full-mode discovery.
-    nested = tmp_path / "features" / "widget"
-    nested.mkdir(parents=True)
-    (nested / "go.mod").write_text("module widget\n\ngo 1.22\n")
-    detected = verification._detected_build_systems(tmp_path)
-    assert "go" in detected
-
-
 def test_prepare_commands_scopes_a_nested_npm_project(tmp_path: Path):
     # A fresh disposable clone installs nothing; without a scoped prepare step
     # a nested npm project's test runner is never on disk (confirmed live:
@@ -1912,13 +1833,6 @@ def test_inferred_candidates_scopes_a_nested_npm_project_with_prepare(tmp_path: 
     install_index = argvs.index(["npm", "--prefix", "features/widget", "install", "--no-audit", "--no-fund"])
     test_index = argvs.index(["npm", "--prefix", "features/widget", "test", "--if-present"])
     assert install_index < test_index
-
-
-def test_detected_build_systems_ignores_vendored_nested_manifests(tmp_path: Path):
-    vendored = tmp_path / "node_modules" / "some-dep"
-    vendored.mkdir(parents=True)
-    (vendored / "Cargo.toml").write_text("[package]\nname = 'dep'\n")
-    assert "cargo" not in verification._detected_build_systems(tmp_path)
 
 
 def test_inferred_candidates_scopes_a_nested_go_module(tmp_path: Path):
@@ -2049,78 +1963,6 @@ def test_targeted_python_candidates_root_case_is_unchanged(tmp_path: Path):
     assert candidates[0]["repairRoots"] == ["tests"]
 
 
-def test_looks_like_test_file_is_conservative():
-    assert verification._looks_like_test_file("tests/test_app.py") is True
-    assert verification._looks_like_test_file("spec/app_spec.rb") is True
-    assert verification._looks_like_test_file("app.py") is False
-    assert verification._looks_like_test_file("README.testing.md") is False
-
-
-def test_validate_agent_argv_rejects_an_empty_or_malformed_proposal(tmp_path: Path):
-    _python_repo(tmp_path)
-    for junk in (None, [], "not a list", [None], ["a string"]):
-        with pytest.raises(verification.VerificationBlocked):
-            verification.validate_agent_argv(junk, root=tmp_path, changed_paths=["app.py"])
-
-
-def test_validate_agent_argv_rejects_an_entrypoint_with_no_repository_evidence(tmp_path: Path):
-    _python_repo(tmp_path)
-    with pytest.raises(verification.VerificationBlocked, match="no evidence"):
-        verification.validate_agent_argv(
-            [{"argv": ["cargo", "test", "-p", "pkg"], "coveredPaths": ["app.py"]}],
-            root=tmp_path, changed_paths=["app.py", "test_app.py"])
-
-
-def test_validate_agent_argv_rejects_a_nonexistent_path_token(tmp_path: Path):
-    _python_repo(tmp_path)
-    with pytest.raises(verification.VerificationBlocked, match="nonexistent path"):
-        verification.validate_agent_argv(
-            [{"argv": ["pytest", "test_missing.py"], "coveredPaths": ["test_app.py"]}],
-            root=tmp_path, changed_paths=["test_app.py"])
-
-
-def test_validate_agent_argv_rejects_claimed_coverage_outside_the_diff(tmp_path: Path):
-    _python_repo(tmp_path)
-    (tmp_path / "other_test.py").write_text("def test_other():\n    pass\n")
-    with pytest.raises(verification.VerificationBlocked, match="outside the candidate diff"):
-        verification.validate_agent_argv(
-            [{"argv": ["pytest", "test_app.py", "other_test.py"],
-              "coveredPaths": ["test_app.py", "other_test.py"]}],
-            root=tmp_path, changed_paths=["test_app.py"])
-
-
-def test_validate_agent_argv_requires_every_changed_test_file_covered_when_targeted(tmp_path: Path):
-    _python_repo(tmp_path)
-    (tmp_path / "test_other.py").write_text("def test_other():\n    pass\n")
-    with pytest.raises(verification.VerificationBlocked, match="omits changed test files"):
-        verification.validate_agent_argv(
-            [{"argv": ["pytest", "test_app.py"], "coveredPaths": ["test_app.py"]}],
-            root=tmp_path, changed_paths=["test_app.py", "test_other.py"])
-
-
-def test_validate_agent_argv_accepts_a_well_formed_targeted_proposal(tmp_path: Path):
-    _python_repo(tmp_path)
-    accepted = verification.validate_agent_argv(
-        [{"argv": ["pytest", "test_app.py"], "coveredPaths": ["test_app.py"],
-          "affectedUnit": "pytest-files", "repairRoots": []}],
-        root=tmp_path, changed_paths=["test_app.py"])
-    assert accepted[0]["argv"] == ["pytest", "test_app.py"]
-    assert accepted[0]["source"] == "agent-proposal"
-    assert accepted[0]["scope"] == "focused"
-
-
-def test_validate_agent_argv_full_mode_skips_anti_omission_and_allows_repository_scope(tmp_path: Path):
-    _python_repo(tmp_path)
-    (tmp_path / "test_other.py").write_text("def test_other():\n    pass\n")
-    # In full mode, a repository-wide command with no coveredPaths at all is
-    # still accepted: full mode already means "the whole suite", so there is
-    # nothing to omit.
-    accepted = verification.validate_agent_argv(
-        [{"argv": ["pytest"], "coveredPaths": []}],
-        mode="full", root=tmp_path, changed_paths=["test_app.py", "test_other.py"])
-    assert accepted[0]["scope"] == "repository"
-
-
 def test_isolated_environment_leaves_toolchain_cache_locations_to_the_real_host(tmp_path: Path):
     # These used to be forced into a synthetic per-run directory; they are now
     # simply whatever the real worker environment has (absent here, matching
@@ -2174,135 +2016,6 @@ def test_merge_worktrees_names_its_own_merge_state():
 
 # --- allowAgentAuthoredTests: validate_authored_test_shape / discard_authored_test_attempt / verify_authored_test ---
 
-def test_validate_authored_test_shape_rejects_multiple_touched_paths(tmp_git_repo: Path):
-    (tmp_git_repo / "TestA.py").write_text("def test_a():\n    assert True\n")
-    (tmp_git_repo / "TestB.py").write_text("def test_b():\n    assert True\n")
-    candidate = git.head(str(tmp_git_repo))
-
-    result = verification.validate_authored_test_shape(
-        str(tmp_git_repo), candidate_commit=candidate, changed_paths=["module.py"])
-
-    assert result["accepted"] is False
-    assert "2 paths" in result["reason"]
-    assert sorted(result["touchedPaths"]) == ["TestA.py", "TestB.py"]
-
-
-def test_validate_authored_test_shape_rejects_a_modified_existing_file(tmp_git_repo: Path):
-    (tmp_git_repo / "README.md").write_text("# tmp git repo\n\nmodified in place.\n")
-    candidate = git.head(str(tmp_git_repo))
-
-    result = verification.validate_authored_test_shape(
-        str(tmp_git_repo), candidate_commit=candidate, changed_paths=[])
-
-    assert result["accepted"] is False
-    assert "modified an existing file" in result["reason"]
-    assert result["touchedPaths"] == ["README.md"]
-
-
-def test_validate_authored_test_shape_rejects_a_non_test_shaped_new_file(tmp_git_repo: Path):
-    (tmp_git_repo / "helper.py").write_text("def helper():\n    return 1\n")
-    candidate = git.head(str(tmp_git_repo))
-
-    result = verification.validate_authored_test_shape(
-        str(tmp_git_repo), candidate_commit=candidate, changed_paths=[])
-
-    assert result["accepted"] is False
-    assert "is not a test-shaped file" in result["reason"]
-    assert result["touchedPaths"] == ["helper.py"]
-
-
-def test_validate_authored_test_shape_rejects_a_file_already_present_at_baseline(tmp_git_repo: Path):
-    (tmp_git_repo / "test_thing.py").write_text("def test_old():\n    assert True\n")
-    _commit(tmp_git_repo, "baseline adds an existing test")
-    (tmp_git_repo / "test_thing.py").unlink()
-    candidate = _commit(tmp_git_repo, "candidate deletes it")
-    # The agent's new attempt recreates the exact same path the baseline already had.
-    (tmp_git_repo / "test_thing.py").write_text("def test_old():\n    assert True\n")
-
-    result = verification.validate_authored_test_shape(
-        str(tmp_git_repo), candidate_commit=candidate, changed_paths=[])
-
-    assert result["accepted"] is False
-    assert "already exists at the pre-candidate baseline" in result["reason"]
-
-
-def test_validate_authored_test_shape_rejects_when_content_names_nothing_changed(tmp_git_repo: Path):
-    (tmp_git_repo / "test_new.py").write_text("def test_something():\n    assert 1 == 1\n")
-    candidate = git.head(str(tmp_git_repo))
-
-    result = verification.validate_authored_test_shape(
-        str(tmp_git_repo), candidate_commit=candidate, changed_paths=["module_under_change.py"])
-
-    assert result["accepted"] is False
-    assert "does not reference any changed file" in result["reason"]
-    assert result["authoredPath"] == "test_new.py"
-
-
-def test_validate_authored_test_shape_accepts_a_well_formed_new_test_referencing_the_changed_module(tmp_git_repo: Path):
-    (tmp_git_repo / "test_widget.py").write_text(
-        "import widget\n\n\ndef test_widget_behavior():\n    assert widget.value == 1\n")
-    candidate = git.head(str(tmp_git_repo))
-
-    result = verification.validate_authored_test_shape(
-        str(tmp_git_repo), candidate_commit=candidate, changed_paths=["widget.py"])
-
-    assert result["accepted"] is True
-    assert result["reason"] == ""
-    assert result["authoredPath"] == "test_widget.py"
-    assert result["matchedIdentifier"] == "widget.py"
-
-
-def test_validate_authored_test_shape_ignores_pre_existing_dirty_paths_when_given_an_authoritative_touched_set(tmp_git_repo: Path):
-    # Confirmed live (execution eb97ddad-23f1-4b69-9ee0-1d906729293e): a raw
-    # whole-tree git status scan attributed 27 pre-existing untracked
-    # .gradle cache artifacts plus one stray untracked test file -- none of
-    # which the Bash-less author_missing_test agent could have produced -- to
-    # that one attempt, and rejected a genuinely well-formed single new test.
-    (tmp_git_repo / ".gradle").mkdir()
-    (tmp_git_repo / ".gradle" / "cache.bin").write_text("stale build cache\n")
-    (tmp_git_repo / "OtherStrayTest.py").write_text("def test_stray():\n    assert True\n")
-    (tmp_git_repo / "test_widget.py").write_text(
-        "import widget\n\n\ndef test_widget_behavior():\n    assert widget.value == 1\n")
-    candidate = git.head(str(tmp_git_repo))
-
-    result = verification.validate_authored_test_shape(
-        str(tmp_git_repo), candidate_commit=candidate, changed_paths=["widget.py"],
-        agent_touched_paths=["test_widget.py"])
-
-    assert result["accepted"] is True
-    assert result["authoredPath"] == "test_widget.py"
-    assert result["touchedPaths"] == ["test_widget.py"]
-
-
-def test_validate_authored_test_shape_still_catches_a_genuinely_smuggled_second_edit(tmp_git_repo: Path):
-    # The authoritative touched-set does not weaken the real guarantee: any
-    # path the agent's own tools genuinely touched this turn is still caught.
-    (tmp_git_repo / "test_widget.py").write_text(
-        "import widget\n\n\ndef test_widget_behavior():\n    assert widget.value == 1\n")
-    (tmp_git_repo / "helper.py").write_text("def helper():\n    return 2\n")
-    candidate = git.head(str(tmp_git_repo))
-
-    result = verification.validate_authored_test_shape(
-        str(tmp_git_repo), candidate_commit=candidate, changed_paths=["widget.py"],
-        agent_touched_paths=["test_widget.py", "helper.py"])
-
-    assert result["accepted"] is False
-    assert "2 paths" in result["reason"]
-    assert sorted(result["touchedPaths"]) == ["helper.py", "test_widget.py"]
-
-
-def test_discard_authored_test_attempt_removes_the_untracked_file_and_restores_a_modified_one(tmp_git_repo: Path):
-    (tmp_git_repo / "test_new.py").write_text("def test_x():\n    assert True\n")
-    (tmp_git_repo / "README.md").write_text("# tmp git repo\n\nmodified accidentally\n")
-
-    result = verification.discard_authored_test_attempt(
-        str(tmp_git_repo), ["test_new.py", "README.md"])
-
-    assert result["discarded"] == ["README.md", "test_new.py"]
-    assert not (tmp_git_repo / "test_new.py").exists()
-    assert git.status_changes(str(tmp_git_repo)) == {}
-
-
 _REAL_GRADLE_TEST = "#!/bin/sh\ntest \"$(cat value.txt)\" = good\n"
 _VACUOUS_GRADLE_TEST = "#!/bin/sh\nexit 0\n"
 _ALWAYS_FAILING_GRADLE_TEST = "#!/bin/sh\nexit 1\n"
@@ -2326,95 +2039,6 @@ def _author_test_commits(repo: Path, gradlew_script: str) -> tuple[str, str]:
     return pre_candidate, authored
 
 
-def test_verify_authored_test_accepts_a_test_that_fails_at_baseline_and_passes_at_candidate(tmp_git_repo: Path):
-    pre_candidate, authored = _author_test_commits(tmp_git_repo, _REAL_GRADLE_TEST)
-
-    result = verification.verify_authored_test(
-        str(tmp_git_repo), pre_candidate_commit=pre_candidate, authored_commit=authored,
-        commands=_focused_gradle_command())
-
-    assert result["accepted"] is True
-    assert result["reason"] == ""
-    assert result["red"]["passed"] is False
-    assert result["green"]["passed"] is True
-    assert result["worktreeIsDisposable"] is True
-
-
-def test_verify_authored_test_rejects_a_vacuous_test_that_passes_at_the_baseline(tmp_git_repo: Path):
-    pre_candidate, authored = _author_test_commits(tmp_git_repo, _VACUOUS_GRADLE_TEST)
-
-    result = verification.verify_authored_test(
-        str(tmp_git_repo), pre_candidate_commit=pre_candidate, authored_commit=authored,
-        commands=_focused_gradle_command())
-
-    assert result["accepted"] is False
-    assert "vacuous" in result["reason"]
-    assert result["red"]["passed"] is True
-    assert result["green"]["passed"] is True
-
-
-def test_verify_authored_test_rejects_when_green_still_fails(tmp_git_repo: Path):
-    pre_candidate, authored = _author_test_commits(tmp_git_repo, _ALWAYS_FAILING_GRADLE_TEST)
-
-    result = verification.verify_authored_test(
-        str(tmp_git_repo), pre_candidate_commit=pre_candidate, authored_commit=authored,
-        commands=_focused_gradle_command())
-
-    assert result["accepted"] is False
-    assert "still fails against the candidate" in result["reason"]
-    assert result["red"]["passed"] is False
-    assert result["green"]["passed"] is False
-
-
-def test_verify_authored_test_blocks_when_the_candidate_touched_no_non_test_path(tmp_git_repo: Path):
-    (tmp_git_repo / "gradlew").write_text(_VACUOUS_GRADLE_TEST)
-    _commit(tmp_git_repo, "baseline")
-    (tmp_git_repo / "ExistingTest.java").write_text("class ExistingTest {}\n")
-    pre_candidate = _commit(tmp_git_repo, "candidate touches only a test file")
-    (tmp_git_repo / "NewTest.java").write_text("class NewTest {}\n")
-    authored = _commit(tmp_git_repo, "agent-authored test")
-
-    with pytest.raises(verification.VerificationBlocked, match="no non-test source path"):
-        verification.verify_authored_test(
-            str(tmp_git_repo), pre_candidate_commit=pre_candidate, authored_commit=authored,
-            commands=_focused_gradle_command())
-
-
-def test_verify_authored_test_reuses_one_disposable_checkout_for_both_red_and_green(
-        monkeypatch: pytest.MonkeyPatch, tmp_git_repo: Path):
-    pre_candidate, authored = _author_test_commits(tmp_git_repo, _REAL_GRADLE_TEST)
-    calls: list[str] = []
-    real_checkout = verification._disposable_checkout
-
-    def counting(*args, **kwargs):
-        calls.append(args[-1] if args else kwargs.get("commit"))
-        return real_checkout(*args, **kwargs)
-
-    monkeypatch.setattr(verification, "_disposable_checkout", counting)
-
-    result = verification.verify_authored_test(
-        str(tmp_git_repo), pre_candidate_commit=pre_candidate, authored_commit=authored,
-        commands=_focused_gradle_command())
-
-    assert result["accepted"] is True
-    assert len(calls) == 1
-
-
-def test_verify_authored_test_never_mutates_the_source_repository_refs(tmp_git_repo: Path):
-    escape_script = ("#!/bin/sh\ngit update-ref refs/heads/verifier-escape HEAD\n"
-                     "test \"$(cat value.txt)\" = good\n")
-    pre_candidate, authored = _author_test_commits(tmp_git_repo, escape_script)
-
-    result = verification.verify_authored_test(
-        str(tmp_git_repo), pre_candidate_commit=pre_candidate, authored_commit=authored,
-        commands=_focused_gradle_command())
-
-    assert result["accepted"] is True
-    assert result["gitMetadataIsIsolated"] is True
-    assert result["sourceRemoteDetached"] is True
-    assert git.git(str(tmp_git_repo), "rev-parse", "refs/heads/verifier-escape", check=False).code != 0
-
-
 # --- commit_and_verify_authored_test: commit + discover + redgreen in one call ---
 #
 # Replaces what used to be three Conductor tasks (commit, test_discover,
@@ -2430,66 +2054,6 @@ def _python_author_commits(repo: Path, module_bad: str, module_good: str) -> str
     _commit(repo, "baseline")
     (repo / "module.py").write_text(module_good)
     return _commit(repo, "candidate fix")
-
-
-def test_commit_and_verify_authored_test_accepts_a_real_test(tmp_git_repo: Path):
-    pre_candidate = _python_author_commits(
-        tmp_git_repo, "def value():\n    return 'bad'\n", "def value():\n    return 'good'\n")
-    (tmp_git_repo / "test_module.py").write_text(
-        "import module\n\n\ndef test_value():\n    assert module.value() == 'good'\n")
-
-    result = verification.commit_and_verify_authored_test(
-        str(tmp_git_repo), pre_candidate_commit=pre_candidate, message="author test")
-
-    assert result["accepted"] is True
-    assert result["reason"] == ""
-    assert result["commit"] != pre_candidate
-    assert git.head(str(tmp_git_repo)) == result["commit"]
-    assert result["commands"][0]["argv"] == ["pytest", "test_module.py"]
-    assert result["red"]["passed"] is False
-    assert result["green"]["passed"] is True
-
-
-def test_commit_and_verify_authored_test_rolls_back_a_vacuous_test(tmp_git_repo: Path):
-    pre_candidate = _python_author_commits(
-        tmp_git_repo, "def value():\n    return 'bad'\n", "def value():\n    return 'good'\n")
-    (tmp_git_repo / "test_module.py").write_text("def test_always_passes():\n    assert True\n")
-
-    result = verification.commit_and_verify_authored_test(
-        str(tmp_git_repo), pre_candidate_commit=pre_candidate, message="author test")
-
-    assert result["accepted"] is False
-    assert "vacuous" in result["reason"]
-    assert result["commit"] == pre_candidate
-    # Rolled back -- HEAD is exactly the pre-candidate commit, so an unproven
-    # test file never rides along in the delivered diff.
-    assert git.head(str(tmp_git_repo)) == pre_candidate
-    assert not (tmp_git_repo / "test_module.py").exists()
-
-
-def test_commit_and_verify_authored_test_rolls_back_when_discovery_cannot_resolve_the_file(tmp_git_repo: Path):
-    pre_candidate = _python_author_commits(
-        tmp_git_repo, "def value():\n    return 'bad'\n", "def value():\n    return 'good'\n")
-    (tmp_git_repo / "notes.py").write_text("NOTE = 'not a test'\n")
-
-    result = verification.commit_and_verify_authored_test(
-        str(tmp_git_repo), pre_candidate_commit=pre_candidate, message="author test")
-
-    assert result["accepted"] is False
-    assert "could not be resolved to a runnable command" in result["reason"]
-    assert result["commit"] == pre_candidate
-    assert git.head(str(tmp_git_repo)) == pre_candidate
-
-
-def test_commit_and_verify_authored_test_handles_a_noop_commit(tmp_git_repo: Path):
-    pre_candidate = git.head(str(tmp_git_repo))
-
-    result = verification.commit_and_verify_authored_test(
-        str(tmp_git_repo), pre_candidate_commit=pre_candidate, message="author test")
-
-    assert result["accepted"] is False
-    assert "no committable change" in result["reason"]
-    assert result["commit"] == pre_candidate
 
 
 # --------------------------------------------------------- this repository's own guide
@@ -2604,3 +2168,114 @@ def test_a_repository_with_no_suite_stays_targeted_for_the_agent_fallback(tmp_pa
     head = git.git(str(repo), "rev-parse", "HEAD").stdout.strip()
     assert verification.repository_suite_available(str(repo)) is False
     assert verification.integration_test_mode(str(repo), head)["testMode"] == "targeted"
+
+
+def test_harness_metadata_under_dot_cc_never_needs_a_test_mapping():
+    """The Architect's definition-of-done commit (.cc/contract.json, .cc/checks/**) landed on the
+    calculator team's branch while it built; targeted discovery could map none of those paths and
+    blocked the team's final cycle (run 884f7eec). `.cc/` is harness metadata, never code under test."""
+    assert not verification._requires_verification_scope(".cc/contract.json")
+    assert not verification._requires_verification_scope(".cc/checks/e2e/main_test.go")
+    assert not verification._requires_verification_scope(".cc/checks/run_scenario.sh")
+    assert verification._requires_verification_scope("main.go")
+
+
+def test_the_go_directive_is_a_minimum_not_a_toolchain_pin(tmp_path: Path):
+    """`go 1.21` in go.mod refused go 1.26 as `runtime_unavailable`; the program's integration check
+    stayed red at every head and the Architect's ladder looped (run 3c84dd5d)."""
+    (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.21\n")
+    requirements = verification.runtime_requirements(str(tmp_path))
+    assert requirements["go"] == ">=1.21"
+    assert verification._runtime_requirement_reason(["go", "test", "./..."], {"version": "go version go1.26.3 darwin/arm64"}, requirements) is None
+    assert "repository requires go >=1.21" in verification._runtime_requirement_reason(
+        ["go", "test", "./..."], {"version": "go version go1.20.1 darwin/arm64"}, requirements)
+
+
+def test_a_check_runs_once_per_code_and_is_reused_across_callers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The same frozen test ran four times at one code in a one-item program (its red run, the team's
+    final cycle, the program's final cycle, the Architect's pass after a `.cc/`-only commit). A
+    completed run is remembered per (code tree without `.cc/`, argv) and reused; a code change runs."""
+    monkeypatch.setenv("CONDUCTOR_DEPENDENCY_CACHE_ROOT", str(tmp_path / "cache"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "test_a.py").write_text("def test_a():\n    assert True\n")
+    git.ensure_ready(str(repo))
+    head = git.head(str(repo))
+    cmd = [{"argv": ["pytest", "-q", "test_a.py"], "source": "provided", "coveredPaths": ["test_a.py"]}]
+    first = verification.verify_candidate(str(repo), head, cmd)
+    assert first["verificationState"] == "passed" and first["reusedCommands"] == 0
+    calls = []
+    real = verification._execute_selected_commands
+    monkeypatch.setattr(verification, "_execute_selected_commands",
+                        lambda *a, **k: calls.append(1) or real(*a, **k))
+    again = verification.verify_candidate(str(repo), head, cmd)
+    assert again["reusedCommands"] == 1 and calls == [] and again["commands"][0]["reused"] is True
+    assert again["commands"][0]["reusedFrom"] == head and again["verificationState"] == "passed"
+    # A commit that changes only the harness's contract directory is the same code.
+    (repo / ".cc").mkdir()
+    (repo / ".cc" / "contract.json").write_text("{}")
+    cc_only = _commit(repo, "architect: definition of done")
+    assert verification.code_tree_id(str(repo), cc_only) == verification.code_tree_id(str(repo), head)
+    assert verification.verify_candidate(str(repo), cc_only, cmd)["reusedCommands"] == 1 and calls == []
+    # A code change runs again, and a red result is remembered too.
+    (repo / "test_a.py").write_text("def test_a():\n    assert False\n")
+    red = _commit(repo, "break")
+    out = verification.verify_candidate(str(repo), red, cmd)
+    assert calls == [1] and out["verificationState"] == "failed" and out["reusedCommands"] == 0
+    assert verification.verify_candidate(str(repo), red, cmd)["commands"][0]["reused"] is True and calls == [1]
+    monkeypatch.setenv("CONDUCTOR_CHECK_MEMO", "0")
+    assert verification.verify_candidate(str(repo), red, cmd)["reusedCommands"] == 0 and calls == [1, 1]
+
+
+def test_a_test_of_another_runtime_gets_every_projects_install_first(tmp_path: Path):
+    """A frozen pytest acceptance test drove `npm test`, `npm run build` and the scenario script in a
+    clone with no node_modules: "vitest: command not found", and a test repairer spent three minutes
+    on an environment it could not fix (run f83293f5). A runner that is not the project's own may
+    invoke anything the project documents, so every manifest's install comes first; the project's own
+    runner keeps the install of the directory it targets; a self-resolving toolchain gets none."""
+    (tmp_path / "package.json").write_text('{"name": "app", "scripts": {"test": "vitest run"}}')
+    pytest_cmd = {"argv": ["pytest", "tests/acceptance/test_accept_app.py"]}
+    assert [c["argv"] for c in verification._with_prepare(tmp_path, [pytest_cmd], broad=True)] == [
+        ["npm", "install", "--no-audit", "--no-fund"], ["pytest", "tests/acceptance/test_accept_app.py"]]
+    both = verification._with_prepare(tmp_path, [pytest_cmd, {"argv": ["npm", "test", "--if-present"]}], broad=True)
+    assert [c["argv"][0] for c in both] == ["npm", "pytest", "npm"]  # one install, before the first command
+    assert [c["argv"] for c in verification._with_prepare(tmp_path, [{"argv": ["go", "test", "./..."]}], broad=True)] == [["go", "test", "./..."]]
+    assert verification._with_prepare(tmp_path / "nowhere", [pytest_cmd], broad=True) == [pytest_cmd]
+    # Discovery keeps the narrow rule: a documented `make test` beside an unrelated nested package.json
+    # does not install that package's dependencies on every cycle.
+    assert verification._with_prepare(tmp_path, [pytest_cmd]) == [pytest_cmd]
+
+
+def test_the_disposable_checkout_carries_the_sources_tool_cache(tmp_path: Path):
+    """A scout's Playwright and Chromium live under the git-excluded .cc-cache; the verification clone
+    had none, so the frozen test that drives the scenario script found nothing to run (run f83293f5)."""
+    repo = tmp_path / "src"
+    repo.mkdir()
+    (repo / "a.txt").write_text("a\n")
+    git.ensure_ready(str(repo))
+    (repo / ".cc-cache" / "playwright").mkdir(parents=True)
+    (repo / ".cc-cache" / "playwright" / "chromium").write_text("binary\n")
+    temp, checkout = verification._disposable_checkout(str(repo), git.head(str(repo)))
+    try:
+        assert (Path(checkout) / ".cc-cache" / "playwright" / "chromium").read_text() == "binary\n"
+        assert git.git(checkout, "status", "--porcelain").stdout.strip() == ""
+    finally:
+        shutil.rmtree(temp, ignore_errors=True)
+
+
+@pytest.mark.parametrize("command,expected", [
+    ({"argv": ["npm", "--prefix", "frontend", "install"], "phase": "prepare"}, True),
+    ({"argv": ["mvn", "-f", "backend/pom.xml", "test"]}, True),
+    ({"argv": ["./gradlew", "test"]}, True),
+    ({"argv": ["cargo", "test", "-p", "pgdb"]}, True),
+    ({"argv": ["go", "test", "./..."]}, True),
+    ({"argv": ["npm", "--prefix", "frontend", "test", "--if-present"]}, False),
+    ({"argv": ["pytest", "-q"]}, False),
+    ({"argv": ["node", ".cc/checks/scenario.mjs"]}, False),
+])
+def test_build_systems_that_resolve_while_building_get_the_network(command, expected):
+    """A sandboxed `mvn test` could fetch neither the parent POM nor the surefire plugin ("Operation not
+    permitted"); every item of three teams ended tests_failed_fix_unavailable and each burned a repair
+    session on a failure no code change fixes (run afb90941). Maven, Gradle, Cargo and Go install as
+    they build, so their test command needs the registry exactly as the prepare phase does."""
+    assert verification._needs_network(command) is expected

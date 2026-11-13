@@ -37,7 +37,7 @@ import subprocess
 import tempfile
 from typing import Any
 
-from . import check_execution
+from . import backend_auth, check_execution
 from .cost import price_usage
 
 log = logging.getLogger("coding_agent.codex")
@@ -115,9 +115,22 @@ def _restore_optional(result: dict[str, Any], output_schema: dict | None) -> dic
 
 
 def _tokens(usage: dict[str, Any]) -> int:
-    return (int(usage.get("input_tokens") or 0)
-            + int(usage.get("output_tokens") or 0)
-            + int(usage.get("reasoning_output_tokens") or 0))
+    # Codex's input_tokens already include the cached ones, and its output_tokens the reasoning ones
+    # (total_tokens == input_tokens + output_tokens in every session log).
+    return int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+
+
+def _usage_cost(usage: dict[str, Any], model: str | None) -> float:
+    """USD for a Codex usage record. Cached input is billed at the cache rate and only once: pricing
+    input_tokens (which include the cached ones) at the full rate and the cached ones again, and the
+    reasoning tokens on top of output_tokens (which include them), overstated a session's input cost
+    about six times (a session of 845,010 input tokens, 764,160 of them cached)."""
+    if not usage:
+        return 0.0
+    cached = int(usage.get("cached_input_tokens") or 0)
+    return price_usage({"input_tokens": max(int(usage.get("input_tokens") or 0) - cached, 0),
+                        "output_tokens": int(usage.get("output_tokens") or 0),
+                        "cache_read_input_tokens": cached}, model or "codex:default")
 
 
 def _item_command(item: dict[str, Any]) -> str | None:
@@ -154,6 +167,8 @@ async def _run_codex_sdk(
     resume_session_id: str | None,
     on_turn,
     extra_env: dict[str, str] | None = None,
+    steer=None,
+    max_budget_usd: float | None = None,
 ) -> dict[str, Any]:
     """Drive one turn via the openai-codex SDK, consuming the notification stream
     ourselves (mirroring the SDK's own _collect_async_turn_result) so we can fire
@@ -188,6 +203,7 @@ async def _run_codex_sdk(
     usage_total: dict[str, Any] = {}
     completed_status: str | None = None
     turn_error: str | None = None
+    over_budget = False
 
     def _snapshot():
         return {"status": "IN_PROGRESS", "turns": _live_turns(), "numTurns": max(turn_idx, 1),
@@ -207,11 +223,17 @@ async def _run_codex_sdk(
             except Exception:  # noqa: BLE001
                 pass
 
-    if extra_env:
-        # The SDK merges ``env`` onto the process environment; the shared runtime environment is passed
-        # whole so the spawned codex sees exactly what every other child process does.
+    # The SDK merges ``env`` onto the process environment; the shared runtime environment is passed
+    # whole so the spawned codex sees exactly what every other child process does, with the credential
+    # CODEX_AUTH decides (the ChatGPT login, or the key; common/backend_auth).
+    backend_auth.ensure_codex_key()  # key mode: the CLI's login store must hold the key (run 9b8d3b39)
+    try:
         from openai_codex import CodexConfig
-        client = AsyncCodex(config=CodexConfig(env=check_execution.inherited_environment(extra_env)))
+    except ImportError:  # an SDK without CodexConfig (or a test double): the process environment as is
+        CodexConfig = None
+    if CodexConfig is not None:
+        client = AsyncCodex(config=CodexConfig(env=check_execution.inherited_environment(
+            backend_auth.extra("codex", extra_env))))
     else:
         client = AsyncCodex()
     try:
@@ -231,7 +253,7 @@ async def _run_codex_sdk(
             handle = await thread.turn(prompt, **turn_kwargs)
 
             async def _consume():
-                nonlocal turn_idx, last_text, usage_total, completed_status, turn_error, cur_cmds
+                nonlocal turn_idx, last_text, usage_total, completed_status, turn_error, cur_cmds, over_budget
                 async for event in handle.stream():
                     m = event.method
                     payload = event.payload
@@ -254,6 +276,15 @@ async def _run_codex_sdk(
                         tu = payload.token_usage.total
                         usage_total = tu.model_dump() if hasattr(tu, "model_dump") else {}
                         _fire()
+                        # The spend cap Claude's SDK enforces itself (max_budget_usd): Codex has none,
+                        # so a session ran to $6.40 under a run whose ceiling was meant to bound it.
+                        if (max_budget_usd is not None and not over_budget
+                                and _usage_cost(usage_total, model) > float(max_budget_usd)):
+                            over_budget = True
+                            try:
+                                await handle.interrupt()
+                            except Exception:  # noqa: BLE001 - the turn may have just ended
+                                pass
                         continue
                     if m == "turn/completed":
                         turn = payload.turn
@@ -266,7 +297,45 @@ async def _run_codex_sdk(
                         cur_cmds = []
                         _fire()
 
-            await _consume()
+            async def _steer_loop():
+                # The live team channel for a driver without tool hooks: every few seconds, hand the
+                # running turn whatever arrived on the board (a teammate's lesson, a question, a
+                # directive) through Codex's turn/steer; a blocking directive interrupts the turn.
+                if steer is None:
+                    log.info("codex steer: no watcher for this session")
+                    return
+                log.info("codex steer: polling the team board every 3 s")
+                while True:
+                    await asyncio.sleep(3.0)
+                    try:
+                        text, blocking = await asyncio.to_thread(steer)
+                    except Exception as e:  # noqa: BLE001 - a board read failure costs one poll
+                        log.warning("codex steer: poll failed: %s", e)
+                        continue
+                    if text:
+                        try:
+                            await handle.steer(text)
+                            log.info("codex steer: delivered %d chars to the running turn", len(text))
+                        except Exception as e:  # noqa: BLE001 - the turn may have just ended
+                            log.warning("codex steer: turn/steer failed: %s", e)
+                            return
+                    if blocking:
+                        try:
+                            await handle.interrupt()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return
+
+            consumer = asyncio.ensure_future(_consume())
+            steerer = asyncio.ensure_future(_steer_loop())
+            try:
+                await consumer
+            finally:
+                steerer.cancel()
+                try:
+                    await steerer
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
     except FileNotFoundError as ex:
         return {"ok": False, "status": "codex_error",
                 "error": f"codex runtime not found: {ex}", **err_base}
@@ -284,17 +353,13 @@ async def _run_codex_sdk(
             structured = None
 
     tokens = _tokens(usage_total)
-    cost = price_usage(
-        {"input_tokens": usage_total.get("input_tokens", 0),
-         "output_tokens": (usage_total.get("output_tokens", 0)
-                           + usage_total.get("reasoning_output_tokens", 0)),
-         "cache_read_input_tokens": usage_total.get("cached_input_tokens", 0)},
-        model or "codex:default",
-    ) if usage_total else 0.0
+    cost = _usage_cost(usage_total, model)
 
     return {
         "ok": ok,
-        "status": "success" if ok else (completed_status or "codex_error"),
+        # Claude's status for the same stop, so callers treat both alike (retryable, resumable).
+        "status": ("error_max_budget_usd" if over_budget
+                   else "success" if ok else (completed_status or "codex_error")),
         "result": last_text.strip(),
         "structured": structured,
         "model": model or "",
@@ -335,6 +400,7 @@ def _run_codex_cli(
     sandbox = "workspace-write" if write else "read-only"
     tmp = tempfile.mkdtemp(prefix=".cc-codex-", dir=worktree)
     out_file = ""
+    backend_auth.ensure_codex_key()
     args = [CODEX_BIN, "exec"]
     if resume_session_id:
         args += ["resume", resume_session_id]
@@ -373,7 +439,7 @@ def _run_codex_cli(
         proc = subprocess.Popen(
             args, cwd=worktree, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            env=check_execution.inherited_environment(extra_env),
+            env=check_execution.inherited_environment(backend_auth.extra("codex", extra_env)),
         )
         for line in proc.stdout:  # streams as Codex emits JSONL
             line = line.strip()
@@ -448,12 +514,7 @@ def _run_codex_cli(
     rc = proc.returncode if proc else 1
     ok = rc == 0 and not errors
     tokens = _tokens(usage)
-    cost = price_usage(
-        {"input_tokens": usage.get("input_tokens", 0),
-         "output_tokens": (usage.get("output_tokens", 0) + usage.get("reasoning_output_tokens", 0)),
-         "cache_read_input_tokens": usage.get("cached_input_tokens", 0)},
-        model or "codex:default",
-    ) if usage else 0.0
+    cost = _usage_cost(usage, model)
     result_text = last_text.strip() or (json.dumps(structured) if structured else "")
     return {
         "ok": ok,
@@ -496,6 +557,8 @@ async def run_codex_agent(
     resume_session_id: str | None = None,
     on_turn=None,
     extra_env: dict[str, str] | None = None,
+    steer=None,
+    max_budget_usd: float | None = None,
 ) -> dict[str, Any]:
     """Run one Codex session to completion; return the uniform coding_agent dict.
 
@@ -508,7 +571,7 @@ async def run_codex_agent(
         return _restore_optional(await _run_codex_sdk(
             prompt, worktree=worktree, model=model, write=write, effort=effort,
             output_schema=output_schema, resume_session_id=resume_session_id,
-            on_turn=on_turn, extra_env=extra_env), output_schema)
+            on_turn=on_turn, extra_env=extra_env, steer=steer, max_budget_usd=max_budget_usd), output_schema)
     log.info("codex driver: CLI fallback (%s)",
              "CODEX_DRIVER=cli" if CODEX_DRIVER == "cli" else "openai_codex not installed")
     return _restore_optional(await asyncio.to_thread(

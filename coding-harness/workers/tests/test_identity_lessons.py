@@ -91,10 +91,13 @@ def test_pushback_is_decided_by_the_lead_and_lessons_are_opinions(monkeypatch, t
                     {"text": "svc.handle is the single entrypoint", "refs": ["svc.py::handle"]}]}}},
                 "x__1": {"output": {"structured": {"summary": "s", "pushback": {"directive": "", "reason": ""}}}}},
     )).output_data
-    assert out["pushbacks"][0]["item"] == "p" and out["reviewing"] == ["q"] and out["lessonsShared"] == 1
-    assert out["pushbacks"][0]["directiveId"] == d1 and [r["id"] for r in out["retry"]] == ["p"]
+    # p delivered its work AND refused the directive: the delivery stands (integrated, under review) and
+    # the directive is exempted for p; redoing the same work without the directive was a wasted round
+    # (five items of one team, run 351812b2). An honored pushback never waits for a human.
+    assert out["pushbacks"] == [] and sorted(out["reviewing"]) == ["p", "q"] and out["lessonsShared"] == 1
+    assert out["retry"] == []
     board = tb.fold_board(cid)
-    assert board["items"]["p"]["state"] == tb.REOPENED and "exempted" in board["items"]["p"]["reason"]
+    assert board["items"]["p"]["state"] == tb.REVIEW
     assert not tb.open_exceptions(board["exceptions"])  # decided, not waiting
     live = {d["id"]: d for d in tb.active_directives(board["directives"])}
     assert live[d1]["exempt"] == ["p"]  # still in force for every other item
@@ -102,6 +105,7 @@ def test_pushback_is_decided_by_the_lead_and_lessons_are_opinions(monkeypatch, t
     assert les["kind"] == "opinion" and les["confidence"] == "medium"
     # The re-dispatch omits the exempted directive; the digest labels the lesson an opinion; every
     # implementer is told how to push back.
+    tb.set_state(cid, "lead", "p", tb.REOPENED)  # as a later review round would
     su = team_standup(fake_task_input(repoPath=shared, correlationId=cid)).output_data
     p = su["dynamicTasksInput"]["p"]["prompt"]
     assert "[opinion, medium] svc.handle is the single entrypoint" in p and "PUSHBACK" in p

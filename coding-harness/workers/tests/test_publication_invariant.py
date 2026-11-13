@@ -45,16 +45,11 @@ def test_publication_plan_always_publishes_and_only_passed_is_ready():
     task = _by_ref("select_publication_plan")
     assert task["name"] == "issue_to_pr_publication_plan"
     assert issue_to_pr.resolve_publication_plan("passed") == \
-        {"publish": "true", "draft": False, "reason": "", "agentAuthoredTest": False}
+        {"publish": "true", "draft": False, "reason": ""}
     blocked = issue_to_pr.resolve_publication_plan("incomplete_delivery")
     assert blocked["publish"] == "true"
     assert blocked["draft"] is True
     assert blocked["reason"] == "delivery outcome: incomplete_delivery"
-
-    authored = issue_to_pr.resolve_publication_plan("passed", agent_authored_test=True)
-    assert authored["draft"] is True
-    assert authored["reason"] == "agent-authored test"
-    assert authored["agentAuthoredTest"] is True
 
 
 def test_push_and_pr_create_are_unconditional_top_level_routes():

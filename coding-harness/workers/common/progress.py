@@ -40,6 +40,9 @@ log = logging.getLogger("coding_agent.progress")
 # update_task calls). Built lazily from the same env Configuration the worker uses.
 _API: TaskResourceApi | None = None
 
+# How long a running task stays invisible to other pollers after each heartbeat: ten heartbeats.
+LEASE_SECONDS = 300
+
 
 def _api() -> TaskResourceApi:
     global _API
@@ -126,6 +129,13 @@ class ProgressReporter:
                 out["running"] = True
                 out["elapsedSeconds"] = round(time.monotonic() - self._started, 1)
                 tr.output_data = out
+                # An IN_PROGRESS update re-queues the task after callbackAfterSeconds (the server's
+                # updateTask postpones it). At 0, every heartbeat made the RUNNING task pollable at
+                # once: a backend session was delivered 9 times and three sessions of run 3c8a5f5b ran
+                # twice. Each heartbeat (every turn, at least every heartbeat_s) pushes it out again,
+                # so it never resurfaces while this worker lives; if the worker dies, the task is
+                # pollable again LEASE_SECONDS later and another worker takes it over.
+                tr.callback_after_seconds = LEASE_SECONDS
                 _api().update_task(tr)
             except Exception as e:  # noqa: BLE001 — progress must never break the task
                 log.debug("progress update failed (continuing): %s", e)

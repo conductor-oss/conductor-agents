@@ -39,7 +39,7 @@ import re
 import subprocess
 from typing import Any
 
-from . import check_execution
+from . import backend_auth, check_execution
 from .cost import price_usage
 
 log = logging.getLogger("coding_agent.gemini")
@@ -114,7 +114,7 @@ def _run_once(args: list[str], worktree: str):
     proc = subprocess.Popen(
         args, cwd=worktree, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env=check_execution.inherited_environment(),
+        env=check_execution.inherited_environment(backend_auth.extra("gemini")),
     )
     stdout, stderr = proc.communicate()
     return proc.returncode, stdout or "", (stderr or "")[-4000:]

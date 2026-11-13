@@ -70,12 +70,8 @@ def build_forks(*, repo_path: object, subtasks: object, change_dir: object,
                 context_paths: object, max_turns: object, max_budget_usd: object,
                 model_profile: object, model_policy: object, model_policy_source: object,
                 model_policy_sha256: object, models_config: object,
-                model_overrides: object, skip_agent_test_fallback: bool = False,
-                single_subtask: bool = False) -> dict:
-    """Build one dynamic-fork SUB_WORKFLOW descriptor per validated plan entry. With
-    ``skip_agent_test_fallback`` a fork whose files map to no exact test stops there at no cost: the
-    post-merge run of the repository suite proves the work, and the agents a fork would start to find
-    or write a test were paid for and their tests discarded (run 1117790e, $2.44 of $5.53)."""
+                model_overrides: object, single_subtask: bool = False) -> dict:
+    """Build one dynamic-fork SUB_WORKFLOW descriptor per validated plan entry."""
     dynamic_tasks: list[dict] = []
     dynamic_inputs: dict[str, dict] = {}
     group_ids: list[str] = []
@@ -106,7 +102,6 @@ def build_forks(*, repo_path: object, subtasks: object, change_dir: object,
             "modelProfile": model_profile, "modelPolicy": model_policy,
             "modelPolicySource": model_policy_source, "modelPolicySha256": model_policy_sha256,
             "modelsConfig": models_config, "modelOverrides": model_overrides,
-            **({"allowAgentTestPlan": False, "allowAgentAuthoredTests": False} if skip_agent_test_fallback else {}),
         }
     return {"dynamicTasks": dynamic_tasks, "dynamicTasksInput": dynamic_inputs,
             "groupIds": ",".join(group_ids), "allowedWriteRoots": sorted(set(all_files))}

@@ -4,3 +4,5 @@ Item: {{description}}
 Files the implementer will create/edit: {{files}}
 Acceptance criteria:
 {{criteria}}
+{{doneSection}}
+A test must never hang: every subprocess, network wait or `go test` it starts carries its own bound (`subprocess.run(..., timeout=120)`, `go test -timeout 120s`, a readiness loop with a cap), so a defect fails in seconds, not in Go's ten-minute default. A test that checks an API by reflection checks the signature BEFORE it starts goroutines that wait on it.

@@ -152,34 +152,3 @@ def test_callers_surface_the_verdict_so_a_gate_can_read_it():
         assert "testCycleState" in outputs, name
         assert "testsPassed" in outputs, name
 
-
-def test_address_pr_forwards_the_agent_fallback_flags_to_both_repair_paths():
-    # A PR-comment fix that touches a file with no directly-matching test (a
-    # shared helper, for example) must not be permanently configuration_blocked
-    # in either verification pass -- confirmed live (case
-    # tests/integration/retry_helpers.py) before this wiring existed.
-    # Both default true here (unlike test_cycle/test_agent_fallback's own
-    # default of false): address_pr is the interactive PR-feedback loop,
-    # where leaving a change permanently configuration_blocked on a missing
-    # test-file mapping is worse than trying the agent fallback first.
-    address_pr = _load("address_pr")
-    assert "allowAgentTestPlan" in address_pr["inputParameters"]
-    assert "allowAgentAuthoredTests" in address_pr["inputParameters"]
-    assert address_pr["inputTemplate"]["allowAgentTestPlan"] is True
-    assert address_pr["inputTemplate"]["allowAgentAuthoredTests"] is True
-
-    verify = _children(address_pr)[0]
-    assert verify["inputParameters"]["allowAgentTestPlan"] == "${workflow.input.allowAgentTestPlan}"
-    assert verify["inputParameters"]["allowAgentAuthoredTests"] == "${workflow.input.allowAgentAuthoredTests}"
-
-    repair_call = next(task for task in _walk(address_pr)
-                       if task.get("subWorkflowParam", {}).get("name") == "address_pr_repair")
-    assert repair_call["inputParameters"]["allowAgentTestPlan"] == "${workflow.input.allowAgentTestPlan}"
-    assert repair_call["inputParameters"]["allowAgentAuthoredTests"] == "${workflow.input.allowAgentAuthoredTests}"
-
-    address_pr_repair = _load("address_pr_repair")
-    assert "allowAgentTestPlan" in address_pr_repair["inputParameters"]
-    assert "allowAgentAuthoredTests" in address_pr_repair["inputParameters"]
-    inner_test_cycle = _children(address_pr_repair)[0]
-    assert inner_test_cycle["inputParameters"]["allowAgentTestPlan"] == "${workflow.input.allowAgentTestPlan}"
-    assert inner_test_cycle["inputParameters"]["allowAgentAuthoredTests"] == "${workflow.input.allowAgentAuthoredTests}"

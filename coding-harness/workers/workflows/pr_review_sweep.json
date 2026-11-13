@@ -60,6 +60,7 @@
       "name": "join",
       "taskReferenceName": "join",
       "type": "JOIN",
+      "joinMode": "SYNC",
       "decisionCases": {},
       "defaultCase": []
     }

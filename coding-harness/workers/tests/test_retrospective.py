@@ -47,7 +47,7 @@ def test_docs_item_gets_a_documents_prompt_no_acceptance_tests_and_a_docs_review
     assert tb.fold_board(cid)["items"]["design"]["deliverable"] == "docs"
     acc = team_acceptance_build(fake_task_input(correlationId=cid, repoPath=shared,
                                                 authorAcceptanceTests=True)).output_data
-    assert "design" not in json.dumps(acc.get("dynamicTasksInput") or {})  # no executable oracle for docs
+    assert "design" not in json.dumps(acc.get("dynamicTasksInput") or {})  # no executable check for docs
     su = team_standup(fake_task_input(repoPath=shared, correlationId=cid, maxWidth=4)).output_data
     assert "DELIVERABLE: DOCUMENTS, not code" in su["dynamicTasksInput"]["design"]["prompt"]
     assert "DELIVERABLE: DOCUMENTS" not in su["dynamicTasksInput"]["store"]["prompt"]
@@ -55,7 +55,7 @@ def test_docs_item_gets_a_documents_prompt_no_acceptance_tests_and_a_docs_review
     rv = team_review_build(fake_task_input(correlationId=cid, sharedRepo=shared,
                                            sharedBranch=git._current_branch(shared))).output_data
     prompt = next(v["prompt"] for v in rv["dynamicTasksInput"].values())
-    assert "deliverable is DOCUMENTS" in prompt and "you are the only oracle" in prompt
+    assert "deliverable is DOCUMENTS" in prompt and "you are the only check" in prompt
 
 
 # ─────────────────────────── (b) retrospective → learnings ────────────────────
@@ -184,7 +184,9 @@ def test_retrospective_agent_reads_the_runs_workspace_not_the_source_checkout(mo
     assert agent["inputParameters"]["worktreePath"] == "${evidence.output.worktreePath}"
     for name in ("team_build", "cc_program"):
         w = json.load(open(os.path.join(WF, f"{name}.json")))
-        assert w["tasks"][-1]["inputParameters"]["workspacePath"] == "${workspace.output.worktreePath}"
+        last = w["tasks"][-1]
+        inputs = last["inputParameters"]["startWorkflow"]["input"] if last["type"] == "START_WORKFLOW" else last["inputParameters"]
+        assert inputs["workspacePath"] == "${workspace.output.worktreePath}"
 
 
 def test_every_swarm_run_ends_with_a_retrospective_and_names_it_as_failure_workflow():
@@ -192,8 +194,15 @@ def test_every_swarm_run_ends_with_a_retrospective_and_names_it_as_failure_workf
         d = json.load(open(os.path.join(WF, f"{name}.json")))
         assert d["failureWorkflow"] == "run_retrospective"
         last = d["tasks"][-1]
-        assert last["type"] == "SUB_WORKFLOW" and last["subWorkflowParam"] == {"name": "run_retrospective"}
-        assert last["optional"] is True and last["inputParameters"]["correlationId"] == "${workflow.workflowId}"
+        assert last["optional"] is True
+        if last["type"] == "START_WORKFLOW":
+            # cc_program: the retrospective is learning for the NEXT run; fire-and-forget, so a delivered
+            # program completes at its outcome instead of waiting a 30 s session (run 41dbb883).
+            start = last["inputParameters"]["startWorkflow"]
+            assert start["name"] == "run_retrospective" and start["input"]["correlationId"] == "${workflow.workflowId}"
+        else:
+            assert last["type"] == "SUB_WORKFLOW" and last["subWorkflowParam"] == {"name": "run_retrospective"}
+            assert last["inputParameters"]["correlationId"] == "${workflow.workflowId}"
     r = json.load(open(os.path.join(WF, "run_retrospective.json")))
     assert [t["taskReferenceName"] for t in r["tasks"]] == ["model_policy", "evidence", "retro_gate"]
 
@@ -265,6 +274,9 @@ def test_sandboxed_agents_get_a_writable_git_excluded_go_cache(tmp_path):
     env = _tool_cache_env(wt)
     _tool_cache_env(wt)  # idempotent
     assert env["GOCACHE"].startswith(os.path.join(wt, TOOL_CACHE_DIR)) and os.path.isdir(env["GOCACHE"])
+    # npm and pip caches too (npm install died on EPERM opening ~/.npm/_cacache from the sandbox, run a8167484).
+    assert os.path.isdir(env["npm_config_cache"]) and env["npm_config_cache"].startswith(os.path.join(wt, TOOL_CACHE_DIR))
+    assert os.path.isdir(env["PIP_CACHE_DIR"])
     with open(os.path.join(env["GOCACHE"], "blob"), "w") as fh:
         fh.write("x")
     assert git.git(wt, "status", "--porcelain").stdout.strip() == ""

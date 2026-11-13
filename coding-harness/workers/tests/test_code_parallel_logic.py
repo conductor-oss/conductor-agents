@@ -206,16 +206,6 @@ def test_a_run_that_did_not_merge_is_incomplete_whatever_the_tests_say():
     assert (out["verdict"], out["deliveredAndTested"]) == ("INCOMPLETE", False)
 
 
-def test_forks_skip_the_paid_test_agents_only_when_the_repository_suite_will_prove_the_work():
-    args = dict(repo_path="/r", subtasks=[{"id": "a", "description": "d", "files": ["a.py"]}], change_dir="",
-                code_model="", code_prompt_template="", code_prompt_template_source="", spec_context_path="",
-                context_paths=[], max_turns=1, max_budget_usd=1, model_profile="", model_policy={},
-                model_policy_source="", model_policy_sha256="", models_config="", model_overrides={})
-    assert "allowAgentTestPlan" not in code_parallel.build_forks(**args)["dynamicTasksInput"]["a"]
-    skipped = code_parallel.build_forks(**args, skip_agent_test_fallback=True)["dynamicTasksInput"]["a"]
-    assert (skipped["allowAgentTestPlan"], skipped["allowAgentAuthoredTests"]) == (False, False)
-
-
 def test_a_single_agent_route_builds_the_whole_plan_as_one_fork():
     args = dict(repo_path="/r", change_dir="", code_model="", code_prompt_template="", code_prompt_template_source="",
                 spec_context_path="", context_paths=[], max_turns=1, max_budget_usd=1, model_profile="", model_policy={},

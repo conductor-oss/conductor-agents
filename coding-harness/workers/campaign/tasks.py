@@ -323,7 +323,6 @@ def campaign_publication_plan(task):
         outcome=i.get("outcome"), requested_draft=i.get("requestedDraft"),
         test_state=i.get("testState"), tests_passed=i.get("testsPassed"),
         tested=i.get("tested"), committed=i.get("committed"),
-        agent_authored_test=i.get("agentAuthoredTest"),
         requested_title=i.get("requestedTitle"), requested_body=i.get("requestedBody"),
         issue_title=i.get("issueTitle"), instruction=i.get("instruction"))
     return ok(task, out, [f"[campaign_publication_plan] draft={out['draft']} outcome={out['outcome']} "
@@ -434,8 +433,6 @@ def convergence_build_forks(task):
                 "modelPolicySha256": i.get("modelPolicySha256") or "",
                 "modelsConfig": i.get("modelsConfig") or "",
                 "modelOverrides": i.get("modelOverrides") or {},
-                "allowAgentTestPlan": _truth(i.get("allowAgentTestPlan"), True),
-                "allowAgentAuthoredTests": _truth(i.get("allowAgentAuthoredTests"), True),
             }
         return ok(task, {
             "dynamicTasks": dynamic_tasks, "dynamicTasksInput": dynamic_inputs,

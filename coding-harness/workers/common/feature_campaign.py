@@ -54,8 +54,7 @@ def _first_line(value: object, limit: int = 120) -> str:
 
 
 def resolve_campaign_pr_description(*, requested_title: object, requested_body: object,
-                                    issue_title: object, instruction: object,
-                                    authored_note: object = "") -> dict:
+                                    issue_title: object, instruction: object) -> dict:
     """Compose the PR title and body a campaign publishes.
 
     ``prTitle``/``prBody`` are optional inputs, and a campaign driven by an issue
@@ -70,36 +69,25 @@ def resolve_campaign_pr_description(*, requested_title: object, requested_body: 
     """
     title = _text(requested_title).strip() or _first_line(issue_title) or _first_line(instruction)
     body = _text(requested_body).strip() or _without_issue_preamble(instruction)
-    return {"prTitle": title, "prBody": f"{body}{_text(authored_note)}", "prSummary": body}
+    return {"prTitle": title, "prBody": body, "prSummary": body}
 
 
 def resolve_campaign_publication_plan(*, outcome: object, requested_draft: object,
                                       test_state: object, tests_passed: object,
                                       tested: object, committed: object,
-                                      agent_authored_test: object = False,
                                       requested_title: object = "",
                                       requested_body: object = "",
                                       issue_title: object = "",
                                       instruction: object = "") -> dict:
-    """Decide the publish head and draft state after the final test cycle.
-
-    ``agent_authored_test`` forces draft even when tests passed: a red/green
-    check proves the new test isn't vacuous, but a human should still see
-    that no pre-existing test covered this change before the PR is treated
-    as fully verified (defense in depth, not a substitute for the check).
-    """
+    """Decide the publish head and draft state after the final test cycle."""
     tested_text = _text(tested)
     head = tested_text if not _blank(tested_text) else committed
-    authored = agent_authored_test is True
-    note = ("\n\n> This PR includes a test file authored by a coding agent (no pre-existing "
-            "test covered these changes); it was verified with a red/green check before "
-            "being accepted." if authored else "")
     description = resolve_campaign_pr_description(
         requested_title=requested_title, requested_body=requested_body,
-        issue_title=issue_title, instruction=instruction, authored_note=note)
+        issue_title=issue_title, instruction=instruction)
     return {
         **description,
-        "draft": outcome != "verified" or requested_draft is True or tests_passed is not True or authored,
+        "draft": outcome != "verified" or requested_draft is True or tests_passed is not True,
         "outcome": outcome if isinstance(outcome, str) and outcome else "incomplete",
         "head": head,
         # A draft to approve exists only when something was committed and the campaign ran to its end:
@@ -107,6 +95,4 @@ def resolve_campaign_publication_plan(*, outcome: object, requested_draft: objec
         "publish": "yes" if not _blank(_text(head)) and outcome in ("verified", "incomplete") else "no",
         "testCycleState": test_state if isinstance(test_state, str) else "not_run",
         "testsPassed": tests_passed is True,
-        "agentAuthoredTest": authored,
-        "agentAuthoredTestNote": note,
     }

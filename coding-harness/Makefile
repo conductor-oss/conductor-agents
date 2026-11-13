@@ -68,6 +68,9 @@ tui: ## Launch the terminal UI (chat; ANTHROPIC_API_KEY needed for chat)
 console: tui-venv ## Launch the Conductor Software Factory web console (roadmap Phase 3, §4.8): board + exception queue over the blackboard. PORT=8750
 	@$(ROOT)/tui/.venv/bin/python -m tui.console $(if $(PORT),--port $(PORT),)
 
+auth: ## Show which credential each agent backend runs with (claude.ai / ChatGPT / Google login, or an API key)
+	@python3 scripts/backend_auth.py
+
 console-actor: tui-venv ## Register a person who may launch and steer runs in the console; prints their sign-in token once. EMAIL=you@example.com NAME="Your Name"
 	@test -n "$(EMAIL)" || (echo "usage: make console-actor EMAIL=you@example.com NAME=\"Your Name\"" && exit 2)
 	@$(ROOT)/tui/.venv/bin/python -m tui.console --add-actor "$(EMAIL)" --name "$(NAME)"

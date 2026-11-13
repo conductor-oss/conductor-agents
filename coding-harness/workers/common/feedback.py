@@ -38,11 +38,12 @@ def _mapping(v) -> dict:
     return {str(k): val for k, val in v.items()} if isinstance(v, dict) else {}
 
 
-def select(facts: list, item: str, *, since_ts: float, seen: set) -> dict:
+def select(facts: list, item: str, *, since_ts: float, seen: set, extra_targets=()) -> dict:
     """Pure: new directives for ``item`` written after ``since_ts`` and not yet delivered (``seen`` holds
     fact keys already injected). Returns ``{advisory, blocking, latest_ts}``, each entry
-    ``{key, text, authority, by, ts}``; human authority sorts first."""
-    targets = {str(item), "team", f"{TARGET_PREFIX_AGENT}{item}"}
+    ``{key, text, authority, by, ts}``; human authority sorts first, the Architect's decisions next.
+    ``run`` addresses every agent of the run; ``team:<name>`` one team (``extra_targets``)."""
+    targets = {str(item), "team", "run", f"{TARGET_PREFIX_AGENT}{item}", *[str(t) for t in extra_targets if t]}
     advisory, blocking = [], []
     latest = float(since_ts or 0)
     for fact in facts or []:
@@ -52,15 +53,18 @@ def select(facts: list, item: str, *, since_ts: float, seen: set) -> dict:
         key = f"{fact.get('author')}@{ts}"
         if ts <= float(since_ts or 0) or key in seen or str(d.get("target")) not in targets:
             continue
+        if str(d.get("by") or fact.get("author") or "") in {f"implementer:{item}", f"agent:{item}", str(item)}:
+            continue  # its own question or split-off, posted through the board, is not feedback to it
         if d.get("op") == "lift":
             continue
         from common import actors
+        by = str(d.get("by") or fact.get("author") or "")
         rec = {"key": key, "text": str(d.get("text") or ""),
-               "authority": actors.authority_of(str(d.get("by") or fact.get("author") or "")),
-               "by": str(d.get("by") or fact.get("author") or ""), "ts": ts}
+               "authority": "architect" if by == "architect" else actors.authority_of(by),
+               "by": by, "ts": ts}
         (blocking if str(d.get("urgency")) == "blocking" else advisory).append(rec)
         latest = max(latest, ts)
-    rank = {"human": 0, "monitor": 1, "agent": 2}
+    rank = {"human": 0, "architect": 1, "monitor": 2, "agent": 3}
     for lst in (advisory, blocking):
         lst.sort(key=lambda r: (rank.get(r["authority"], 3), r["ts"]))
     return {"advisory": advisory, "blocking": blocking, "latest_ts": latest}
@@ -79,9 +83,15 @@ class FeedbackWatcher:
     which checkpoints were taken. ``read`` is injectable (tests); it returns directive facts."""
 
     def __init__(self, correlation_id: str, item: str, *, since_ts: float | None = None,
-                 every: int = 1, checkpoint_every: int = 0, worktree: str = "", read=None):
+                 every: int = 1, checkpoint_every: int = 0, worktree: str = "", read=None,
+                 run_id: str = "", team: str = "", decider=None):
         self.cid = str(correlation_id or "")
         self.item = str(item or "")
+        # ONE board per run: the program's board when the team has a parent, else the team's own. Every
+        # lesson, question, decision and steer lives there, shared by every team and every agent.
+        self.run = str(run_id or "") or self.cid
+        self.team = str(team or "")
+        self.decider = decider
         self.since = float(since_ts) if since_ts else time.time()
         self.every = max(int(every or 0), 0)
         self.checkpoint_every = max(int(checkpoint_every or 0), 0)
@@ -102,7 +112,13 @@ class FeedbackWatcher:
         if self._read is not None:
             return self._read(self.cid)
         from common import blackboard as bb
-        return bb.read_facts(self.cid, kind="directive", since=self.since)
+        facts = list(bb.read_facts(self.cid, kind="directive", since=self.since))
+        if self.run and self.run != self.cid:
+            facts += bb.read_facts(self.run, kind="directive", since=self.since)
+        return facts
+
+    def _extra_targets(self) -> list[str]:
+        return [f"team:{self.team}"] if self.team else []
 
     # Live activity (state on demand): what this agent is doing right now, posted to the board at most
     # this often so a human, the UI, the API or another agent can ask for the current state at any time.
@@ -120,6 +136,49 @@ class FeedbackWatcher:
         except Exception:  # noqa: BLE001 - a missed heartbeat never costs the session
             pass
 
+    def _channel(self) -> list[str]:
+        """Both directions of the live team channel (common.team_channel): post what this session queued
+        with ``board ...``, refresh what ``board show`` prints, and collect teammates' new lessons."""
+        if not (self.cid and self.item and self.worktree):
+            return []
+        try:
+            from common import team_channel
+            posted = team_channel.drain(self.worktree, self.cid, author=f"implementer:{self.item}", item=self.item,
+                                        run_cid=self.run)
+            for req in posted:
+                if req.get("kind") == "decide" and self.decider is not None:
+                    # The Architect breaks the tie in its own session, off this thread; its decision lands
+                    # on the run board as a directive and reaches every party's running session.
+                    import threading
+                    threading.Thread(target=self.decider, args=(req,), name="architect-decide", daemon=True).start()
+            team_channel.snapshot(self.worktree, self.cid, run_cid=self.run)
+            return team_channel.peer_updates(self.run, self.item, since_ts=self.since, seen=self.seen)
+        except Exception:  # noqa: BLE001 - the channel never costs the session
+            return []
+
+    def poll_text(self) -> tuple[str, bool]:
+        """Hook-free poll for drivers without tool hooks (Codex steers a running turn): the text to hand
+        the session now and whether it is blocking. ("", False) when nothing is new."""
+        self.calls += 1
+        peers = self._channel()
+        picked = select(self._facts(), self.item, since_ts=self.since, seen=self.seen,
+                        extra_targets=self._extra_targets()) if (self.cid and self.item) \
+            else {"advisory": [], "blocking": []}
+        for r in picked["advisory"] + picked["blocking"]:
+            self.seen.add(r["key"])
+            self.injections.append({"call": self.calls, "key": r["key"], "text": r["text"], "authority": r["authority"],
+                                    "postedTs": r["ts"], "injectedTs": time.time(),
+                                    "urgency": "blocking" if r in picked["blocking"] else "advisory"})
+        if picked["blocking"]:
+            first = picked["blocking"][0]
+            self.interrupted_by = {"key": first["key"], "text": first["text"], "by": first["by"]}
+        parts = []
+        if picked["advisory"] or picked["blocking"]:
+            parts.append(render(picked["advisory"], picked["blocking"]))
+        if peers:
+            parts.append("TEAMMATES posted on the board while you were working:\n" + "\n".join(peers))
+        return "\n\n".join(parts), bool(picked["blocking"])
+
     def on_tool_call(self, tool: str = "") -> dict:
         """Called after each tool call (synchronously, off the event loop). Returns the hook output."""
         self.calls += 1
@@ -130,8 +189,12 @@ class FeedbackWatcher:
                 self.checkpoints.append({"call": self.calls, **snap})
         if not (self.cid and self.item and self.every) or self.calls % self.every:
             return {}
-        picked = select(self._facts(), self.item, since_ts=self.since, seen=self.seen)
+        peers = self._channel()
+        picked = select(self._facts(), self.item, since_ts=self.since, seen=self.seen, extra_targets=self._extra_targets())
         if not picked["advisory"] and not picked["blocking"]:
+            if peers:
+                return {"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                              "additionalContext": "TEAMMATES posted on the board while you were working:\n" + "\n".join(peers)}}
             return {}
         now = time.time()
         for r in picked["advisory"] + picked["blocking"]:
@@ -162,7 +225,7 @@ class FeedbackWatcher:
         ``MAX_STOP_BLOCKS`` times; blocking feedback lets it stop and marks the session interrupted."""
         if not (self.cid and self.item and self.every):
             return {}
-        picked = select(self._facts(), self.item, since_ts=self.since, seen=self.seen)
+        picked = select(self._facts(), self.item, since_ts=self.since, seen=self.seen, extra_targets=self._extra_targets())
         if not picked["advisory"] and not picked["blocking"]:
             return {}
         now = time.time()

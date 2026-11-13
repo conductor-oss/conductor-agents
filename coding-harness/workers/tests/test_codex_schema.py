@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from common import program, retrospective
+from common import architect, program, retrospective
 from common.codex import _UNSUPPORTED_KEYWORDS, _omit_strict_nulls, _restore_optional, _strictify_schema
 from team import tasks as team_tasks
 
@@ -129,7 +129,10 @@ def test_every_swarm_schema_is_closed_for_openai_strict_mode_at_every_depth():
     schemas = dict(s for path in sorted(WORKFLOWS.glob("*.json"))
                    for s in _workflow_schemas(json.loads(path.read_text()).get("tasks", []), path.name))
     schemas.update({"implementer": team_tasks.IMPLEMENTER_SCHEMA, "reviewer": team_tasks.REVIEWER_SCHEMA,
-                    "breakdown": program.BREAKDOWN_SCHEMA, "retrospective": retrospective.SCHEMA})
+                    "breakdown": program.BREAKDOWN_SCHEMA, "retrospective": retrospective.SCHEMA,
+                    "architect.draft": architect.DRAFT_SCHEMA, "architect.scout": architect.SCOUT_SCHEMA,
+                    "architect.review": architect.REVIEW_SCHEMA,
+                    "architect.evaluate": architect.EVALUATE_SCHEMA, "architect.opinion": architect.OPINION_SCHEMA})
     assert {"cc_program.json:program_plan", "sdlc_intake.json:classify", "implementer"} <= set(schemas)
     assert {name: _open_objects(_strictify_schema(s)) for name, s in schemas.items()
             if _open_objects(_strictify_schema(s))} == {}

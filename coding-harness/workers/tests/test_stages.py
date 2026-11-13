@@ -2,7 +2,7 @@
 
 Covers the pure decisions (``common/intake.py``, ``common/bug_fix.py``) and the thin workers:
 classification→route, the red/green repro gate, and the honest FIXED/NOT_FIXED/CANNOT_REPRODUCE
-verdict including the H13 oracle-tamper guard.
+verdict including the H13 check-tamper guard.
 """
 import os
 
@@ -68,7 +68,7 @@ def test_fix_outcome_verdicts():
     assert bug_fix.fix_outcome(reproduced=True, tests_passed=True)["verdict"] == "FIXED"
     assert bug_fix.fix_outcome(reproduced=True, tests_passed=False)["verdict"] == "NOT_FIXED"
     assert bug_fix.fix_outcome(reproduced=False, tests_passed=True)["verdict"] == "CANNOT_REPRODUCE"
-    # Oracle tampering (H13): green under a modified repro test is NOT a fix.
+    # Check tampering (H13): green under a modified repro test is NOT a fix.
     assert bug_fix.fix_outcome(reproduced=True, tests_passed=True, repro_test_tampered=True)["verdict"] == "NOT_FIXED"
 
 

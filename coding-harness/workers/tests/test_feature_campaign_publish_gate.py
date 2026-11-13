@@ -8,7 +8,7 @@ from common import feature_campaign as fc
 def test_publication_plan_says_whether_there_is_a_draft_to_approve():
     plan = lambda **kw: fc.resolve_campaign_publication_plan(**{  # noqa: E731
         "outcome": "verified", "requested_draft": False, "test_state": "tests_passed", "tests_passed": True,
-        "tested": "abc123", "committed": "abc123", "agent_authored_test": False, **kw})["publish"]
+        "tested": "abc123", "committed": "abc123", **kw})["publish"]
     assert plan() == "yes" and plan(outcome="incomplete") == "yes"
     assert plan(tested="", committed="") == "no"          # nothing was committed
     assert plan(outcome="design_rejected") == "no"       # stopped before the end

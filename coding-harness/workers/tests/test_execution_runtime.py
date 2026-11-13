@@ -117,6 +117,14 @@ def test_every_production_subprocess_uses_a_shared_runtime_environment():
         root / "common" / "check_execution.py",
         root / "common" / "codex.py",
         root / "common" / "gemini.py",
+        # The zero-stall handover starts the next worker generation (run_workers.sh) detached from
+        # this one; it must outlive this process, so it is a Popen with the inherited runtime
+        # environment, not a tracked repository command.
+        root / "common" / "source_watch.py",
+        # The host's one browser server (Playwright run-server) is shared by every session and check
+        # and outlives the worker call that first needed it, so it is a detached Popen with the
+        # inherited runtime environment; its installs go through exec.run.
+        root / "common" / "browser_service.py",
     }
     direct_launchers = []
     for source in root.rglob("*.py"):
@@ -130,6 +138,8 @@ def test_every_production_subprocess_uses_a_shared_runtime_environment():
     assert set(direct_launchers) == allowed
     for source in (root / "common" / "codex.py", root / "common" / "gemini.py"):
         assert "env=check_execution.inherited_environment(" in source.read_text(encoding="utf-8")
+    for source in (root / "common" / "source_watch.py", root / "common" / "browser_service.py"):
+        assert "check_execution.inherited_environment()" in source.read_text(encoding="utf-8")
 
 
 def test_runtime_health_contract_covers_required_language_families():
@@ -182,6 +192,8 @@ def test_shared_executor_retries_transient_process_spawn_pressure(tmp_path: Path
 
     def pressured(*args, **kwargs):
         nonlocal attempts
+        if args[0][0] != "sh":  # the leftover scan after the command (check_execution.reap_marked)
+            return original(*args, **kwargs)
         attempts += 1
         if attempts < 3:
             raise OSError(errno.EAGAIN, "resource temporarily unavailable")
@@ -264,7 +276,7 @@ def test_runtime_requirements_read_repository_metadata(tmp_path: Path):
     (tmp_path / "rust-toolchain.toml").write_text("[toolchain]\nchannel = '1.82.0'\n")
 
     assert verification.runtime_requirements(tmp_path) == {
-        "java": "21", "node": "20", "python": "3.12", "go": "1.23", "rust": "1.82.0",
+        "java": "21", "node": "20", "python": "3.12", "go": ">=1.23", "rust": "1.82.0",
     }
 
 
@@ -306,6 +318,10 @@ def test_sdk_batch_poll_uses_the_configured_long_poll_timeout(monkeypatch: pytes
     monkeypatch.setenv("CONDUCTOR_POLL_TIMEOUT_MS", "5000")
     monkeypatch.setattr(TaskResourceApi, "batch_poll", original)
     monkeypatch.setattr(TaskResourceApi, "_conductor_harness_poll_patch", False, raising=False)
+    # The live fleet on this host may be draining for a reload (a marker in the workers directory)
+    # while the suite runs; this test is about the poll's timeouts, not the drain.
+    from common import polling as _polling
+    monkeypatch.setattr(_polling, "_draining", lambda: False)
     configure_sdk_polling()
 
     TaskResourceApi.batch_poll(object(), "coding_agent", count=8, timeout=100)
@@ -412,3 +428,24 @@ def test_forked_poller_child_does_not_keep_the_supervisor_lock(tmp_path: Path, m
     assert parent.recv() == "acquired"
     process.join()
     assert process.exitcode == 0
+
+
+def test_execute_stops_what_a_command_leaves_running(tmp_path):
+    """A check that starts a server and never stops it leaves nothing behind: the next check must test
+    the head under test, not a listener from the day before (run 5456297e)."""
+    import os, signal, subprocess, time
+    from common import check_execution
+    marker = tmp_path / "pid"
+    res = check_execution.execute(["sh", "-c", f"sleep 300 & echo $! > {marker}; echo started"], cwd=str(tmp_path),
+                                  env=check_execution.inherited_environment())
+    assert res.exit_code == 0 and "started" in res.stdout
+    pid = int(marker.read_text().strip())
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(pid, signal.SIGKILL)
+        raise AssertionError("the background sleep the command left behind is still running")

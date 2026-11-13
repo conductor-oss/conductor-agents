@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from conductor.client.worker.worker_task import worker_task
 
-from common import code_parallel, verification
+from common import code_parallel
 from common.results import ok
 
 
@@ -26,7 +26,6 @@ def code_parallel_build_forks(task):
         model_profile=i.get("modelProfile"), model_policy=i.get("modelPolicy"),
         model_policy_source=i.get("modelPolicySource"), model_policy_sha256=i.get("modelPolicySha256"),
         models_config=i.get("modelsConfig"), model_overrides=i.get("modelOverrides"),
-        skip_agent_test_fallback=verification.repository_suite_available(str(i.get("repoPath") or "")),
         single_subtask=i.get("singleSubtask") is True)
     return ok(task, out, [f"[code_parallel_build_forks] {len(out['dynamicTasks'])} subtask(s)"])
 

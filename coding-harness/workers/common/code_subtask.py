@@ -46,9 +46,14 @@ def resolve_delivery_outcome(*, planned_paths: object, commit: object, audit: ob
     # A claim that the shared branch already satisfies the item is not a delivery either: the peer
     # reviewer decides it at integration (run 90e5e3aa).
     satisfied = str(audit.get("state") or "") == "satisfied"
-    passed = not missing and not rejected and not pushback and not satisfied
+    # Planned files on disk that git does not report: the harness's view of the tree is wrong, which no
+    # agent can repair (run a87e9ddb). The team blocks the item with an escalation instead of retrying.
+    staging_fault = [p for p in _listed(audit.get("stagingFault")) if isinstance(p, str) and p]
+    passed = not missing and not rejected and not pushback and not satisfied and not staging_fault
 
-    if pushback:
+    if staging_fault:
+        state = "staging_fault"
+    elif pushback:
         state = "pushback"
     elif satisfied:
         state = "satisfied"
@@ -71,6 +76,7 @@ def resolve_delivery_outcome(*, planned_paths: object, commit: object, audit: ob
         "state": state, "passed": passed, "plannedPaths": planned, "optionalPaths": sorted(optional),
         "presentPaths": sorted(present), "stagedPaths": staged, "missingPaths": missing,
         "rejectedPaths": rejected,
+        "stagingFault": staging_fault,
         "actualPaths": _listed(audit.get("actualPaths")),
         "commandFailures": _listed(audit.get("commandFailures")),
         "sandboxDenials": _listed(audit.get("sandboxDenials")),

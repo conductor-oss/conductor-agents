@@ -73,7 +73,7 @@ def test_delivery_repair_keeps_its_repair_instructions():
     """Sharing the subtask's key and context, the repair agent got the original description back."""
     repair = next(s for w, s in STEPS if s["taskReferenceName"] == "delivery_repair")["inputParameters"]
     assert repair["templateKey"] == "delivery_repair" and repair["promptTemplate"] == ""
-    assert "INCOMPLETE" in t.bundled_default("delivery_repair")
+    assert "NOT ACCEPTED" in t.bundled_default("delivery_repair")
 
 
 def test_a_composed_prompt_renders_completely_from_its_default():

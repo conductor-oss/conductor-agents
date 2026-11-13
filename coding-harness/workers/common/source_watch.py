@@ -141,13 +141,128 @@ def generation_busy(leader: int) -> bool:
     an agent CLI session, a build, a test run.
     """
     children = _children_map()
-    return any(children.get(poller) for poller, _ in children.get(leader, []))
+    # The successor supervisor (``start_successor``) is a child of the leader too, and its own
+    # generation runs below it; counting it kept every predecessor "draining" for as long as its
+    # successor lived (three generations stacked up in one hour, 2026-11-10).
+    return any(children.get(poller) for poller, command in children.get(leader, [])
+               if _SUPERVISOR_SCRIPT not in command)
+
+
+# While a reload is pending the generation's pollers claim no new task (``common.polling`` honours
+# the marker), so in-flight work drains while a NEW generation, started at once beside it, takes
+# every new task: no stall. The marker names the draining generation's leader, so the successor's
+# pollers ignore it. Before the handover, every edit paused the whole fleet for up to one agent
+# session (the drain), and before the drain a busy fleet never reloaded at all (2026-11-10).
+DRAIN_MARKER = ".reload-pending"
+_SUPERVISOR_SCRIPT = "run_workers.sh"
+# A long poll already in flight when the marker is written can still return a task, and a step that
+# runs inside the poller has no child process to show for it until it starts: a generation that
+# reloaded 75 ms after writing its marker took a just-claimed `model_profile_resolve` with it and the
+# program's final test cycle waited 13 minutes on the task (run 884f7eec). The marker must be older
+# than one long poll before the generation may end.
+DRAIN_GRACE_SECONDS = 15.0
+LEADER_ENV = "WORKER_LEADER_PID"        # set by main.py before the pollers fork; inherited by them
+HANDOVER_ENV = "WORKER_HANDOVER_FROM"   # the successor learns which leader it replaces
+
+
+def _leader(leader: int | None = None) -> int:
+    return leader if leader is not None else int(os.environ.get(LEADER_ENV) or os.getpid())
+
+
+def drain_marker(root: Path | None = None, leader: int | None = None) -> Path:
+    """One marker per draining generation, named after its leader: generations drain side by side
+    (every edit starts one more), and a shared marker, overwritten by the newest, let the older
+    generations resume claiming work under the code they were meant to stop serving."""
+    return (root or WORKER_ROOT) / f"{DRAIN_MARKER}-{_leader(leader)}"
+
+
+def _markers(root: Path | None = None) -> list[tuple[int, Path]]:
+    out = []
+    for path in (root or WORKER_ROOT).glob(f"{DRAIN_MARKER}-*"):
+        try:
+            out.append((int(path.name.rsplit("-", 1)[1]), path))
+        except ValueError:
+            continue
+    return out
+
+
+def _pid_alive(pid: int | None) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def draining(root: Path | None = None, *, leader: int | None = None) -> bool:
+    """True for the pollers of a generation whose leader wrote a marker (this one, by default):
+    they claim no new work."""
+    return drain_marker(root, leader).exists()
+
+
+def drain_age(root: Path | None = None, *, leader: int | None = None) -> float:
+    """Seconds since this generation's marker was written; 0 without one."""
+    try:
+        return max(0.0, time.time() - float(drain_marker(root, leader).read_text(encoding="utf-8").split()[1]))
+    except (OSError, ValueError, IndexError):
+        return 0.0
+
+
+def begin_drain(root: Path | None = None, *, leader: int | None = None) -> None:
+    try:
+        drain_marker(root, leader).write_text(f"{_leader(leader)} {time.time()}", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def end_drain(root: Path | None = None, *, leader: int | None = None) -> None:
+    """Drop this generation's marker, and every marker of a generation that is gone; a successor
+    never removes the marker its predecessor is still draining under."""
+    mine = _leader(leader)
+    for pid, path in _markers(root):
+        if pid == mine or not _pid_alive(pid):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def start_successor(*, leader: int, env: dict | None = None, spawner=None) -> bool:
+    """Start the next generation beside this one: a new supervisor running the current source, told
+    which leader it replaces (``WORKER_HANDOVER_FROM``, so it waits for that leader to exit before
+    reclaiming tasks). Returns whether it started."""
+    import subprocess
+    from . import check_execution
+    # The successor is the same supervisor this generation was started as, so it inherits the full
+    # worker runtime environment (the repository command runtime policy), told only whom it replaces.
+    base = dict(env) if env is not None else check_execution.inherited_environment()
+    base[HANDOVER_ENV] = str(leader)
+    base.pop(LEADER_ENV, None)
+    script = WORKER_ROOT / "run_workers.sh"
+    try:
+        if spawner is not None:
+            spawner([str(script)], base)
+        else:
+            subprocess.Popen([str(script)], cwd=str(WORKER_ROOT), env=base, start_new_session=True,
+                             stdin=subprocess.DEVNULL)
+        return True
+    except OSError as exc:
+        log.error("could not start the successor generation: %s", exc)
+        return False
 
 
 def watch(*, interval: float | None = None, reload_on_change: bool | None = None,
-          on_reload=None) -> threading.Thread:
-    """Start the drift watcher. Returns the (already started) daemon thread."""
-    baseline = source_fingerprint()
+          on_reload=None, root: Path | None = None, on_handover=None) -> threading.Thread:
+    """Start the drift watcher. Returns the (already started) daemon thread. ``root`` is the source
+    tree watched and where the drain marker lives (the workers directory; a test passes its own).
+    ``on_handover`` starts the successor generation once this one has stopped claiming work and
+    released its locks (``start_successor`` in production); ``on_reload`` ends this generation once
+    its in-flight work has drained."""
+    baseline = source_fingerprint(root)
     period = interval if interval is not None else float(
         os.environ.get("WORKER_SOURCE_CHECK_SECONDS") or DEFAULT_INTERVAL_SECONDS)
     reload_enabled = (reload_on_change if reload_on_change is not None
@@ -156,11 +271,14 @@ def watch(*, interval: float | None = None, reload_on_change: bool | None = None
 
     def _run() -> None:
         warned = False
+        handed_over = False
         while True:
             time.sleep(period)
-            drifted = changed_since(baseline)
+            drifted = changed_since(baseline, root)
             if not drifted:
                 warned = False
+                if draining(root, leader=leader) and not handed_over:
+                    end_drain(root, leader=leader)  # a marker with no drift behind it is stale: poll again
                 continue
             if not warned:
                 log.warning(
@@ -170,9 +288,23 @@ def watch(*, interval: float | None = None, reload_on_change: bool | None = None
                 warned = True
             if not reload_enabled:
                 continue
+            if not draining(root, leader=leader):
+                begin_drain(root, leader=leader)
+                log.warning("reload pending: this generation claims no new task; its in-flight work drains")
+            if not handed_over and on_handover is not None:
+                # Hand the deployment over now: the successor takes every new task while this
+                # generation finishes what it holds. Nothing waits for an idle moment.
+                try:
+                    handed_over = bool(on_handover())
+                except Exception:  # noqa: BLE001
+                    log.exception("handover to a successor generation failed; draining to a reload instead")
+                if handed_over:
+                    log.warning("successor generation started; this one exits when its work is done")
             if generation_busy(leader):
-                log.warning("deferring reload: child work still running in this generation")
+                log.warning("deferring reload: child work still running in this generation (draining)")
                 continue
+            if drain_age(root, leader=leader) < DRAIN_GRACE_SECONDS:
+                continue  # a poll in flight when the marker was written may still hand this generation a task
             log.warning("reloading worker generation to pick up changed source")
             if on_reload is not None:
                 on_reload()

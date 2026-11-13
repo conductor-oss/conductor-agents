@@ -186,9 +186,24 @@ def _norm(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", str(text).lower()))
 
 
+_GIVING_UP = re.compile(r"(cannot (?:run|launch|be installed|be run)|not installed|unavailable|is not available|"
+                        r"do not assume|treat .* as unrunnable|is blocked|denies|not writable|unrunnable)", re.I)
+_WAY_THROUGH = re.compile(r"(\binstead\b|\buse\b|\bvia\b|\bworks\b|\bworked\b|workaround|install(?:ed|ing)? .* under|"
+                          r"\brun it\b|\bso run\b|repo-local|\.cc-cache|on the host)", re.I)
+
+
+def defeatist(text: str) -> bool:
+    """A learning that records a limit without the way past it: "Chromium is not installed, treat browser
+    checks as unrunnable" reached every later planner and told it to stop at the wall the team was
+    there to get over (runs 806e18ba to 7601683b). Such a text is not recorded."""
+    t = str(text or "")
+    return bool(_GIVING_UP.search(t)) and not _WAY_THROUGH.search(t)
+
+
 def record(learnings: list, *, repo: str, languages: list[str], host_name: str, run: str,
            backend=None) -> list[dict]:
-    """Append each learning to the shared store under its scope key; skip exact repeats."""
+    """Append each learning to the shared store under its scope key; skip exact repeats and any
+    learning that is a reason to stop rather than a way to make something work (``defeatist``)."""
     from common import blackboard as bb
     existing = {(_mapping(f.get("data")).get("scope"), _mapping(f.get("data")).get("key"),
                  _norm(_mapping(f.get("data")).get("text")))
@@ -196,6 +211,8 @@ def record(learnings: list, *, repo: str, languages: list[str], host_name: str, 
     written = []
     for x in substantive(learnings):
         scope, text = str(x.get("scope") or "").strip(), str(x.get("text") or "").strip()
+        if defeatist(text):
+            continue
         lang = str(x.get("language") or "").strip().lower() or (languages[0] if languages else "")
         key = {"repo": repo, "environment": host_name, "language": lang, "process": "*"}[scope]
         if scope == "language" and not key:

@@ -31,12 +31,13 @@ issue  ──issue_to_pr──▶  PR  ──pr_review──▶  review comments
   changed files to exact tests or affected build units and verifies only that scope in a disposable clone; it is
   intentionally not loaded by ordinary coding workers. Start it with
   `WORKER_MODULES=verification workers/.venv/bin/python workers/main.py`.
-  It returns a typed execution outcome: `passed`, `code_failed`, `infra_blocked`,
-  `configuration_blocked`, `timed_out`, or `cancelled`. Only `code_failed` may enter
-  automated remediation.
-  Built-in adapters cover Gradle, Maven, npm/pnpm/Yarn workspaces (JavaScript and TypeScript),
-  pytest, Go, Cargo, CMake/CTest, and SwiftPM. Unknown build graphs must provide
-  `.conductor-code/verification.json`; the worker blocks instead of falling back to a root test suite.
+  It returns a typed execution outcome: `passed`, `no_tests_required`, `no_tests_found`, `code_failed`,
+  `invalid_input`, `infra_blocked`, or `cancelled`. Only `code_failed` may enter automated remediation.
+  Discovery never blocks: it runs the exact tests the changed files map to, else the affected package's
+  own test command, else the repository suite; a repository with no test command at all ends
+  `no_tests_found`, named and passed. Built-in adapters cover Gradle, Maven, npm/pnpm/Yarn workspaces
+  (JavaScript and TypeScript), pytest, Go, Cargo, CMake/CTest, and SwiftPM; `.conductor-code/verification.json`
+  can declare exact changed-scope rules for any other build graph.
 - **`feature_campaign`** is the interactive path for complex work: design and DAG review,
   resumable dependency waves, profile-driven checks, and final verification on a local branch.
 - **`openspec_development`** validates an apply-ready OpenSpec change, selects the appropriate
@@ -97,9 +98,12 @@ and watch agents work live — see [`../tui/README.md`](../tui/README.md).
 - **At least one agent backend**, authenticated in the worker's environment:
   | Backend | `agent` value | Auth |
   |---|---|---|
-  | Claude Agent SDK (default) | `claude` | `claude login` or `ANTHROPIC_API_KEY` |
-  | OpenAI Codex | `codex` | bundled `openai-codex` SDK — reuses `~/.codex/auth.json` / `OPENAI_API_KEY` (`CODEX_DRIVER=cli` uses the `codex` CLI) |
-  | Google Gemini | `gemini` | `npm i -g @google/gemini-cli`, `GEMINI_API_KEY` (or `~/.gemini/.env`) |
+  | Claude Agent SDK (default) | `claude` | `claude login` (claude.ai account) or `ANTHROPIC_API_KEY`; `CLAUDE_AUTH` = auto \| login \| key |
+  | OpenAI Codex | `codex` | bundled `openai-codex` SDK — `codex login` (ChatGPT account, `~/.codex/auth.json`) or `OPENAI_API_KEY`; `CODEX_AUTH` (`CODEX_DRIVER=cli` uses the `codex` CLI) |
+  | Google Gemini | `gemini` | `npm i -g @google/gemini-cli`, then `gemini` → "Login with Google", or `GEMINI_API_KEY` (or `~/.gemini/.env`); `GEMINI_AUTH` |
+
+  `make auth` shows which credential each backend will use (a login is preferred over a key; in
+  login mode the key variable is withheld from that backend). The workers log the same at startup.
 - **For the GitHub workflows** (`issue_to_pr`, `pr_review`, `address_pr`, `github_demo`): the
   [`gh` CLI](https://cli.github.com) installed and authenticated (`gh auth login`, or
   `GH_TOKEN` in the worker's env). The first remote task runs `gh auth setup-git` so plain

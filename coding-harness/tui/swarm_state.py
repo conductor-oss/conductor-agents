@@ -62,6 +62,15 @@ def _phase(wf: dict, view: dict) -> str:
                if t.get("status") in ("IN_PROGRESS", "SCHEDULED")]
     if any(r.startswith("retrospective") for r in running):
         return "retrospective (recording learnings)"
+    building = any(r.startswith(("team_", "rank_fan_out", "rank_join")) for r in running)
+    if any(r.startswith(("scout_", "scouts", "contract_")) for r in running):
+        return ("building rank one while defining done (scouts, review)" if building
+                else "defining done (scouting and red-proving the checks)")
+    if any(r.startswith(("final_contract_run", "architect_", "repair_", "second_opinion", "opinion_fold", "amendment_"))
+           for r in running):
+        return "converging (the Architect's ladder)"
+    if any(r.startswith("rank_contract_run") or r.startswith("rank_architect") for r in running):
+        return "architect evaluating the integrated rank"
     if any(r.startswith(("tests", "final_tests")) for r in running):
         return "final verification (full test suite)"
     if any(r.startswith(("plan", "program_plan", "classify")) for r in running) and not view["items"]:
@@ -93,10 +102,20 @@ def _recent(runs: list[str], limit: int = 12) -> list[dict]:
     trace = _trace()
     events = []
     for run in runs:
-        for kind in ("state", "directive", "exception", "delivery", "review", "contract_event"):
+        for kind in ("state", "directive", "exception", "delivery", "review", "contract_event",
+                     "lesson", "decision", "decision_request"):
             for f in bb.read_facts(run, kind=kind)[-limit:]:
-                events.append({"ts": f.get("ts"), "run": run, "kind": kind, "by": f.get("author"),
-                               "summary": trace._summary(kind, f.get("data") or {})})
+                d = f.get("data") or {}
+                if kind == "lesson":
+                    summary = f"lesson: {d.get('text') or ''}"
+                elif kind == "decision":
+                    summary = f"ARCHITECT DECISION: {d.get('decision') or ''}"
+                elif kind == "decision_request":
+                    summary = f"asked the Architect to decide: {d.get('question') or ''}"
+                else:
+                    summary = trace._summary(kind, d)
+                events.append({"ts": f.get("ts"), "run": run, "kind": kind, "by": d.get("by") or f.get("author"),
+                               "summary": summary})
     events.sort(key=lambda e: e["ts"] or 0)
     return events[-limit:]
 
@@ -115,9 +134,11 @@ def _retrospective(run: str) -> dict | None:
 
 
 def snapshot(run: str, *, blackboard_dir: str | None = None, server_url: str | None = None,
-             opener=None, wf: dict | None = None, view: dict | None = None) -> dict:
+             opener=None, wf: dict | None = None, view: dict | None = None, live: dict | None = None) -> dict:
     """The run's current state, structured for UIs, APIs and other agents. ``wf``/``view`` let a caller
-    that already fetched the execution and folded the board (the console's run view) pass them in."""
+    that already fetched the execution and folded the board (the console's run view) pass them in;
+    ``live`` (``live.collect``) adds the sessions the orchestrator says are running, so an agent that
+    posts no per-tool activity (a Codex session) still shows as working, with what it is doing."""
     console = _console()
     view = view if view is not None else console.board_json(run, blackboard_dir=blackboard_dir)
     wf = wf if wf is not None else _workflow(run, server_url, opener)
@@ -125,12 +146,28 @@ def snapshot(run: str, *, blackboard_dir: str | None = None, server_url: str | N
     ceiling = (wf.get("input") or {}).get("ceilingUsd")
     spend = float(view["spend"].get("usd", 0) or 0)
     active = _activity(runs)
+    seen = {(a["run"], str(a["item"])) for a in active}
+    for s in (live or {}).get("running") or []:
+        if (s["run"], str(s["item"])) in seen:
+            continue
+        last = s["lastCommands"][-1] if s["lastCommands"] else ""
+        active.append({"run": s["run"], "item": s["item"] or s["role"], "role": s["role"],
+                       "tool": (last[:120] or (s["lastText"][:120] if s["lastText"] else "") or "working"),
+                       "toolCalls": s["commands"], "seconds": s["seconds"], "tokens": s["tokens"], "costUsd": s["costUsd"],
+                       "lastText": s["lastText"], "ts": s["updatedAt"] or s["startedAt"] or time.time(),
+                       "secondsAgo": round(time.time() - float(s["updatedAt"] or s["startedAt"] or time.time()))})
     teams = [{"subsystem": c.get("subsystem"), "run": c.get("run"), "verdict": c.get("verdict") or "running",
               "done": c["rollup"].get("done", 0), "total": c["rollup"].get("total", 0),
               "escalations": c.get("openExceptions", 0)} for c in view.get("children") or []]
+    phase = _phase(wf, view)
+    if live and str(wf.get("status") or "") == "RUNNING":
+        import live as live_mod
+        doing = live_mod.phrase(live)
+        if doing:
+            phase = f"{phase} — {doing}"
     snap = {
         "run": run, "workflow": wf.get("workflowName") or "", "status": wf.get("status") or "unknown",
-        "phase": _phase(wf, view), "progress": {"done": view["rollup"].get("done", 0),
+        "phase": phase, "progress": {"done": view["rollup"].get("done", 0),
                                                "total": view["rollup"].get("total", 0)},
         "items": [{"id": it.get("id"), "state": it.get("state"), "deliverable": it.get("deliverable") or "code",
                    "reason": it.get("reason") or ""} for it in view["items"]],

@@ -24,7 +24,7 @@
         "maxAttempts": {"type": ["integer", "string"], "description": "Retry cap for transient (empty/conflict) deliveries."},
         "enablePeerReview": {"type": ["boolean", "string"], "description": "When true, integrated items go to 'review'; when false, straight to 'done'."},
         "joined": {"type": ["object", "string"], "description": "The FORK_JOIN_DYNAMIC join output, used to record per-agent spend."},
-        "sandboxChecks": {"type": ["boolean", "string"], "description": "Run the integration oracle (every integrated item's frozen acceptance tests at the integrated head) OS-sandboxed, as the test cycles do."}
+        "sandboxChecks": {"type": ["boolean", "string"], "description": "Run the integration check (every integrated item's frozen acceptance tests at the integrated head) OS-sandboxed, as the test cycles do."}
       },
       "required": ["sharedRepo", "sharedBranch"]
     }
@@ -47,7 +47,7 @@
         "spendRecorded": {"type": "integer"},
         "big_bang_merge": {"type": "boolean", "description": "Always false — the H1 invariant."},
         "final_head": {"type": "string", "description": "Shared branch head after this wave."},
-        "oracle": {"type": "object", "description": "The integration oracle: {state: passed|failed|blocked|skipped, checked: [item ids whose frozen tests ran at final_head], red: {item: failing output tail}, reason}. A red item is re-opened (integration_oracle_red) with the failure as its directive."}
+        "check": {"type": "object", "description": "The integration check: {state: passed|failed|blocked|skipped, checked: [item ids whose frozen tests ran at final_head], red: {item: failing output tail}, reason}. A red item is re-opened (integration_check_red) with the failure as its directive."}
       },
       "required": ["reviewing", "retry", "blocked", "final_head", "big_bang_merge"]
     }

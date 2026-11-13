@@ -5,15 +5,20 @@ a child process. A deterministic step runs inside the poller, so a restart can e
 server then holds the task IN_PROGRESS with no worker until its response lease expires. A one-second
 ``test_plan_resolve`` claimed just before a reload stalled a whole program that way (run 373cac75).
 
-Each new generation therefore requeues what its predecessor left, which also covers a crash. Every
-generation polls under its own identity, ``<host>/<start ms>``, so a task is left behind when its
-worker is an earlier generation of this host, for a task type this generation polls: pollers are
-singletons per deployment (``worker_lock``), so no live process can still hold it. A task claimed under
-the bare host name (a worker older than this rule) is judged by its start time instead. The requeue
-reports IN_PROGRESS with no callback delay, so it uses none of the task's retries.
+Each generation therefore requeues what an earlier one left, which also covers a crash. Every
+generation polls under its own identity, ``<host>/<start ms>/<leader pid>``, so a task is left behind
+when its worker is another generation of this host whose leader process is gone, for a task type this
+generation polls. A generation that is still draining beside this one keeps its tasks: they finish
+there (requeued, they would run twice). The sweep repeats every ``SWEEP_SECONDS`` for the life of the
+generation, not once at its start: a predecessor can claim a task after its successor started (a poll
+already in flight when it began draining) and end before finishing it — the program's final test cycle
+waited 13 minutes on a `model_profile_resolve` claimed 75 ms before its generation reloaded (run
+884f7eec). A task claimed under an identity without a pid (a worker older than this rule) is judged
+by its start time instead. The requeue reports IN_PROGRESS with no callback delay, so it uses none of
+the task's retries.
 
 The sweep reads every running workflow with its tasks: Conductor's task search cannot filter on the
-worker, and a sweep happens once per generation.
+worker.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import urllib.parse
 import urllib.request
 from typing import Iterable
@@ -33,18 +39,38 @@ log = logging.getLogger("coding-harness.workers.orphans")
 _PAGE = 100
 
 
-def generation_identity(host: str, started_ms: int) -> str:
-    return f"{host}/{int(started_ms)}"
+SWEEP_SECONDS = 30.0
 
 
-def orphaned(workflow: dict, task_names: Iterable[str], *, identity: str, before_ms: int) -> list[dict]:
-    """The tasks of one workflow this generation should requeue (pure)."""
+def generation_identity(host: str, started_ms: int, pid: int | None = None) -> str:
+    return f"{host}/{int(started_ms)}" + (f"/{int(pid)}" if pid else "")
+
+
+def _pid_alive(pid: int) -> bool:
+    import os
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def orphaned(workflow: dict, task_names: Iterable[str], *, identity: str, before_ms: int,
+             alive=_pid_alive) -> list[dict]:
+    """The tasks of one workflow this generation should requeue (pure, given ``alive``)."""
     names, host = set(task_names), identity.split("/", 1)[0]
 
     def left_behind(task: dict) -> bool:
         worker = str(task.get("workerId") or "")
+        if worker == identity:
+            return False
         if worker.startswith(host + "/"):
-            return worker != identity
+            parts = worker.split("/")
+            if len(parts) >= 3 and parts[2].isdigit():
+                return not alive(int(parts[2]))  # another generation of this host: gone, or still draining
+            return 0 < int(task.get("startTime") or 0) < before_ms
         return worker == host and 0 < int(task.get("startTime") or 0) < before_ms
 
     return [t for t in workflow.get("tasks") or []
@@ -104,12 +130,20 @@ def reclaim(task_names: Iterable[str], *, identity: str, before_ms: int) -> list
     return reclaimed
 
 
-def reclaim_in_background(task_names: Iterable[str], *, identity: str, before_ms: int) -> threading.Thread:
+def reclaim_in_background(task_names: Iterable[str], *, identity: str, before_ms: int,
+                          every_s: float | None = None, stop: threading.Event | None = None) -> threading.Thread:
+    """Sweep now and every ``every_s`` seconds for as long as this generation lives (or until ``stop``)."""
+    period = SWEEP_SECONDS if every_s is None else every_s
+    halt = stop or threading.Event()
+
     def _run() -> None:
-        try:
-            reclaim(task_names, identity=identity, before_ms=before_ms)
-        except Exception:  # noqa: BLE001 - a failed sweep must never take the generation down
-            log.exception("could not check for tasks left behind")
+        while True:
+            try:
+                reclaim(task_names, identity=identity, before_ms=before_ms)
+            except Exception:  # noqa: BLE001 - a failed sweep must never take the generation down
+                log.exception("could not check for tasks left behind")
+            if period <= 0 or halt.wait(period):
+                return
 
     thread = threading.Thread(target=_run, name="orphan-reclaim", daemon=True)
     thread.start()

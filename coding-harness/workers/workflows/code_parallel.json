@@ -527,6 +527,7 @@
       "name": "fan_join",
       "taskReferenceName": "fan_join",
       "type": "JOIN",
+      "joinMode": "SYNC",
       "optional": true,
       "decisionCases": {},
       "defaultCase": []
@@ -604,8 +605,6 @@
         "repoPath": "${workspace.output.worktreePath}",
         "candidateCommit": "${workflow.variables.candidateCommit}",
         "testMode": "${post_merge_mode.output.testMode}",
-        "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
-        "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
         "maxFixAttempts": "${workflow.input.maxFixAttempts}",
         "allowedWriteRoots": "${build_forks.output.allowedWriteRoots}",
         "maxTurns": "${workflow.input.maxTurns}",
@@ -732,8 +731,6 @@
     "workspacePath",
     "contextPaths",
     "maxFixAttempts",
-    "allowAgentTestPlan",
-    "allowAgentAuthoredTests",
     "singleSubtask"
   ],
   "outputParameters": {
@@ -851,8 +848,6 @@
     "usePrecomputedPlan": false,
     "workspacePath": "",
     "maxFixAttempts": 4,
-    "allowAgentTestPlan": true,
-    "allowAgentAuthoredTests": true,
     "singleSubtask": false
   },
   "overwriteTags": false,
@@ -1072,16 +1067,6 @@
           "type": "integer",
           "default": 4,
           "description": "Upper bound on structured fix/commit/re-test passes performed by the post-merge test_cycle sub-workflow."
-        },
-        "allowAgentTestPlan": {
-          "type": "boolean",
-          "default": true,
-          "description": "Forwarded to the post-merge test_cycle sub-workflow: when true and deterministic discovery is configuration_blocked, lets a coding agent search for and propose an existing test command as a last resort."
-        },
-        "allowAgentAuthoredTests": {
-          "type": "boolean",
-          "default": true,
-          "description": "Forwarded to the post-merge test_cycle sub-workflow: when true and allowAgentTestPlan's search also finds nothing, lets a coding agent author exactly one new test file, accepted only after a red/green check (fails against the pre-candidate baseline, passes against the real candidate change)."
         },
         "singleSubtask": {
           "type": "boolean",
@@ -1465,7 +1450,8 @@
             "no_tests_required",
             "tests_failed_fix_unavailable",
             "tests_failed_after_fix_budget",
-            "command_discovery_blocked",
+            "no_tests_found",
+            "verification_input_invalid",
             "candidate_commit_missing",
             "runtime_unavailable",
             "verifier_worker_unavailable"

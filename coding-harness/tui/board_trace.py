@@ -42,7 +42,8 @@ def _summary(kind: str, d: dict) -> str:
     if kind == "dispatch":
         return (f"dispatched {d.get('candidate')} attempt {d.get('attempt')} on {str(d.get('waveBase'))[:12]} "
                 f"(contract rev {d.get('contractRevision')}, prompt {str(d.get('promptSha256'))[:12]}, "
-                f"{len(d.get('lessons') or [])} lessons, {len(d.get('directives') or [])} directives)")
+                f"{len(d.get('lessons') or [])} lessons, {len(d.get('directives') or [])} directives)"
+                + (f"; rung {d.get('rung')}: {d.get('rungReason')}" if d.get("rung") is not None else ""))
     if kind == "session":
         inj = d.get("feedbackInjections") or []
         return (f"session {d.get('candidate')}: delivered={d.get('delivered')} tests={d.get('testsPassed')} "
@@ -57,6 +58,8 @@ def _summary(kind: str, d: dict) -> str:
     if kind == "directive":
         if d.get("op") == "lift":
             return f"lifted directive {d.get('lifts')} (by {d.get('by')})"
+        if d.get("op") == "exempt":
+            return f"{d.get('by')} exempted {d.get('item')} from directive {d.get('exempts')}: {d.get('reason') or ''}"
         return f"directive [{d.get('urgency') or 'advisory'}] from {d.get('by')}: {d.get('text')}"
     if kind == "lesson":
         if d.get("op") == "retract":

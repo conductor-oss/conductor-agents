@@ -35,7 +35,7 @@
             "array",
             "string"
           ],
-          "description": "The final test cycle's executed commands ([{argv, exitCode, ...}]): a delivered head must show a command naming each frozen acceptance test, or it is unproven against its oracle."
+          "description": "The final test cycle's executed commands ([{argv, exitCode, ...}]): a delivered head must show a command naming each frozen acceptance test, or it is unproven against its check."
         },
         "sharedRepo": {
           "type": "string",

@@ -113,6 +113,35 @@ details.brief div{white-space:pre-wrap;margin-top:8px;color:var(--ink-2);font-si
 .badge.running{background:var(--working-soft);color:var(--working)}
 .badge.delivered{background:var(--done-soft);color:var(--done)}
 .badge.failed,.badge.incomplete{background:var(--blocked-soft);color:var(--blocked)}
+.badge.needs{background:var(--working-soft);color:var(--working)}
+/* The definition of done: checks, the score climbing, the ladder rung, the needs. */
+.dod{margin-top:26px;background:var(--sheet);border:1px solid var(--rule);border-radius:12px;padding:16px 18px}
+.dod .top{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px 18px;margin-bottom:12px}
+.dod .top h2{font-size:15px;font-weight:600;margin:0}
+.dod .score{font-size:20px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.dod .meter{margin-top:0;flex:1 1 160px;min-width:120px;align-self:center}
+.dod .rung{font-size:13px;color:var(--ink-2)}
+.dod .rung b{color:var(--ink)}
+.checks{display:grid;gap:6px;margin:0;padding:0;list-style:none}
+.check{display:grid;grid-template-columns:14px 1fr auto;gap:10px;align-items:start;padding:8px 10px;border:1px solid var(--rule);border-radius:8px;background:var(--paper)}
+.check i{width:10px;height:10px;border-radius:50%;margin-top:5px;background:var(--queued)}
+.check.green i{background:var(--done)}.check.red i{background:var(--blocked)}.check.blocked i{background:var(--working)}.check.satisfied i{background:var(--accent)}
+.check .claim{font-size:14px}.check .why{font-size:12.5px;color:var(--ink-3);margin-top:2px;word-break:break-word}
+.check .w{font-size:12px;color:var(--ink-3);white-space:nowrap}
+.check pre{margin:6px 0 0;font-size:11.5px;max-height:140px;overflow:auto;background:var(--sunk);padding:8px;border-radius:6px;white-space:pre-wrap}
+.dod .hist{display:flex;gap:4px;align-items:flex-end;height:36px;margin:12px 0 4px}
+.dod .hist span{flex:0 0 14px;background:var(--done);border-radius:3px 3px 0 0;min-height:2px;opacity:.85}
+.dod .hist span.final{background:var(--accent)}
+.dod .needs{margin-top:12px;border:1px solid color-mix(in srgb,var(--working) 45%,var(--rule));background:var(--working-soft);border-radius:8px;padding:10px 12px}
+.dod .needs h3{margin:0 0 6px;font-size:13.5px}
+.dod .absent{font-size:12.5px;color:var(--ink-3);margin-top:8px}
+.absent-kind{margin:4px 0}.absent-kind summary{cursor:pointer;color:var(--ink-2);list-style:none}.absent-kind summary::before{content:"▸ ";color:var(--ink-3)}.absent-kind[open] summary::before{content:"▾ "}
+.absent-kind div{margin:6px 0 4px 16px;max-width:80ch;line-height:1.5;white-space:pre-wrap}
+.dod .steer{margin-top:14px;border-top:1px solid var(--rule);padding-top:12px}
+.dod .steer h3{font-size:13.5px;margin:0 0 8px}
+.dod .steer .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.dod .steer textarea{width:100%;min-height:56px;margin-bottom:8px}
+.dod .steer select,.dod .steer input{font:inherit;padding:6px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--paper);color:var(--ink)}
 .copy{background:none;border:0;padding:0;cursor:pointer;color:var(--ink-3)}
 .copy:hover{color:var(--ink)}
 
@@ -183,6 +212,25 @@ h3{font-size:14px;font-weight:600;margin:0 0 10px}
 .feed li>div.open{-webkit-line-clamp:unset}
 .feed time{color:var(--ink-3);font-size:12.5px;padding-top:1px}
 .feed .kind{display:inline-block;font-size:12px;color:var(--ink-3);margin-right:6px}
+/* the swarm's roster and the timeline */
+.roster{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;margin:0 0 10px;font-size:13px;color:var(--ink-2)}
+.roster span{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border:1px solid var(--rule);border-radius:999px}
+.roster span.on{border-color:var(--working)}
+.roster span b{font-weight:600;color:var(--ink)}
+.roster .spark{width:7px;height:7px;border-radius:50%;background:var(--working);display:inline-block}
+@media (prefers-reduced-motion:no-preference){.roster .spark{animation:blink 1.4s ease-in-out infinite}}
+.steps{display:flex;flex-direction:column;gap:2px;font-size:13px}
+.step{display:grid;grid-template-columns:minmax(150px,260px) 1fr 70px 110px;gap:10px;align-items:center;padding:4px 0;border-bottom:1px solid var(--rule)}
+.step .who{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.step.d1 .who{padding-left:14px}.step.d2 .who{padding-left:28px}.step.d3 .who{padding-left:42px}.step.d4 .who{padding-left:56px}
+.step .bar{position:relative;height:10px;background:color-mix(in srgb,var(--rule) 55%,transparent);border-radius:5px;overflow:hidden}
+.step .bar i{position:absolute;top:0;bottom:0;border-radius:5px;background:var(--done)}
+.step.running .bar i{background:var(--working)}
+.step.failed .bar i{background:var(--blocked)}
+.step.canceled .bar i{background:var(--ink-3)}
+@media (prefers-reduced-motion:no-preference){.step.running .bar i{animation:blink 1.4s ease-in-out infinite}}
+.step .t{font-size:12.5px;color:var(--ink-3);white-space:nowrap}
+@media (max-width:720px){.step{grid-template-columns:1fr 60px 90px}.step .bar{display:none}}
 
 .composer{background:var(--sheet);border:1px solid var(--rule);border-radius:12px;padding:14px}
 .composer textarea{width:100%;min-height:96px;resize:vertical;border:1px solid var(--rule);border-radius:8px;padding:10px;background:var(--paper)}
@@ -472,6 +520,7 @@ function runState(r){
   if(st==="COMPLETED"){
     if(v==="DELIVERED_UNTESTED") return ["incomplete","Not tested"];
     if(v==="TESTS_FAILED") return ["incomplete","Tests failed"];
+    if(v==="PROGRAM_NEEDS") return ["needs","Needs input"];
     return (v.includes("DELIVERED")||v==="BOOTSTRAPPED"||v==="FIXED")&&!v.includes("INCOMPLETE") ? ["delivered","Delivered"] : ["incomplete", v? "Incomplete":"Finished"]; }
   if(st==="FAILED"||st==="TIMED_OUT") return ["failed","Failed"];
   if(st==="TERMINATED") return ["stopped","Stopped"];
@@ -566,13 +615,30 @@ function renderHome(error){
 async function loadRun(){
   if(!CURRENT) return;
   const id = CURRENT;
-  const r = await api("/api/run?run="+encodeURIComponent(id));
+  const [r, d] = await Promise.all([api("/api/run?run="+encodeURIComponent(id)), api("/api/discussion?run="+encodeURIComponent(id))]);
   if(id!==CURRENT) return;
-  VIEW = r.body; renderRun();
-  if(DRAWER_ITEM) renderDrawerState();
+  VIEW = r.body; VIEW.discussion = (d.body && d.body.posts) || []; renderRun();
+  if(DRAWER_ITEM){ renderDrawerState(); refreshDrawerTrace(); }
+}
+// Fields that change on every poll without meaning anything new to the reader: they never trigger a
+// re-render on their own (elapsed times tick in place, see tickLive).
+const VOLATILE = new Set(["updatedAt","secondsAgo","ts","seconds","updateTime","summary"]);
+function viewKey(v){ return JSON.stringify(v, (k,val)=> VOLATILE.has(k) ? undefined : val); }
+function elapsedText(sinceSec){ const s=Math.max(0, Date.now()/1000 - sinceSec); const m=Math.floor(s/60); return m ? `${m} min ${Math.round(s%60)} s` : `${Math.round(s)} s`; }
+function tickLive(){
+  document.querySelectorAll("[data-since]").forEach(el=>{ const since=Number(el.dataset.since); if(!since) return;
+    el.textContent = (el.dataset.prefix||"") + (el.dataset.fmt==="dur" ? dur(since*1000) : elapsedText(since)) + (el.dataset.suffix||""); });
 }
 function renderRun(){
   const v = VIEW; if(!v) return;
+  const page = $("#page");
+  // A poll that changed nothing the reader can see re-renders nothing: the refresh used to rebuild the
+  // page every four seconds, collapsing every open panel and resetting the scroll position.
+  const key = viewKey(v);
+  if(page.dataset.run===CURRENT && page.dataset.tab===TAB && page.dataset.key===key){ tickLive(); return; }
+  const openDetails = new Set([...page.querySelectorAll("details[open]")].map(d=>d.querySelector("summary")?.textContent.trim()).filter(Boolean));
+  const openClamps = new Set([...page.querySelectorAll(".open")].map(e=>e.textContent.trim().slice(0,120)).filter(Boolean));
+  const scrollY = page.dataset.run===CURRENT ? window.scrollY : 0;
   const run = v.run, snap = v.snapshot||{}, board = v.board||{}, roll = board.rollup||{};
   const [cls,label] = runState(run);
   const running = cls==="running";
@@ -582,7 +648,6 @@ function renderRun(){
   const pctSpend = ceil ? Math.min(100, 100*spend/ceil) : 0;
   const agents = snap.activeAgents||[], escs = board.exceptions||[], cons = board.constraints||[];
   const brief = v.input?.description || v.input?.request || "";
-  const page = $("#page");
   const keepComposer = page.querySelector("#msg")?.value || "";
   const focusMsg = document.activeElement?.id === "msg";
   page.innerHTML = `
@@ -604,7 +669,7 @@ function renderRun(){
       <span>${KIND_LABEL[run.workflow]||esc(run.workflow||"")}</span>
       ${run.repo ? `<span class="mono" title="${esc(run.repo)}">${esc(run.repoName)}</span>` : ""}
       ${running && v.result?.branch ? `<span title="The branch this run commits to">on <span class="mono">${esc(v.result.branch)}</span></span>` : ""}
-      ${run.startTime ? `<span>${running ? "running for "+dur(run.startTime) : "took "+dur(run.startTime, run.endTime)}</span>` : ""}
+      ${run.startTime ? (running ? `<span data-since="${toMs(run.startTime)/1000}" data-fmt="dur" data-prefix="running for ">running for ${dur(run.startTime)}</span>` : `<span>took ${dur(run.startTime, run.endTime)}</span>`) : ""}
       <span><span class="mono">${esc(String(run.id).slice(0,8))}</span> <button class="copy" type="button" title="Copy run id" onclick="copyId('${esc(run.id)}')"><svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.5 9.5V3a1 1 0 0 1 1-1h6" fill="none" stroke="currentColor" stroke-width="1.4"/></svg><span class="sr">Copy run id</span></button></span>
     </div>
     <div class="readout">
@@ -619,13 +684,19 @@ function renderRun(){
     ${brief && brief.length > (run.title||"").length + 4 ? `<details class="brief"><summary>Show the full brief</summary><div>${esc(brief)}</div></details>` : ""}
     ${failurePanel(snap.failure, v.actions)}
     ${running ? "" : resultPanel(v.result)}
+    ${architectPanel(v, running)}
     ${renderStrip(v)}
     <div class="tabs" role="tablist">
-      ${tab("activity","Activity")}${tab("board","Board", (board.items||[]).length)}
+      ${tab("activity","Activity", (v.live?.running||[]).length || null, (v.live?.running||[]).length>0)}${tab("timeline","Timeline", (v.live?.steps||[]).length || null)}${tab("board","Board", (board.items||[]).length)}
       ${tab("escalations","Escalations", escs.length, escs.length>0)}${tab("constraints","Constraints", cons.length)}${tab("learnings","Lessons", (board.lessons||[]).length)}
     </div>
     <div class="panel" role="tabpanel">${renderTab(v)}</div>`;
   if(page.querySelector("#msg")){ page.querySelector("#msg").value = keepComposer; if(focusMsg) page.querySelector("#msg").focus(); }
+  // What the reader had opened stays open; where they were stays where they were.
+  page.querySelectorAll("details").forEach(d=>{ if(openDetails.has(d.querySelector("summary")?.textContent.trim())) d.open = true; });
+  page.querySelectorAll(".clamp, .feed li>div").forEach(e=>{ if(openClamps.has(e.textContent.trim().slice(0,120))) e.classList.add("open"); });
+  page.dataset.run = CURRENT; page.dataset.tab = TAB; page.dataset.key = key;
+  if(scrollY) window.scrollTo(0, scrollY);
   document.title = run.title + " · Conductor Software Factory";
 }
 const capital = s => s ? s[0].toUpperCase()+s.slice(1) : s;
@@ -658,6 +729,58 @@ function resultPanel(r){
       ${!r.remote && !r.merged && !r.inPlace ? `<span class="faint" style="font-size:13px">No remote is configured, so the branch stays local.</span>` : ""}</div>` : ""}
     ${cmds ? `<details><summary>Work with the branch yourself</summary><pre>${esc(cmds)}</pre></details>` : ""}
   </div>`;
+}
+const RUNG_LABEL = {rework:"Rework: a repair team is on the red checks", change_approach:"Change of approach: a different plan for the red checks",
+  second_opinion:"Second opinion: an independent judgment of the work", amend:"Deciding an amendment of the contract",
+  replan:"The same plan came back; the Architect tries again one tier up", deliver:"Delivered: the definition of done is met",
+  needs:"Waiting on something outside the swarm (see below)"};
+const KIND_WORD = {acceptance:"acceptance tests", integration:"integration suite", client:"real client", scenario:"scenario", budget:"budget", docs:"docs"};
+function architectPanel(v, running){
+  const d = v.architect; if(!d || !d.checks) return "";
+  const score = d.score==null ? null : Number(d.score), thr = Number(d.threshold||1);
+  const pct = score==null ? 0 : Math.round(100*score), ok = score!=null && score >= thr-1e-9;
+  const hist = (d.history||[]);
+  const checks = d.checks.map(o => `<li class="check ${esc(o.state)}"><i title="${esc(o.state)}"></i>
+      <div><div class="claim">${esc(o.claim||o.id)}</div>
+        <div class="why">${esc(KIND_WORD[o.kind]||o.kind)}${o.command?` · <span class="mono">${esc(o.command)}</span>`:""}${o.mechanism?` · ${esc(o.mechanism)}`:""}</div>
+        ${o.tail && o.state!=="green" ? `<pre>${esc(o.tail)}</pre>` : ""}</div>
+      <div class="w">${o.state==="satisfied"?"accepted":o.state==="green"?"green":o.state==="blocked"?"blocked":"red"} · weight ${esc(String(o.weight))}</div></li>`).join("");
+  // A kind no scout could serve: one line each, the scout's full reasoning folded away.
+  const absent = Object.entries(d.absentKinds||{}).map(([k,why])=>`<details class="absent-kind"><summary>No ${esc(KIND_WORD[k]||k)} check<span class="faint"> · ${esc(String(why).split(/[.:]\s/)[0].slice(0,90))}${String(why).length>90?"…":""}</span></summary><div>${esc(why)}</div></details>`).join("");
+  const needs = (d.needs||[]).length ? `<div class="needs"><h3>What this run needs</h3>${d.needs.map(n=>`<div><b>${esc(n.kind)}</b>: ${esc(n.detail)}</div>`).join("")}
+      ${v.actions?.retryUnfinished ? `<div class="row" style="margin-top:8px"><button class="btn primary sm" type="button" onclick="askRetryUnfinished()">Continue from here</button></div>`:""}</div>` : "";
+  const pending = (d.pendingAmendments||[]);
+  const steer = `<div class="steer"><h3>Steer the architect</h3>
+      <textarea id="archText" placeholder="Feedback the Architect reads at its next evaluation. It is advisory: nothing waits on it."></textarea>
+      <div class="row">
+        <button class="btn primary sm" type="button" onclick="steerArchitect('feedback')">Send feedback</button>
+        <select id="archCheck"><option value="">Accept a check as met…</option>${d.checks.filter(o=>!o.passed).map(o=>`<option value="${esc(o.id)}">${esc(o.id)}</option>`).join("")}</select>
+        <button class="btn sm" type="button" onclick="steerArchitect('accept')">Accept</button>
+        ${pending.length ? `<select id="archAmend">${pending.map(a=>`<option value="${esc(a.id)}">${esc(a.id)}: ${esc(a.op)} ${esc(a.check||"")} — ${esc(a.reason||"")}</option>`).join("")}</select>
+        <button class="btn sm" type="button" onclick="steerArchitect('amend','approve')">Approve</button><button class="btn sm" type="button" onclick="steerArchitect('amend','reject')">Reject</button>` : ""}
+        <input id="archBudget" type="number" min="1" step="1" placeholder="New ceiling $" style="width:130px">
+        <button class="btn sm" type="button" onclick="steerArchitect('budget')">Raise budget</button>
+      </div></div>`;
+  return `<div class="dod">
+    <div class="top"><h2>Definition of done</h2>
+      <span class="score">${score==null ? "—" : score.toFixed(2)} <small class="faint">of ${thr.toFixed(2)}</small></span>
+      <div class="meter ${ok?"":"spend"}"><i style="width:${pct}%"></i></div>
+      <span class="rung">${d.rung ? `<b>${esc(RUNG_LABEL[d.rung]||d.rung)}</b>` : (running ? "Scored after every integrated rank" : "")}${d.revision>1?` · contract revision ${esc(String(d.revision))}`:""}${d.copiedFrom?` · continues ${esc(String(d.copiedFrom).slice(0,8))}`:""}</span></div>
+    ${hist.length>1 ? `<div class="hist" title="Score after each evaluation">${hist.map(h=>`<span class="${h.stage==="final"?"final":""}" style="height:${Math.max(2,Math.round(34*Number(h.score||0)))}px" title="${esc(h.stage==="final"?"final":"rank "+(Array.isArray(h.rank)?h.rank.join(", "):h.rank))}: ${Number(h.score||0).toFixed(2)}${h.rung?" → "+esc(h.rung):""}"></span>`).join("")}</div>` : ""}
+    <ul class="checks">${checks}</ul>
+    ${absent ? `<div class="absent">${absent}</div>` : ""}
+    ${d.override ? `<div class="absent">Delivered by override: ${esc(d.override.reasoning||"")}</div>` : ""}
+    ${needs}${steer}</div>`;
+}
+async function steerArchitect(shape, decision){
+  const payload = {run:CURRENT, action:"architect", shape};
+  if(shape==="feedback"){ payload.text = $("#archText").value.trim(); if(!payload.text){ $("#archText").focus(); return toast("Write the feedback first."); } }
+  if(shape==="accept"){ payload.check = $("#archCheck").value; payload.text = $("#archText").value.trim(); if(!payload.check) return toast("Pick the check to accept."); }
+  if(shape==="amend"){ payload.amendment = $("#archAmend")?.value; payload.decision = decision; }
+  if(shape==="budget"){ payload.ceilingUsd = Number($("#archBudget").value); if(!(payload.ceilingUsd>0)) return toast("Enter the new ceiling."); }
+  const r = await write("/api/steer", payload);
+  if(r.ok){ if($("#archText")) $("#archText").value=""; toast({feedback:"Feedback recorded. The Architect reads it at its next evaluation.", accept:"Accepted. The next evaluation counts it as met.", amend:`Amendment ${decision}d.`, budget:"Ceiling recorded. Continue from here picks it up."}[shape]); loadRun(); }
+  else toast(r.body.error || "Not recorded.");
 }
 function failurePanel(f, actions){
   if(!f) return "";
@@ -712,21 +835,32 @@ function renderTab(v){
   if(TAB==="activity"){
     const agents = snap.activeAgents||[], events=(snap.recentEvents||[]).slice().reverse();
     const runs = Object.fromEntries((board.children||[]).map(c=>[c.run,c.subsystem]));
+    const live = v.live||{}, roles = live.roles||[], sessions = live.sessions||[];
+    const roster = roles.length ? `<div class="roster">${roles.map(r=>`<span class="${r.running?"on":""}" title="${esc(r.role)}: ${r.done} finished${r.running?", "+r.running+" working":""}${r.failed?", "+r.failed+" failed":""}, ${money(r.costUsd)}">${esc(r.role)} <b>${r.done+r.running+r.failed}</b>${r.running?`<i class="spark"></i>`:""}</span>`).join("")}
+      <span class="faint">${sessions.length} agent session${sessions.length===1?"":"s"} so far, ${money(sessions.reduce((a,s)=>a+(s.costUsd||0),0))}</span></div>` : "";
+    const stepsNow = (live.steps||[]).filter(s=>s.status==="running" && s.type!=="SUB_WORKFLOW" && s.type!=="coding_agent");
     return `<div class="two"><div>
-      <h3>Working now</h3>
+      <h3>Working now</h3>${roster}
       ${agents.length ? agents.map(a=>`<div class="agent"><span class="spark"></span>
-         <div><b>${esc(a.item)}</b>${runs[a.run]?` <span class="faint">in ${esc(runs[a.run])}</span>`:""}<div class="what">${esc(a.tool||"thinking")}${a.toolCalls?`, ${a.toolCalls} tool calls so far`:""}</div></div>
-         <span class="ago">${a.secondsAgo<5?"now":a.secondsAgo+"s ago"}</span></div>`).join("")
-       : `<div class="empty">${runState(v.run)[0]==="running" ? "No agent is mid-task this moment. The team is between steps: planning, integrating or reviewing." : "Nobody is working; this run has finished."}</div>`}
+         <div><b>${esc(a.role?capital(a.role)+(a.item&&a.item!==a.role?" on "+a.item:""):a.item)}</b>${runs[a.run]?` <span class="faint">in ${esc(runs[a.run])}</span>`:""}
+           <div class="what">${a.seconds!=null?`<span data-since="${(a.ts||Date.now()/1000)-a.seconds}" data-suffix=" in">${elapsedText((a.ts||Date.now()/1000)-a.seconds)} in</span>`:""}${a.toolCalls?`, ${a.toolCalls} command${a.toolCalls===1?"":"s"}`:""}${a.tokens?`, ${Math.round(a.tokens/1000)}k tokens`:""}${a.costUsd?`, ${money(a.costUsd)}`:""}</div>
+           ${a.lastText?`<div class="what clamp" onclick="this.classList.toggle('open')">${esc(a.lastText)}</div>`:""}
+           <div class="what mono">${esc(a.tool||"thinking")}</div></div>
+         <span class="ago">${a.secondsAgo<5?"now":a.secondsAgo<120?a.secondsAgo+"s ago":Math.round(a.secondsAgo/60)+" min ago"}</span></div>`).join("")
+       : `<div class="empty">${runState(v.run)[0]==="running" ? (stepsNow.length ? `No agent session is open. The harness is ${esc(stepsNow.map(s=>s.label+(s.item?" ("+s.item+")":"")).join(", "))}${stepsNow.some(s=>s.detail)?`:<div class="what mono" style="white-space:pre-wrap;margin-top:6px">${esc(stepsNow.map(s=>s.detail).filter(Boolean).join("\n"))}</div>`:"."}` : "No agent is mid-task this moment. The team is between steps: planning, integrating or reviewing.") : "Nobody is working; this run has finished."}</div>`}
+      <h3 style="margin-top:28px">The board</h3>
+      ${(v.discussion||[]).length ? `<ul class="feed board">${(v.discussion||[]).slice(-40).map(pst=>`<li><time>${clock(pst.ts)}</time><div onclick="this.classList.toggle('open')"><span class="kind">${esc(pst.kind==="directive"?(pst.target==="run"?"to everyone":pst.target&&pst.target.startsWith("team:")?"to "+pst.target.slice(5):pst.target?"to "+pst.target:"note"):pst.kind==="decision_request"?"asked the Architect":pst.kind)}</span><b>${esc(pst.by||"")}</b>${pst.team?` <span class="faint">(${esc(pst.team)})</span>`:""}: ${esc(pst.text)}</div></li>`).join("")}</ul>` : `<div class="empty">Nothing posted yet. Lessons, questions, decisions and steers from every team and agent appear here as they happen.</div>`}
       <h3 style="margin-top:28px">What happened</h3>
       ${events.length ? `<ul class="feed">${events.map(e=>`<li><time>${clock(e.ts)}</time><div onclick="this.classList.toggle('open')"><span class="kind">${esc(e.kind)}</span>${esc(e.summary)}${runs[e.run]?` <span class="faint">(${esc(runs[e.run])})</span>`:""}</div></li>`).join("")}</ul>` : `<div class="empty">Nothing yet.</div>`}
       ${snap.retrospective && (snap.retrospective.summary || snap.retrospective.recorded) ? `<div class="retro"><h3>Retrospective</h3><div>${esc(snap.retrospective.summary)}</div>
         <div class="faint" style="margin-top:6px;font-size:13px">${snap.retrospective.recorded} learning${snap.retrospective.recorded===1?"":"s"} recorded for future runs</div></div>` : ""}
     </div><div>
       <div class="composer">
-        ${runState(v.run)[0]==="running" ? `<h3>Tell or ask the team</h3>
+        ${runState(v.run)[0]==="running" ? `<h3>Tell or ask the swarm</h3>
+        <div class="row" style="margin-bottom:8px"><label class="faint" for="msgTarget" style="font-size:12.5px">To</label>
+          <select id="msgTarget"><option value="auto">route it for me</option><option value="run">everyone</option><option value="architect">the Architect</option>${(board.children||[]).map(c=>`<option value="team:${esc(c.subsystem)}">team ${esc(c.subsystem)}</option>`).join("")}</select></div>
         <textarea id="msg" placeholder="For example: use the standard library only. Or: why is the store team blocked?"></textarea>
-        <div class="hint">Instructions go to the right agent or the whole team at their next step. Questions are answered from the live state.</div>` : `<h3>Ask about this run</h3>
+        <div class="hint">A note reaches the chosen agents inside their running sessions and the next standup of every team. Questions are answered from the live state.</div>` : `<h3>Ask about this run</h3>
         <textarea id="msg" placeholder="For example: which items needed review rework, and why?"></textarea>
         <div class="hint">Answered from the run's board and history.</div>`}
         <div class="bar"><span class="faint" style="font-size:12.5px">Enter to send, Shift+Enter for a new line</span><button class="btn primary" type="button" id="sendMsg" onclick="sendMessage()">Send</button></div>
@@ -734,16 +868,40 @@ function renderTab(v){
       </div>
     </div></div>`;
   }
+  if(TAB==="timeline"){
+    const steps = (v.live?.steps||[]);
+    if(!steps.length) return `<div class="empty">No steps recorded yet.</div>`;
+    const t0 = Math.min(...steps.filter(s=>s.startedAt).map(s=>s.startedAt));
+    const now = Date.now()/1000;
+    const end = Math.max(now, ...steps.map(s=>s.endedAt||now));
+    const span = Math.max(60, end - t0);
+    const fmt = s => s>=3600 ? `${Math.floor(s/3600)} h ${Math.round((s%3600)/60)} min` : s>=60 ? `${Math.floor(s/60)} min ${Math.round(s%60)} s` : `${Math.round(s)} s`;
+    const rows = steps.filter(s=>s.startedAt && (s.seconds>=5 || s.status==="running" || s.type==="coding_agent" || s.type==="SUB_WORKFLOW")).map(s=>{
+      const secs = s.status==="running" ? now - s.startedAt : s.seconds;
+      const left = 100*(s.startedAt - t0)/span, width = Math.max(0.4, 100*secs/span);
+      const who = s.role ? capital(s.role)+(s.item?" on "+s.item:"") : s.type==="SUB_WORKFLOW" ? (s.label==="team"?"Team "+(s.item||""):capital(s.label)) : capital(s.label)+(s.item?" · "+s.item:"");
+      return `<div class="step d${s.depth} ${s.status}" title="${esc(s.ref)} · ${esc(s.status)}${s.reason?" · "+esc(s.reason):""}">
+        <div class="who">${esc(who)}${s.type==="coding_agent"?`<span class="faint"> agent</span>`:""}</div>
+        <div class="bar"><i style="left:${left}%;width:${width}%"></i></div>
+        <div class="t">+${fmt(s.startedAt - t0)}</div><div class="t">${fmt(secs)}${s.status==="running"?" …":s.status==="failed"?" ✕":s.status==="canceled"?" stopped":""}${s.costUsd?` · ${money(s.costUsd)}`:""}</div></div>`;
+    }).join("");
+    return `<p class="dim" style="margin-top:0">Every step of this run and its teams, in start order: when it began, how long it took, and what is running now (the agents are marked). Hover a row for the step's internal name.</p><div class="steps">${rows}</div>`;
+  }
   if(TAB==="board"){
     const items = board.items||[];
     if(!items.length) return `<div class="empty">The board fills in once the plan is cut into work items.</div>`;
     const by = {}; items.forEach(it=>(by[it.state] ||= []).push(it));
     const live = runState(v.run)[0]==="running";
-    return `<div class="kanban">${STATES.filter(([s])=>by[s]?.length || (live && ["in_progress","review","done"].includes(s))).map(([s,label])=>`
+    // A program's board holds subsystems, each built by its own team when its rank comes; before the
+    // first rank they are planned work, not agents waiting. What is running now is on the Activity tab.
+    const program = !!(v.ranks?.length);
+    const label = (s, l) => program && s==="backlog" ? "Planned" : program && s==="in_progress" ? "Team building" : l;
+    const note = program ? `<p class="dim" style="margin-top:0">${esc(String(items.length))} subsystems, each built by its own team in dependency order${live ? ` · now: ${esc(snap.phase||"")}` : ""}. Who is working right now is on the Activity tab.</p>` : "";
+    return `${note}<div class="kanban">${STATES.filter(([s])=>by[s]?.length || (live && ["in_progress","review","done"].includes(s))).map(([s,l])=>[s,label(s,l)]).map(([s,label])=>`
       <div class="col"><h4><i style="background:var(--${{in_progress:"working",review:"review",reopened:"reopened",ready:"queued",backlog:"queued",blocked:"blocked",done:"done"}[s]})"></i>${label}<span class="c">${(by[s]||[]).length}</span></h4>
         ${(by[s]||[]).map(it=>`<button class="card" type="button" onclick="openItem('${esc(it.id)}')"><div class="id">${esc(it.id)}</div>
           <div class="d">${esc(it.title||it.description||"")}</div>
-          <div class="f">${it.deliverable==="docs"?"<span>documents</span>":""}${it.attempt?`<span>attempt ${it.attempt+1}</span>`:""}${(it.files||[]).length?`<span>${it.files.length} file${it.files.length>1?"s":""}</span>`:""}</div></button>`).join("")}
+          <div class="f">${it.deliverable==="docs"?"<span>documents</span>":""}${it.attempt?`<span>attempt ${it.attempt+1}</span>`:""}${it.rung!=null?`<span title="${esc(it.rungReason||"")}">rung ${esc(String(it.rung))}</span>`:""}${(it.files||[]).length?`<span>${it.files.length} file${it.files.length>1?"s":""}</span>`:""}</div></button>`).join("")}
       </div>`).join("")}</div>`;
   }
   if(TAB==="escalations"){
@@ -809,7 +967,10 @@ async function sendMessage(){
   // A finished run has no team to instruct: everything typed is a question about it.
   const finished = VIEW && runState(VIEW.run)[0] !== "running";
   if(finished) entry.pending = "Looking at the run…", renderThread();
+  const target = $("#msgTarget")?.value || "auto";
+  const explicit = target==="run" ? {action:"run"} : target==="architect" ? {action:"architect", shape:"feedback"} : target.startsWith("team:") ? {action:"team", team: target.slice(5)} : null;
   const r = finished ? await write("/api/ask", {run, question:text})
+                     : (explicit && !/\?\s*$/.test(text)) ? await write("/api/steer", {run, text, ...explicit})
                      : await write("/api/steer", {run, action:"message", text});
   delete entry.pending;
   if(r.ok){ entry.a = r.body.answer || r.body.reply || "Sent to the team.";
@@ -857,38 +1018,56 @@ async function liftConstraint(id){
 
 /* ── item drawer ─────────────────────────── */
 async function openItem(id){
-  DRAWER_ITEM = id; $("#drawer").classList.add("open"); $("#scrim").classList.add("open"); $("#drawer").setAttribute("aria-hidden","false");
-  renderDrawerState(); const t = await api(`/api/trace?run=${encodeURIComponent(CURRENT)}&item=${encodeURIComponent(id)}`);
-  if(DRAWER_ITEM!==id) return; DRAWER_ITEM_TRACE = t.body.timeline||[]; renderDrawerState();
+  DRAWER_ITEM = id; DRAWER_ITEM_TRACE = null; $("#drawer").classList.add("open"); $("#scrim").classList.add("open"); $("#drawer").setAttribute("aria-hidden","false");
+  renderDrawerState(); await refreshDrawerTrace();
 }
-let DRAWER_ITEM_TRACE = null;
+let DRAWER_ITEM_TRACE = null, DRAWER_TRACE_BUSY = false;
+async function refreshDrawerTrace(){
+  if(!DRAWER_ITEM || DRAWER_TRACE_BUSY) return;
+  const id = DRAWER_ITEM; DRAWER_TRACE_BUSY = true;
+  try{ const t = await api(`/api/trace?run=${encodeURIComponent(CURRENT)}&item=${encodeURIComponent(id)}`);
+       if(DRAWER_ITEM!==id) return; DRAWER_ITEM_TRACE = t.body.timeline||[]; renderDrawerState(); }
+  finally{ DRAWER_TRACE_BUSY = false; }
+}
+/* The drawer is rendered ONCE per item; every poll afterwards updates only the parts that change
+   (status, latest reason, actions, history), each only when its HTML differs. Rebuilding the whole
+   drawer every 4 s reset the scroll position and the caret in the steer box while a human typed. */
+function drawerBadgeHtml(it){ const st=it.state;
+  return `<span class="badge ${st==="done"?"delivered":st==="blocked"?"failed":st==="in_progress"?"running":""}">${STATE_LABEL[st]||esc(st||"")}</span>${it.attempt?` <span class="faint" style="font-size:13px">attempt ${it.attempt+1}</span>`:""}`; }
+function drawerLatestHtml(it){ return (it.reason ? `<h3>Latest</h3><div class="dim">${esc(it.reason)}</div>` : "")
+  + (it.rung!=null ? `<h3>Model rung</h3><div class="dim">Rung ${esc(String(it.rung))}${it.workKind?` · ${esc(it.workKind)} item`:""}: ${esc(it.rungReason||"")}</div>` : ""); }
+function drawerActionsHtml(it){ const st=it.state;
+  return `<button class="btn primary sm" type="button" onclick="steerItem('nudge')">Send note</button>
+          <button class="btn sm" type="button" onclick="steerItem('stop')" title="Stops the agent at its next step and re-runs the item with your note">Stop and redo</button>
+          ${st==="done"||st==="blocked" ? `<button class="btn sm" type="button" onclick="steerItem('reopen')">Reopen</button>`:""}`; }
+function drawerHistoryHtml(){ return `<h3>History</h3>${DRAWER_ITEM_TRACE===null ? `<div class="empty">Loading…</div>` : DRAWER_ITEM_TRACE.length ?
+        `<ol class="timeline">${DRAWER_ITEM_TRACE.map(e=>`<li><div class="when">${clock(e.ts)} · ${esc(e.kind)}</div><div>${esc(e.summary)}</div></li>`).join("")}</ol>` : `<div class="empty">No history yet.</div>`}`; }
 function renderDrawerState(){
   const it = (VIEW?.board?.items||[]).find(x=>x.id===DRAWER_ITEM) || {id:DRAWER_ITEM};
-  const keep = $("#drawer").querySelector("#steerText")?.value || "";
-  const st = it.state;
-  $("#drawer").innerHTML = `<header><div style="flex:1"><h2>${esc(it.id)}</h2>
-      <div style="margin-top:6px"><span class="badge ${st==="done"?"delivered":st==="blocked"?"failed":st==="in_progress"?"running":""}">${STATE_LABEL[st]||esc(st||"")}</span>
-      ${it.attempt?` <span class="faint" style="font-size:13px">attempt ${it.attempt+1}</span>`:""}</div></div>
+  const d = $("#drawer");
+  if(d.dataset.item === DRAWER_ITEM){
+    const set = (sel, html) => { const el = d.querySelector(sel); if(el && el.innerHTML !== html) el.innerHTML = html; };
+    set("#drawerBadge", drawerBadgeHtml(it)); set("#drawerLatest", drawerLatestHtml(it));
+    set("#drawerActions", drawerActionsHtml(it)); set("#drawerHistory", drawerHistoryHtml());
+    return;
+  }
+  d.dataset.item = DRAWER_ITEM;
+  d.innerHTML = `<header><div style="flex:1"><h2>${esc(it.id)}</h2>
+      <div id="drawerBadge" style="margin-top:6px">${drawerBadgeHtml(it)}</div></div>
       <button class="btn quiet" type="button" onclick="closeDrawer()" aria-label="Close">Close</button></header>
     <div class="body">
       ${it.description||it.title ? `<section><div>${esc(it.description||it.title)}</div></section>`:""}
-      ${it.reason ? `<section><h3>Latest</h3><div class="dim">${esc(it.reason)}</div></section>`:""}
+      <section id="drawerLatest">${drawerLatestHtml(it)}</section>
       ${(it.acceptanceCriteria||[]).length ? `<section><h3>Done when</h3><ul style="margin:0;padding-left:18px">${it.acceptanceCriteria.map(c=>`<li>${esc(c)}</li>`).join("")}</ul></section>`:""}
       ${(it.files||[]).length ? `<section><h3>Files</h3><div class="files">${it.files.map(esc).join("<br>")}</div></section>`:""}
       ${(it.acceptanceTests||[]).length ? `<section><h3>Acceptance tests</h3><div class="files">${it.acceptanceTests.map(esc).join("<br>")}</div></section>`:""}
       <section class="steer"><h3>Steer this item</h3>
         <textarea id="steerText" placeholder="What should the agent on ${esc(it.id)} do differently?"></textarea>
-        <div class="row">
-          <button class="btn primary sm" type="button" onclick="steerItem('nudge')">Send note</button>
-          <button class="btn sm" type="button" onclick="steerItem('stop')" title="Stops the agent at its next step and re-runs the item with your note">Stop and redo</button>
-          ${st==="done"||st==="blocked" ? `<button class="btn sm" type="button" onclick="steerItem('reopen')">Reopen</button>`:""}
-        </div></section>
-      <section><h3>History</h3>${DRAWER_ITEM_TRACE===null ? `<div class="empty">Loading…</div>` : DRAWER_ITEM_TRACE.length ?
-        `<ol class="timeline">${DRAWER_ITEM_TRACE.map(e=>`<li><div class="when">${clock(e.ts)} · ${esc(e.kind)}</div><div>${esc(e.summary)}</div></li>`).join("")}</ol>` : `<div class="empty">No history yet.</div>`}</section>
+        <div class="row" id="drawerActions">${drawerActionsHtml(it)}</div></section>
+      <section id="drawerHistory">${drawerHistoryHtml()}</section>
     </div>`;
-  $("#steerText").value = keep;
 }
-function closeDrawer(){ DRAWER_ITEM=null; DRAWER_ITEM_TRACE=null; $("#drawer").classList.remove("open"); $("#scrim").classList.remove("open"); $("#drawer").setAttribute("aria-hidden","true"); }
+function closeDrawer(){ DRAWER_ITEM=null; DRAWER_ITEM_TRACE=null; delete $("#drawer").dataset.item; $("#drawer").classList.remove("open"); $("#scrim").classList.remove("open"); $("#drawer").setAttribute("aria-hidden","true"); }
 $("#scrim").onclick = closeDrawer;
 async function steerItem(action){
   const text = $("#steerText").value.trim();
@@ -988,9 +1167,16 @@ function renderSettings(){
     <div id="settingsBody">${t==="models" ? modelsHtml() : templatesHtml()}</div></div>`;
 }
 /* models */
+const AUTH_WORD = {login:"signed in", key:"API key", none:"not configured", unknown:"unknown"};
+function authHtml(){
+  const rows = SETTINGS.auth||[]; if(!rows.length) return "";
+  return `<section class="prof"><header><h3>Credentials on this host</h3></header>
+    <div class="dim" style="font-size:13px;margin-bottom:8px">Each backend runs with the account you are signed in to (claude.ai, ChatGPT, Google) or an API key. Set CLAUDE_AUTH, CODEX_AUTH or GEMINI_AUTH in .env to choose; <span class="mono">make auth</span> explains.</div>
+    ${rows.map(r=>`<div style="display:flex;gap:10px;align-items:baseline;padding:4px 0"><b style="min-width:64px">${esc(r.backend)}</b><span class="chip ${r.mode==="none"?"":"human"}">${esc(AUTH_WORD[r.mode]||r.mode)}${r.source?` · ${esc(r.source)}`:""}</span>${r.detail?`<span class="faint" style="font-size:12.5px">${esc(r.detail)}</span>`:""}</div>`).join("")}</section>`;
+}
 function modelsHtml(){
   const m = SETTINGS.models, d = DRAFT;
-  if(!d) return `<div class="problems">${esc((m.problems||[]).join(" "))}</div>${jsonEditor(m.text||"")}${saveBar()}`;
+  if(!d) return `${authHtml()}<div class="problems">${esc((m.problems||[]).join(" "))}</div>${jsonEditor(m.text||"")}${saveBar()}`;
   const profiles = Object.keys(d.profiles||{});
   const opts = (list, val) => list.map(x=>`<option ${x===val?"selected":""}>${esc(x)}</option>`).join("");
   const models = `<datalist id="knownModels">${(SETTINGS.knownModels||[]).map(x=>`<option value="${esc(x)}">`).join("")}</datalist>`;
@@ -1143,7 +1329,7 @@ function route(){
   const m = location.hash.match(/^#\/run\/([^/]+)(?:\/([a-z]+))?(?:\/(.+))?$/);
   const next = m ? decodeURIComponent(m[1]) : null;
   if(next!==CURRENT){ CURRENT=next; VIEW=null; closeDrawer(); TAB="activity"; $("#rail").classList.remove("open"); }
-  if(m && m[2] && ["activity","board","escalations","constraints","learnings"].includes(m[2])) TAB=m[2];
+  if(m && m[2] && ["activity","timeline","board","escalations","constraints","learnings"].includes(m[2])) TAB=m[2];
   renderRuns();
   if(CURRENT){ if(!VIEW) $("#page").innerHTML = `<div class="empty">Loading the run…</div>`; loadRun().then(()=>{ if(m && m[3]) openItem(decodeURIComponent(m[3])); }); }
   else { document.title="Conductor Software Factory"; renderHome(); }

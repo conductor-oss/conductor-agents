@@ -232,11 +232,12 @@ def _walk_tasks(value):
 
 
 def test_swarm_workflows_are_launchable_and_need_their_text():
-    """The agent swarm (sdlc_intake front door, cc_program teams of teams) is startable from the TUI;
-    a blank request/description is caught before it reaches Conductor and spends an agent call."""
+    """The swarm is what the TUI starts (the teams-of-teams pipeline and its sdlc_intake front door are
+    no longer launched); a blank description is caught before it reaches Conductor."""
     from tui.chat import tools
-    assert {"sdlc_intake", "cc_program"} <= set(catalog.LAUNCHABLE)
-    assert {"team_build", "cc_program", "sdlc_intake"} <= set(catalog.DASHBOARD_TYPES)
+    assert "swarm" in catalog.LAUNCHABLE and not {"sdlc_intake", "cc_program"} & set(catalog.LAUNCHABLE)
+    assert {"swarm", "team_build", "cc_program", "sdlc_intake"} <= set(catalog.DASHBOARD_TYPES)
+    assert catalog.result_for("swarm", {"verdict": "DELIVERED", "delivered": True}).title == "Delivered"
     assert "request" in tools._required_inputs("sdlc_intake")
     assert tools._missing_at_least_one_groups("cc_program", {"repoPath": "/r"}) == [("description", "subsystems")]
     card = catalog.result_for("team_build", {"verdict": "DELIVERED", "delivered": True, "doneCount": 3, "total": 3})

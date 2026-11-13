@@ -21,9 +21,7 @@
     "modelOverrides",
     "reconcileModel",
     "reconcileMaxResolutionAttempts",
-    "reconcileMaxBudgetUsd",
-    "allowAgentTestPlan",
-    "allowAgentAuthoredTests"
+    "reconcileMaxBudgetUsd"
   ],
   "inputTemplate": {
     "replyBody": "",
@@ -35,9 +33,7 @@
     "modelOverrides": {},
     "reconcileModel": "",
     "reconcileMaxResolutionAttempts": 3,
-    "reconcileMaxBudgetUsd": 50.0,
-    "allowAgentTestPlan": true,
-    "allowAgentAuthoredTests": true
+    "reconcileMaxBudgetUsd": 50.0
   },
   "inputSchema": {
     "name": "publish_verified_pr_input",
@@ -141,16 +137,6 @@
           "type": "number",
           "default": 50.0,
           "description": "USD budget ceiling for the branch-drift conflict-resolution agent."
-        },
-        "allowAgentTestPlan": {
-          "type": "boolean",
-          "default": true,
-          "description": "Forwarded to the re-verification test_cycle sub-workflow run after a resolved branch-drift conflict: when true and deterministic discovery is configuration_blocked, lets a coding agent search for and propose an existing test command as a last resort."
-        },
-        "allowAgentAuthoredTests": {
-          "type": "boolean",
-          "default": true,
-          "description": "Forwarded to the re-verification test_cycle sub-workflow run after a resolved branch-drift conflict: when true and allowAgentTestPlan's search also finds nothing, lets a coding agent author exactly one new test file, accepted only after a red/green check (fails against the pre-candidate baseline, passes against the real candidate change)."
         }
       },
       "required": [
@@ -359,8 +345,6 @@
                   "repoPath": "${workflow.input.repoPath}",
                   "candidateCommit": "${reconcile.output.commit}",
                   "testMode": "targeted",
-                  "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
-                  "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
                   "modelProfile": "${workflow.input.modelProfile}",
                   "modelPolicy": "${workflow.input.modelPolicy}",
                   "modelPolicySource": "${workflow.input.modelPolicySource}",

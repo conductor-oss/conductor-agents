@@ -24,20 +24,41 @@
           "description": "Run id under which contract/ownership facts are recorded on the shared blackboard."
         },
         "subtasks": {
-          "type": ["array", "string"],
+          "type": [
+            "array",
+            "string"
+          ],
           "description": "The still-pending work items for this wave [{id, description, files}]; files deliberately overlap across items."
         },
         "contractPaths": {
-          "type": ["array", "string"],
+          "type": [
+            "array",
+            "string"
+          ],
           "description": "Repository-relative files that form the frozen contract; forks are told to build against, never edit, these."
         },
-        "codeModel": {"type": "string", "description": "Model id passed through to each fork's coding agent."},
-        "maxTurns": {"type": ["integer", "string"], "description": "Per-fork agent turn cap."},
-        "maxBudgetUsd": {"type": ["number", "string"], "description": "Per-fork USD cap."},
-        "allowAgentTestPlan": {"type": ["boolean", "string"], "description": "Forwarded to each fork's test_cycle."},
-        "allowAgentAuthoredTests": {"type": ["boolean", "string"], "description": "Forwarded to each fork's test_cycle."}
+        "codeModel": {
+          "type": "string",
+          "description": "Model id passed through to each fork's coding agent."
+        },
+        "maxTurns": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "Per-fork agent turn cap."
+        },
+        "maxBudgetUsd": {
+          "type": [
+            "number",
+            "string"
+          ],
+          "description": "Per-fork USD cap."
+        }
       },
-      "required": ["repoPath"]
+      "required": [
+        "repoPath"
+      ]
     }
   },
   "outputSchema": {
@@ -46,16 +67,50 @@
     "data": {
       "type": "object",
       "properties": {
-        "dynamicTasks": {"type": "array", "description": "FORK_JOIN_DYNAMIC descriptors, one code_subtask per item."},
-        "dynamicTasksInput": {"type": "object", "description": "Per-fork input map keyed by subtask id."},
-        "groupIds": {"type": "string", "description": "Comma-separated ids dispatched THIS wave, in fork order."},
-        "contractPaths": {"type": "array", "items": {"type": "string"}, "description": "The frozen contract paths echoed back for the integrator."},
-        "dispatched": {"type": "array", "description": "Items dispatched this wave as [{id, description, files, attempt}] — passed to the integrator so it can release ownership and re-queue failed ones with attempt+1."},
-        "remaining": {"type": "array", "description": "Pending items blocked by a live owner this wave; carried to the next wave."},
-        "forkCount": {"type": "integer", "description": "Number of forks dispatched this wave."},
-        "remainingCount": {"type": "integer", "description": "Number of items deferred to the next wave."}
+        "dynamicTasks": {
+          "type": "array",
+          "description": "FORK_JOIN_DYNAMIC descriptors, one code_subtask per item."
+        },
+        "dynamicTasksInput": {
+          "type": "object",
+          "description": "Per-fork input map keyed by subtask id."
+        },
+        "groupIds": {
+          "type": "string",
+          "description": "Comma-separated ids dispatched THIS wave, in fork order."
+        },
+        "contractPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The frozen contract paths echoed back for the integrator."
+        },
+        "dispatched": {
+          "type": "array",
+          "description": "Items dispatched this wave as [{id, description, files, attempt}] — passed to the integrator so it can release ownership and re-queue failed ones with attempt+1."
+        },
+        "remaining": {
+          "type": "array",
+          "description": "Pending items blocked by a live owner this wave; carried to the next wave."
+        },
+        "forkCount": {
+          "type": "integer",
+          "description": "Number of forks dispatched this wave."
+        },
+        "remainingCount": {
+          "type": "integer",
+          "description": "Number of items deferred to the next wave."
+        }
       },
-      "required": ["dynamicTasks", "dynamicTasksInput", "groupIds", "dispatched", "remaining", "forkCount"]
+      "required": [
+        "dynamicTasks",
+        "dynamicTasksInput",
+        "groupIds",
+        "dispatched",
+        "remaining",
+        "forkCount"
+      ]
     }
   }
 }

@@ -14,10 +14,11 @@ import re
 
 from conductor.client.worker.worker_task import worker_task
 
-from common import (bootstrap, budget_gate, bug_fix, git, intake, program, repo_memory, retrospective,
-                    team_board)
+from common import (architect, bootstrap, budget_gate, bug_fix, decomposition, git, intake, program, repo_memory,
+                    retrospective, team_board)
 from common import blackboard as bb
 from common.results import fail, ok
+from common.architect import _num
 
 
 def _list(v):
@@ -69,6 +70,15 @@ def intake_route(task):
         num = lambda v: float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0  # noqa: E731
         plan["planUsage"] = {"costUsd": round(num(prior.get("costUsd")) + num(raw.get("costUsd")), 6),
                              "tokenUsed": int(num(prior.get("tokenUsed")) + num(raw.get("tokenUsed")))}
+        # The Architect's draft of the definition of done travels with the plan (cc_program), and a
+        # placeholder claim rejects the plan the way a placeholder item does.
+        draft = _mapping(classification.get("contract"))
+        plan["contractDraft"] = draft
+        problems = architect.draft_problems(draft) if _truth(i.get("requireCode")) else []
+        if problems:
+            plan["route"] = "replan"
+            plan["replanReasons"] = [*_list(plan.get("replanReasons")), *problems]
+            plan["replanPrompt"] = decomposition.replan_prompt(plan["replanReasons"])
         return ok(task, plan, [f"[intake_route] kind={plan['kind']} route={plan['route']} mode={plan['mode']} "
                                f"conf={plan['confidence']} items={plan['itemCount']} "
                                f"decomposition={plan['decompositionVerdict']} {plan['replanReasons']}"])
@@ -165,11 +175,35 @@ def program_outcome(task):
                  "total": len(subs),
                  "verdict": "; ".join(f"{s}: {it.get('reason')}" for s, it in sorted(subs.items())
                                       if it.get("state") != team_board.DONE) or "all subsystems delivered"}
-        out = program.program_report(
-            subsystems=subsystems, delivered=_truth(i.get("delivered")),
-            verdict=i.get("verdict"), done_count=i.get("doneCount") or 0, total=i.get("total") or 0,
-            tests_passed=_truth(i.get("testsPassed")) if i.get("testsPassed") is not None else None,
-            final_head=str(i.get("finalHead") or ""))
+        arch = architect
+        contract = arch.contract_of(cid) if cid else {}
+        if contract:
+            # The Architect's verdict: delivered when its final evaluation reached the threshold (or an
+            # override stands); otherwise the run ends naming its needs, never a graded failure.
+            finals = arch.evaluations_of(cid, "final")
+            last = finals[-1] if finals else {}
+            results = arch.results_of(cid)
+            s = float(last.get("score")) if last.get("score") is not None else architect.score(contract, results)
+            delivered = last.get("rung") == architect.DELIVER
+            needs = _list(last.get("needs"))
+            if not delivered and not needs:
+                red = architect.red_checks(contract, results)
+                needs = architect.needs_of(contract, results, budget_spent=False, spent=0.0, ceiling=0.0,
+                                           owner_items=red or None) or [
+                    {"kind": "owner decision", "detail": "the program ended before its final evaluation; continue it"}]
+            ranks = program.topo_ranks(subsystems)["ranks"]
+            out = architect.program_report(
+                delivered=delivered, contract=contract, results=results, s=s, evaluations=arch.evaluations_of(cid),
+                needs=needs, override=arch.override_of(cid, int(contract.get("revision") or 1)) or None,
+                done_count=int(i.get("doneCount") or 0), total=int(i.get("total") or 0),
+                final_head=str(i.get("finalHead") or ""), ranks=ranks)
+            out["ranks"], out["cyclic"], out["rung"] = ranks, [], str(last.get("rung") or "")
+        else:
+            out = program.program_report(
+                subsystems=subsystems, delivered=_truth(i.get("delivered")),
+                verdict=i.get("verdict"), done_count=i.get("doneCount") or 0, total=i.get("total") or 0,
+                tests_passed=_truth(i.get("testsPassed")) if i.get("testsPassed") is not None else None,
+                final_head=str(i.get("finalHead") or ""))
         # Decayable lessons for repo_memory (G5): one per subsystem, refs = its files (so a later run
         # invalidates the lesson if those files are gone, H10).
         lessons = []
@@ -238,7 +272,14 @@ def program_rank_init(task):
                 u = _mapping(i.get("planUsage"))
                 budget_gate.record_spend(cid, "planner", usd=float(u.get("costUsd") or 0.0),
                                          tokens=int(u.get("tokenUsed") or 0))
-        return ok(task, {"gate": "build", "ranks": ranked["ranks"], "rankCount": len(ranked["ranks"]),
+        seeded = {}
+        if cid and not architect.contract_of(cid):
+            # The checks the Architect wrote itself are on the branch before the first team forks.
+            from architect.tasks import seed_authored_contract
+            seeded = seed_authored_contract(cid, str(i.get("workspacePath") or "").strip(),
+                                            _mapping(plan.get("contractDraft")),
+                                            external=_truth(i.get("externalChecks"), True))
+        return ok(task, {"gate": "build", "ranks": ranked["ranks"], "rankCount": len(ranked["ranks"]), "seeded": seeded,
                          "maxRankIterations": len(ranked["ranks"]) * max(int(i.get("maxTeamAttempts") or 2), 1),
                          "split": ranked["split"], "subsystems": subsystems, "contractPaths": contract},
                   [f"[program_rank_init] ranks={ranked['ranks']} split={ranked['split']}"])
@@ -261,7 +302,9 @@ def program_rank_build(task):
         if resliced:
             prog = _program(cid)
         items = team_board.fold_board(cid)["items"]
-        built = {sid for sid, it in items.items() if it.get("state") in (team_board.DONE, team_board.BLOCKED)}
+        # Built, or handed to the Architect's ladder (REVIEW): never re-forked by the rank loop.
+        built = {sid for sid, it in items.items()
+                 if it.get("state") in (team_board.DONE, team_board.BLOCKED, team_board.REVIEW)}
         rank = next((r for r in prog.get("ranks") or [] if not set(r) <= built), [])
         depth = int(prog.get("depth") or 0)
         max_depth = max(int(i.get("maxDepth") or 2), 1)
@@ -271,7 +314,7 @@ def program_rank_build(task):
         subs = {str(_mapping(s).get("id")): _mapping(s) for s in prog.get("subsystems") or []}
         passthrough = {k: i.get(k) for k in (
             "codeModel", "maxTurns", "maxBudgetUsd", "maxFixAttempts", "maxWidth", "maxWaves", "bestOf",
-            "allowAgentTestPlan", "allowAgentAuthoredTests", "authorAcceptanceTests",
+            "authorAcceptanceTests",
             "modelProfile", "modelPolicy", "modelPolicySource", "modelPolicySha256", "modelsConfig",
             "modelOverrides") if i.get(k) not in (None, "")}
         dynamic_tasks, dynamic_inputs = [], {}
@@ -285,6 +328,12 @@ def program_rank_build(task):
                          "parentCorrelationId": cid, "subsystemId": sid,
                          # A team the program re-runs (it ended INCOMPLETE) starts its agents one tier up.
                          "baseModelTier": int(_mapping(items.get(sid)).get("attempt") or 0)}
+            # The team's swarm size: the user's `teamSize` when given, else the Architect's `agents` for
+            # this subsystem (sized by complexity), else the program's width cap.
+            team_size = int(_num(i.get("teamSize"), 0)) if str(i.get("teamSize") or "").strip() not in ("", "0") else 0
+            agents = int(_num(sub.get("agents"), 0))
+            if team_size or agents:
+                common_in["maxWidth"] = max(team_size or agents, 1)
             if nested:
                 ref = "program_" + ref[5:]
                 dynamic_tasks.append({"name": "cc_program", "taskReferenceName": ref, "type": "SUB_WORKFLOW",
@@ -293,9 +342,15 @@ def program_rank_build(task):
                                        "depth": depth + 1, "maxDepth": max_depth,
                                        "description": str(sub.get("description") or sid)}
             else:
+                items_ = program.child_items(sub)
                 dynamic_tasks.append({"name": "team_build", "taskReferenceName": ref, "type": "SUB_WORKFLOW",
                                       "optional": True, "subWorkflowParam": {"name": "team_build"}})
-                dynamic_inputs[ref] = {**common_in, "subtasks": program.child_items(sub), "forceTeam": True}
+                # A one-item team authors no separate acceptance test: the scouts' checks are the check the
+                # builder did not write, the implementer's own tests and the peer review are the rest. The
+                # author cost 1.2-1.7 min before the build and its test only re-wrapped the scenario check
+                # (runs 0f829d58, f83293f5); a request that one session builds in minutes was taking twelve.
+                dynamic_inputs[ref] = {**common_in, "subtasks": items_, "forceTeam": True,
+                                       "authorAcceptanceTests": _truth(common_in.get("authorAcceptanceTests"), True) and len(items_) > 1}
             team_board.set_state(cid, "program", sid, team_board.IN_PROGRESS, assignee=ref)
         return ok(task, {"dynamicTasks": dynamic_tasks, "dynamicTasksInput": dynamic_inputs, "rank": rank,
                          "childBudgetUsd": share, "depth": depth, "resliced": resliced},
@@ -375,10 +430,16 @@ def program_apply_rank(task):
             if not delivered and ceiling and spent >= ceiling and attempt + 1 < max_attempts:
                 # Nothing left to re-run it with: a re-run team would get a zero share and end at its
                 # not-startable gate, five times over, each with a retrospective (maxTeamAttempts 5).
+                # The subsystem is handed to the Architect, whose ladder names the need (budget) the run
+                # ends on and a continuation resumes from; it is never a terminal block.
                 mech = (f"program budget exhausted (${spent:.2f} of ${ceiling:.2f} spent) after child team "
-                        f"{child_run[:8]} ended {verdict}; not re-run — {report[:300]}")
-                team_board.set_state(cid, "program", sid, team_board.BLOCKED, reason=mech)
+                        f"{child_run[:8]} ended {verdict}; handed to the architect — {report[:300]}")
+                team_board.set_state(cid, "program", sid, team_board.REVIEW, reason=mech)
                 team_board.post_exception(cid, "program", sid, "budget", mech, severity="high")
+                bb.post_fact(cid, "program", architect.NEED_KIND, {"kind": "budget", "subsystem": sid,
+                                                                  "detail": f"${spent:.2f} of ${ceiling:.2f} spent; raise the "
+                                                                            f"ceiling and continue", "spentUsd": spent,
+                                                                  "ceilingUsd": ceiling, "evaluation": -1})
                 bb.post_fact(cid, "program", _ROLLUP_KIND, {"subsystem": sid, "childRun": child_run, "verdict": verdict,
                                                            "rollup": _mapping(out.get("rollup")), "spendUsd": spend,
                                                            "delivered": False})
@@ -410,9 +471,16 @@ def program_apply_rank(task):
                 results.append({"subsystem": sid, "childRun": child_run, "delivered": False, "verdict": verdict,
                                 "retrying": True})
                 continue
-            team_board.set_state(cid, "program", sid, team_board.DONE if delivered else team_board.BLOCKED,
+            # A team still INCOMPLETE after its last attempt is handed to the Architect (REVIEW): its open
+            # items go to the ladder's change of approach at the end, never to a terminal block.
+            team_board.set_state(cid, "program", sid, team_board.DONE if delivered else team_board.REVIEW,
                                  reason=f"child team {child_run[:8]}: {verdict}"
-                                        + ("" if delivered else f" — {report[:300]}"))
+                                        + ("" if delivered else f" — handed to the architect — {report[:300]}"))
+            if not delivered:
+                team_board.post_exception(cid, "program", sid, "handed_to_architect",
+                                          f"{sid} ended {verdict} after {attempt + 1} attempt(s); the Architect's ladder "
+                                          f"takes its open items", severity="info")
+                team_board.resolve_exception(cid, "program", sid, "handed_to_architect", "handed to the architect")
             bb.post_fact(cid, "program", _ROLLUP_KIND, {"subsystem": sid, "childRun": child_run,
                                                        "verdict": verdict, "rollup": _mapping(out.get("rollup")),
                                                        "spendUsd": spend, "delivered": delivered})
@@ -527,8 +595,8 @@ def bug_repro_gate(task):
 @worker_task(task_definition_name="bug_outcome")
 def bug_outcome(task):
     """Fold the run into an honest FIXED / NOT_FIXED / CANNOT_REPRODUCE verdict (G2). Also enforces the
-    oracle-integrity check (H13): if the repro test changed between the commit where it was proven red
-    and the fix head, the fix tampered with its own oracle and a green does not count as a fix."""
+    check-integrity check (H13): if the repro test changed between the commit where it was proven red
+    and the fix head, the fix tampered with its own check and a green does not count as a fix."""
     i = task.input_data or {}
     try:
         tampered = False

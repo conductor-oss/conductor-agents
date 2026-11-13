@@ -7,7 +7,7 @@
   "inputSchema": {"name": "bug_outcome_input", "type": "JSON", "data": {"type": "object", "properties": {
     "reproduced": {"type": ["boolean", "string"]}, "testsPassed": {"type": ["boolean", "string"]},
     "testCycleState": {"type": "string"}, "finalHead": {"type": "string"},
-    "repoPath": {"type": "string", "description": "Worktree, for the oracle-integrity (test-tamper) check."},
+    "repoPath": {"type": "string", "description": "Worktree, for the check-integrity (test-tamper) check."},
     "reproCommit": {"type": "string", "description": "Commit where the repro test was proven red."},
     "reproTestPaths": {"type": ["array", "string"], "description": "The repro test file(s) that must be unchanged by the fix."}
   }}},

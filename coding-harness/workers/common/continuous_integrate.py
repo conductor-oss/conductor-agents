@@ -20,9 +20,10 @@ from common import git
 
 # Failure reasons a later wave can fix by re-dispatching (the moving shared head lets a retry land). A
 # frozen-contract edit is NOT here: it is a controlled event for a human (H4), never a blind retry.
-# ``integration_oracle_red``: the item's frozen acceptance tests fail at the integrated head after a
+# ``integration_check_red``: the item's frozen acceptance tests fail at the integrated head after a
 # sibling landed; the re-dispatch fixes the code or amends the test (the peer reviewer decides).
-RETRYABLE_REOPEN = ("rebase_conflict", "empty_delivery", "integration_oracle_red")
+# agent_unavailable: the session itself did not complete (an API error, a crash); it retries on the same rung.
+RETRYABLE_REOPEN = ("rebase_conflict", "empty_delivery", "integration_check_red", "agent_unavailable")
 
 
 def integration_order(ready_items) -> list[dict]:
@@ -82,6 +83,10 @@ def rebase_onto(worktree_path: str, onto_ref: str) -> dict:
     classified = classify_rebase_result(res.code, conflicts)
     if classified["status"] == "conflict":
         git.git(worktree_path, "rebase", "--abort", check=False)
+        if not classified["conflicts"]:
+            # git refused before any file conflicted (a dirty tree, a missing ref): its own words are the
+            # mechanism, never "conflict markers in: (none reported)" (run 836437d7).
+            classified["error"] = (res.stderr or res.stdout or "").strip()[-600:] or f"exit {res.code}"
         return classified
     classified["head"] = git.head(worktree_path)
     return classified
@@ -131,6 +136,8 @@ def integrate_ready(shared_repo: str, shared_branch: str, items, *, correlation_
         else:
             rec = reopen_record(item_id, shared_branch, res["conflicts"],
                                 touched=last_change(shared_repo, shared_branch, res["conflicts"]))
+            if res.get("error"):
+                rec["mechanism"] = f"rebase of item {item_id} ({branch}) onto {shared_branch} refused: {res['error']}"
             if correlation_id is not None:
                 from common import blackboard as bb
                 bb.post_fact(correlation_id, item_id, "reopen", rec, backend=backend)

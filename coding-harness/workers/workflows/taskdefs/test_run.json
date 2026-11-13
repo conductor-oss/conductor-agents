@@ -21,16 +21,16 @@
         },
         "candidateCommit": {
           "type": "string",
-          "description": "Candidate commit to check out into a disposable worktree and verify. Blank is treated as missing and yields a blocked result."
+          "description": "Candidate commit to check out into a disposable worktree and verify. Blank is treated as missing and yields an invalid_input result."
         },
         "discoveryOutcome": {
           "type": "string",
           "default": "discovered",
-          "description": "Outcome carried in from test_discover: 'no_tests_required' short-circuits to a passed result, 'discovered' proceeds to run commands, anything else is treated as blocked using discoveryReason."
+          "description": "Outcome carried in from test_discover: 'no_tests_required' short-circuits to a passed result, 'discovered' proceeds to run commands, anything else is reported as it is (using discoveryReason."
         },
         "discoveryReason": {
           "type": "string",
-          "description": "Reason to report when discoveryOutcome is neither 'discovered' nor 'no_tests_required'."
+          "description": "Reason carried from discovery, reported with any outcome that ran nothing."
         },
         "commands": {
           "type": "array",
@@ -59,6 +59,10 @@
             "string"
           ],
           "description": "Run the repository's check commands inside the OS sandbox (macOS sandbox-exec / Linux bwrap): writes confined to the disposable checkout and caches, no network except loopback (closure plan WP9, H17). A missing sandbox tool blocks the check as sandbox_unavailable."
+        },
+        "sharedTree": {
+          "type": "boolean",
+          "description": "Run the commands in repoPath itself (a team's shared tree) instead of a disposable clone; no install step."
         }
       },
       "required": [
@@ -88,10 +92,11 @@
             "passed",
             "code_failed",
             "infra_blocked",
-            "configuration_blocked",
+            "no_tests_found",
+            "invalid_input",
             "cancelled"
           ],
-          "description": "Fine-grained execution outcome; 'configuration_blocked' comes from a documented VerificationBlocked reason, 'infra_blocked' from an unexpected execution error."
+          "description": "Fine-grained execution outcome; 'no_tests_required'/'no_tests_found' passed with nothing to run, 'invalid_input' names a caller wiring defect, 'infra_blocked' an unexpected execution error."
         },
         "candidateCommit": {
           "type": "string",
@@ -99,7 +104,7 @@
         },
         "commands": {
           "type": "array",
-          "description": "Per-command execution results. Empty when blocked or when no tests are required.",
+          "description": "Per-command execution results. Empty when nothing ran.",
           "items": {
             "type": "object",
             "properties": {
@@ -176,7 +181,7 @@
         },
         "reason": {
           "type": "string",
-          "description": "Present only when blocked or when no tests are required: a human-readable explanation."
+          "description": "Present when nothing ran: a human-readable explanation."
         },
         "runtimeRequirements": {
           "type": "object",

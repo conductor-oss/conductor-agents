@@ -15,7 +15,8 @@
     "acceptanceCommands": [],
     "testWriteRoots": [],
     "starved": false,
-    "teamGateCommands": []
+    "teamGateCommands": [],
+    "testMode": "full"
   },
   "inputParameters": [
     "repoPath",
@@ -54,8 +55,6 @@
     "branchRunId",
     "inPlace",
     "workspacePath",
-    "allowAgentTestPlan",
-    "allowAgentAuthoredTests",
     "modelProfile",
     "modelPolicy",
     "modelPolicySource",
@@ -76,7 +75,7 @@
     "ceilingUsd": 40,
     "warnFraction": 0.8,
     "maxWaves": 12,
-    "maxWidth": 6,
+    "maxWidth": 10,
     "maxAttempts": 2,
     "maxReviewRounds": 2,
     "stallAttempts": 2,
@@ -90,8 +89,6 @@
     "branchRunId": "",
     "inPlace": false,
     "workspacePath": "",
-    "allowAgentTestPlan": true,
-    "allowAgentAuthoredTests": true,
     "modelProfile": "",
     "modelPolicy": {},
     "modelPolicySource": "",
@@ -169,8 +166,6 @@
               "maxFixAttempts": "${workflow.input.maxFixAttempts}",
               "inPlace": "${workflow.input.inPlace}",
               "workspacePath": "${workflow.input.workspacePath}",
-              "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
-              "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
               "modelProfile": "${workflow.input.modelProfile}",
               "modelPolicy": "${workflow.input.modelPolicy}",
               "modelPolicySource": "${workflow.input.modelPolicySource}",
@@ -301,116 +296,6 @@
       }
     },
     {
-      "name": "team_acceptance_build",
-      "taskReferenceName": "acceptance_build",
-      "type": "SIMPLE",
-      "inputParameters": {
-        "correlationId": "${workflow.workflowId}",
-        "repoPath": "${workspace.output.worktreePath}",
-        "authorAcceptanceTests": "${workflow.input.authorAcceptanceTests}",
-        "acceptanceTestPattern": "${workflow.input.acceptanceTestPattern}",
-        "codeModel": "${workflow.input.codeModel}",
-        "modelProfile": "${workflow.input.modelProfile}",
-        "modelPolicy": "${workflow.input.modelPolicy}",
-        "modelPolicySource": "${workflow.input.modelPolicySource}",
-        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
-        "modelsConfig": "${workflow.input.modelsConfig}",
-        "modelOverrides": "${workflow.input.modelOverrides}"
-      }
-    },
-    {
-      "name": "acceptance_gate",
-      "taskReferenceName": "acceptance_gate",
-      "type": "SWITCH",
-      "evaluatorType": "value-param",
-      "expression": "gate",
-      "inputParameters": {
-        "gate": "${acceptance_build.output.gate}"
-      },
-      "decisionCases": {
-        "author": [
-          {
-            "name": "acceptance_fan_out",
-            "taskReferenceName": "acceptance_fan_out",
-            "type": "FORK_JOIN_DYNAMIC",
-            "optional": true,
-            "inputParameters": {
-              "dynamicTasks": "${acceptance_build.output.dynamicTasks}",
-              "dynamicTasksInput": "${acceptance_build.output.dynamicTasksInput}"
-            },
-            "dynamicForkTasksParam": "dynamicTasks",
-            "dynamicForkTasksInputParamName": "dynamicTasksInput"
-          },
-          {
-            "name": "acceptance_join",
-            "taskReferenceName": "acceptance_join",
-            "type": "JOIN",
-            "optional": true
-          },
-          {
-            "name": "team_acceptance_collect",
-            "taskReferenceName": "acceptance_tests_commit",
-            "type": "SIMPLE",
-            "inputParameters": {
-              "repoPath": "${workspace.output.worktreePath}",
-              "authored": "${acceptance_build.output.authored}"
-            }
-          },
-          {
-            "name": "test_discover",
-            "taskReferenceName": "acceptance_discover",
-            "type": "SIMPLE",
-            "inputParameters": {
-              "repoPath": "${workspace.output.worktreePath}",
-              "candidateCommit": "${acceptance_tests_commit.output.commit}",
-              "testMode": "targeted",
-              "allowHeavySuites": false,
-              "includeBrowserTests": false
-            }
-          },
-          {
-            "name": "test_plan_resolve",
-            "taskReferenceName": "acceptance_plan",
-            "type": "SIMPLE",
-            "inputParameters": {
-              "discovered": "${acceptance_discover.output.candidates}",
-              "discoveryOutcome": "${acceptance_discover.output.executionOutcome}",
-              "discoveryReason": "${acceptance_discover.output.reason}",
-              "selection": "${acceptance_discover.output.selection}"
-            }
-          },
-          {
-            "name": "test_run",
-            "taskReferenceName": "acceptance_red_run",
-            "type": "SIMPLE",
-            "inputParameters": {
-              "repoPath": "${workspace.output.worktreePath}",
-              "candidateCommit": "${acceptance_tests_commit.output.commit}",
-              "commands": "${acceptance_plan.output.commands}",
-              "discoveryOutcome": "${acceptance_plan.output.discoveryOutcome}",
-              "discoveryReason": "${acceptance_plan.output.discoveryReason}",
-              "testMode": "targeted",
-              "allowHeavySuites": false,
-              "sandboxChecks": "${workflow.input.sandboxChecks}"
-            }
-          },
-          {
-            "name": "team_acceptance_commit",
-            "taskReferenceName": "acceptance_commit",
-            "type": "SIMPLE",
-            "inputParameters": {
-              "correlationId": "${workflow.workflowId}",
-              "repoPath": "${workspace.output.worktreePath}",
-              "authored": "${acceptance_build.output.authored}",
-              "run": "${acceptance_red_run.output}",
-              "joined": "${acceptance_join.output}"
-            }
-          }
-        ]
-      },
-      "defaultCase": []
-    },
-    {
       "name": "loop_init",
       "taskReferenceName": "loop_init",
       "type": "SET_VARIABLE",
@@ -452,8 +337,6 @@
             "codeModel": "${workflow.input.codeModel}",
             "maxTurns": "${workflow.input.maxTurns}",
             "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-            "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
-            "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
             "modelProfile": "${workflow.input.modelProfile}",
             "modelPolicy": "${workflow.input.modelPolicy}",
             "modelPolicySource": "${workflow.input.modelPolicySource}",
@@ -467,7 +350,8 @@
             "subsystemId": "${workflow.input.subsystemId}",
             "sandboxChecks": "${workflow.input.sandboxChecks}",
             "baseModelTier": "${workflow.input.baseModelTier}",
-            "maxRescues": "${workflow.input.maxRescues}"
+            "maxRescues": "${workflow.input.maxRescues}",
+            "authorAcceptanceTests": "${workflow.input.authorAcceptanceTests}"
           }
         },
         {
@@ -486,6 +370,7 @@
           "name": "fan_join",
           "taskReferenceName": "fan_join",
           "type": "JOIN",
+          "joinMode": "SYNC",
           "optional": true
         },
         {
@@ -549,6 +434,7 @@
           "name": "review_fan_join",
           "taskReferenceName": "review_fan_join",
           "type": "JOIN",
+          "joinMode": "SYNC",
           "optional": true
         },
         {
@@ -564,7 +450,8 @@
             "joined": "${review_fan_join.output}",
             "maxReviewAttempts": "${workflow.input.maxReviewAttempts}",
             "parentCorrelationId": "${workflow.input.parentCorrelationId}",
-            "maxRescues": "${workflow.input.maxRescues}"
+            "maxRescues": "${workflow.input.maxRescues}",
+            "subsystemId": "${workflow.input.subsystemId}"
           }
         },
         {
@@ -605,10 +492,34 @@
             "acceptanceCommands": "${replan.output.acceptanceCommands}",
             "testWriteRoots": "${replan.output.writeRoots}",
             "starved": "${monitor.output.starved}",
-            "teamGateCommands": "${replan.output.gateCommands}"
+            "teamGateCommands": "${replan.output.gateCommands}",
+            "testMode": "${replan.output.testMode}"
           }
         }
       ]
+    },
+    {
+      "name": "team_gate_refresh",
+      "taskReferenceName": "gate_refresh",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.workflowId}",
+        "sharedRepo": "${workspace.output.worktreePath}",
+        "parentCorrelationId": "${workflow.input.parentCorrelationId}",
+        "subsystemId": "${workflow.input.subsystemId}"
+      }
+    },
+    {
+      "name": "capture_gate",
+      "taskReferenceName": "capture_gate",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "finalHead": "${gate_refresh.output.finalHead}",
+        "acceptanceCommands": "${gate_refresh.output.acceptanceCommands}",
+        "testWriteRoots": "${gate_refresh.output.writeRoots}",
+        "teamGateCommands": "${gate_refresh.output.gateCommands}",
+        "testMode": "${gate_refresh.output.testMode}"
+      }
     },
     {
       "name": "worktree_add",
@@ -630,13 +541,11 @@
       "inputParameters": {
         "repoPath": "${tests_fork.output.worktreePath}",
         "candidateCommit": "${tests_fork.output.initialCommit}",
-        "testMode": "full",
+        "testMode": "${workflow.variables.testMode}",
         "priorVerification": {
           "commands": "${workflow.variables.acceptanceCommands}"
         },
         "allowedWriteRoots": "${workflow.variables.testWriteRoots}",
-        "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
-        "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
         "maxFixAttempts": "${workflow.input.maxFixAttempts}",
         "model": "${workflow.input.codeModel}",
         "maxTurns": "${workflow.input.maxTurns}",

@@ -33,7 +33,6 @@ ordinary templates:
 | `convergence_subtask` | `convergence_spike` items |
 | `bug_repro`, `project_scaffold` | `bug_fix` reproduction, `project_bootstrap` skeleton |
 | `delivery_repair`, `test_repair`, `merge_conflict` | completing a delivery, failing tests, git conflicts |
-| `test_propose_commands`, `test_author_missing` | `test_agent_fallback` |
 | `retrospective`, `openspec_artifact` | end-of-run learnings, one OpenSpec artifact |
 
 To change any of them for one repository, commit `.conductor/<key>.md`; it can use the same

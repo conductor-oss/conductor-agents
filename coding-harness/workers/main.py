@@ -34,13 +34,13 @@ import time
 from pathlib import Path
 
 from conductor.client.automator.task_handler import TaskHandler
-from common import check_execution
+from common import backend_auth, check_execution
 from common.conductor_config import configuration_from_env
 from common.polling import configure_registered_workers, configure_sdk_polling, poll_interval_ms, poll_timeout_ms
 from common import orphans, source_watch
 from common.worker_lock import DuplicateWorkerError, singleton_worker
 
-DEFAULT_MODULES = "coding_agent,gitops,campaign,team,stages,openspec,openspecops,automation,model_policy,planning"
+DEFAULT_MODULES = "coding_agent,gitops,campaign,team,swarm,stages,architect,openspec,openspecops,automation,model_policy,planning"
 
 # Direct ``python workers/main.py`` launches previously resolved Python from a
 # virtualenv, but does not add that virtualenv's bin directory for subprocesses.
@@ -75,6 +75,10 @@ def main() -> None:
     # Do not permit an operator environment to turn the server's normalized
     # response lease into a hidden execution deadline.
     os.environ["CONDUCTOR_WORKER_ALL_LEASE_EXTEND_ENABLED"] = "true"
+    # Every poller of this generation knows its leader: the drain marker names the generation it
+    # pauses, so a successor started beside a draining predecessor polls at once.
+    os.environ[source_watch.LEADER_ENV] = str(os.getpid())
+    source_watch.end_drain()  # a marker of this generation's own (or of a dead one) is cleared; it polls
     modules = [m.strip() for m in os.environ.get("WORKER_MODULES", DEFAULT_MODULES).split(",") if m.strip()]
     for mod in modules:
         importlib.import_module(mod)
@@ -84,7 +88,7 @@ def main() -> None:
     # predecessor left behind without comparing clocks (``common.orphans``).
     from conductor.client.automator.task_handler import _decorated_functions
     generation_started_ms = int(time.time() * 1000)
-    identity = orphans.generation_identity(socket.gethostname(), generation_started_ms)
+    identity = orphans.generation_identity(socket.gethostname(), generation_started_ms, os.getpid())
     for record in _decorated_functions.values():
         record["worker_id"] = identity
 
@@ -93,6 +97,8 @@ def main() -> None:
     log.info("polling Conductor at %s (authentication=%s)",
              os.environ.get("CONDUCTOR_SERVER_URL", "<unset>"), auth_mode)
     log.info("poll configuration: longPollMs=%s emptyQueueIntervalMs=%s", poll_timeout_ms(), poll_interval_ms())
+    for line in backend_auth.report_lines():
+        log.info("backend credential: %s", line)
     server_url = os.environ.get("CONDUCTOR_SERVER_URL", "<unset>")
     try:
         with singleton_worker(server_url, modules) as lock_path:
@@ -105,7 +111,13 @@ def main() -> None:
                 # reaches nothing until someone restarts the generation by
                 # hand, and the stale answer is indistinguishable from a wrong
                 # fix. The supervisor relaunches whatever this leader leaves.
-                source_watch.watch(on_reload=lambda: os.kill(os.getpid(), signal.SIGTERM))
+                def _handover() -> bool:
+                    from common import worker_lock
+                    worker_lock.release_all()  # the successor takes the deployment locks
+                    return source_watch.start_successor(leader=os.getpid())
+
+                source_watch.watch(on_reload=lambda: os.kill(os.getpid(), signal.SIGTERM),
+                                   on_handover=_handover)
                 handler.join_processes()
     except DuplicateWorkerError as exc:
         log.error("%s", exc)

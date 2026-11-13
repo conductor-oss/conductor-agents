@@ -75,7 +75,7 @@ def test_loop_conditions_read_the_loops_own_iteration_output():
             for t in ts:
                 if t["taskReferenceName"] == loop_ref:
                     return t
-                for sub in [t.get("loopOver", [])] + list(t.get("decisionCases", {}).values()):
+                for sub in [t.get("loopOver", [])] + list(t.get("decisionCases", {}).values()) + list(t.get("forkTasks") or []):
                     r = find(sub)
                     if r:
                         return r

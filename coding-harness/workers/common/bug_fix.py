@@ -44,7 +44,7 @@ def fix_outcome(*, reproduced: object, tests_passed: object, test_state: object 
                 final_head: str = "", repro_test_tampered: object = False) -> dict:
     """Fold the run into an honest verdict. FIXED iff the bug was reproduced (red at parent) AND the
     branch is now green (the repro test, committed as a regression guard, passes at the fix) AND the
-    fix did not tamper with the repro test (H13 — the author must not weaken the oracle to pass)."""
+    fix did not tamper with the repro test (H13 — the author must not weaken the check to pass)."""
     reproduced = reproduced is True
     passed = tests_passed is True
     tampered = repro_test_tampered is True
@@ -56,7 +56,7 @@ def fix_outcome(*, reproduced: object, tests_passed: object, test_state: object 
     if tampered:
         return {"fixed": False, "verdict": "NOT_FIXED",
                 "report": ("NOT_FIXED: the fix modified the regression test after it was committed red "
-                           "(oracle tampering, H13) — a green under a weakened test is not a fix. "
+                           "(check tampering, H13) — a green under a weakened test is not a fix. "
                            f"Head {head[:12]}.")}
     if passed:
         return {"fixed": True, "verdict": "FIXED",

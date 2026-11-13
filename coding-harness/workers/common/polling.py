@@ -18,6 +18,7 @@ failure, backs off and polls again; no running task is touched.
 
 from __future__ import annotations
 
+import time
 from functools import partial, update_wrapper
 import os
 
@@ -66,14 +67,21 @@ def poll_response_bound() -> tuple[float, float]:
     return (POLL_CONNECT_BOUND_S, poll_timeout_ms() / 1000.0 + POLL_RESPONSE_GRACE_S)
 
 
+# No task type runs single-file: a program's ranks fork several teams whose board steps (standups,
+# integrations, commits, folds) arrive together, and one thread per type queued them behind each other.
+MIN_WORKER_THREADS = 4
+
+
 def worker_thread_count(task_name: str, current: int) -> int:
     """Resolve an operator concurrency floor for one task type.
 
     A concurrency bound is not an execution deadline: it decides how many tasks
     may run at once, never how long a running task may take. It only ever
-    *raises* the value a worker declared, so an explicit decorator setting made
-    for a heavy task can never be silently lowered by a broad env var.
+    *raises* the value a worker declared (never below ``MIN_WORKER_THREADS``), so an
+    explicit decorator setting made for a heavy task can never be silently lowered by a
+    broad env var.
     """
+    current = max(int(current or 1), MIN_WORKER_THREADS)
     specific = os.environ.get(f"CONDUCTOR_WORKER_THREADS_{task_name.upper()}")
     general = os.environ.get("CONDUCTOR_WORKER_THREADS")
     for value in (specific, general):
@@ -87,6 +95,11 @@ def worker_thread_count(task_name: str, current: int) -> int:
     return current
 
 
+def _draining() -> bool:
+    from common import source_watch
+    return source_watch.draining()
+
+
 def configure_sdk_polling() -> None:
     """Patch the SDK request boundary before worker processes are spawned."""
     from conductor.client.http.api.async_task_resource_api import AsyncTaskResourceApi
@@ -96,6 +109,10 @@ def configure_sdk_polling() -> None:
         original_sync = TaskResourceApi.batch_poll
 
         def batch_poll(self, tasktype, **kwargs):
+            if _draining():
+                # A reload is pending: claim nothing, let in-flight work finish (common.source_watch).
+                time.sleep(poll_interval_ms() / 1000.0)
+                return []
             kwargs["timeout"] = poll_timeout_ms()
             kwargs["_request_timeout"] = poll_response_bound()
             return original_sync(self, tasktype, **kwargs)
@@ -107,6 +124,10 @@ def configure_sdk_polling() -> None:
         original_async = AsyncTaskResourceApi.batch_poll
 
         async def batch_poll(self, tasktype, **kwargs):
+            if _draining():
+                import asyncio
+                await asyncio.sleep(poll_interval_ms() / 1000.0)
+                return []
             kwargs["timeout"] = poll_timeout_ms()
             kwargs["_request_timeout"] = poll_response_bound()
             return await original_async(self, tasktype, **kwargs)

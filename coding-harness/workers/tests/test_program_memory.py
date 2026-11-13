@@ -29,7 +29,7 @@ def test_program_report_verdicts():
     assert good["verdict"] == "PROGRAM_DELIVERED" and good["ranks"] == [["core"], ["api"]]
     bad = program.program_report(subsystems=subs, delivered=False, verdict="INCOMPLETE", total=2,
                                  done_count=1, tests_passed=False)
-    assert bad["verdict"] == "PROGRAM_INCOMPLETE"
+    assert bad["verdict"] == "PROGRAM_NEEDS" and bad["needs"][0]["kind"] == "owner decision"  # never a graded failure
     cyc = program.program_report(subsystems=[{"id": "a", "dependsOn": ["b"]}, {"id": "b", "dependsOn": ["a"]}],
                                  delivered=False, verdict="x")
     assert cyc["verdict"] == "PROGRAM_PLAN_CYCLIC"

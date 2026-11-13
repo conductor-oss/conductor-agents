@@ -28,6 +28,8 @@ UNATTENDED worker:
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import logging
 import os
 from typing import Any
@@ -36,8 +38,41 @@ from common.tool_policy import DEFAULT_ALLOWED_TOOLS, DEFAULT_DISALLOWED_TOOLS
 
 import claude_agent_sdk as sdk
 
+from . import backend_auth, check_execution
 from .cost import usage_tokens
 from .exec import run
+
+_CLI_CHOICE: list[str | None] = []
+
+
+def _cli_version(path: str) -> tuple[int, ...]:
+    import re
+    try:
+        out = run([path, "--version"], check=False).stdout
+    except OSError:
+        return ()
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", out or "")
+    return tuple(int(x) for x in m.groups()) if m else ()
+
+
+def claude_cli() -> str | None:
+    """The Claude Code CLI every session runs: ``CONDUCTOR_CLAUDE_CLI`` when set, else the newer of the
+    one bundled with the agent SDK and the one installed on the host (None = the SDK's own choice, the
+    bundled one). The bundled CLI was 2.1.208 while 2.1.322 was installed: every session ran a CLI 114
+    releases old that could not run Opus 5.5 at all, so the planner was stuck on the slower Opus 4.8
+    (2026-11-11). Chosen once per process."""
+    if _CLI_CHOICE:
+        return _CLI_CHOICE[0]
+    import shutil
+    from pathlib import Path
+    chosen = os.environ.get("CONDUCTOR_CLAUDE_CLI") or None
+    if not chosen:
+        bundled = Path(sdk.__file__).parent / "_bundled" / "claude"
+        host = shutil.which("claude")
+        if host and (not bundled.exists() or _cli_version(host) > _cli_version(str(bundled))):
+            chosen = host
+    _CLI_CHOICE.append(chosen)
+    return chosen
 
 log = logging.getLogger("coding_agent")
 
@@ -173,6 +208,21 @@ SCOPE_BOUNDARY = (
 
 TOOL_CACHE_DIR = ".cc-cache"
 
+# The package registries and tool downloads a build needs. Claude's OS sandbox allows NO egress
+# unless a session names domains, so every `npm install` an implementer ran answered 403 from the
+# sandbox proxy and the build shipped untested while the prompt told it to install first (run
+# 74bd988c: ten turns fighting the registry). Codex's workspace-write sandbox has network on.
+DEFAULT_ALLOWED_DOMAINS = [
+    "registry.npmjs.org", "registry.yarnpkg.com", "nodejs.org",
+    "pypi.org", "files.pythonhosted.org",
+    "proxy.golang.org", "sum.golang.org", "storage.googleapis.com",
+    "repo.maven.apache.org", "repo1.maven.org", "plugins.gradle.org", "services.gradle.org",
+    "crates.io", "static.crates.io", "index.crates.io",
+    "rubygems.org", "index.rubygems.org",
+    "playwright.download.prss.microsoft.com", "cdn.playwright.dev", "playwright.azureedge.net",
+    "github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com",
+]
+
 
 def _tool_cache_env(worktree_abs: str) -> dict[str, str]:
     """Build caches the sandboxed Bash can write. The OS sandbox allows writes only inside the worktree,
@@ -181,18 +231,33 @@ def _tool_cache_env(worktree_abs: str) -> dict[str, str]:
     The cache lives in the worktree under a git-excluded directory, so it is never committed."""
     from . import git
     cache = os.path.join(worktree_abs, TOOL_CACHE_DIR)
-    os.makedirs(os.path.join(cache, "go-build"), exist_ok=True)
-    os.makedirs(os.path.join(cache, "tmp"), exist_ok=True)
-    rel = git.git(worktree_abs, "rev-parse", "--git-path", "info/exclude", check=False).stdout.strip()
-    if rel:
-        exclude = rel if os.path.isabs(rel) else os.path.join(worktree_abs, rel)
-        os.makedirs(os.path.dirname(exclude), exist_ok=True)
-        text = open(exclude).read() if os.path.exists(exclude) else ""
-        if f"/{TOOL_CACHE_DIR}/" not in text.split("\n"):
-            with open(exclude, "a") as fh:
-                fh.write(("" if not text or text.endswith("\n") else "\n") + f"/{TOOL_CACHE_DIR}/\n")
+    # npm and pip too: `npm install` died on EPERM opening ~/.npm/_cacache from the sandbox, so a React
+    # team's first three implementers could neither test nor build (run a8167484).
+    # Maven and Gradle too: the sandbox denied writes to ~/.m2, so no backend agent could build or
+    # verify a Spring Boot service (run 18e18490).
+    for sub in ("go-build", "tmp", "npm", "pip", "m2", "gradle"):
+        os.makedirs(os.path.join(cache, sub), exist_ok=True)
+    git.exclude_path(worktree_abs, f"/{TOOL_CACHE_DIR}/")
+    git.exclude_generated(worktree_abs)
+    # The browser is a host service over loopback (common/browser_service): the sandbox cannot launch
+    # one, so a scenario connects to it instead and the implementer runs the check itself.
+    from . import browser_service, team_channel
+    team_channel.install_client(worktree_abs)
     return {"GOCACHE": os.path.join(cache, "go-build"), "GOTMPDIR": os.path.join(cache, "tmp"),
-            "PYTHONDONTWRITEBYTECODE": "1"}
+            "npm_config_cache": os.path.join(cache, "npm"), "PIP_CACHE_DIR": os.path.join(cache, "pip"),
+            "PYTHONDONTWRITEBYTECODE": "1", "CI": "1",
+            "MAVEN_OPTS": " ".join(filter(None, [os.environ.get("MAVEN_OPTS", ""),
+                                                 f"-Dmaven.repo.local={os.path.join(cache, 'm2')}"])),
+            "GRADLE_USER_HOME": os.path.join(cache, "gradle"),
+            # The tree's own tool bin first: `npm` there serializes installs across the teammates
+            # sharing this tree (three concurrent installs left node_modules without jsdom, run c6c1e7a7).
+            "CONDUCTOR_PATH_PREPEND": os.path.join(cache, "bin"), **browser_service.ensure(),
+            # Everything this session starts carries its launch marker, so what it leaves running is
+            # stopped when the session ends (run_coding_agent; check_execution.reap_marked).
+            **({check_execution.LAUNCH_MARKER: m} if (m := _SESSION_MARKER.get()) else {})}
+
+
+_SESSION_MARKER: contextvars.ContextVar[str] = contextvars.ContextVar("conductor_session_marker", default="")
 
 
 def _worktree_guard(worktree_abs: str, write_roots: list[str] | None = None) -> sdk.HookMatcher:
@@ -422,7 +487,22 @@ async def _drive(prompt: str, options: sdk.ClaudeAgentOptions,
     }
 
 
-async def run_coding_agent(
+async def run_coding_agent(*args, **kwargs) -> dict:
+    """Run one agent session (``_run_session``), then stop anything it left running: an app or server
+    an agent started in the background outlives its shell, and a Codex session's `start.sh` held the
+    app's ports for the rest of run 3e3991fc. The session is over, so this is cleanup, not a deadline."""
+    marker = check_execution.new_launch_marker()
+    token = _SESSION_MARKER.set(marker)
+    try:
+        return await _run_session(*args, **kwargs)
+    finally:
+        _SESSION_MARKER.reset(token)
+        reaped = await asyncio.to_thread(check_execution.reap_marked, marker)
+        if reaped:
+            log.info("stopped %d process(es) an agent session left running", reaped)
+
+
+async def _run_session(
     prompt: str,
     *,
     worktree: str,
@@ -577,14 +657,22 @@ async def run_coding_agent(
         from .codex import run_codex_agent
         # Native async (openai-codex SDK; internally falls back to the CLI on a
         # worker thread). Passes `effort` through — honored by the SDK driver.
-        return await run_codex_agent(
+        res = await run_codex_agent(
             prompt, worktree=worktree_abs, model=model,
             write=_is_write_surface(tools), effort=effort,
             output_schema=output_schema, resume_session_id=resume_session_id,
             on_turn=on_turn,
             extra_env=(await asyncio.to_thread(_tool_cache_env, worktree_abs)
                        if _is_write_surface(tools) else None),
+            steer=(feedback.poll_text if feedback is not None and getattr(feedback, "active", False) else None),
+            max_budget_usd=max_budget_usd,
         )
+        if feedback is not None:
+            # The same provenance the Claude path records: what the board delivered into the session.
+            res.update(feedback.report())
+            if feedback.interrupted_by:
+                res["status"] = "interrupted"
+        return res
     if be == "gemini":
         from .gemini import run_gemini_agent
         # Blocking subprocess driver — a worker thread, not the shared event loop.
@@ -620,8 +708,12 @@ async def run_coding_agent(
         # env MERGES on top of the inherited env in Python (doc gotcha #17), so this
         # keeps ANTHROPIC_API_KEY/PATH while disabling auto-memory for reproducibility.
         "env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+                # The claude.ai login or the API key, as CLAUDE_AUTH decides (common/backend_auth):
+                # in login mode the key is blanked so the CLI signs in with the stored login.
+                **backend_auth.overrides("claude"),
                 **(await asyncio.to_thread(_tool_cache_env, worktree_abs) if sandbox_enabled else {})},
         "permission_mode": "dontAsk",
+        "cli_path": claude_cli(),
         # Availability trim: only these built-ins exist in context (doc §6).
         "tools": tools if tools is not None else DEFAULT_TOOLS,
         "allowed_tools": allowed_tools if allowed_tools is not None else DEFAULT_ALLOWED_TOOLS,

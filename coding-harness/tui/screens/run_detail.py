@@ -109,6 +109,21 @@ class RunDetail(Screen):
         t.append(f"{fmt.status_glyph(run.status)} {run.status}", style=fmt.status_color(run.status))
         t.append(f" · {fmt.duration(run.duration_ms())} · "
                  f"{fmt.tokens(tokens)} tok · {fmt.cost(cost)}", style="grey62")
+        # A program's definition of done: the score against its threshold, the ladder rung it ended on
+        # and what it needs (PROGRAM_NEEDS is never a failure: Continue resumes at that rung).
+        out = run.output or {}
+        if out.get("score") is not None:
+            try:
+                score, thr = float(out.get("score")), float(out.get("threshold") or 1.0)
+            except (TypeError, ValueError):
+                score, thr = 0.0, 1.0
+            t.append(f" · done {score:.2f}/{thr:.2f}", style="green" if score >= thr - 1e-9 else "yellow")
+            if out.get("rung"):
+                t.append(f" · {out['rung']}", style="grey62")
+            needs = out.get("needs") if isinstance(out.get("needs"), list) else []
+            if needs:
+                t.append(" · needs " + ", ".join(str((n or {}).get("kind") or "") for n in needs if isinstance(n, dict)),
+                         style="bold yellow")
         gate = d.pending_gate() if run.running else None
         if gate and gate.input.get("workflow") == "feature_campaign":
             phase = gate.input.get("phase") or "checkpoint"

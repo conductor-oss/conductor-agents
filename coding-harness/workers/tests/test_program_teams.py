@@ -47,6 +47,9 @@ def test_program_board_ranks_children_and_rollups(monkeypatch, tmp_path, fake_ta
     child = rb["dynamicTasksInput"]["team_model"]
     assert rb["dynamicTasks"][0]["subWorkflowParam"]["name"] == "team_build"
     assert child["parentCorrelationId"] == pid and child["workspacePath"] == "/w" and child["forceTeam"] is True
+    # A one-item team authors no separate acceptance test (the scouts' check is the one the builder did not
+    # write); a team of several items keeps its authors.
+    assert len(child["subtasks"]) == 1 and child["authorAcceptanceTests"] is False
 
     # The child team registers itself on the program board (team tree).
     team_plan_init(fake_task_input(correlationId="child-model", subtasks=child["subtasks"], contractPaths=[],
@@ -63,13 +66,15 @@ def test_program_board_ranks_children_and_rollups(monkeypatch, tmp_path, fake_ta
     rb2 = program_rank_build(fake_task_input(correlationId=pid, ceilingUsd=30)).output_data
     assert rb2["rank"] == ["api", "store"] and rb2["childBudgetUsd"] == 13.0  # (30 - 4) / 2
     assert [i["id"] for i in rb2["dynamicTasksInput"]["team_store"]["subtasks"]] == ["s1", "s2"]
+    assert rb2["dynamicTasksInput"]["team_store"]["authorAcceptanceTests"] is True
     ap2 = program_apply_rank(fake_task_input(correlationId=pid, rank=["api", "store"], maxTeamAttempts=1, joined={
         "team_api__2": {"output": {"delivered": True, "verdict": "DELIVERED"}},
         "team_store__2": {"output": {"delivered": False, "verdict": "INCOMPLETE", "report": "s2 blocked"}}})).output_data
     assert ap2["continue"] is False and ap2["rankDelivered"] is False
     assert "INCOMPLETE" in tb.fold_board(pid)["items"]["store"]["reason"]
     out = program_outcome(fake_task_input(correlationId=pid, subsystems=SUBS, testsPassed=True)).output_data
-    assert out["programDelivered"] is False and out["verdict"] == "PROGRAM_INCOMPLETE"
+    # Never a graded failure: a program that did not deliver names what it needs (first principle).
+    assert out["programDelivered"] is False and out["verdict"] == "PROGRAM_NEEDS" and out["needs"]
     assert {c["subsystem"] for c in out["children"]} == {"model", "api", "store"}
 
 
@@ -137,17 +142,22 @@ def test_design_docs_reslice_the_remaining_subsystems_before_their_rank_is_built
     assert ap2["breakdown"] == "no" and ap2["breakdownPrompt"] == ""
 
     wf = json.load(open(os.path.join(os.path.dirname(__file__), "..", "workflows", "cc_program.json")))
-    loop = next(t for t in wf["tasks"] if t["taskReferenceName"] == "rank_loop")["loopOver"]
-    assert [t["taskReferenceName"] for t in loop] == ["rank_build", "rank_fan_out", "rank_join", "apply_rank",
-                                                      "breakdown_gate", "capture_rank"]
-    gate = loop[4]
+    fork = next(t for t in wf["tasks"] if t["taskReferenceName"] == "define_and_build")
+    loop = next(t for b in fork["forkTasks"] for t in b if t["taskReferenceName"] == "rank_loop")["loopOver"]
+    # After every integrated rank the Architect scores the head and files items before the breakdown.
+    # The previous rank's evaluation runs beside this rank's build; the breakdown follows the join.
+    assert [t["taskReferenceName"] for t in loop] == ["rank_step", "rank_step_join", "apply_rank", "breakdown_gate", "capture_rank"]
+    assert [[t["taskReferenceName"] for t in b] for b in loop[0]["forkTasks"]] == [
+        ["rank_contract_run", "rank_eval_gate"], ["rank_build", "rank_fan_out", "rank_join"]]
+    gate = loop[3]
     assert gate["inputParameters"] == {"breakdown": "${apply_rank.output.breakdown}"}
     agent = gate["decisionCases"]["yes"][0]
     assert agent["name"] == "coding_agent" and agent["optional"] is True
     assert agent["inputParameters"]["worktreePath"] == "${workspace.output.worktreePath}"
     assert agent["inputParameters"]["prompt"] == "${apply_rank.output.breakdownPrompt}"
-    assert loop[5]["inputParameters"]["breakdown"] == "${rank_breakdown.output}"
-    assert loop[0]["inputParameters"]["breakdown"] == "${workflow.variables.breakdown}"
+    assert loop[4]["inputParameters"]["breakdown"] == "${rank_breakdown.output}"
+    assert loop[4]["inputParameters"]["lastRank"] == "${rank_build.output.rank}"
+    assert loop[0]["forkTasks"][1][0]["inputParameters"]["breakdown"] == "${workflow.variables.breakdown}"
 
 
 def test_nested_program_recurses_within_max_depth(monkeypatch, tmp_path, fake_task_input):
@@ -277,8 +287,8 @@ def test_breakdown_prompt_asks_for_each_source_files_test_file():
 
 def test_a_team_is_not_re_run_once_the_programs_budget_is_spent(monkeypatch, tmp_path, fake_task_input):
     """With the program's ceiling spent, a re-run team would get a zero share and end at its not-startable
-    gate — up to four times, each with a retrospective. The program blocks the subsystem naming the
-    budget instead."""
+    gate — up to four times, each with a retrospective. The subsystem is handed to the Architect
+    (``review``) with a ``need`` naming the budget; the ladder ends the run on it, never a block."""
     _iso(monkeypatch, tmp_path)
     pid = "prog-broke"
     program_rank_init(fake_task_input(correlationId=pid, plan={"subtasks": SUBS, "contractPaths": []},
@@ -289,8 +299,9 @@ def test_a_team_is_not_re_run_once_the_programs_budget_is_spent(monkeypatch, tmp
                                      "spendUsd": 10.0}}})).output_data
     assert ap["retrying"] == [] and ap["continue"] is False and ap["results"][0]["budgetExhausted"] is True
     item = tb.fold_board(pid)["items"]["model"]
-    assert item["state"] == tb.BLOCKED and "budget exhausted ($10.00 of $10.00" in item["reason"]
+    assert item["state"] == tb.REVIEW and "budget exhausted ($10.00 of $10.00" in item["reason"]
     assert [e["kind"] for e in tb.open_exceptions(tb.fold_board(pid)["exceptions"])] == ["budget"]
+    assert [n["data"]["kind"] for n in bb.read_facts(pid, kind="need")] == ["budget"]
     # Budget left: the same outcome is re-run as before.
     pid = "prog-flush"
     program_rank_init(fake_task_input(correlationId=pid, plan={"subtasks": SUBS, "contractPaths": []},
@@ -308,6 +319,8 @@ def test_a_team_is_not_re_run_once_the_programs_budget_is_spent(monkeypatch, tmp
             yield from walk(t.get("loopOver") or [])
             for c in (t.get("decisionCases") or {}).values():
                 yield from walk(c)
+            for b in t.get("forkTasks") or []:
+                yield from walk(b)
     apply = next(t for t in walk(wf["tasks"]) if t["taskReferenceName"] == "apply_rank")
     assert apply["inputParameters"]["ceilingUsd"] == "${workflow.input.ceilingUsd}"
 
@@ -350,11 +363,12 @@ def test_an_incomplete_team_is_re_run_once_with_its_diagnosis(monkeypatch, tmp_p
         "team_store__3": {"output": {"delivered": True, "verdict": "DELIVERED"}}})).output_data
     assert ap2["continue"] is True and ap2["rankDelivered"] is True and ap2["retrying"] == []
     assert tb.fold_board(pid)["items"]["api"]["state"] == tb.DONE
-    # A second failure of the same team, past the cap, blocks it as before.
+    # A second failure of the same team, past the cap, hands it to the Architect's ladder (never a block).
     tb.set_state(pid, "program", "cli", tb.IN_PROGRESS, attempt=1)
     ap3 = program_apply_rank(fake_task_input(correlationId=pid, rank=["cli"], joined={
         "team_cli__4": {"output": {"delivered": False, "verdict": "INCOMPLETE", "report": "still red"}}})).output_data
-    assert ap3["continue"] is False and tb.fold_board(pid)["items"]["cli"]["state"] == tb.BLOCKED
+    assert ap3["continue"] is False and tb.fold_board(pid)["items"]["cli"]["state"] == tb.REVIEW
+    assert "handed to the architect" in tb.fold_board(pid)["items"]["cli"]["reason"]
     import json as _j
     wf = _j.load(open(os.path.join(os.path.dirname(__file__), "..", "workflows", "cc_program.json")))
     assert wf["inputTemplate"]["maxTeamAttempts"] == 5
@@ -365,6 +379,8 @@ def test_an_incomplete_team_is_re_run_once_with_its_diagnosis(monkeypatch, tmp_p
                 yield from walk(t.get(k) or [])
             for c in (t.get("decisionCases") or {}).values():
                 yield from walk(c)
+            for b in t.get("forkTasks") or []:
+                yield from walk(b)
     loop = [t for t in walk(wf["tasks"]) if t.get("taskReferenceName") == "rank_loop"][0]
     assert "$.max_iterations" in loop["loopCondition"]
     assert loop["inputParameters"]["max_iterations"] == "${rank_init.output.maxRankIterations}"

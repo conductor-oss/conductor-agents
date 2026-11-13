@@ -1,0 +1,12 @@
+schema: spec-driven
+rules:
+  tasks:
+  - 'Each numbered task group MUST be independent of every other group and file-disjoint:
+    no file may be listed under more than one group. Immediately under each `## N.
+    <title>` heading, before its checkbox items, add a `Files:` line listing every
+    file the group touches (comma-separated) and a `Test:` line with the command that
+    verifies it. Example:
+
+    Files: path/a.py, path/b.py
+
+    Test: pytest path/to/test_a.py'

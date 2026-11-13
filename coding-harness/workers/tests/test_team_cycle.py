@@ -25,6 +25,27 @@ _ITEMS = [
 ]
 
 
+def _task(d, ref):
+    """A task of the workflow by reference name, inside loops, switch cases and fork branches."""
+    def walk(ts):
+        for t in ts:
+            if t.get("taskReferenceName") == ref:
+                return t
+            for k in ("loopOver", "defaultCase"):
+                r = walk(t.get(k) or [])
+                if r:
+                    return r
+            for b in (t.get("decisionCases") or {}).values():
+                r = walk(b)
+                if r:
+                    return r
+            for b in t.get("forkTasks") or []:
+                r = walk(b)
+                if r:
+                    return r
+    return walk(d["tasks"])
+
+
 def _commit_all(repo, msg):
     git.git(repo, "add", "-A")
     git.git(repo, "commit", "-m", msg)
@@ -158,7 +179,7 @@ def test_integrate_empty_delivery_reopens_then_blocks_at_cap(monkeypatch, tmp_pa
 
 # ─────────────────────────── peer review: build + apply ────────────────────────
 def test_review_criteria_hidden_from_implementer_shown_to_reviewer(monkeypatch, tmp_path, fake_task_input):
-    # H8/H13: reviewCriteria are the reviewer's oracle — injected into the reviewer, never the implementer.
+    # H8/H13: reviewCriteria are the reviewer's check — injected into the reviewer, never the implementer.
     _isolate_board(monkeypatch, tmp_path)
     cid = "run-hidden"
     shared = str(tmp_path / "shared")
@@ -177,7 +198,7 @@ def test_review_criteria_hidden_from_implementer_shown_to_reviewer(monkeypatch, 
     prompt = su["dynamicTasksInput"]["a"]["prompt"]
     assert "add returns the sum" in prompt and "raise ValueError on string input" not in prompt
 
-    # Reviewer prompt must carry BOTH (the hidden criterion is the oracle).
+    # Reviewer prompt must carry BOTH (the hidden criterion is the check).
     with open(os.path.join(shared, "a.py"), "w") as fh:
         fh.write("def add(a, b):\n    return a + b\n")
     _commit_all(shared, "impl")
@@ -479,7 +500,7 @@ def test_swarm_workflows_never_wait_for_a_human():
         text = open(os.path.join(wf, f"{name}.json")).read()
         assert '"WAIT"' not in text and "humanAvailable" not in text, name
     d = json.load(open(os.path.join(wf, "team_build.json")))
-    loop = [t for t in d["tasks"] if t["taskReferenceName"] == "wave_loop"][0]
+    loop = _task(d, "wave_loop")
     assert "$.starved === false" in loop["loopCondition"]
 
 
@@ -586,7 +607,7 @@ def test_best_of_dispatches_candidates_and_integrates_only_the_winner(monkeypatc
     assert budget_gate.read_spend(cid)["usd"] == 0.5  # every candidate's spend counts
 
 
-# ─────────────────────────── WP6 acceptance tests: author ≠ oracle (H13) ────────
+# ─────────────────────────── WP6 acceptance tests: author ≠ check (H13) ────────
 def test_acceptance_authoring_freezes_red_tests_and_discards_tautologies(monkeypatch, tmp_path, fake_task_input):
     from team.tasks import team_acceptance_build, team_acceptance_commit, _file_verdicts
     _isolate_board(monkeypatch, tmp_path)
@@ -621,7 +642,7 @@ def test_acceptance_authoring_freezes_red_tests_and_discards_tautologies(monkeyp
     item = tb.fold_board(cid)["items"]["alpha"]
     assert item["acceptanceTests"] == ["tests/acceptance/test_accept_alpha.py"]
     assert item["testCommands"] == [{"argv": ["pytest", "-q", "tests/acceptance/test_accept_alpha.py"]}]
-    # The implementer is told about its frozen oracle and its own test gate is pinned to it; an edit of
+    # The implementer is told about its frozen check and its own test gate is pinned to it; an edit of
     # the acceptance test is now a frozen-contract (controlled) event.
     su = team_standup(fake_task_input(repoPath=shared, correlationId=cid, contractPaths=["contract.py"],
                                       maxWidth=6)).output_data
@@ -900,17 +921,18 @@ def test_apply_reviews_reports_the_head_after_an_approved_amendment(monkeypatch,
                                         testsPassed=True, testCycleState="tests_passed",
                                         testCommandsRan=ran)).output_data
     assert good["delivered"] is True and good["acceptanceTampered"] == []
-    # The same outcome at the integrate step's stale head is the live false "tampered" verdict.
+    # Handed the integrate step's stale head, the outcome still judges the branch as it is: a frozen
+    # test committed after the recorded head is not "modified after frozen" (runs ec0fb6dc, 884f7eec).
     stale = team_outcome(fake_task_input(correlationId=cid, repoPath=shared, finalHead=frozen,
                                          testsPassed=True, testCycleState="tests_passed",
                                          testCommandsRan=ran)).output_data
-    assert stale["delivered"] is False and stale["acceptanceTampered"] == ["tests/test_acc.py"]
+    assert stale["delivered"] is True and stale["acceptanceTampered"] == [] and stale["finalHead"] == git.head(shared)
     import json
     d = json.load(open(os.path.join(os.path.dirname(__file__), "..", "workflows", "team_build.json")))
-    loop = [t for t in d["tasks"] if t["taskReferenceName"] == "wave_loop"][0]
+    loop = _task(d, "wave_loop")
     capture = [t for t in loop["loopOver"] if t["taskReferenceName"] == "capture_round"][0]
     assert capture["inputParameters"]["finalHead"] == "${replan.output.finalHead}"
-    by_ref = {t["taskReferenceName"]: t for t in d["tasks"]}
+    by_ref = {ref: _task(d, ref) for ref in ("loop_init", "outcome", "tests", "tests_fork", "wave_loop", "acceptance_build", "acceptance_gate")}
     assert "set_candidate" not in by_ref  # the final cycle verifies its own fork's head (tests_fork)
     assert by_ref["outcome"]["inputParameters"]["finalHead"] == "${workflow.variables.finalHead}"
 
@@ -990,8 +1012,8 @@ def test_integrate_removes_the_worktrees_of_decided_forks(monkeypatch, tmp_path,
     assert git.WORKTREES not in git.git(shared, "worktree", "list", "--porcelain").stdout
 
 
-# ───────── the integration oracle: frozen tests re-run at the integrated head (run 299b4907) ─────────
-def _oracle_repo(tmp_path, cid, fake_task_input):
+# ───────── the integration check: frozen tests re-run at the integrated head (run 299b4907) ─────────
+def _check_repo(tmp_path, cid, fake_task_input):
     """alpha landed with a frozen test that asserts beta's key is ABSENT (true on alpha's fork); beta's
     frozen test is red until beta lands. Returns (shared, branch)."""
     shared = str(tmp_path / "shared")
@@ -1025,8 +1047,8 @@ def test_integrate_reopens_an_item_whose_frozen_test_fails_at_the_integrated_hea
     a red one re-opens its owner with the failure as its directive, and the just-landed sibling still
     goes to review."""
     _isolate_board(monkeypatch, tmp_path)
-    cid = "run-oracle"
-    shared, branch = _oracle_repo(tmp_path, cid, fake_task_input)
+    cid = "run-check"
+    shared, branch = _check_repo(tmp_path, cid, fake_task_input)
     _fork_worktree(shared, "beta", branch, edit=("registry.py", "H = {'alpha': 1, 'beta': 2}\n"))
     out = team_integrate(fake_task_input(
         sharedRepo=shared, sharedBranch=branch, correlationId=cid, contractPaths=[], groupIds="beta",
@@ -1034,8 +1056,8 @@ def test_integrate_reopens_an_item_whose_frozen_test_fails_at_the_integrated_hea
         sandboxChecks=False, joined={"beta__1": {"output": {"testsPassed": True, "deliveryOutcome": "passed"}}}
     )).output_data
     assert out["integratedCount"] == 1 and out["reviewing"] == ["beta"]
-    assert out["oracle"]["state"] == "failed" and out["oracle"]["checked"] == ["alpha", "beta"]
-    assert list(out["oracle"]["red"]) == ["alpha"] and "test_alpha" in out["oracle"]["red"]["alpha"]
+    assert out["check"]["state"] == "failed" and out["check"]["checked"] == ["alpha", "beta"]
+    assert list(out["check"]["red"]) == ["alpha"] and "test_alpha" in out["check"]["red"]["alpha"]
     assert out["retryCount"] == 1 and out["retry"][0]["id"] == "alpha"
     board = tb.fold_board(cid)
     assert board["items"]["beta"]["state"] == tb.REVIEW
@@ -1055,18 +1077,18 @@ def test_integrate_reopens_an_item_whose_frozen_test_fails_at_the_integrated_hea
     again = team_integrate(fake_task_input(
         sharedRepo=shared, sharedBranch=branch, correlationId=cid, contractPaths=[], groupIds="",
         dispatched=[], enablePeerReview=True, sandboxChecks=False, joined={})).output_data
-    assert again["oracle"] == {"state": "passed", "checked": ["alpha", "beta"], "red": {}}
+    assert again["check"] == {"state": "passed", "checked": ["alpha", "beta"], "red": {}}
     assert again["retryCount"] == 0 and tb.fold_board(cid)["items"]["alpha"]["state"] == tb.DONE
 
 
-def test_integrate_oracle_skips_a_fork_held_for_an_amendment_and_items_without_a_frozen_test(
+def test_integrate_check_skips_a_fork_held_for_an_amendment_and_items_without_a_frozen_test(
         monkeypatch, tmp_path, fake_task_input):
     """A fork held unmerged for the reviewer's amendment decision is red at the head by construction and
     must not be re-opened for it; an item with no frozen test is not checked."""
     _isolate_board(monkeypatch, tmp_path)
     from common import blackboard as bbx
-    cid = "run-oracle-held"
-    shared, branch = _oracle_repo(tmp_path, cid, fake_task_input)
+    cid = "run-check-held"
+    shared, branch = _check_repo(tmp_path, cid, fake_task_input)
     tb.set_state(cid, "lead", "beta", tb.REVIEW)  # integrated earlier, still awaiting its reviewer
     bbx.post_fact(cid, "integrator", "acceptance_amendment", {
         "item": "beta", "candidate": "beta", "paths": ["tests/acceptance/test_accept_beta.py"]})
@@ -1075,14 +1097,14 @@ def test_integrate_oracle_skips_a_fork_held_for_an_amendment_and_items_without_a
     out = team_integrate(fake_task_input(
         sharedRepo=shared, sharedBranch=branch, correlationId=cid, contractPaths=[], groupIds="",
         dispatched=[], enablePeerReview=True, sandboxChecks=False, joined={})).output_data
-    assert out["oracle"] == {"state": "passed", "checked": ["alpha"], "red": {}}
+    assert out["check"] == {"state": "passed", "checked": ["alpha"], "red": {}}
     assert tb.fold_board(cid)["items"]["beta"]["state"] == tb.REVIEW
 
 
 def test_outcome_refuses_delivery_when_the_final_cycle_ran_no_frozen_test(monkeypatch, tmp_path,
                                                                            fake_task_input):
     """`make test` green is not evidence about the frozen acceptance tests: the final cycle's executed
-    commands must name each of them, or the delivered head is unproven against its oracle."""
+    commands must name each of them, or the delivered head is unproven against its check."""
     _isolate_board(monkeypatch, tmp_path)
     cid = "run-unproven"
     shared = str(tmp_path / "shared")
@@ -1112,10 +1134,10 @@ def test_outcome_refuses_delivery_when_the_final_cycle_ran_no_frozen_test(monkey
     # Wiring: the final test cycle runs on its own fork (tests_fork), verifies that fork's head, carries
     # the DONE items' frozen-test commands (apply_reviews → capture_round) as its prior obligation and
     # repairs only inside the team's span; the outcome reads the commands it ran and integrates the
-    # fork; the integrator gets the sandbox flag for the per-wave oracle.
+    # fork; the integrator gets the sandbox flag for the per-wave check.
     import json
     d = json.load(open(os.path.join(os.path.dirname(__file__), "..", "workflows", "team_build.json")))
-    by_ref = {t["taskReferenceName"]: t for t in d["tasks"]}
+    by_ref = {ref: _task(d, ref) for ref in ("loop_init", "outcome", "tests", "tests_fork", "wave_loop", "acceptance_build", "acceptance_gate")}
     assert by_ref["tests_fork"]["name"] == "worktree_add" and by_ref["tests_fork"]["inputParameters"] == {
         "repoPath": "${workspace.output.worktreePath}", "name": "tests"}
     tests = by_ref["tests"]["inputParameters"]
@@ -1130,7 +1152,7 @@ def test_outcome_refuses_delivery_when_the_final_cycle_ran_no_frozen_test(monkey
     assert outcome["sharedBranch"] == "${workspace.output.branch}"
     assert by_ref["loop_init"]["inputParameters"]["acceptanceCommands"] == []
     assert by_ref["loop_init"]["inputParameters"]["testWriteRoots"] == []
-    loop = [t for t in d["tasks"] if t["taskReferenceName"] == "wave_loop"][0]
+    loop = _task(d, "wave_loop")
     in_loop = {t["taskReferenceName"]: t for t in loop["loopOver"]}
     assert in_loop["integrate"]["inputParameters"]["sandboxChecks"] == "${workflow.input.sandboxChecks}"
     assert in_loop["capture_round"]["inputParameters"]["acceptanceCommands"] == "${replan.output.acceptanceCommands}"
@@ -1139,7 +1161,7 @@ def test_outcome_refuses_delivery_when_the_final_cycle_ran_no_frozen_test(monkey
     assert in_loop["monitor"]["inputParameters"]["scopeWaits"] == "${standup.output.scopeWaits}"
 
 
-# ──────── the final test cycle on its own fork; done-items oracle; scope-wait deadlocks (run a4f1ff1f) ────────
+# ──────── the final test cycle on its own fork; done-items check; scope-wait deadlocks (run a4f1ff1f) ────────
 def test_outcome_integrates_a_green_final_cycle_repair_from_its_own_fork(monkeypatch, tmp_path, fake_task_input):
     """The final test cycle's repair agent ran in the SHARED worktree, where the agent runner resets the
     tree to the head the session started from: the store team's repair commit was parented on a commit
@@ -1185,13 +1207,13 @@ def test_outcome_integrates_a_green_final_cycle_repair_from_its_own_fork(monkeyp
     assert not os.path.isdir(fork2["worktreePath"])
 
 
-def test_apply_reviews_reports_the_done_items_oracle_and_the_team_span(monkeypatch, tmp_path, fake_task_input):
+def test_apply_reviews_reports_the_done_items_check_and_the_team_span(monkeypatch, tmp_path, fake_task_input):
     """The final cycle's obligations come from the board at the end of the loop: the frozen tests of the
     items that are DONE (an undone item's test is red by construction — the store team's final cycle ran
     st-core's test and its repair agent set out to implement st-core with write roots derived from the
     resp team's last commit, run a4f1ff1f) and the files this team's items span."""
     _isolate_board(monkeypatch, tmp_path)
-    cid = "run-replan-oracle"
+    cid = "run-replan-check"
     shared = str(tmp_path / "shared")
     git.ensure_ready(shared)
     with open(os.path.join(shared, "seed.py"), "w") as fh:
@@ -1465,7 +1487,7 @@ def test_integrate_treats_a_pushback_with_a_refused_edit_as_a_scope_gap(monkeypa
     shared = _scope_run(monkeypatch, tmp_path, fake_task_input, cid)
     branch = git._current_branch(shared)
     tb.set_state(cid, "lead", "core", tb.DONE)
-    tb.set_state(cid, "lead", "lru", tb.IN_PROGRESS, attempt=1)  # already re-opened once by the oracle
+    tb.set_state(cid, "lead", "lru", tb.IN_PROGRESS, attempt=1)  # already re-opened once by the check
     text = "Its frozen acceptance test FAILS on the shared branch; make it pass there"
     tb.post_directive(cid, "integrator", "lru", text, authority="agent")
     d1 = tb.fold_board(cid)["directives"][-1]["id"]
@@ -1488,7 +1510,9 @@ def test_integrate_treats_a_pushback_with_a_refused_edit_as_a_scope_gap(monkeypa
     su = team_standup(fake_task_input(repoPath=shared, correlationId=cid, contractPaths=["contract.go"],
                                       maxWidth=6)).output_data
     assert su["groupIds"] == "lru" and "store.go" in su["dynamicTasksInput"]["lru"]["allowedWriteRoots"]
-    # A pushback that refused nothing is still a refused constraint: exempted once, then blocked at the cap.
+    # A pushback that refused nothing is a refused directive: exempted and re-dispatched at the SAME attempt,
+    # never a block or a rescue (an item has only as many directives to refuse as it was given; five items
+    # went to stronger-tier helpers for refusing advice that was never theirs, run 351812b2).
     tb.set_state(cid, "lead", "lru", tb.IN_PROGRESS, attempt=1)
     _fork_worktree(shared, "lru", branch)
     plain = team_integrate(fake_task_input(maxRescues=0, 
@@ -1498,7 +1522,8 @@ def test_integrate_treats_a_pushback_with_a_refused_edit_as_a_scope_gap(monkeypa
             "summary": "no change", "pushback": {
                 "directive": "make the frozen acceptance test pass on the shared branch",
                 "reason": "the test contradicts the design"}}}}})).output_data
-    assert [b["item"] for b in plain["blocked"]] == ["lru"]
+    assert plain["blocked"] == [] and [r["id"] for r in plain["retry"]] == ["lru"]
+    assert tb.fold_board(cid)["items"]["lru"]["attempt"] == 1 and "exempted" in tb.fold_board(cid)["items"]["lru"]["reason"]
 
 
 def test_apply_reviews_at_the_cap_accepts_when_every_prior_finding_was_addressed(monkeypatch, tmp_path,
@@ -1583,18 +1608,22 @@ def test_a_program_team_is_gated_on_its_own_frozen_tests(monkeypatch, tmp_path, 
     child = team_apply_reviews(fake_task_input(correlationId=cid, sharedRepo=shared, sharedBranch=branch, reviewed=[],
                                                joined={}, parentCorrelationId="prog-1")).output_data
     assert child["gateCommands"] == [{"argv": ["pytest", "tests/acceptance/test_accept_alpha.py"]}]
+    assert child["gateMode"] == "commands" and child["testMode"] == "full"
     alone = team_apply_reviews(fake_task_input(correlationId=cid, sharedRepo=shared, sharedBranch=branch, reviewed=[],
                                                joined={})).output_data
-    assert alone["gateCommands"] == []
+    assert alone["gateCommands"] == [] and alone["testMode"] == "full" and alone["gateMode"] == "full"
     import json
     d = json.load(open(os.path.join(os.path.dirname(__file__), "..", "workflows", "team_build.json")))
-    by_ref = {t["taskReferenceName"]: t for t in d["tasks"]}
+    by_ref = {ref: _task(d, ref) for ref in ("loop_init", "outcome", "tests", "tests_fork", "wave_loop", "acceptance_build", "acceptance_gate")}
     assert by_ref["tests"]["inputParameters"]["testCommands"] == "${workflow.variables.teamGateCommands}"
     assert d["variables"]["teamGateCommands"] == []
-    loop = [t for t in d["tasks"] if t["taskReferenceName"] == "wave_loop"][0]
+    loop = _task(d, "wave_loop")
     in_loop = {t["taskReferenceName"]: t for t in loop["loopOver"]}
     assert in_loop["replan"]["inputParameters"]["parentCorrelationId"] == "${workflow.input.parentCorrelationId}"
     assert in_loop["capture_round"]["inputParameters"]["teamGateCommands"] == "${replan.output.gateCommands}"
+    assert in_loop["capture_round"]["inputParameters"]["testMode"] == "${replan.output.testMode}"
+    tests = next(t for t in d["tasks"] if t["taskReferenceName"] == "tests")
+    assert tests["inputParameters"]["testMode"] == "${workflow.variables.testMode}"  # a docs team: targeted, never the full suite
 
 
 def test_a_reviewer_naming_a_file_without_detail_still_blocks_done(monkeypatch, tmp_path, fake_task_input):
@@ -1672,7 +1701,7 @@ def test_a_reused_acceptance_test_gets_the_repositorys_own_command(monkeypatch, 
 
 def test_a_re_run_team_reuses_the_frozen_tests_already_on_the_branch(monkeypatch, tmp_path, fake_task_input):
     """A re-run team found its predecessor's acceptance tests on the branch. Re-authored, they would pass
-    at once (the code exists), be judged tautological and be deleted; they are reused as the oracle."""
+    at once (the code exists), be judged tautological and be deleted; they are reused as the check."""
     from team.tasks import team_acceptance_build, _frozen_acceptance
     _isolate_board(monkeypatch, tmp_path)
     cid = "run-reuse"
@@ -1883,3 +1912,334 @@ def test_model_tier_escalates_within_the_roles_tiers():
     assert d["inputTemplate"]["modelTier"] == 0
     t = json.load(open(os.path.join(os.path.dirname(__file__), "..", "workflows", "team_build.json")))
     assert t["inputTemplate"]["maxRescues"] == 2 and t["inputTemplate"]["baseModelTier"] == 0
+
+
+def test_apply_reviews_accepts_an_item_whose_only_findings_are_outside_the_teams_directories(
+        monkeypatch, tmp_path, fake_task_input):
+    """storage-core's second review asked only for docs/architecture.md, a file outside the store team's
+    directories that the standup can never widen to: the item was re-dispatched with a directive it had
+    to push back on, the Lead exempted it, and a fourth round began for nothing (run c4a9237d). Such a
+    round accepts the item and carries the change to the team as a directive."""
+    cid = "run-scope-unreachable"
+    shared = _scope_run(monkeypatch, tmp_path, fake_task_input, cid)
+    branch = git._current_branch(shared)
+    tb.set_state(cid, "lead", "core", tb.DONE)
+    tb.set_state(cid, "lead", "lru", tb.REVIEW)
+    docs_round = {"review_lru": {"output": {"verdict": "changes", "findings": [],
+                                            "outOfScope": [{"file": "docs/architecture.md",
+                                                            "change": "describe the eviction hook"}]}}}
+    out = team_apply_reviews(fake_task_input(correlationId=cid, sharedRepo=shared, sharedBranch=branch,
+                                             reviewed=["lru"], maxReviewRounds=2, joined=docs_round)).output_data
+    assert out["changes"] == [] and "lru" in out["doneCount"] if isinstance(out["doneCount"], list) else out["doneCount"] >= 1
+    board = tb.fold_board(cid)
+    assert board["items"]["lru"]["state"] == tb.DONE and "outside this team's directories" in board["items"]["lru"]["reason"]
+    carried = [d for d in board["directives"] if d.get("target") == "team"][-1]["text"]
+    assert "docs/architecture.md" in carried and "describe the eviction hook" in carried
+    assert not [d for d in board["directives"] if d.get("target") == "lru"]  # nothing was sent back to the implementer
+    assert [e["kind"] for e in board["exceptions"] if e.get("item") == "lru"][-1] == "scope_unreachable"
+
+
+def test_acceptance_test_that_passes_over_existing_files_is_kept_as_the_gate(monkeypatch, tmp_path, fake_task_input):
+    """storage-core's freshly written test passed at the red run because the repository already held the
+    store: the test was discarded as tautological, the item had no gate, and every fork spent four
+    minutes in the discovery fallback (run c4a9237d). Over existing files the green test is the gate;
+    over files that do not exist yet it is still a tautology."""
+    from team.tasks import team_acceptance_build, team_acceptance_commit
+    _isolate_board(monkeypatch, tmp_path)
+    cid = "run-green-gate"
+    shared = str(tmp_path / "shared")
+    git.ensure_ready(shared)
+    for name in ("registry.py", "alpha.py"):
+        with open(os.path.join(shared, name), "w") as fh:
+            fh.write("x = 1\n")
+    _commit_all(shared, "base")
+    team_plan_init(fake_task_input(correlationId=cid, subtasks=_ITEMS, contractPaths=[]))
+    tb.post_item(cid, "lead", {**_ITEMS[1], "acceptanceCriteria": ["beta registered"]})
+    ab = team_acceptance_build(fake_task_input(correlationId=cid, repoPath=shared)).output_data
+    os.makedirs(os.path.join(shared, "tests", "acceptance"))
+    for p in ab["authored"].values():
+        with open(os.path.join(shared, p), "w") as fh:
+            fh.write("def test_x():\n    assert True\n")
+    _commit_all(shared, "acceptance")
+    run = {"verificationState": "passed", "commands": [
+        {"argv": ["pytest", "-q", "tests/acceptance/test_accept_alpha.py"], "exitCode": 0},
+        {"argv": ["pytest", "-q", "tests/acceptance/test_accept_beta.py"], "exitCode": 0}]}
+    out = team_acceptance_commit(fake_task_input(correlationId=cid, repoPath=shared, authored=ab["authored"], run=run)).output_data
+    # alpha's files exist: kept, flagged; beta's beta.py does not: discarded as before.
+    assert list(out["kept"]) == ["alpha"] and out["greenBeforeWork"] == ["alpha"] and out["discarded"] == ["beta"]
+    item = tb.fold_board(cid)["items"]["alpha"]
+    assert item["greenBeforeWork"] is True and item["testCommands"] == [{"argv": ["pytest", "-q", "tests/acceptance/test_accept_alpha.py"]}]
+    su = team_standup(fake_task_input(repoPath=shared, correlationId=cid, contractPaths=[], maxWidth=6)).output_data
+    spec = su["dynamicTasksInput"]["alpha"]
+    assert "ALREADY PASSES" in spec["prompt"] and spec["testCommands"] == item["testCommands"]
+    assert su["dynamicTasksInput"]["gamma"]["testCommands"] == []
+
+
+def test_standup_widens_into_a_delivered_subsystems_file_and_refuses_an_open_ones(monkeypatch, tmp_path, fake_task_input):
+    """ce-zset-inf-scores needed one line in internal/store/zsets.go; its team spanned internal/command,
+    the standup refused to widen ("the program's call") three rounds running, and the gap waited for the
+    final repair although the store team had delivered long before (run 351812b2). A file no open
+    subsystem of the program still owns is widened to; one a subsystem is still building stays refused."""
+    from common import file_ownership
+    _isolate_board(monkeypatch, tmp_path)
+    parent, cid = "prog-widen", "team-widen"
+    shared = str(tmp_path / "shared")
+    git.ensure_ready(shared)
+    for p in ("cmd/z.go", "store/zsets.go", "net/server.go"):
+        os.makedirs(os.path.join(shared, os.path.dirname(p)), exist_ok=True)
+        with open(os.path.join(shared, p), "w") as fh:
+            fh.write("package x\n")
+    _commit_all(shared, "base")
+    # The program board: the store subsystem is delivered, the server subsystem is still being built.
+    tb.post_item(parent, "program", {"id": "store", "files": ["store/zsets.go"], "kind": "subsystem"})
+    tb.set_state(parent, "program", "store", tb.DONE)
+    tb.post_item(parent, "program", {"id": "server", "files": ["net/server.go"], "kind": "subsystem"})
+    tb.set_state(parent, "program", "server", tb.IN_PROGRESS)
+    tb.post_item(parent, "program", {"id": "cmd", "files": ["cmd/z.go"], "kind": "subsystem"})
+    team_plan_init(fake_task_input(correlationId=cid, subtasks=[{"id": "zinf", "description": "inf scores", "files": ["cmd/z.go"]}],
+                                   contractPaths=[], parentCorrelationId=parent, subsystemId="cmd"))
+    tb.set_state(cid, "lead", "zinf", tb.REOPENED, attempt=1)
+    file_ownership.bb.post_fact(cid, "integrator", "session", {"item": "zinf", "deniedWrites": ["store/zsets.go", "net/server.go"]})
+    su = team_standup(fake_task_input(repoPath=shared, correlationId=cid, contractPaths=[], maxWidth=6,
+                                      parentCorrelationId=parent, subsystemId="cmd")).output_data
+    files = su["dynamicTasksInput"]["zinf"]["allowedWriteRoots"]
+    assert "store/zsets.go" in files and "net/server.go" not in files
+    assert any("net/server.go" in r and "still being built (server)" in r for r in su["scopeRefusals"])
+    assert not any("store/zsets.go" in r for r in su["scopeRefusals"])
+
+
+def test_acceptance_tests_are_authored_beside_the_first_wave(monkeypatch, tmp_path, fake_task_input):
+    """Authoring cost every team 3-6 minutes before any implementer started (run 351812b2: 2.6-6.1 min
+    to the first standup). The authors now run beside the wave loop; a wave that would drain before the
+    tests have landed waits for them on the board (never for a human), so the integration check can run
+    the frozen tests at the integrated head before the team calls itself done."""
+    import json
+    import threading
+    from team.tasks import ACCEPTANCE_SETTLED_KIND, team_acceptance_build
+    from common import blackboard as bbx
+    _isolate_board(monkeypatch, tmp_path)
+    d = json.load(open(os.path.join(os.path.dirname(__file__), "..", "workflows", "team_build.json")))
+    # Authored BESIDE the first wave (again): serialized before it, two authors held the first implementer
+    # for 142 s on a two-item team (run e8bc7c2a). The Architect's own scenario now pins the interface from
+    # the first turn, so a test landing mid-wave rarely disagrees with the build; when it does, the
+    # integration check runs it at the head and re-opens the item, and the loop waits for the tests to
+    # settle before it drains. Up to maxWidth implementers and the authors run concurrently.
+    order = [t["taskReferenceName"] for t in d["tasks"]]
+    # No author chain in the workflow any more: plan_init settles the acceptance tests on the board and the
+    # wave loop starts at once; the gate is refreshed from the board after the loop.
+    assert "accept_and_build" not in order and order.index("wave_loop") < order.index("gate_refresh")
+    # Nothing to author (no criteria): the settle fact is posted at once.
+    cid = "run-settle-skip"
+    shared = str(tmp_path / "shared")
+    git.ensure_ready(shared)
+    team_plan_init(fake_task_input(correlationId=cid, subtasks=[{"id": "a", "files": ["a.py"]}], contractPaths=[]))
+    assert team_acceptance_build(fake_task_input(correlationId=cid, repoPath=shared)).output_data["gate"] == "skip"
+    assert bbx.read_facts(cid, kind=ACCEPTANCE_SETTLED_KIND)
+    # A drained board never waits on anything: the tests are on the branch before the first standup.
+    cid2 = "run-settle-wait"
+    team_plan_init(fake_task_input(correlationId=cid2, subtasks=[{"id": "a", "files": ["a.py"]}], contractPaths=[]))
+    tb.set_state(cid2, "lead", "a", tb.DONE)
+    import time as _t
+    t0 = _t.time()
+    su = team_standup(fake_task_input(repoPath=shared, correlationId=cid2, contractPaths=[], maxWidth=6,
+                                      authorAcceptanceTests=True)).output_data
+    assert su["dispatchedCount"] == 0 and _t.time() - t0 < 2.5
+    del threading
+
+
+def test_final_gate_is_refreshed_after_the_acceptance_and_build_branches_join(monkeypatch, tmp_path, fake_task_input):
+    """Frozen tests authored beside the first wave can land after the last wave's replan captured the
+    gate: the calculator team's item was done at 27 s, its test committed at 72 s, the final cycle ran
+    no command for it and the head on record predated the test's own commit, so the delivered head
+    was 'unproven' and the frozen test 'modified after frozen' (run 884f7eec). The gate the final cycle
+    runs is read from the board once both branches have joined, and the verdict reads the live head."""
+    import json
+    from team.tasks import team_gate_refresh, team_outcome
+    _isolate_board(monkeypatch, tmp_path)
+    d = json.load(open(os.path.join(os.path.dirname(__file__), "..", "workflows", "team_build.json")))
+    order = [t["taskReferenceName"] for t in d["tasks"]]
+    assert order.index("wave_loop") < order.index("gate_refresh") < order.index("capture_gate") < order.index("tests_fork")
+    cap = _task(d, "capture_gate")["inputParameters"]
+    assert cap == {"finalHead": "${gate_refresh.output.finalHead}", "acceptanceCommands": "${gate_refresh.output.acceptanceCommands}",
+                   "testWriteRoots": "${gate_refresh.output.writeRoots}", "teamGateCommands": "${gate_refresh.output.gateCommands}",
+                   "testMode": "${gate_refresh.output.testMode}"}
+    assert _task(d, "gate_refresh")["inputParameters"]["parentCorrelationId"] == "${workflow.input.parentCorrelationId}"
+    cid = "run-gate-late"
+    shared = str(tmp_path / "shared")
+    git.ensure_ready(shared)
+    team_plan_init(fake_task_input(correlationId=cid, subtasks=_ITEMS[:1], contractPaths=[]))
+    tb.set_state(cid, "lead", "alpha", tb.DONE)
+    # The frozen test lands after the item was done (the authoring branch finishing second).
+    tb.post_item(cid, "lead", {**_ITEMS[0], "acceptanceTests": ["tests/acceptance/test_accept_alpha.py"],
+                               "testCommands": [{"argv": ["pytest", "tests/acceptance/test_accept_alpha.py"]}]})
+    os.makedirs(os.path.join(shared, "tests/acceptance"), exist_ok=True)
+    open(os.path.join(shared, "tests/acceptance/test_accept_alpha.py"), "w").write("def test_a(): pass\n")
+    git.commit(shared, "frozen", force_add_paths=["tests/acceptance/test_accept_alpha.py"])
+    late_head = git.head(shared)
+    from common import blackboard as bbx
+    bbx.post_fact(cid, "lead", "contract", {"paths": ["tests/acceptance/test_accept_alpha.py"], "frozen": True, "revision": 1,
+                                            "acceptanceTests": ["tests/acceptance/test_accept_alpha.py"], "acceptanceCommit": late_head})
+    gate = team_gate_refresh(fake_task_input(correlationId=cid, sharedRepo=shared, parentCorrelationId="prog-1")).output_data
+    assert gate["finalHead"] == late_head
+    assert gate["gateCommands"] == [{"argv": ["pytest", "tests/acceptance/test_accept_alpha.py"]}]
+    assert gate["gateMode"] == "commands" and gate["testMode"] == "full"
+    assert gate["writeRoots"] == sorted(_ITEMS[0]["files"])
+    # The outcome judges the branch as it is, not the head a wave recorded before the test landed.
+    out = team_outcome(fake_task_input(correlationId=cid, finalHead="0" * 40, testsPassed=True, testCycleState="green",
+                                       testCommandsRan=[{"argv": ["pytest", "tests/acceptance/test_accept_alpha.py"]}],
+                                       repoPath=shared, sharedRepo=shared, sharedBranch=git._current_branch(shared))).output_data
+    assert out["finalHead"] == late_head and out["acceptanceTampered"] == [] and out["acceptanceUnproven"] == []
+
+
+def test_the_integration_check_covers_only_what_the_wave_touched(monkeypatch, tmp_path):
+    """Every integrated item's frozen tests ran at every wave: test time grew with the square of the
+    item count. A wave checks the items it landed, the items whose files or frozen test its diff
+    touched, and the dependants of a landed item; with no wave delta it checks everything."""
+    from team.tasks import _integration_check
+    from common import verification
+    shared = str(tmp_path / "shared")
+    git.ensure_ready(shared)
+    for f in ("a.py", "b.py", "c.py"):
+        open(os.path.join(shared, f), "w").write("x = 1\n")
+    _commit_all(shared, "base")
+    before = git.head(shared)
+    open(os.path.join(shared, "b.py"), "w").write("x = 2\n")
+    _commit_all(shared, "wave")
+    head = git.head(shared)
+    cmd = lambda p: [{"argv": ["pytest", "-q", p]}]  # noqa: E731
+    items = {"a": {"state": tb.DONE, "files": ["a.py"], "acceptanceTests": ["tests/test_a.py"], "testCommands": cmd("tests/test_a.py")},
+             "b": {"state": tb.DONE, "files": ["b.py"], "acceptanceTests": ["tests/test_b.py"], "testCommands": cmd("tests/test_b.py")},
+             "c": {"state": tb.DONE, "files": ["c.py"], "acceptanceTests": ["tests/test_c.py"], "testCommands": cmd("tests/test_c.py"), "dependsOn": ["d"]},
+             "d": {"state": tb.DONE, "files": ["d.py"], "acceptanceTests": ["tests/test_d.py"], "testCommands": cmd("tests/test_d.py")}}
+    seen = []
+    monkeypatch.setattr(verification, "verify_candidate",
+                        lambda repo, h, commands, **k: seen.append(sorted(" ".join(c["argv"]) for c in commands))
+                        or {"verificationState": "passed", "commands": [{**c, "exitCode": 0} for c in commands]})
+    out = _integration_check(None, shared, head, items, sandbox=False, since=before, landed=["d"])
+    # d landed; b's file changed in the wave; c depends on d; a is untouched.
+    assert out["checked"] == ["b", "c", "d"] and seen[-1] == ["pytest -q tests/test_b.py", "pytest -q tests/test_c.py", "pytest -q tests/test_d.py"]
+    out = _integration_check(None, shared, head, items, sandbox=False)
+    assert out["checked"] == ["a", "b", "c", "d"]
+
+
+def test_a_programs_only_open_team_runs_the_repositorys_own_command(monkeypatch, tmp_path, fake_task_input):
+    """A program's team with no frozen test ran its final cycle `targeted`; targeted discovery cannot map
+    a new project's package.json to a unit, so the one-item React team fell back to an agent that proposed
+    nothing and then authored a test it did not need (run b00146a9). With no sibling subsystem still open
+    there is nothing of anyone else's for the full suite to run: the team keeps the repository's command."""
+    _isolate_board(monkeypatch, tmp_path)
+    shared = str(tmp_path / "shared")
+    git.ensure_ready(shared)
+    branch = git._current_branch(shared)
+    tb.post_item("prog-only", "program", {"id": "calc", "kind": "subsystem", "files": ["a.py"]})
+    cid = "run-only-team"
+    team_plan_init(fake_task_input(correlationId=cid, subtasks=_ITEMS[:1], contractPaths=[], parentCorrelationId="prog-only",
+                                   subsystemId="calc"))
+    tb.set_state(cid, "lead", "alpha", tb.DONE)
+    only = team_apply_reviews(fake_task_input(correlationId=cid, sharedRepo=shared, sharedBranch=branch, reviewed=[], joined={},
+                                              parentCorrelationId="prog-only", subsystemId="calc")).output_data
+    assert only["gateCommands"] == [] and only["gateMode"] == "full" and only["testMode"] == "full"
+    # A sibling still building: targeted, never the whole suite (its tests would run too).
+    tb.post_item("prog-only", "program", {"id": "api", "kind": "subsystem", "files": ["b.py"]})
+    tb.set_state("prog-only", "program", "api", tb.IN_PROGRESS)
+    sib = team_apply_reviews(fake_task_input(correlationId=cid, sharedRepo=shared, sharedBranch=branch, reviewed=[], joined={},
+                                             parentCorrelationId="prog-only", subsystemId="calc")).output_data
+    assert sib["gateMode"] == "targeted" and sib["testMode"] == "targeted"
+    import json
+    d = json.load(open(os.path.join(os.path.dirname(__file__), "..", "workflows", "team_build.json")))
+    for ref in ("gate_refresh", "replan"):
+        assert _task(d, ref)["inputParameters"]["subsystemId"] == "${workflow.input.subsystemId}"
+
+
+# ─────────────────────────── ONE tree per team: integration records, never rebases ───────────────
+def _shared_team(monkeypatch, tmp_path, fake_task_input, cid):
+    _isolate_board(monkeypatch, tmp_path)
+    shared = str(tmp_path / "shared")
+    git.ensure_ready(shared)
+    with open(os.path.join(shared, "seed.py"), "w") as fh:
+        fh.write("x = 1\n")
+    _commit_all(shared, "base")
+    branch = git._current_branch(shared)
+    team_plan_init(fake_task_input(correlationId=cid, contractPaths=[], subtasks=[
+        {"id": "alpha", "description": "add alpha", "files": ["alpha.py"]},
+        {"id": "beta", "description": "add beta", "files": ["beta.py"]}]))
+    from common import file_ownership
+    file_ownership.bb.post_fact(cid, "lead", "dispatch", {"item": "alpha", "waveBase": git.head(shared)})
+    return shared, branch
+
+
+def test_a_shared_tree_item_is_integrated_where_it_committed_while_a_teammate_is_mid_edit(
+        monkeypatch, tmp_path, fake_task_input):
+    """Run 836437d7: the integrator rebased the team's ONE tree onto its own branch; git refused on a
+    teammate's uncommitted file and five delivered items were re-opened as conflicts with no file."""
+    cid = "run-shared"
+    shared, branch = _shared_team(monkeypatch, tmp_path, fake_task_input, cid)
+    base = git.head(shared)
+    with open(os.path.join(shared, "alpha.py"), "w") as fh:
+        fh.write("A = 1\n")
+    git.git(shared, "add", "alpha.py")
+    git.git(shared, "commit", "-m", "code_subtask alpha")
+    with open(os.path.join(shared, "beta.py"), "w") as fh:  # the teammate, still working
+        fh.write("B = 1\n")
+    with open(os.path.join(shared, "seed.py"), "w") as fh:
+        fh.write("x = 2\n")
+    head = git.head(shared)
+    out = team_integrate(fake_task_input(
+        sharedRepo=shared, sharedBranch=branch, correlationId=cid, contractPaths=[], groupIds="alpha",
+        dispatched=[{"id": "alpha", "files": ["alpha.py"], "attempt": 0}], enablePeerReview=True,
+        joined={"alpha": {"output": {"deliveryOutcome": "passed", "commit": head, "filesChanged": ["alpha.py"],
+                                     "stagedPaths": ["alpha.py"], "presentPaths": []}}})).output_data
+    assert out["reviewing"] == ["alpha"] and out["retry"] == [] and out["blocked"] == []
+    assert git.head(shared) == head, "integration moved the shared branch"
+    assert git.git(shared, "status", "--porcelain").stdout.count("\n") == 2, "the teammate's edits were touched"
+    from common import file_ownership
+    delivery = [f["data"] for f in file_ownership.bb.read_facts(cid, kind="delivery")][-1]
+    assert (delivery["base"], delivery["head"]) == (base, head)
+
+
+def test_a_re_dispatched_shared_tree_item_whose_files_are_already_committed_is_delivered(
+        monkeypatch, tmp_path, fake_task_input):
+    """Run 836437d7: a re-dispatched item had nothing left to commit, its audit said passed (its planned
+    files are at HEAD), and the integrator called it an empty delivery eight times in a row."""
+    cid = "run-redo"
+    shared, branch = _shared_team(monkeypatch, tmp_path, fake_task_input, cid)
+    with open(os.path.join(shared, "alpha.py"), "w") as fh:
+        fh.write("A = 1\n")
+    _commit_all(shared, "code_subtask alpha")
+    out = team_integrate(fake_task_input(
+        sharedRepo=shared, sharedBranch=branch, correlationId=cid, contractPaths=[], groupIds="alpha",
+        dispatched=[{"id": "alpha", "files": ["alpha.py"], "attempt": 1}], enablePeerReview=True,
+        joined={"alpha": {"output": {"deliveryOutcome": "passed", "commit": git.head(shared), "filesChanged": [],
+                                     "stagedPaths": [], "presentPaths": ["alpha.py"]}}})).output_data
+    assert out["reviewing"] == ["alpha"] and out["retry"] == []
+
+
+def test_a_shared_tree_item_whose_audit_failed_is_still_not_delivered(monkeypatch, tmp_path, fake_task_input):
+    cid = "run-short"
+    shared, branch = _shared_team(monkeypatch, tmp_path, fake_task_input, cid)
+    out = team_integrate(fake_task_input(maxRescues=0,
+        sharedRepo=shared, sharedBranch=branch, correlationId=cid, contractPaths=[], groupIds="alpha",
+        dispatched=[{"id": "alpha", "files": ["alpha.py"], "attempt": 0}], enablePeerReview=True, maxAttempts=2,
+        joined={"alpha": {"output": {"deliveryOutcome": "incomplete_delivery", "commit": git.head(shared),
+                                     "filesChanged": [], "stagedPaths": [], "presentPaths": [],
+                                     "agentCompleted": True}}})).output_data
+    assert out["reviewing"] == [] and len(out["retry"]) == 1
+
+
+def test_a_rebase_git_refuses_names_gits_reason_not_a_conflict(tmp_path):
+    from common import continuous_integrate as ci
+    shared = str(tmp_path / "shared")
+    git.ensure_ready(shared)
+    with open(os.path.join(shared, "seed.py"), "w") as fh:
+        fh.write("x = 1\n")
+    _commit_all(shared, "base")
+    branch = git._current_branch(shared)
+    wt = _fork_worktree(shared, "alpha", branch, edit=("alpha.py", "A = 1\n"))
+    with open(os.path.join(shared, "seed.py"), "w") as fh:
+        fh.write("x = 3\n")
+    _commit_all(shared, "moved")
+    with open(os.path.join(wt, "seed.py"), "w") as fh:  # uncommitted edit in the fork
+        fh.write("x = 2\n")
+    out = ci.integrate_ready(shared, branch, [{"id": "alpha", "worktree": wt, "branch": git.group_branch(shared, "alpha")}])
+    rec = out["reopened"][0]
+    assert "none reported" not in rec["mechanism"] and "refused" in rec["mechanism"]

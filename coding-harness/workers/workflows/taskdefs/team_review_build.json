@@ -1,6 +1,6 @@
 {
   "name": "team_review_build",
-  "description": "Team cycle (roadmap Phase 2, §4.3 review): build read-only peer-review forks for the items integrated this wave (H8). The reviewer is a different agent than the implementer (H13 — author is not the oracle); it reviews each item's isolated diff (waveBase..finalHead for the item's files) against its acceptance criteria and returns a structured lgtm/changes verdict. Items already reviewed maxReviewRounds times are not re-reviewed.",
+  "description": "Team cycle (roadmap Phase 2, §4.3 review): build read-only peer-review forks for the items integrated this wave (H8). The reviewer is a different agent than the implementer (H13 — author is not the check); it reviews each item's isolated diff (waveBase..finalHead for the item's files) against its acceptance criteria and returns a structured lgtm/changes verdict. Items already reviewed maxReviewRounds times are not re-reviewed.",
   "retryCount": 1,
   "retryLogic": "FIXED",
   "retryDelaySeconds": 1,

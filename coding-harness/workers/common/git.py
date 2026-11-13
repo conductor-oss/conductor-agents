@@ -467,7 +467,7 @@ def within_write_roots(path: str, write_roots) -> bool:
 
 
 def stage_vetted_changes(repo: str, *, force_add_paths: list[str] | tuple[str, ...] | None = None,
-                         allow_noop: bool = False, write_roots=None) -> dict:
+                         allow_noop: bool = False, write_roots=None, _locked: bool = False) -> dict:
     """Replace automated staging with the vetted changed-path set only.
 
     A hard reset is never used; ``git reset`` here only clears the index so a
@@ -486,19 +486,22 @@ def stage_vetted_changes(repo: str, *, force_add_paths: list[str] | tuple[str, .
     outside = sorted(path for path in allowed if not within_write_roots(path, write_roots))
     allowed = [path for path in allowed if path not in outside]
     if not allowed:
-        detail = ", ".join(classified["rejected"]) or "no changed files"
+        rejected_all = classified["rejected"]
+        detail = (", ".join(path_sample(rejected_all))
+                  + (f" and {len(rejected_all) - PATH_SAMPLE} more" if len(rejected_all) > PATH_SAMPLE else "")
+                  ) or "no changed files"
         if outside:
             detail = f"every change is outside the item's write roots: {', '.join(outside)}"
         if allow_noop:
             # A coding task may correctly find nothing to change.  Do not turn
             # that result into a failed workflow, and never stage generated
             # artifacts merely to manufacture a commit.
-            with _repo_lock(repo):
+            with (_nolock() if _locked else _repo_lock(repo)):
                 _git_retry(lambda: git(repo, "reset", check=False))
             return {"staged": [], "rejected": classified["rejected"], "outsideScope": outside,
                     "noOp": True, "reason": f"no meaningful source changes: {detail}"}
         raise ValueError(f"no meaningful change to commit; rejected generated/cache-only paths: {detail}")
-    with _repo_lock(repo):
+    with (_nolock() if _locked else _repo_lock(repo)):
         _git_retry(lambda: git(repo, "reset", check=False))
         normal = [path for path in allowed if path not in forced]
         if normal:
@@ -514,29 +517,138 @@ def stage_vetted_changes(repo: str, *, force_add_paths: list[str] | tuple[str, .
     return {"staged": sorted(staged), "rejected": classified["rejected"], "outsideScope": outside, "noOp": False}
 
 
+@contextmanager
+def _nolock():
+    yield
+
+
 def commit(repo: str, message: str = "conductor-code change", *,
-           force_add_paths: list[str] | tuple[str, ...] | None = None, write_roots=None) -> dict:
-    # Serialized on the shared git dir: parallel forks committing to sibling
-    # worktrees write shared refs/reflog and can otherwise collide.
-    staged = stage_vetted_changes(repo, force_add_paths=force_add_paths, allow_noop=True,
-                                  write_roots=write_roots)
-    if staged["noOp"]:
-        return {"commit": head(repo), "stagedPaths": [],
-                "rejectedPaths": staged["rejected"], "outsideScope": staged.get("outsideScope", []),
-                "noOp": True, "reason": staged["reason"]}
-    with _repo_lock(repo):
-        result = git(repo, "commit", "-m", message or "conductor-code change", check=False)
-        if result.code != 0:
-            raise RunError("git commit", result.code, result.stdout, result.stderr)
-        # Commit identities are an API boundary between workers and workflows.
-        # Always return the canonical object ID; returning an abbreviation here
-        # made this field change shape between real and no-op commits.
-        sha = head(repo)
-    return {"commit": sha, "stagedPaths": staged["staged"],
-            "rejectedPaths": staged["rejected"], "outsideScope": staged.get("outsideScope", []), "noOp": False}
+           force_add_paths: list[str] | tuple[str, ...] | None = None, write_roots=None,
+           atomic: bool = False) -> dict:
+    """Stage the vetted changes (within ``write_roots``) and commit. ``atomic`` holds the repo lock across
+    staging AND the commit: several agents of one team commit their own files from ONE shared tree, and
+    a teammate's ``git reset`` between this agent's staging and its commit would unstage its files."""
+    def _run():
+        staged = stage_vetted_changes(repo, force_add_paths=force_add_paths, allow_noop=True,
+                                      write_roots=write_roots, _locked=atomic)
+        if staged["noOp"]:
+            return {"commit": head(repo), "stagedPaths": [],
+                    "rejectedPaths": path_sample(staged["rejected"]), "rejectedCount": len(staged["rejected"]),
+                    "outsideScope": staged.get("outsideScope", []),
+                    "noOp": True, "reason": staged["reason"]}
+        with (_nolock() if atomic else _repo_lock(repo)):
+            result = git(repo, "commit", "-m", message or "conductor-code change", check=False)
+            if result.code != 0:
+                raise RunError("git commit", result.code, result.stdout, result.stderr)
+            sha = head(repo)
+        return {"commit": sha, "stagedPaths": staged["staged"],
+                "rejectedPaths": path_sample(staged["rejected"]), "rejectedCount": len(staged["rejected"]),
+                "outsideScope": staged.get("outsideScope", []), "noOp": False}
+    if atomic:
+        with _repo_lock(repo):
+            return _run()
+    return _run()
+
+
+# The tool cache a sandboxed session may write (common.coding_agent.TOOL_CACHE_DIR, architect.CACHE_ROOT):
+# npm and pip caches, Go's build cache, a scout's Playwright browsers. Git-excluded, so a fresh worktree
+# starts without one and every session re-downloaded its dependencies (a React implementer spent part
+# of its 4.6 minutes on `npm install` and a Chromium download its scout had already made, run 0f829d58).
+CACHE_DIR = ".cc-cache"
+
+
+def exclude_path(repo: str, pattern: str) -> None:
+    """Add ``pattern`` to the repository's ``info/exclude`` once (a worktree shares its main
+    repository's; a clone has its own), so a seeded cache never shows as an untracked change."""
+    rel = git(repo, "rev-parse", "--git-path", "info/exclude", check=False).stdout.strip()
+    if not rel:
+        return
+    path = rel if os.path.isabs(rel) else os.path.join(repo, rel)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        text = open(path).read() if os.path.exists(path) else ""
+        if pattern in text.split("\n"):
+            return
+        with open(path, "a") as fh:
+            fh.write(("" if not text or text.endswith("\n") else "\n") + pattern + "\n")
+    except OSError:
+        return
+
+
+# A task output is a message, not a dump: a path list read off the filesystem goes into it as its
+# count plus this many examples. A failed scaffold carried its 15,000 rejected node_modules paths
+# (1 MB) in every attempt's output, joins copied them, and the team workflow passed Conductor's 10 MB
+# payload limit and died (run a87e9ddb). The full list is the tree's own `git status`.
+PATH_SAMPLE = 20
+
+
+def path_sample(paths) -> list[str]:
+    return list(paths or [])[:PATH_SAMPLE]
+
+
+def exclude_generated(repo: str) -> None:
+    """Keep generated directories (dependency installs, build output, caches) out of git's view in
+    ``repo`` and every worktree that shares its ``info/exclude``, whatever the repository's own ignore
+    files say. ``is_vetted_change_path`` already never commits them; excluding them at the source keeps
+    `git status` the size of the work. A frontend scaffold with an empty .gitignore and a team's
+    `npm install` put 15,000 untracked node_modules files in a shared tree, and its `git status` grew to
+    2.8 MB (run a87e9ddb). Tracked files under such a directory stay tracked: exclude rules apply to
+    untracked paths only."""
+    for part in sorted(_NON_PRODUCT_PATH_PARTS):
+        exclude_path(repo, f"{part}/")
+
+
+def seed_cache(src: str, dst: str) -> int:
+    """Warm the tool cache at ``dst`` from the one at ``src``: every file not yet there is hard-linked
+    (the caches are content-addressed and immutable) or copied where linking is refused. Returns the
+    number of files seeded; nothing to seed is 0."""
+    if not src or not os.path.isdir(src) or os.path.realpath(src) == os.path.realpath(dst):
+        return 0
+    if os.path.basename(dst.rstrip(os.sep)) == CACHE_DIR:
+        exclude_path(os.path.dirname(dst.rstrip(os.sep)), f"/{CACHE_DIR}/")
+    seeded = 0
+    for root, dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        target = os.path.join(dst, rel) if rel != "." else dst
+        os.makedirs(target, exist_ok=True)
+        for d in dirs:
+            s = os.path.join(root, d)
+            if os.path.islink(s) and not os.path.lexists(os.path.join(target, d)):
+                os.symlink(os.readlink(s), os.path.join(target, d))
+        dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]
+        for f in files:
+            s, t = os.path.join(root, f), os.path.join(target, f)
+            if os.path.lexists(t):
+                continue
+            try:
+                if os.path.islink(s):
+                    os.symlink(os.readlink(s), t)
+                else:
+                    os.link(s, t)
+            except OSError:
+                try:
+                    shutil.copy2(s, t, follow_symlinks=False)
+                except OSError:
+                    continue
+            seeded += 1
+    return seeded
+
+
+def worktree_shared(repo: str) -> dict:
+    """ONE working tree per team: the item builds in the team's shared checkout itself (no fork), so
+    every agent sees every teammate's files as they land and verifies against the real tree. Three
+    implementers in separate forks each finished "verification could not run" because their fork lacked
+    the others' files (run b93cd3e2)."""
+    return {"worktreePath": repo, "branch": _trim(git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout),
+            "initialCommit": head(repo), "resumed": False, "shared": True}
 
 
 def worktree_add(repo: str, name: str, *, preserve_existing: bool = False) -> dict:
+    exclude_generated(repo)
+    return _worktree_add(repo, name, preserve_existing=preserve_existing)
+
+
+def _worktree_add(repo: str, name: str, *, preserve_existing: bool = False) -> dict:
     wt = os.path.join(repo, WORKTREES, name)
     br = group_branch(repo, name)
     if preserve_existing and os.path.isdir(wt):
@@ -567,6 +679,9 @@ def worktree_add(repo: str, name: str, *, preserve_existing: bool = False) -> di
                     shutil.copy2(src, dst)
             except OSError:
                 pass
+    # A fork starts with the shared worktree's tool cache: no second `npm install` download, no second
+    # Chromium, for every implementer, author, reviewer and scout.
+    seed_cache(os.path.join(repo, CACHE_DIR), os.path.join(wt, CACHE_DIR))
     initial = _trim(git(wt, "rev-parse", "HEAD").stdout)
     return {"worktreePath": wt, "branch": br, "initialCommit": initial, "resumed": False}
 

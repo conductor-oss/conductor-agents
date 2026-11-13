@@ -371,8 +371,13 @@ def targets() -> dict:
 
 # Defaults whose steps are composed in code rather than declared in a workflow's tasks.
 _CODE_BUILT_USES = {
+    "swarm_work": ("swarm",),
     "team_implement": ("team_build",), "team_rescue": ("team_build",), "team_review": ("team_build",),
     "team_acceptance_tests": ("team_build",), "convergence_subtask": ("convergence_spike",),
+    # The Architect's scouts are forked dynamically (check_scout_build), one per external check kind.
+    "check_scout": ("cc_program",),
+    # `board decide` runs the Architect's tie-break session from the team channel (architect_decide.py).
+    "architect_decide": ("cc_program", "team_build"),
     "merge_conflict": ("code_parallel", "merge_remediation", "publish_verified_pr"), "code": ("code_parallel",),
     # The starting text for a custom fix prompt: those workflows run fixPromptTemplate when one is given.
     "address_pr": ("address_pr", "pr_address_sweep"),
@@ -393,6 +398,8 @@ def _workflow_prompt_uses() -> dict[str, list[str]]:
                 walk(branch, name)
             for field_name in ("defaultCase", "loopOver"):
                 walk(task.get(field_name) or [], name)
+            for branch in task.get("forkTasks") or []:  # a program defines done beside its first rank
+                walk(branch, name)
     for path in sorted((_DEFAULTS_DIR.parents[1] / "workflows").glob("*.json")):
         try:
             definition = json.loads(path.read_text(encoding="utf-8"))

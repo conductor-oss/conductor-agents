@@ -63,6 +63,16 @@ def test_generic_shells_and_sensitive_controls_remain_blocked(tool):
         assert tool in DEFAULT_DISALLOWED_TOOLS
 
 
+@pytest.mark.parametrize("rule", [
+    "Bash(.cc-cache/bin/*)", "Bash(bash .cc/checks/*)", "Bash(sh .cc/checks/*)", "Bash(./*)",
+    "Bash(psql *)", "Bash(curl *)", "Bash(sleep *)", "Bash(command -v *)",
+])
+def test_the_board_the_frozen_checks_and_the_built_program_are_allowed(rule):
+    """A Claude session on run 1cabdcac was denied `.cc-cache/bin/board show`, `bash .cc/checks/
+    scenario.sh` and `./target/release/pgdb --port 6345`: it shipped a server it had never started."""
+    assert rule in DEFAULT_ALLOWED_TOOLS
+
+
 def test_denials_with_no_changes_fail_closed():
     assert denied_without_changes([], ["Bash(cargo test) denied"]) is True
     assert denied_without_changes(["test_output.txt"], ["unrelated denial"]) is False
@@ -423,3 +433,13 @@ def test_coding_agent_worker_initializes_a_fresh_directory_before_reading_head(m
     missing = worker.coding_agent(typo)
     assert not (tmp_path / "typo").exists()
     assert "is not a directory" in str(missing.reason_for_incompletion or missing.output_data)
+
+
+def test_a_sessions_report_never_lists_a_dependency_tree():
+    """An implementer's `npm install` put 2,960 node_modules paths in filesChanged; the sub-workflow stored
+    the report in a variable and Conductor refused the 731 KB payload (run a8167484)."""
+    from coding_agent.tasks import _REPORT_CAP, report_paths
+    changed = ["src/App.jsx", "package.json"] + [f"node_modules/p{n}/index.js" for n in range(3000)] \
+        + [".venv/lib/x.py", "web/node_modules/y.js", "dist/index.html", ".cc-cache/npm/a"]
+    assert report_paths(changed) == ["src/App.jsx", "package.json", "dist/index.html"]
+    assert len(report_paths([f"src/f{n}.go" for n in range(1000)])) == _REPORT_CAP

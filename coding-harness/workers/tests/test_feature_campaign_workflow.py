@@ -192,12 +192,6 @@ def test_campaign_pr_draft_carries_composed_prose_not_a_bare_issue_link():
         instruction="Add durable signals\n\nMore detail here.")
     assert local["prTitle"] == "Add durable signals"
     assert local["prBody"].startswith("Add durable signals")
-    # The agent-authored-test note rides on the body, never on the summary.
-    noted = logic.resolve_campaign_pr_description(
-        requested_title="", requested_body="Body", issue_title="", instruction="",
-        authored_note="\n\n> note")
-    assert noted["prBody"] == "Body\n\n> note"
-    assert noted["prSummary"] == "Body"
 
 
 def test_campaign_workspace_accepts_a_repo_to_clone_not_only_a_local_path():

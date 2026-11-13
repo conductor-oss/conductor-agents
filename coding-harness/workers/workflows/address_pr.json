@@ -41,9 +41,7 @@
     "openspecMaxBudgetUsd",
     "openspecHumanApproval",
     "openspecMaxIterations",
-    "maxFixAttempts",
-    "allowAgentTestPlan",
-    "allowAgentAuthoredTests"
+    "maxFixAttempts"
   ],
   "inputTemplate": {
     "agent": "",
@@ -77,9 +75,7 @@
     "openspecMaxBudgetUsd": 50,
     "openspecHumanApproval": true,
     "openspecMaxIterations": 5,
-    "maxFixAttempts": 4,
-    "allowAgentTestPlan": true,
-    "allowAgentAuthoredTests": true
+    "maxFixAttempts": 4
   },
   "variables": {
     "agentCompleted": false,
@@ -247,9 +243,7 @@
               "modelPolicySource": "${workflow.input.modelPolicySource}",
               "modelPolicySha256": "${workflow.input.modelPolicySha256}",
               "modelsConfig": "${workflow.input.modelsConfig}",
-              "modelOverrides": "${workflow.input.modelOverrides}",
-              "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
-              "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}"
+              "modelOverrides": "${workflow.input.modelOverrides}"
             }
           },
           {
@@ -298,9 +292,7 @@
                   "modelProfile": "${workflow.input.modelProfile}",
                   "modelsConfig": "${workflow.input.modelsConfig}",
                   "repoPath": "${workflow.variables.currentWorkspacePath}",
-                  "verification": "${verify.output}",
-                  "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
-                  "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}"
+                  "verification": "${verify.output}"
                 }
               },
               {
@@ -661,16 +653,6 @@
           "type": "integer",
           "default": 4,
           "description": "Upper bound on structured fix/commit/re-test repair passes in the post-fix test_cycle verification."
-        },
-        "allowAgentTestPlan": {
-          "type": "boolean",
-          "default": true,
-          "description": "Defaults true for this workflow: when either verification pass hits configuration_blocked (e.g. a changed helper file no per-language planner maps to an exact test), lets a read-only coding agent search for an existing test by content as a last resort, instead of leaving the PR blocked. Set false to restore the strict deterministic-only behavior. See test_cycle/test_agent_fallback."
-        },
-        "allowAgentAuthoredTests": {
-          "type": "boolean",
-          "default": true,
-          "description": "Defaults true for this workflow: when allowAgentTestPlan's search also finds nothing, lets a coding agent author exactly one new test file, trusted only after a red/green check (must fail at the pre-candidate baseline, must pass at the real candidate). Set false to restore the strict deterministic-only behavior. Independent of allowAgentTestPlan so existing callers of that flag are unaffected."
         }
       },
       "required": [

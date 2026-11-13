@@ -156,6 +156,8 @@ implementation worktree; it is then committed and opened as a draft PR. Other sa
 remain on the verified local branch; external GitHub specs are archived on a separate branch and
 opened as a draft PR. It never accepts credential values in workflow inputs.
 
+`cc_program` builds a program as teams of teams under an **Architect**. The Architect turns the request into a definition of done: the teams' own frozen acceptance tests and the repository's suite, plus external checks the builders did not write (a real client suite such as `redis-py` against the server, a scenario script, a budget, a docs check) that scouts find, install under the worktree's cache and prove red against the untouched head; a reviewer on another model approves the contract. After every integrated rank and at the final head the Architect runs every check and scores the head (the weighted share passing, the same for the same head), files items for the gaps between teams, and signs off. Under the threshold a convergence ladder takes rework, a change of approach, a second opinion and only then a precisely named need. The swarm's first principle is that it finds a way, never a reason to stop: its only terminal verdict is `PROGRAM_DELIVERED`; `PROGRAM_NEEDS` ends a run naming what it needs (budget, a credential, an owner decision), keeps the Architect's state, and Continue resumes at the recorded rung. Humans steer asynchronously through the console; nothing waits on them.
+
 ## Documentation
 
 | Doc | For |
@@ -184,10 +186,13 @@ opened as a draft PR. It never accepts credential values in workflow inputs.
   [`docker-compose.postgres.yml`](docker-compose.postgres.yml) instead (requires Docker). Stop
   any already-running SQLite server first (`conductor server stop`) — a leftover process can
   keep answering on port 8080 and silently shadow the new container.
-- At least one authenticated backend:
-  - Claude: `claude login` or `ANTHROPIC_API_KEY`.
-  - Codex: `~/.codex/auth.json` or `OPENAI_API_KEY`.
-  - Gemini: Gemini CLI plus `GEMINI_API_KEY`.
+- At least one authenticated backend, with the account you already have or an API key:
+  - Claude: `claude login` (a claude.ai account) or `ANTHROPIC_API_KEY`.
+  - Codex: `codex login` (a ChatGPT account) or `OPENAI_API_KEY`.
+  - Gemini: the Gemini CLI signed in with Google (run `gemini` once, "Login with Google") or `GEMINI_API_KEY`.
+  `make auth` shows which credential each backend will use. By default a login is preferred over a
+  key; `CLAUDE_AUTH`, `CODEX_AUTH` and `GEMINI_AUTH` (`auto` | `login` | `key`) in `.env` decide per
+  backend, and in login mode a key inherited from your shell is withheld from that backend.
 - For GitHub workflows: authenticated `gh` CLI (`gh auth login` or a valid `GH_TOKEN`).
 - The target repository's own build/test toolchain.
 

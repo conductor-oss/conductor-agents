@@ -38,8 +38,8 @@ import time
 
 from conductor.client.worker.worker_task import worker_task
 
-from common import (budget_gate, contract_event, contract_freeze, continuous_integrate, retrospective, templating,
-                    file_ownership, git, monitor, team_board, verification)
+from common import (architect, budget_gate, contract_event, contract_freeze, continuous_integrate, prompt_files, retrospective,
+                    rung_policy, templating, file_ownership, git, monitor, team_board, verification)
 from common.code_parallel import CODE_SUBTASK_TOOLS
 from common.results import fail, ok
 from common.continuous_integrate import RETRYABLE_REOPEN as _RETRYABLE_REOPEN
@@ -206,8 +206,16 @@ def _parent_directives(i: dict) -> list[dict]:
     if not parent:
         return []
     sub = str(i.get("subsystemId") or "")
-    return [{**d, "target": "team"} for d in team_board.fold_board(parent)["directives"]
-            if str(d.get("target")) in (f"subsystem:{sub}", "team")]
+    out = []
+    for d in team_board.fold_board(parent)["directives"]:
+        target = str(d.get("target") or "")
+        if target in (f"subsystem:{sub}", "team"):
+            out.append({**d, "target": "team"})
+        elif target.startswith(f"subsystem:{sub}:"):
+            # The Architect named the item: only that implementer reads it (five siblings pushed back on
+            # advice about sorted-set scores that was for one item, run 351812b2).
+            out.append({**d, "target": target[len(f"subsystem:{sub}:"):]})
+    return out
 
 
 def _steering(cid: str | None, board: dict) -> list[dict]:
@@ -289,6 +297,9 @@ def team_plan_init(task):
                     continue
                 team_board.post_item(cid, "lead", entry)
                 seeded.append(sid)
+            # No separate acceptance-author chain: the Architect's checks, the items' own tests and the
+            # peer review are the gates. The board drains when its items are done.
+            file_ownership.bb.post_fact(cid, "acceptance", ACCEPTANCE_SETTLED_KIND, {"authored": 0, "reused": []})
         return ok(task, {"total": len(seeded), "itemIds": seeded, "contractPaths": contract_paths,
                          "plannerSpendRecorded": planned_spend},
                   [f"[team_plan_init] seeded {len(seeded)} items; contract={contract_paths}"])
@@ -353,6 +364,13 @@ def _decide_amendment(cid: str, repo: str, branch: str, amend: dict, approve: bo
         "item": gid, "decision": "approve" if merged else "reject", "paths": _list(amend.get("paths")),
         "reason": why[:600]})
     return merged
+def _done_section(repo: str) -> str:
+    """The program's definition of done from the branch (``.cc/contract.json`` and its check scripts),
+    as a prompt section; empty on a repository without one (a plain ``team_build``)."""
+    brief = architect.read_contract_brief(repo) if repo and os.path.isdir(repo) else ""
+    return f"\n{brief}\n" if brief else ""
+
+
 def _board_contract_paths(cid: str | None, given: list[str]) -> list[str]:
     """The frozen contract = the workflow's declared paths ∪ the board's current contract fact (which
     later steps — e.g. acceptance tests frozen at plan time — may extend)."""
@@ -415,7 +433,7 @@ def _in_span(path: str, span: set[str]) -> bool:
 
 
 def _widen_scope(items: dict, sid: str, files: list[str], denied: list[str],
-                 contract_paths: list[str]) -> tuple[list[str], list[str], list[str]]:
+                 contract_paths: list[str], foreign_open: set[str] | None = None) -> tuple[list[str], list[str], list[str]]:
     """The Lead's scope decision for a re-dispatched item (pure): ``(widen, held_by, refused)``.
 
     An implementer refused a file outside its write roots is evidence that the plan sliced the item
@@ -433,7 +451,11 @@ def _widen_scope(items: dict, sid: str, files: list[str], denied: list[str],
     for path in denied:
         if path in files or path in contract_paths:
             continue
-        if not _in_span(path, span):
+        if not _in_span(path, span) and (foreign_open is None or path in foreign_open):
+            # Outside the team's directories AND a subsystem still being built owns it (or the program
+            # is unknown): the program's call. A file of a subsystem already DELIVERED has no live owner:
+            # ce-zset-inf-scores needed one line in internal/store/zsets.go, whose team was long done,
+            # was refused three rounds and the gap waited for the final repair (run 351812b2).
             if path not in refused:
                 refused.append(path)
             continue
@@ -483,7 +505,21 @@ def team_standup(task):
         board["directives"] = _steering(cid, board)
         board["lessons"] = team_board.live_lessons(board.get("lessons") or [],
                                                    repo=shared_repo if shared_repo and os.path.isdir(shared_repo) else None)
+        # ONE board per run: what every team and agent posted on the program's board (lessons, and the
+        # steers addressed to everyone or to this team) reaches this team's briefs too.
+        run_cid = str(i.get("parentCorrelationId") or "").strip()
+        if run_cid and run_cid != cid:
+            rb = team_board.fold_board(run_cid)
+            board["lessons"] = board["lessons"] + team_board.live_lessons(rb.get("lessons") or [])
+            mine = {"run", "team", f"team:{str(i.get('subsystemId') or '')}"}  # "team" on the run board = everyone
+            board["directives"] = board["directives"] + [
+                {**d, "target": "team"} for d in team_board.with_authority(team_board.active_directives(rb.get("directives") or []))
+                if str(d.get("target")) in mine]
         items = board["items"]
+        # Acceptance tests are authored BEFORE the first wave (team_build: acceptance_build precedes
+        # wave_loop). Authored beside it, the frozen test always landed after its implementer started:
+        # it was in neither the prompt nor the fork's own test cycle, and re-opened the item for a
+        # whole second build-and-review round (runs 14b40b1a, a8167484, 0f829d58).
         rollup = team_board.board_rollup(board)
         ready = team_board.ready_items(items)
         wave_n = team_board.size_wave(len(ready), max_width=max(max_width // best_of, 1),
@@ -496,6 +532,9 @@ def team_standup(task):
 
         dynamic_tasks, dynamic_inputs, group_ids, dispatched = [], {}, [], []
         wave_head = git.head(shared_repo) if shared_repo and os.path.isdir(shared_repo) else ""
+        # The program's definition of done, read from the branch: the same text the test author and
+        # the reviewers read, so the interface is decided once, by the checks, not by each agent.
+        done_section = _done_section(shared_repo)
         contract_rev = (contract_event.current_contract(
             file_ownership.bb.read_facts(cid, kind=contract_event.CONTRACT_KIND))["revision"] if cid else 0)
         # One ownership fold per standup; claims made this wave are simulated on the in-memory map. Under
@@ -507,8 +546,24 @@ def team_standup(task):
         rescued_items = _rescue_map(cid)
         # F: help climbs one tier per helper, up to maxRescues tiers, then stays at the strongest reached.
         tiers_up = max(int(i.get("maxRescues") if i.get("maxRescues") not in (None, "") else 2), 0)
+        # Hill climbing across items (common/rung_policy): each item starts on the cheapest rung of the
+        # code ladder that has got its kind of work done on this repository, probing one cheaper after a
+        # success; only agent-fixable failures climb.
+        ladder_top = _code_ladder_top(i, shared_repo)
+        outcome_repo = rung_policy.repo_key(shared_repo) if shared_repo else ""
         scope_waits: list[str] = []
         scope_refusals: list[str] = []
+        # Files other subsystems of the program still own (not DELIVERED): the only paths outside this
+        # team's directories it may not widen to. Without a program, every outside path is refused.
+        foreign_open: set[str] | None = None
+        foreign_owner: dict[str, str] = {}
+        if parent:
+            foreign_open = set()
+            for oid, it in team_board.fold_board(parent)["items"].items():
+                if oid != str(i.get("subsystemId") or "") and it.get("state") != team_board.DONE:
+                    for path in _list(it.get("files")):
+                        foreign_open.add(str(path))
+                        foreign_owner[str(path)] = oid
         for entry in ready[:wave_n]:
             sid = str(entry.get("id"))
             files = [str(p).strip() for p in _list(entry.get("files")) if str(p).strip()]
@@ -518,10 +573,11 @@ def team_standup(task):
             # both helpers were refused there until it blocked (run 41fddf7a).
             helps = rescued_items.get(sid, [])
             widen, held_by, refused = ([], [], []) if helps else _widen_scope(items, sid, files, denied.get(sid, []),
-                                                                              contract_paths)
+                                                                              contract_paths, foreign_open)
             for path in refused:
                 mech = (f"refused to widen {sid}'s write scope to {path}: outside the directories this "
-                        f"team's items span ({', '.join(sorted(d or '.' for d in _team_span(items)))})")
+                        f"team's items span ({', '.join(sorted(d or '.' for d in _team_span(items)))})"
+                        + (f" and owned by a subsystem still being built ({foreign_owner.get(path, '?')})" if foreign_open else ""))
                 scope_refusals.append(mech)
                 if cid and not any(_mapping(e).get("detail") == mech for e in (board.get("exceptions") or [])):
                     team_board.post_exception(cid, "lead", sid, "write_scope", mech, severity="info")
@@ -585,15 +641,20 @@ def team_standup(task):
             prompt_key = "team_implement"
             prompt_context = {
                 "header": header, "deliverableNote": deliverable_note, "files": ", ".join(files) or "(none)",
-                "contractPaths": ", ".join(contract_paths) or "(none)",
+                "contractPaths": ", ".join(contract_paths) or "(none)", "doneSection": done_section,
                 "acceptanceSection": f"\nAcceptance criteria for this item:\n{acceptance}\n" if acceptance else "",
                 "frozenTestsSection": (
                     f"\nFROZEN ACCEPTANCE TESTS for this item, written by a different agent: "
-                    f"{', '.join(frozen_tests)}. They are the oracle: make them pass. "
+                    f"{', '.join(frozen_tests)}. They are the check: make them pass. "
                     f"Never weaken them to fit your code. Only if one is genuinely WRONG (it contradicts the design "
                     f"documents, the frozen contract or the acceptance criteria) correct that assertion in the "
                     f"same change and explain why, citing the source, in your summary: a peer reviewer then "
-                    f"decides whether the amendment stands.\n" if frozen_tests else ""),
+                    f"decides whether the amendment stands.\n"
+                    + ("This test ALREADY PASSES on the branch and the item's files already exist: first verify "
+                       "whether every acceptance criterion is genuinely met by the code as it is. If it is, report "
+                       "alreadySatisfied with the evidence and change nothing; if the test passes only because it "
+                       "is too weak, strengthen it (an amendment the reviewer decides) and implement what is "
+                       "missing.\n" if entry.get("greenBeforeWork") else "") if frozen_tests else ""),
                 "boardSection": f"\nTeam board: {_rollup_line(rollup)}.\n" if rollup.get("total") else "",
                 "lessonsSection": (f"\nLessons from teammates (build on these, do not repeat their mistakes):\n"
                                    f"{lesson_digest}\n" if lesson_digest else ""),
@@ -602,7 +663,16 @@ def team_standup(task):
             }
             prompt = templating.render_default(prompt_key, prompt_context)
             # Help for a stuck item (``_rescue``): a stronger teammate, briefed with everything tried so far.
-            model_tier = base_tier + min(len(helps), tiers_up)
+            kind = rung_policy.item_kind(entry)
+            start, rung_reason = (rung_policy.start_rung(outcome_repo, role="code", kind=kind, top=ladder_top)
+                                  if outcome_repo else (0, "no repository to learn from"))
+            climbs = [h for h in helps if rung_policy.agent_fixable(h.get("cause"))]
+            model_tier = min(base_tier + start + min(len(climbs), tiers_up), ladder_top)
+            if climbs:
+                rung_reason = (f"{rung_reason}; climbed {min(len(climbs), tiers_up)} rung(s) for being stuck "
+                               f"({climbs[-1].get('cause') or 'stuck'})")
+            if base_tier:
+                rung_reason += f"; the program re-runs this team {base_tier} rung(s) up"
             if helps:
                 prompt_key = "team_rescue"
                 prompt_context = {"item": sid, "mechanism": helps[-1].get("mechanism"),
@@ -624,6 +694,7 @@ def team_standup(task):
                 for ref in refs:
                     file_ownership.bb.post_fact(cid, "lead", "dispatch", {
                         "item": sid, "candidate": ref, "attempt": attempt, "waveBase": wave_head,
+                        "rung": model_tier, "kind": kind, "rungReason": rung_reason,
                         "contractRevision": contract_rev, "model": str(i.get("codeModel") or ""),
                         "promptSha256": hashlib.sha256(prompt.encode()).hexdigest(),
                         "lessons": [{"ts": les.get("ts"), "text": str(les.get("text"))[:160],
@@ -638,6 +709,7 @@ def team_standup(task):
                   "repoPath": shared_repo, "name": ref, "model": i.get("codeModel") or "",
                   "maxTurns": i.get("maxTurns") or 250, "maxBudgetUsd": i.get("maxBudgetUsd") or 10,
                   "prompt": prompt, "promptTemplate": "", "promptTemplateSource": "",
+                  "promptPath": prompt_files.stash(shared_repo, ref, prompt, prompt_context),
                   # The brief is the item's own default prompt. Under templateKey "code" with a "subtask"
                   # context the resolver sent only the item description: target files, frozen contract,
                   # acceptance tests, lessons and the report format never reached the implementer.
@@ -649,15 +721,13 @@ def team_standup(task):
                   # Help is unscoped (empty): it fixes the root cause wherever that is.
                   "allowedWriteRoots": [] if helps else files + [p for p in _list(entry.get("acceptanceTests"))
                                                                  if p not in files],
-                  # ...and the delivery audit never counts that untouched oracle as a missing delivery.
+                  # ...and the delivery audit never counts that untouched check as a missing delivery.
                   "acceptanceTests": _list(entry.get("acceptanceTests")),
                   "modelProfile": i.get("modelProfile") or "", "modelPolicy": i.get("modelPolicy") or {},
                   "modelPolicySource": i.get("modelPolicySource") or "",
                   "modelPolicySha256": i.get("modelPolicySha256") or "",
                   "modelsConfig": i.get("modelsConfig") or "",
                   "modelOverrides": i.get("modelOverrides") or {},
-                  "allowAgentTestPlan": _truth(i.get("allowAgentTestPlan"), True),
-                  "allowAgentAuthoredTests": _truth(i.get("allowAgentAuthoredTests"), True),
                   # The item's own green gate is its frozen acceptance tests when it has them (H13).
                   "testCommands": _list(entry.get("testCommands")),
                   "outputSchema": IMPLEMENTER_SCHEMA,
@@ -665,6 +735,11 @@ def team_standup(task):
                   # In-session feedback (H11): the running agent takes new directives for this item after
                   # every tool call; anything older than this prompt is already in it.
                   "feedbackCorrelationId": cid or "", "feedbackItem": sid, "feedbackSince": time.time(),
+                  # ONE board per run: lessons, questions, decisions and steers live on the program's board.
+                  "feedbackRunId": (str(i.get("parentCorrelationId") or "").strip() or cid or ""),
+                  # ONE working tree per team: no fork; the item commits only its own files, atomically.
+                  "sharedTree": True,
+                  "feedbackTeam": str(i.get("subsystemId") or ""),
                   "feedbackEveryTurns": int(i.get("feedbackEveryTurns") if i.get("feedbackEveryTurns")
                                             not in (None, "") else 1),
                   "checkpointEveryTurns": int(i.get("checkpointEveryTurns") or 0),
@@ -686,7 +761,8 @@ def team_standup(task):
 
 
 # ─────────────────────────────── team_integrate ───────────────────────────────
-ORACLE_REOPEN = "integration_oracle_red"
+CHECK_REOPEN = "integration_check_red"
+ACCEPTANCE_SETTLED_KIND = "acceptance_settled"  # the frozen tests (or none) are on the branch; waves may drain
 RESCUE_KIND = "rescue"
 
 
@@ -706,7 +782,7 @@ def _rescues(cid: str | None, gid: str) -> list[dict]:
             if str(_mapping(f.get("data")).get("item")) == str(gid)]
 
 
-def _rescue(cid: str | None, gid: str, mechanism: str, *, max_rescues: int) -> bool:
+def _rescue(cid: str | None, gid: str, mechanism: str, *, max_rescues: int, cause: str = "") -> bool:
     """A swarm helps the agent that is struggling instead of giving up on its item. Where an item would
     block — attempts exhausted, review rounds exhausted with findings unaddressed, a pushback that could
     not be resolved, contract churn — the Lead reopens it with a fresh attempt budget and the next standup
@@ -718,7 +794,10 @@ def _rescue(cid: str | None, gid: str, mechanism: str, *, max_rescues: int) -> b
     if not cid or max_rescues <= 0:
         return False
     n = len(_rescues(cid, gid))
-    file_ownership.bb.post_fact(cid, "lead", RESCUE_KIND, {"item": gid, "rescue": n + 1,
+    # The cause decides whether the helper runs a rung higher (common/rung_policy): a session that never
+    # ran or a harness fault retries on the same rung, since a stronger model cannot fix it.
+    cause = cause or str(mechanism).split(":", 1)[0].strip()
+    file_ownership.bb.post_fact(cid, "lead", RESCUE_KIND, {"item": gid, "rescue": n + 1, "cause": cause,
                                                           "mechanism": str(mechanism)[:1500]})
     team_board.set_state(cid, "lead", gid, team_board.REOPENED, attempt=0,
                          reason=f"stuck: {str(mechanism)[:240]} — a stronger teammate takes it over with its "
@@ -727,6 +806,44 @@ def _rescue(cid: str | None, gid: str, mechanism: str, *, max_rescues: int) -> b
     team_board.post_exception(cid, "lead", gid, "rescue", note, severity="info")
     team_board.resolve_exception(cid, "lead", gid, "rescue", note)
     return True
+
+
+def _code_ladder_top(i: dict, repo: str) -> int:
+    """Index of the code role's last rung in this run's model profile (2 when it cannot be read)."""
+    try:
+        from common import model_policy
+        return max(len(model_policy.resolve_model_policy(i, worktree=repo or None)["roles"]["code"]["tiers"]) - 1, 0)
+    except Exception:  # noqa: BLE001 - an unreadable policy fails at the agent, not at the standup
+        return 2
+
+
+def _record_rung_outcomes(cid: str | None, repo: str, items: dict) -> int:
+    """Teach the ladder (common/rung_policy) what this team's items show: the rung each done item was
+    finished on, and the rung each agent-fixable failure happened on. Returns how many were recorded."""
+    if not cid or not repo:
+        return 0
+    key = rung_policy.repo_key(repo)
+    dispatch, rescue, reopen = {}, {}, {}
+    for kind, into in (("dispatch", dispatch), (RESCUE_KIND, rescue), ("reopen", reopen)):
+        for f in file_ownership.bb.read_facts(cid, kind=kind):
+            d = _mapping(f.get("data"))
+            into.setdefault(str(d.get("item")), []).append({**d, "ts": f.get("ts") or 0})
+    n = 0
+    for gid, it in items.items():
+        if it.get("kind", "subsystem") == "subsystem" and gid not in dispatch:
+            continue
+        sent = dispatch.get(gid) or []
+        kinds = [d.get("kind") for d in sent if d.get("kind")]
+        if not kinds:
+            continue
+        last_reopen = sorted(reopen.get(gid) or [], key=lambda d: d["ts"])[-1:] or [{}]
+        for o in rung_policy.outcomes_from_board(dispatches=sent, rescues=rescue.get(gid) or [],
+                                                 final_state=str(it.get("state") or ""),
+                                                 blocked_reason=str(last_reopen[0].get("reason") or "")):
+            rung_policy.record(key, role="code", kind=kinds[-1], rung=o["rung"], ok=o["ok"], cause=o["cause"],
+                               item=gid, run=cid)
+            n += 1
+    return n
 
 
 def _item_history(cid: str | None, gid: str, limit: int = 7000) -> str:
@@ -765,21 +882,42 @@ def _item_history(cid: str | None, gid: str, limit: int = 7000) -> str:
     return text if len(text) <= limit else "…(earlier events omitted)\n" + text[-limit:]
 
 
-def _integration_oracle(cid: str | None, repo: str, head: str, items: dict, *, sandbox: bool) -> dict:
+def _integration_check(cid: str | None, repo: str, head: str, items: dict, *, sandbox: bool,
+                       since: str = "", landed: list | None = None) -> dict:
     """Run every integrated item's frozen acceptance tests at the integrated head (H13 on the shared
     branch, not only on each fork). A fork proves its own test in isolation; a sibling landing later can
     falsify an assumption the test was written with — sv-core's test asserted PING is an unknown
     command, sv-connection then registered PING — and the final test cycle ran only the repository's
     `make test`, which never executes the acceptance suite: the program delivered 6/6 with 2 of its 290
     frozen tests red at the head (run 299b4907). Items in ``review``/``done`` whose fork is not held
-    for an amendment are checked; ``red`` maps a failing item to the tail of its failing output."""
+    for an amendment are checked; ``red`` maps a failing item to the tail of its failing output.
+    Given ``since`` (the head before this wave's merges) and ``landed`` (the items merged), only the
+    items this wave can have affected are checked: the landed ones, those whose files or frozen test
+    the wave's diff touched, and those depending on a landed item — every integrated item's tests at
+    every wave made test time grow with the square of the item count, and a wave that lands one
+    leaf cannot falsify a test of an item it did not touch."""
+    changed: set[str] | None = None
+    if since and head and repo and os.path.isdir(repo):
+        diff = git.git(repo, "diff", "--name-only", since, head, check=False)
+        if diff.code == 0:
+            changed = {p.strip() for p in diff.stdout.splitlines() if p.strip()}
+    landed_ids = {str(g) for g in _list(landed)}
+
+    def touched(it: dict) -> bool:
+        if changed is None or landed is None or (not changed and not landed_ids):
+            return True  # no wave delta known, or a wave that moved nothing: check everything (the old rule)
+        if str(it.get("id")) in landed_ids or landed_ids & {str(d) for d in _list(it.get("dependsOn"))}:
+            return True
+        own = [str(p) for p in _list(it.get("files"))] + [str(p) for p in _list(it.get("acceptanceTests"))]
+        return any(c == f or c.startswith(f.rstrip("/") + "/") for c in changed for f in own if f)
+
     targets: dict[str, dict] = {}
     for gid, it in sorted(items.items()):
         if it.get("state") not in (team_board.REVIEW, team_board.DONE):
             continue
         paths = [str(p) for p in _list(it.get("acceptanceTests"))]
         commands = [_mapping(c) for c in _list(it.get("testCommands")) if _list(_mapping(c).get("argv"))]
-        if not paths or not commands or (cid and _pending_amendment(cid, gid)):
+        if not paths or not commands or (cid and _pending_amendment(cid, gid)) or not touched({**it, "id": gid}):
             continue
         targets[gid] = {"paths": paths, "commands": commands}
     if not targets or not repo or not head or not os.path.isdir(repo):
@@ -807,6 +945,21 @@ def _integration_oracle(cid: str | None, repo: str, head: str, items: dict, *, s
         if failed:
             red[gid] = str(failed[0].get("output") or "")[-1500:]
     return {"state": "failed" if red else "passed", "checked": sorted(targets), "red": red}
+
+
+def _shared_delivery_base(repo: str, dispatched_at: str, files: list[str], head: str) -> str:
+    """Where a shared-tree item's delivery range starts, for its reviewer's diff: the shared head when it
+    was dispatched, so the range holds its own commit (teammates' commits in that range touch other
+    files, and the reviewer reads this item's files). With no dispatch record, the parent of the
+    newest commit that touched its files; with none, an empty range at ``head`` (the reviewer then
+    judges the files on the tree)."""
+    if dispatched_at and git.git(repo, "merge-base", "--is-ancestor", dispatched_at, head, check=False).code == 0:
+        return dispatched_at
+    newest = git.git(repo, "log", "-1", "--format=%H", head, "--", *files, check=False).stdout.strip() if files else ""
+    if newest:
+        parent = git.git(repo, "rev-parse", "--verify", "--quiet", f"{newest}^", check=False).stdout.strip()
+        return parent or head
+    return head
 
 
 @worker_task(task_definition_name="team_integrate")
@@ -838,10 +991,12 @@ def team_integrate(task):
             refs = [str(r) for r in _list(item.get("candidates"))] or [gid]
             given = []  # the directives this item's agents were dispatched with (the dispatch record)
             given_ids: dict[str, str] = {}
+            dispatched_at = ""  # the shared head when this item's latest dispatch went out
             if cid:
                 for f in file_ownership.bb.read_facts(cid, kind="dispatch"):
                     d = _mapping(f.get("data"))
                     if d.get("item") == gid:
+                        dispatched_at = str(d.get("waveBase") or "")
                         given = [str(_mapping(x).get("text") or "") for x in _list(d.get("directives"))]
                         given_ids = {str(_mapping(x).get("text") or ""): str(_mapping(x).get("id") or "")
                                      for x in _list(d.get("directives"))}
@@ -850,8 +1005,24 @@ def team_integrate(task):
                 out = _mapping(joined_by_ref.get(ref))
                 worktree = _subtask_worktree(shared_repo, ref)
                 branch = git.group_branch(shared_repo, ref)
-                ahead, changed, diff_lines = "0", [], 0
-                if os.path.isdir(worktree):
+                ahead, changed, diff_lines, shared = "0", [], 0, False
+                if not os.path.isdir(worktree):
+                    # ONE tree per team (git.worktree_shared): no fork and no branch of its own. The item
+                    # was built in the shared tree and committed its own files there atomically, so its
+                    # delivery is already ON the shared branch: integrating it is recording it, never a
+                    # rebase. The delivery audit judged it, and its verdict is the delivery: the files
+                    # this session committed plus the planned files an earlier attempt already committed.
+                    # Rebasing the shared tree onto its own branch failed on teammates' uncommitted files
+                    # and re-opened five delivered items as "conflicts" with no conflicting file; their
+                    # re-dispatch had nothing left to commit and looped as "empty delivery" for an hour
+                    # while every audit said passed (run 836437d7).
+                    worktree, branch, shared = shared_repo, shared_branch, True
+                    staged = [str(p) for p in _list(out.get("stagedPaths")) if str(p).strip()]
+                    present = [str(p) for p in _list(out.get("presentPaths")) if str(p).strip()]
+                    changed = sorted({*staged, *present}) if str(out.get("deliveryOutcome") or "") == "passed" \
+                        else [str(p) for p in _list(out.get("filesChanged")) if str(p).strip()]
+                    ahead = "1" if changed else "0"
+                elif os.path.isdir(worktree):
                     ahead = git.git(worktree, "rev-list", "--count", f"{shared_branch}..{branch}",
                                     check=False).stdout.strip() or "0"
                     names = git.git(worktree, "diff", "--name-only", f"{shared_branch}...{branch}",
@@ -861,7 +1032,7 @@ def team_integrate(task):
                     diff_lines = sum(int(a) + int(b) for a, b, *_ in (ln.split("\t") for ln in stat.splitlines())
                                      if a.isdigit() and b.isdigit())
                 cands.append({
-                    "ref": ref, "worktree": worktree, "branch": branch, "changed": changed,
+                    "ref": ref, "worktree": worktree, "branch": branch, "changed": changed, "shared": shared,
                     "delivered": ahead != "0" and bool(changed),
                     "touchesContract": bool(contract_paths) and bool(changed)
                     and not contract_freeze.is_integration_eligible(changed, contract_paths),
@@ -885,6 +1056,8 @@ def team_integrate(task):
                                                              *_list(out.get("outsideScope"))] if str(p).strip()}),
                     "testsPassed": out.get("testsPassed") is True,
                     "deliveryOutcome": str(out.get("deliveryOutcome") or ""),
+                    "stagingFault": [str(p) for p in _list(out.get("stagingFault")) if str(p).strip()],
+                    "agentCompleted": out.get("agentCompleted") is True,
                     "changedFiles": len(changed), "diffLines": diff_lines,
                     "costUsd": _spend_args(out)["usd"] or 0.0,
                 })
@@ -903,11 +1076,23 @@ def team_integrate(task):
             # Pushback (H16): the agent judged a constraint harmful/impossible and did not follow it. Its
             # work is not integrated; the item blocks and a human decides (lift the constraint or not).
             pushed = next((c for c in cands if c["pushback"]), None)
-            if pushed:
+            worked = any(c["delivered"] or c["testsPassed"] or c["satisfiedClaim"] for c in cands)
+            if pushed and not worked:
                 pushbacks.append({"item": gid, **pushed["pushback"],
                                   "directiveId": given_ids.get(str(pushed["pushback"].get("matched") or ""), ""),
                                   "deniedWrites": pushed["deniedWrites"]})
                 continue
+            if pushed and worked and cid:
+                # The implementer did its item and also refused a directive that was not about it (the
+                # Architect's advice on sorted-set scores reached ce-keys, which then proved itself already
+                # satisfied, run 351812b2): the delivery stands and the directive is exempted for this item.
+                did = given_ids.get(str(pushed["pushback"].get("matched") or ""), "")
+                if did:
+                    team_board.exempt_directive(cid, "lead", did, gid, reason=str(pushed["pushback"].get("reason") or ""))
+                team_board.post_exception(cid, "integrator", gid, "pushback",
+                                          f"{gid} refused a directive it judged not its own ('{str(pushed['pushback'].get('directive') or '')[:120]}') "
+                                          f"and delivered its item anyway; the directive is exempted for it", severity="info")
+                team_board.resolve_exception(cid, "lead", gid, "pushback", "delivery stands; directive exempted")
             stopped = next((c["interruptedBy"] for c in cands if c["interruptedBy"]), None)
             winner = team_board.pick_best([c for c in cands if not c["interruptedBy"]])
             if stopped and not winner:
@@ -917,7 +1102,8 @@ def team_integrate(task):
                                     "text": _mapping(stopped).get("text")})
             elif winner:
                 eligible.append({"id": gid, "worktree": winner["worktree"], "branch": winner["branch"],
-                                 "readyAt": idx})
+                                 "readyAt": idx, "shared": winner["shared"], "files": winner["changed"],
+                                 "dispatchedAt": dispatched_at})
                 for les in winner["lessons"]:
                     les = _mapping(les)
                     if cid and str(les.get("text") or "").strip():
@@ -949,6 +1135,16 @@ def team_integrate(task):
                 # judges the claim against the criteria on the current tree: lgtm → done, changes → the
                 # findings re-open it as any review would.
                 claimed.append((gid, next(c["satisfiedClaim"] for c in cands if c["satisfiedClaim"])))
+            elif any(c.get("stagingFault") for c in cands):
+                unseen = next(c["stagingFault"] for c in cands if c.get("stagingFault"))
+                failures.append((gid, "staging_fault",
+                                 f"the item's files are on disk but git does not report them, a harness fault "
+                                 f"no agent can repair: {', '.join(unseen[:10])}", []))
+            elif all(c.get("deliveryOutcome") in ("implementation_unavailable", "audit_unavailable")
+                     and not c.get("agentCompleted") for c in cands):
+                failures.append((gid, "agent_unavailable",
+                                 f"fork {', '.join(refs)}: the agent session did not complete "
+                                 f"({', '.join(sorted({c['deliveryOutcome'] for c in cands}))}); retried on the same rung", []))
             else:
                 failures.append((gid, "empty_delivery",
                                  f"fork {', '.join(refs)} produced no commit; not counted as integrated", []))
@@ -963,7 +1159,15 @@ def team_integrate(task):
                         discarded.append(c["ref"])
 
         base_before = git.head(shared_repo)
-        result = continuous_integrate.integrate_ready(shared_repo, shared_branch, eligible)
+        # Fork candidates are rebased onto the moving shared branch; a shared-tree item is already on it.
+        result = continuous_integrate.integrate_ready(shared_repo, shared_branch,
+                                                      [e for e in eligible if not e["shared"]])
+        on_branch = [e for e in eligible if e["shared"]]
+        result["integrated"] = [*result.get("integrated", []),
+                                *({"item": e["id"], "branch": shared_branch, "head": base_before,
+                                   "base": _shared_delivery_base(shared_repo, e["dispatchedAt"], e["files"],
+                                                                 base_before)}
+                                  for e in on_branch)]
         for rec in result.get("reopened", []):
             failures.append((str(rec.get("item")), "rebase_conflict",
                              str(rec.get("mechanism") or "rebase conflict"), _list(rec.get("conflicts"))))
@@ -976,9 +1180,10 @@ def team_integrate(task):
             if cid:
                 # The exact range this item contributed — the reviewer's diff, even if review slips a wave.
                 file_ownership.bb.post_fact(cid, "integrator", "delivery", {
-                    "item": gid, "base": prev_head, "head": str(rec.get("head") or ""),
+                    "item": gid, "base": str(rec.get("base") or prev_head), "head": str(rec.get("head") or ""),
                     "files": _list(by_id.get(gid, {}).get("files"))})
-            prev_head = str(rec.get("head") or prev_head)
+            if not rec.get("base"):
+                prev_head = str(rec.get("head") or prev_head)
             if peer_review:
                 if cid:
                     team_board.set_state(cid, "integrator", gid, team_board.REVIEW,
@@ -1012,24 +1217,25 @@ def team_integrate(task):
                                         "the peer reviewer decides")
             reviewing.append(gid)
 
-        # Integration oracle (H13 at the integrated head): every integrated item's frozen acceptance
+        # Integration check (H13 at the integrated head): every integrated item's frozen acceptance
         # tests must still pass on the shared branch after this wave's merges. One that fails re-opens
         # its owner with the failure — the re-dispatch fixes the code, or amends a test whose assumption
         # a sibling's landing falsified (the peer reviewer decides). Bounded by maxAttempts below.
         board_items = team_board.fold_board(cid)["items"] if cid else {}
-        oracle = _integration_oracle(cid, shared_repo, result["final_head"], board_items,
-                                     sandbox=_truth(i.get("sandboxChecks"), True))
-        for gid, tail in sorted(oracle["red"].items()):
+        check = _integration_check(cid, shared_repo, result["final_head"], board_items,
+                                     sandbox=_truth(i.get("sandboxChecks"), True), since=base_before,
+                                     landed=[str(r.get("item")) for r in result.get("integrated", [])])
+        for gid, tail in sorted(check["red"].items()):
             paths = [str(p) for p in _list(_mapping(board_items.get(gid)).get("acceptanceTests"))]
             landed = ", ".join(str(r.get("item")) for r in result.get("integrated", [])) or "none"
             mech = (f"frozen acceptance test(s) {', '.join(paths)} of '{gid}' fail at the integrated head "
                     f"{result['final_head'][:12]} after this wave's merges ({landed}); re-dispatched to make "
                     f"them pass there")
             if gid in reviewing:
-                reviewing.remove(gid)  # not worth a reviewer until its oracle is green on the branch
+                reviewing.remove(gid)  # not worth a reviewer until its check is green on the branch
             if gid in done_now:
                 done_now.remove(gid)
-            failures.append((gid, ORACLE_REOPEN, mech, paths))
+            failures.append((gid, CHECK_REOPEN, mech, paths))
             if cid:
                 team_board.post_directive(
                     cid, "integrator", gid,
@@ -1070,14 +1276,18 @@ def team_integrate(task):
                                              f"dispatch instead of being held to the directive")
                 retry.append({**item, "attempt": attempt})
                 continue
-            if cid and did and (attempt + 1) < max_attempts:
+            if cid and did:
+                # Exempted and re-dispatched at the SAME attempt: a refused directive is not a failed
+                # attempt, and an item has only as many directives to refuse as it was given. Counting it
+                # sent five items of one team to a stronger-tier helper for refusing advice that was never
+                # theirs (run 351812b2).
                 team_board.exempt_directive(cid, "lead", did, gid, reason=str(rec.get("reason") or ""))
-                team_board.set_state(cid, "lead", gid, team_board.REOPENED, attempt=attempt + 1,
+                team_board.set_state(cid, "lead", gid, team_board.REOPENED, attempt=attempt,
                                      reason="constraint_pushback: exempted from the directive; re-dispatched")
                 team_board.post_exception(cid, "integrator", gid, "pushback", mech, severity="info")
                 team_board.resolve_exception(cid, "lead", gid, "pushback",
                                              f"lead exempted {gid} from directive {did} and re-dispatched it")
-                retry.append({**item, "attempt": attempt + 1})
+                retry.append({**item, "attempt": attempt})
                 continue
             if _rescue(cid, gid, f"constraint_pushback: {mech}", max_rescues=max_rescues):
                 rescued.append(gid)
@@ -1127,7 +1337,7 @@ def team_integrate(task):
                 # An amendment of frozen acceptance test(s) only — the test itself may be wrong (one asserted
                 # Exists==2 right after deleting both keys, contradicting the design; run 3e502ddc). Held
                 # UNMERGED and judged by the peer reviewer (a different agent than both authors), not
-                # auto-rejected: a defective oracle otherwise deadlocks its item for good.
+                # auto-rejected: a defective check otherwise deadlocks its item for good.
                 held.add(str(ev["candidate"]))
                 file_ownership.bb.post_fact(cid, "integrator", AMENDMENT_KIND, amend)
                 team_board.set_state(cid, "integrator", gid, team_board.REVIEW,
@@ -1168,7 +1378,7 @@ def team_integrate(task):
 
         for gid, reason, mechanism, conflicts in failures:
             rec = {"op": "reopen", "item": gid, "reason": reason, "mechanism": mechanism, "conflicts": conflicts}
-            # An item the oracle re-opens may have been done a wave ago: its attempt is on the board.
+            # An item the check re-opens may have been done a wave ago: its attempt is on the board.
             item = by_id.get(gid) or {**_mapping(board_items.get(gid)), "id": gid}
             attempt = int(item.get("attempt") or 0)
             if reason in _RETRYABLE_REOPEN and (attempt + 1) < max_attempts:
@@ -1177,6 +1387,13 @@ def team_integrate(task):
                     team_board.set_state(cid, "integrator", gid, team_board.REOPENED,
                                          reason=mechanism, attempt=attempt + 1)
                     file_ownership.bb.post_fact(cid, gid, "retry", {**rec, "op": "retry", "nextAttempt": attempt + 1})
+            elif reason == "staging_fault":
+                # A harness fault: a retry or a stronger teammate would redo work that is already on disk.
+                blocked.append(rec)
+                if cid:
+                    file_ownership.bb.post_fact(cid, gid, "reopen", rec)
+                    team_board.post_exception(cid, "integrator", gid, "staging_fault", mechanism)
+                    team_board.set_state(cid, "integrator", gid, team_board.BLOCKED, reason=mechanism)
             else:
                 if cid:
                     file_ownership.bb.post_fact(cid, gid, "reopen", rec)
@@ -1224,7 +1441,7 @@ def team_integrate(task):
             "contractEvents": pending_contract, "contractEventCount": len(pending_contract),
             "interrupted": interrupted,
             "bestOf": best_of_picks, "discardedCandidates": discarded, "pushbacks": pushbacks,
-            "lessonsShared": shared_lessons, "removedForks": removed_forks, "oracle": oracle, "rescued": rescued,
+            "lessonsShared": shared_lessons, "removedForks": removed_forks, "check": check, "rescued": rescued,
             "integratedCount": len(result.get("integrated", [])), "reviewingCount": len(reviewing),
             "retryCount": len(retry), "blockedCount": len(blocked), "releasedFiles": released,
             "spendRecorded": recorded, "big_bang_merge": result["big_bang_merge"],
@@ -1232,8 +1449,8 @@ def team_integrate(task):
         }, [f"[team_integrate] integrated={len(result.get('integrated', []))} review={len(reviewing)} "
             f"done={len(done_now)} retry={len(retry)} blocked={len(blocked)} "
             f"released={released} removedForks={len(removed_forks)} head={result['final_head'][:12]} "
-            f"oracle={oracle['state']} checked={len(oracle['checked'])} red={sorted(oracle['red'])}"
-            + (f" reason={oracle.get('reason')}" if oracle.get("reason") else "")])
+            f"check={check['state']} checked={len(check['checked'])} red={sorted(check['red'])}"
+            + (f" reason={check.get('reason')}" if check.get("reason") else "")])
     except Exception as e:  # noqa: BLE001
         return fail(task, "team_integrate", e)
 
@@ -1251,7 +1468,7 @@ def _latest_delivery(cid: str | None) -> dict:
 @worker_task(task_definition_name="team_review_build")
 def team_review_build(task):
     """Build read-only peer-review forks for every item awaiting review (H8). The reviewer is a
-    DIFFERENT agent than the implementer (H13 — the author is not the oracle). Each item's change is the
+    DIFFERENT agent than the implementer (H13 — the author is not the check). Each item's change is the
     exact range it contributed at integration (its ``delivery`` fact), so an item whose review slipped a
     wave (reviewer unavailable) is still reviewed against its own diff. Every item in ``review`` is
     reviewed — the round cap is enforced on the verdict (quarantine), never by skipping review."""
@@ -1270,6 +1487,7 @@ def team_review_build(task):
                             if it.get("state") == team_board.REVIEW and gid not in reviewing)
         deliveries = _latest_delivery(cid)
         rescued_items = _rescue_map(cid)
+        done_section = _done_section(shared_repo)
 
         dynamic_tasks, dynamic_inputs, reviewed = [], {}, []
         for gid in reviewing:
@@ -1294,7 +1512,7 @@ def team_review_build(task):
                 diff = git.git(shared_repo, "diff", f"{base}..{head}", "--", *files,
                                check=False).stdout[:_DIFF_LIMIT]
                 review_wt = git.worktree_add_detached(shared_repo, f"review-{gid}", head)["worktreePath"]
-            # The reviewer's oracle = the shared acceptance criteria PLUS the hidden reviewCriteria the
+            # The reviewer's check = the shared acceptance criteria PLUS the hidden reviewCriteria the
             # implementer never saw (H8/H13 — catch what tests and the handed-over spec do not).
             acceptance = "\n".join(f"- {c}" for c in
                                    (_list(item.get("acceptanceCriteria")) + _list(item.get("reviewCriteria"))))
@@ -1309,6 +1527,9 @@ def team_review_build(task):
                                     f"above; never request a change that contradicts one):\n{steering}\n\n"
                                     if steering else ""),
                 "acceptance": acceptance or "(none stated)", "files": ", ".join(files) or "(any file)",
+                "doneSection": (done_section + "\nA change that meets the item's criteria but not a check's interface "
+                                "(its syntax, paths, ports or output format) is a blocking finding: name the check.\n"
+                                if done_section else ""),
                 "claimSection": (
                     f"THE IMPLEMENTER MADE NO CHANGE: it reports the shared branch ALREADY satisfies this item "
                     f"(its evidence: {dlv.get('claimedSatisfied')}). The diff below is empty by design. Read the "
@@ -1327,13 +1548,13 @@ def team_review_build(task):
                     f"'changes' only to reject, when the original test was right. The test then stays exactly as "
                     f"it was, so every finding must be a change to the implementation, never to the test. "
                     if amend else ""),
-                "oracleNote": (
-                    "This item's deliverable is DOCUMENTS, not code: you are the only oracle (there are no "
+                "checkNote": (
+                    "This item's deliverable is DOCUMENTS, not code: you are the only check (there are no "
                     "executable tests for it). Check every acceptance criterion is actually met, and that the "
                     "documents are concrete enough for other teams to build from without guessing (names, "
                     "interfaces, formats, error behaviour, edge cases); vague or missing parts are blocking. "
                     if team_board.deliverable_of(item) == "docs" else
-                    "The automated test suite is the correctness oracle and runs separately — do NOT just "
+                    "The automated test suite is the correctness check and runs separately — do NOT just "
                     "restate that tests pass. Your job is to catch what tests cannot: an acceptance "
                     "criterion left unmet, a frozen-contract violation, a design/security smell, or a test in "
                     "the diff that cannot fail (a tautological test is a blocking finding). "),
@@ -1349,6 +1570,7 @@ def team_review_build(task):
                 "worktreePath": review_wt, "tools": _REVIEW_TOOLS, "templateKey": "team_review", "modelTier": silent,
                 "model": i.get("codeModel") or "", "maxTurns": i.get("reviewMaxTurns") or 60,
                 "maxBudgetUsd": i.get("reviewMaxBudgetUsd") or 3, "prompt": prompt,
+                "promptPath": prompt_files.stash(shared_repo, ref, prompt, prompt_context),
                 "promptContext": prompt_context, "promptTemplate": "", "promptTemplateSource": "",
                 "modelProfile": i.get("modelProfile") or "", "modelPolicy": i.get("modelPolicy") or {},
                 "modelPolicySource": i.get("modelPolicySource") or "",
@@ -1362,6 +1584,67 @@ def team_review_build(task):
                   [f"[team_review_build] reviewing={len(reviewed)} ({', '.join(reviewed)})"])
     except Exception as e:  # noqa: BLE001
         return fail(task, "team_review_build", e)
+
+
+def _final_gate(board: dict, shared_repo: str, parent_cid: str, subsystem_id: str = "") -> dict:
+    """What the team's final test cycle verifies, proves and may repair, read from the board NOW.
+
+    ``finalHead`` is the shared head AFTER the caller's step: an approved acceptance-test amendment is
+    merged by apply_reviews, after the wave's integrate step, so the integrator's head is stale by
+    then — the server team re-froze its amended test at the merged head and was then judged "modified
+    after frozen" against the pre-merge head, blocking cmd and integration (run ec0fb6dc). The frozen
+    acceptance tests of the items that are DONE are what the cycle must prove (an undone item's test
+    is red by construction — the store team's final cycle ran st-core's test and its repair agent set
+    out to implement st-core, with write roots derived from a sibling team's last commit, run
+    a4f1ff1f), and the files the team's items span are its write authority (never another team's
+    directory). A program's team is gated on its OWN check: in a repository that documents no test
+    command, discovery inferred a bare root `pytest`, which ran every team's acceptance tests — the
+    pgtype team was refused for the parser team's tests while that team was still building in the
+    same rank, and its own two tests never ran (run 037e1cbe); cross-team checks are the integration
+    check's (every wave) and the program's final full suite's. A program's team with nothing of its
+    own to gate on (a documents team) is verified against its diff only (``targeted``), never the
+    repository's whole suite, which cost a documents team 23 minutes on a sibling's stale, hanging
+    test (team 11d9aaa2). A standalone team keeps the repository's own command (``full``), and so does
+    a program's team with no frozen test when no sibling subsystem is still open: there is nothing of
+    anyone else's for the full suite to run, and ``targeted`` discovery cannot map a new project's
+    package.json to a unit, so the one-item React team's final cycle fell back to an agent that
+    proposed nothing and then authored a test it did not need (run b00146a9)."""
+    final_head = git.head(shared_repo) if shared_repo and os.path.isdir(shared_repo) else ""
+    items = board["items"]
+    acceptance_commands = [c for gid, it in sorted(items.items()) if it.get("state") == team_board.DONE
+                           for c in _list(it.get("testCommands")) if _list(_mapping(c).get("argv"))]
+    write_roots = sorted({str(p) for it in items.values() for p in _list(it.get("files")) if str(p).strip()})
+    gate_commands = acceptance_commands if parent_cid.strip() else []
+    siblings_open = parent_cid.strip() and any(
+        it.get("kind", "subsystem") == "subsystem" and sid != subsystem_id and it.get("state") != team_board.DONE
+        for sid, it in team_board.fold_board(parent_cid.strip())["items"].items())
+    gate_mode = ("commands" if gate_commands else "targeted") if siblings_open else ("commands" if gate_commands else "full")
+    return {"finalHead": final_head, "acceptanceCommands": acceptance_commands, "writeRoots": write_roots,
+            "gateCommands": gate_commands, "gateMode": gate_mode,
+            "testMode": "targeted" if gate_mode == "targeted" else "full"}
+
+
+# ─────────────────────────────── team_gate_refresh ────────────────────────────
+@worker_task(task_definition_name="team_gate_refresh")
+def team_gate_refresh(task):
+    """Re-read the final gate from the board once BOTH branches of ``accept_and_build`` have joined.
+
+    The frozen acceptance tests are authored beside the first wave, so they can land on the branch
+    after the last wave's ``team_apply_reviews`` computed the gate: the calculator team's one item
+    was done at 27 s, its test file was committed at 72 s, the wave loop's variables still said "no
+    frozen commands", and the final cycle ran nothing — the delivered head was judged
+    ``acceptanceUnproven`` and the frozen test "modified after frozen" against a head older than its
+    own commit (run 884f7eec). The gate the final cycle runs is the board's state at the join."""
+    i = task.input_data or {}
+    try:
+        cid = str(i.get("correlationId") or "").strip()
+        board = team_board.fold_board(cid) if cid else {"items": {}}
+        gate = _final_gate(board, str(i.get("sharedRepo") or "").strip(), str(i.get("parentCorrelationId") or ""),
+                           str(i.get("subsystemId") or ""))
+        return ok(task, gate, [f"[team_gate_refresh] head={gate['finalHead'][:12]} "
+                               f"acceptance_commands={len(gate['acceptanceCommands'])} mode={gate['gateMode']}"])
+    except Exception as e:  # noqa: BLE001
+        return fail(task, "team_gate_refresh", e)
 
 
 # ─────────────────────────────── team_apply_reviews ───────────────────────────
@@ -1441,6 +1724,35 @@ def team_apply_reviews(task):
             # fault of this implementer, the Lead needs to widen" — spent the item's last round; a new
             # finding in round three quarantined it and the program ended at 0/6 (run 0709d705).
             scope_only = bool(out_of_scope) and not findings
+            # A file outside the directories this team's items span can never be widened to (the
+            # standup refuses it: writing outside the subsystem is the program's call). A round that asks
+            # ONLY for such files cannot be addressed by this implementer: re-dispatching sent it a
+            # directive it had to push back on, the Lead exempted it, and a fourth round began for
+            # nothing (storage-core, run c4a9237d). The item is accepted; the change is carried to the
+            # team (and the program's Architect reads the board) as a directive, decided and recorded.
+            span = _team_span(items)
+            unreachable = [x for x in out_of_scope if not _in_span(str(_mapping(x).get("file")), span)
+                           and str(_mapping(x).get("file")) not in _list(_mapping(items.get(gid)).get("files"))]
+            if scope_only and unreachable and len(unreachable) == len(out_of_scope):
+                carried = "; ".join(f"in {_mapping(x).get('file')}: {_mapping(x).get('change') or 'a change this item needs there'}"
+                                    for x in unreachable)
+                mech = (f"peer review of '{gid}' asked only for files outside this team's directories "
+                        f"({', '.join(str(_mapping(x).get('file')) for x in unreachable)}); accepted, the change "
+                        f"carried to the team: {carried}")
+                if cid:
+                    team_board.post_review(cid, f"reviewer_{gid}", gid, "lgtm", findings=[], out_of_scope=out_of_scope,
+                                           scope_only=True)
+                    team_board.post_directive(cid, "lead", "team", f"'{gid}' was accepted; its reviewer named a change "
+                                              f"outside this team's directories, for whoever owns it: {carried}",
+                                              authority="agent")
+                    team_board.set_state(cid, "lead", gid, team_board.DONE,
+                                         reason="peer review passed; a change outside this team's directories carried on")
+                    team_board.post_exception(cid, "lead", gid, "scope_unreachable", mech, severity="info")
+                    team_board.resolve_exception(cid, "lead", gid, "scope_unreachable", mech)
+                    team_board.post_lesson(cid, gid, f"item {gid} delivered and peer-reviewed", confidence="high",
+                                           provenance="reviewed", refs=_list(_mapping(items.get(gid)).get("files")))
+                done.append(gid)
+                continue
             if out_of_scope and verdict == "lgtm":
                 # The reviewer approved the diff but named a change the item still needs in a file its
                 # implementer may not write: the item is not done until that lands. sv-cmd-registry was
@@ -1567,42 +1879,25 @@ def team_apply_reviews(task):
 
         board = team_board.fold_board(cid) if cid else board
         rollup = team_board.board_rollup(board)
-        # The shared head AFTER this step: an approved acceptance-test amendment is merged here, after
-        # the wave's integrate step, so the integrator's head is stale by then. The run's finalHead
-        # (the final test cycle's candidate and the outcome's tamper check) is read from here — the
-        # server team re-froze its amended test at the merged head and was then judged "modified after
-        # frozen" against the pre-merge head, blocking cmd and integration (run ec0fb6dc).
-        final_head = git.head(shared_repo) if shared_repo and os.path.isdir(shared_repo) else ""
-        # What the final test cycle must prove and may repair, as of this round: the frozen acceptance
-        # tests of the items that are DONE (an undone item's test is red by construction — the store
-        # team's final cycle ran st-core's test and its repair agent set out to implement st-core, with
-        # write roots derived from a sibling team's last commit, run a4f1ff1f) and the files this
-        # team's items span (its write authority; never another team's directory).
-        items_after = board["items"]
-        acceptance_commands = [c for gid, it in sorted(items_after.items()) if it.get("state") == team_board.DONE
-                               for c in _list(it.get("testCommands")) if _list(_mapping(c).get("argv"))]
-        write_roots = sorted({str(p) for it in items_after.values() for p in _list(it.get("files")) if str(p).strip()})
-        # A program's team is gated on its OWN oracle. In a repository that documents no test command,
-        # discovery inferred a bare root `pytest`, which ran every team's acceptance tests — the pgtype
-        # team was refused for the parser team's tests while that team was still building in the same
-        # rank, and its own two tests never ran (run 037e1cbe). Cross-team checks are the integration
-        # oracle's (every wave) and the program's final full suite's. A standalone team keeps the
-        # repository's own command.
-        gate_commands = acceptance_commands if str(i.get("parentCorrelationId") or "").strip() else []
-        return ok(task, {"drained": rollup["drained"], "allDone": rollup["allDone"], "rollup": rollup,
+        gate = _final_gate(board, shared_repo, str(i.get("parentCorrelationId") or ""), str(i.get("subsystemId") or ""))
+        # The frozen acceptance tests are authored beside the first wave. A board that drains before
+        # they have landed is not done: the next standup waits for them and the red ones re-open their
+        # items (the calculator's one item was done at 117 s, its test landed at 125 s red, the loop
+        # had already exited and a repair agent at the final cycle spent 134 s instead, run 993dce38).
+        settled = bool(file_ownership.bb.read_facts(cid, kind=ACCEPTANCE_SETTLED_KIND)) if cid else True
+        return ok(task, {"drained": rollup["drained"] and settled, "allDone": rollup["allDone"], "rollup": rollup,
+                         "acceptanceSettled": settled,
                          "changes": changes, "changesCount": len(changes), "doneCount": len(done),
                          "quarantined": quarantined, "unavailable": unavailable, "retracted": retracted,
-                         "reviewSpendRecorded": recorded, "finalHead": final_head,
-                         "acceptanceCommands": acceptance_commands, "writeRoots": write_roots,
-                         "gateCommands": gate_commands, "rescued": rescued_now},
+                         "reviewSpendRecorded": recorded, "rescued": rescued_now, **gate},
                   [f"[team_apply_reviews] done={len(done)} changes={len(changes)} "
                    f"quarantined={len(quarantined)} unavailable={len(unavailable)} "
-                   f"drained={rollup['drained']} head={final_head[:12]} board={_rollup_line(rollup)}"])
+                   f"drained={rollup['drained']} head={gate['finalHead'][:12]} board={_rollup_line(rollup)}"])
     except Exception as e:  # noqa: BLE001
         return fail(task, "team_apply_reviews", e)
 
 
-# ─────────────────────── acceptance tests: author ≠ oracle (WP6, H13) ────────────────────
+# ─────────────────────── acceptance tests: author ≠ check (WP6, H13) ────────────────────
 def _acceptance_path(pattern: str, item_id: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_]", "_", item_id)
     return (pattern or "tests/acceptance/test_accept_{id}.py").replace("{id}", safe)
@@ -1654,7 +1949,7 @@ def _acceptance_isolation(items: dict, gid: str) -> str:
 @worker_task(task_definition_name="team_acceptance_build")
 def team_acceptance_build(task):
     """Before any implementer is dispatched, a DIFFERENT agent writes each item's acceptance tests from
-    its acceptance criteria (H13: the author of the code is never the author of its oracle). One
+    its acceptance criteria (H13: the author of the code is never the author of its check). One
     read-mostly ``coding_agent`` per item that has criteria and no frozen tests yet; each may write only
     its own test file. The next tasks commit them, prove them red at the base, and freeze them."""
     i = task.input_data or {}
@@ -1664,10 +1959,15 @@ def team_acceptance_build(task):
         enabled = _truth(i.get("authorAcceptanceTests"), True)
         pattern = str(i.get("acceptanceTestPattern") or "tests/acceptance/test_accept_{id}.py")
         items = team_board.fold_board(cid)["items"] if cid else {}
+        done_section = _done_section(repo)
+        if done_section:
+            done_section += ("\nYour tests drive the program EXACTLY as these checks do: the same invocation syntax, "
+                             "arguments, paths, ports and output format. A test that invents a second syntax beside "
+                             "the checks' fails a correct program.\n")
         dynamic_tasks, dynamic_inputs, authored, reused = [], {}, {}, {}
         for gid, it in sorted(items.items()):
             criteria = _list(it.get("acceptanceCriteria"))
-            # A documents deliverable has no executable oracle: its criteria are judged at peer review.
+            # A documents deliverable has no executable check: its criteria are judged at peer review.
             if not enabled or not criteria or _list(it.get("acceptanceTests")) \
                     or team_board.deliverable_of(it) == "docs":
                 continue
@@ -1675,7 +1975,7 @@ def team_acceptance_build(task):
             if repo and os.path.isfile(os.path.join(repo, path)):
                 # A program re-runs a team whose first attempt ended INCOMPLETE; that attempt's frozen
                 # acceptance test is on the branch, already proven red before its implementation. It stays
-                # the item's oracle. Re-authoring it would pass at once (the code exists), be judged
+                # the item's check. Re-authoring it would pass at once (the code exists), be judged
                 # tautological, and be deleted from the branch.
                 reused[gid] = path
                 continue
@@ -1686,13 +1986,14 @@ def team_acceptance_build(task):
             prompt_context = {"item": gid, "path": path, "isolation": _acceptance_isolation(items, gid),
                               "description": it.get("description") or it.get("title") or gid,
                               "files": ", ".join(_list(it.get("files"))) or "(unspecified)",
-                              "criteria": "\n".join(f"- {c}" for c in criteria)}
+                              "criteria": "\n".join(f"- {c}" for c in criteria), "doneSection": done_section}
             prompt = templating.render_default("team_acceptance_tests", prompt_context)
             dynamic_tasks.append({"name": "coding_agent", "taskReferenceName": ref, "type": "SIMPLE",
                                   "optional": True})
             dynamic_inputs[ref] = {
                 "worktreePath": author_wt, "tools": ["Read", "Grep", "Glob", "Write", "Edit"],
                 "allowedWriteRoots": [path], "templateKey": "team_acceptance_tests", "prompt": prompt,
+                "promptPath": prompt_files.stash(repo, ref, prompt, prompt_context),
                 "promptContext": prompt_context, "promptTemplate": "", "promptTemplateSource": "",
                 "model": i.get("codeModel") or "", "maxTurns": i.get("authorMaxTurns") or 40,
                 "maxBudgetUsd": i.get("authorMaxBudgetUsd") or 2, "includeFileTree": True,
@@ -1719,6 +2020,9 @@ def team_acceptance_build(task):
                 "paths": cur["paths"] + [p for p in frozen if p not in cur["paths"]], "frozen": True,
                 "revision": max(cur["revision"], 1), "acceptanceTests": frozen,
                 "acceptanceCommit": git.head(repo)})
+        if cid and not authored:
+            file_ownership.bb.post_fact(cid, "acceptance", ACCEPTANCE_SETTLED_KIND,
+                                        {"authored": 0, "reused": sorted(reused)})
         return ok(task, {"dynamicTasks": dynamic_tasks, "dynamicTasksInput": dynamic_inputs,
                          "authored": authored, "count": len(authored), "reused": reused,
                          "gate": "author" if authored else "skip"},
@@ -1749,10 +2053,11 @@ def team_acceptance_collect(task):
             git.git(repo, "branch", "-D", git.group_branch(repo, ref), check=False)
         commit = ""
         if collected:
-            git.git(repo, "add", "--", *collected)
-            git.git(repo, "-c", "user.name=conductor-team", "-c", "user.email=team@conductor.local", "commit",
-                    "-q", "-m", "team: frozen acceptance tests (authored before implementation, H13)")
-            commit = git.head(repo)
+            # The shared worktree is also the integrators' target while the first wave runs: stage and
+            # commit under the repository lock, only the authored files.
+            out = git.commit(repo, "team: frozen acceptance tests (authored before implementation, H13)",
+                             force_add_paths=collected, write_roots=sorted({os.path.dirname(p) or "." for p in collected}))
+            commit = str(out.get("commit") or git.head(repo))
         return ok(task, {"commit": commit, "collected": collected, "noOp": not collected},
                   [f"[team_acceptance_collect] collected={collected} commit={commit[:12]}"])
     except Exception as e:  # noqa: BLE001
@@ -1803,9 +2108,18 @@ def team_acceptance_commit(task):
                    if git.git(repo, "ls-files", "--error-unmatch", p, check=False).code == 0}
         verdicts = _file_verdicts({g: p for g, p in authored.items() if p in present}, commands, overall)
         kept, discarded, absent = {}, [], [g for g, p in authored.items() if p not in present]
+        board_items = team_board.fold_board(cid)["items"] if cid else {}
+        green_before_work: list[str] = []
         for gid, verdict in verdicts.items():
             path = authored[gid]
-            if verdict == "green":
+            files = [str(f) for f in _list(_mapping(board_items.get(gid)).get("files")) if str(f).strip()]
+            # Every file the item would create or edit already exists on the branch: the work may have
+            # been done before (a continuation, a repository that already holds it). A test that passes
+            # there is not a tautology but the item's gate; discarding it left every fork of storage-core
+            # with nothing to run and four minutes of discovery fallback per round (run c4a9237d).
+            exists = bool(files) and all(git.git(repo, "ls-files", "--error-unmatch", f, check=False).code == 0
+                                         for f in files)
+            if verdict == "green" and not exists:
                 git.git(repo, "rm", "-q", path, check=False)
                 discarded.append(gid)
                 if cid:
@@ -1813,6 +2127,13 @@ def team_acceptance_commit(task):
                                            f"the feature existed (tautological) and was discarded",
                                            confidence="high", provenance="acceptance_test_tautology", refs=[path])
             else:
+                if verdict == "green":
+                    green_before_work.append(gid)
+                    if cid:
+                        team_board.post_lesson(cid, "acceptance", f"acceptance test {path} for '{gid}' passed before "
+                                               f"any work; the item's files already exist, so it is kept as the gate "
+                                               f"and the implementer confirms the criteria are met",
+                                               confidence="medium", provenance="acceptance_green_before_work", refs=[path])
                 naming = [_mapping(c) for c in commands
                           if any(path in str(a) for a in _list(_mapping(c).get("argv")))]
                 others = [p for g, p in authored.items() if g != gid]
@@ -1822,12 +2143,38 @@ def team_acceptance_commit(task):
             git.git(repo, "-c", "user.name=conductor-team", "-c", "user.email=team@conductor.local",
                     "commit", "-q", "-m", "team: discard tautological acceptance tests", check=False)
         head = git.head(repo) if repo else ""
+        # Authored beside the first wave, a test can land after its item was delivered and reviewed:
+        # red at that head, it re-opens the item now (the same re-dispatch as a red integration check),
+        # so the implementer makes it pass before the team calls itself done instead of a final-cycle
+        # repair agent (134 s, run 993dce38). An item still open runs it on its fork's gate as usual.
+        reopened: list[str] = []
+        for gid, verdict in verdicts.items():
+            item = _mapping(board_items.get(gid))
+            if verdict != "red" or item.get("state") not in (team_board.DONE, team_board.REVIEW) or not cid:
+                continue
+            path = authored[gid]
+            tail = "\n".join(str(_mapping(c).get("output") or "")[-1500:] for c in commands
+                             if any(path in str(a) for a in _list(_mapping(c).get("argv"))))
+            team_board.set_state(cid, "acceptance", gid, team_board.REOPENED, attempt=int(item.get("attempt") or 0),
+                                 reason=f"{CHECK_REOPEN}: frozen acceptance test {path} landed after the item was "
+                                        f"delivered and fails at {head[:12]}")
+            team_board.post_directive(
+                cid, "acceptance", gid,
+                f"Its frozen acceptance test {path} (authored beside your first attempt, now on the branch) FAILS "
+                f"at {head[:12]} against what you delivered. Make it pass: fix the implementation, or — if an "
+                f"assertion contradicts the design — amend it citing the design; the peer reviewer decides the "
+                f"amendment. Failing output:\n{tail}", authority="agent")
+            team_board.post_exception(cid, "acceptance", gid, CHECK_REOPEN,
+                                      f"frozen test {path} red at {head[:12]} after '{gid}' was delivered", severity="info")
+            team_board.resolve_exception(cid, "acceptance", gid, CHECK_REOPEN, "re-dispatched with the failing output")
+            reopened.append(gid)
         contract_paths = []
         if cid:
             for gid, rec in kept.items():
                 cur = team_board.fold_board(cid)["items"].get(gid, {"id": gid})
                 team_board.post_item(cid, "acceptance", {**cur, "acceptanceTests": [rec["path"]],
-                                                         "testCommands": rec["commands"]})
+                                                         "testCommands": rec["commands"],
+                                                         "greenBeforeWork": gid in green_before_work})
             cur = contract_event.current_contract(file_ownership.bb.read_facts(cid, kind=contract_event.CONTRACT_KIND))
             contract_paths = cur["paths"] + [r["path"] for r in kept.values() if r["path"] not in cur["paths"]]
             if kept:
@@ -1839,10 +2186,15 @@ def team_acceptance_commit(task):
                     "acceptanceCommit": head})
             for ref, out in _iter_joined(i.get("joined")):
                 _record(cid, "acceptance:" + re.sub(r"__[0-9]+$", "", str(ref)).removeprefix("accept_"), out)
+        if cid:
+            file_ownership.bb.post_fact(cid, "acceptance", ACCEPTANCE_SETTLED_KIND,
+                                        {"authored": len(authored), "kept": sorted(kept), "discarded": discarded,
+                                         "acceptanceCommit": head})
         return ok(task, {"kept": kept, "discarded": discarded, "absent": absent, "verdicts": verdicts,
-                         "acceptanceCommit": head, "contractPaths": contract_paths},
+                         "greenBeforeWork": green_before_work, "acceptanceCommit": head, "contractPaths": contract_paths,
+                         "reopened": reopened},
                   [f"[team_acceptance_commit] kept={sorted(kept)} discarded={discarded} absent={absent} "
-                   f"run={overall}"])
+                   f"run={overall} reopened={reopened}"])
     except Exception as e:  # noqa: BLE001
         return fail(task, "team_acceptance_commit", e)
 
@@ -1984,6 +2336,12 @@ def team_outcome(task):
         shared_branch = str(i.get("sharedBranch") or "")
         tests_wt = str(i.get("testsWorktree") or "")
         tests_branch = str(i.get("testsBranch") or "")
+        # The verdict is about the branch as it IS: a frozen test or the program's definition of done
+        # committed after the last wave's variables were captured moves the head past the recorded
+        # one, and a tamper diff from a newer commit to an older head reports the newer commit's own
+        # files as "modified" (run 884f7eec, the recorded head predated the acceptance commit).
+        if shared_repo and os.path.isdir(shared_repo):
+            final_head = git.head(shared_repo) or final_head
         repair_integrated, repair_dropped = False, ""
         if shared_repo and os.path.isdir(shared_repo) and tests_wt and os.path.isdir(tests_wt) and tests_branch:
             ahead = git.git(tests_wt, "rev-list", "--count", f"{shared_branch}..{tests_branch}",
@@ -2022,7 +2380,7 @@ def team_outcome(task):
         stuck = team_board.starvation(items, open_exc)
 
         # H13 tamper guard: the frozen acceptance tests must be byte-identical at the delivered head
-        # (no implementer or final test-repair agent may have edited its own oracle).
+        # (no implementer or final test-repair agent may have edited its own check).
         tampered, unproven = [], []
         if cid:
             cur = file_ownership.bb.read_facts(cid, kind=contract_event.CONTRACT_KIND)
@@ -2048,6 +2406,7 @@ def team_outcome(task):
         delivered = (bool(total) and done == total and tests_passed and not tampered and not unproven
                      and not repair_dropped)
         verdict = "DELIVERED" if delivered else "INCOMPLETE"
+        rungs_recorded = _record_rung_outcomes(cid, shared_repo, items)
         if delivered:
             report = (f"DELIVERED: all {total} work items reached done on the shared branch "
                       f"(continuous rebase, zero big-bang merge); branch green "
@@ -2071,14 +2430,14 @@ def team_outcome(task):
                 reasons.append(f"frozen acceptance test(s) modified after they were frozen: {', '.join(tampered)}")
             if unproven:
                 reasons.append(f"the final test cycle ran no command for frozen acceptance test(s) "
-                               f"{', '.join(unproven)}; the delivered head is unproven against its oracle")
+                               f"{', '.join(unproven)}; the delivered head is unproven against its check")
             if repair_dropped:
                 reasons.append(f"the final test cycle's repair commit was not integrated ({repair_dropped})")
             report = "INCOMPLETE: " + "; ".join(reasons or [f"only {done}/{total} items done"]) + \
                      f". Head {final_head[:12]}."
 
         return ok(task, {
-            "delivered": delivered, "verdict": verdict, "finalHead": final_head,
+            "delivered": delivered, "verdict": verdict, "finalHead": final_head, "rungOutcomes": rungs_recorded,
             "total": total, "doneCount": done, "blockedCount": len(blocked_ids),
             "openCount": len(open_ids), "blocked": blocked_ids, "rollup": rollup,
             "openExceptions": len(open_exc), "exceptions": open_exc,

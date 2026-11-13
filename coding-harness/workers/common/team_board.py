@@ -108,7 +108,7 @@ def post_item(correlation_id: str, author: str, item: dict, *, backend=None) -> 
         "files": [str(f).strip() for f in _listed(item.get("files")) if str(f).strip()],
         # Criteria written as one text (a planner's paragraph) are criteria, not nothing (run 90e5e3aa).
         "acceptanceCriteria": _lines(item.get("acceptanceCriteria")),
-        # reviewCriteria are the peer reviewer's ORACLE (H8/H13): checked at review, deliberately NOT
+        # reviewCriteria are the peer reviewer's CHECK (H8/H13): checked at review, deliberately NOT
         # shown to the implementer, so the author cannot teach to the test and review catches what the
         # shared spec + automated tests do not.
         "reviewCriteria": _lines(item.get("reviewCriteria")),
@@ -118,6 +118,9 @@ def post_item(correlation_id: str, author: str, item: dict, *, backend=None) -> 
         # (H13, closure plan WP6), and the commands that run them (the item's own green gate).
         "acceptanceTests": [str(p) for p in _listed(item.get("acceptanceTests")) if str(p).strip()],
         "testCommands": _listed(item.get("testCommands")),
+        # The frozen test passed before any work while the item's files already existed: kept as the
+        # gate, the implementer confirms the criteria are met (or strengthens it) instead of rebuilding.
+        "greenBeforeWork": item.get("greenBeforeWork") is True,
     }
     return bb.post_fact(correlation_id, author, ITEM_KIND, data, backend=backend)
 
@@ -327,6 +330,7 @@ def _fold(item_facts: list[dict], state_facts: list[dict]) -> dict:
             "priority": data.get("priority", prev.get("priority", 0)),
             "acceptanceTests": _listed(data.get("acceptanceTests")) or prev.get("acceptanceTests", []),
             "testCommands": _listed(data.get("testCommands")) or prev.get("testCommands", []),
+            "greenBeforeWork": bool(data.get("greenBeforeWork")) or bool(prev.get("greenBeforeWork")),
             "state": prev.get("state", BACKLOG),
             "attempt": prev.get("attempt", 0),
             "assignee": prev.get("assignee", ""),

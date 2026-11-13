@@ -55,6 +55,18 @@ def board_json(run: str, *, ceiling_usd: float | None = None, blackboard_dir: st
     """The full console projection for one run: the fold + the open exception queue + a cost-burn."""
     view = board_mod.project_board(run, blackboard_dir=blackboard_dir)
     board = team_board.fold_board(run)
+    # Each item's place on the model ladder (common/rung_policy): the rung and the reason its latest
+    # dispatch was sent there, so a human sees the swarm climb and step down.
+    from common import blackboard as bb
+    latest = {}
+    for f in bb.read_facts(run, kind="dispatch"):
+        d = f.get("data") or {}
+        if d.get("rung") is not None:
+            latest[str(d.get("item"))] = d
+    for it in view.get("items") or []:
+        d = latest.get(str(it.get("id")))
+        if d:
+            it["rung"], it["rungReason"], it["workKind"] = d.get("rung"), d.get("rungReason") or "", d.get("kind") or ""
     view["exceptions"] = team_board.open_exceptions(board.get("exceptions") or [])
     if run == retrospective.LEARNINGS_RUN:
         # The cross-run learning board: every retrospective's durable learnings (kind ``learning``,
@@ -94,8 +106,8 @@ def board_json(run: str, *, ceiling_usd: float | None = None, blackboard_dir: st
 # The console lists, launches and drills into swarm runs. Their lifecycle (status, start/end, input,
 # verdict) lives in Conductor; their working state lives on the boards. Both are read live — the
 # console still keeps no state of its own.
-SWARM_TYPES = ("cc_program", "team_build", "sdlc_intake")
-LAUNCH_TYPES = ("cc_program", "sdlc_intake")
+SWARM_TYPES = ("swarm", "cc_program", "team_build", "sdlc_intake")
+LAUNCH_TYPES = ("swarm",)
 _TERMINAL = {"COMPLETED", "FAILED", "TERMINATED", "TIMED_OUT"}
 
 
@@ -135,10 +147,31 @@ def _title(wf_name: str, inp: dict) -> str:
     return f"{sub} team" if sub else wf_name
 
 
-def _run_row(w: dict) -> dict:
+# Output of finished runs read back as JSON, by run id. A finished run's output never changes, so
+# one read per run per console process is all the list ever needs.
+_FINISHED_OUTPUT: dict[str, dict] = {}
+
+
+def _finished_output(run: str, *, opener=None, server_url: str | None = None) -> dict:
+    if run not in _FINISHED_OUTPUT:
+        status, wf = _conductor("GET", f"/workflow/{run}?includeTasks=false", opener=opener, server_url=server_url)
+        out = (wf.get("output") if status == 200 and isinstance(wf, dict) else None)
+        if not isinstance(out, dict):
+            return {}
+        _FINISHED_OUTPUT[run] = out
+    return _FINISHED_OUTPUT[run]
+
+
+def _run_row(w: dict, *, opener=None, server_url: str | None = None) -> dict:
     # The search index returns input/output as a Java Map toString(); /workflow/{id} returns JSON.
     inp, out = _coerce_map(w.get("input")), _coerce_map(w.get("output"))
     status = str(w.get("status") or "")
+    # Map.toString() is lossy: a value holding a brace, a comma or a newline (a check's output tail,
+    # a report sentence) ends the parse early, and every key after it is gone. The verdict is what the
+    # list colours by, so a finished run whose verdict did not survive the parse is read back as JSON
+    # (run 8fb0cf98 was PROGRAM_DELIVERED and listed red).
+    if status in _TERMINAL and isinstance(w.get("output"), str) and not out.get("verdict"):
+        out = {**out, **_finished_output(str(w.get("workflowId")), opener=opener, server_url=server_url)}
     spend = out.get("spendUsd")
     if spend is None and status not in _TERMINAL:
         try:
@@ -171,7 +204,8 @@ def list_swarm_runs(limit: int = 80, *, opener=None, server_url: str | None = No
         opener=opener, server_url=server_url)
     if status != 200 or not isinstance(body, dict):
         return {"items": [], "error": (body or {}).get("error") if isinstance(body, dict) else str(body)}
-    return {"items": [_run_row(w) for w in body.get("results") or []], "error": ""}
+    return {"items": [_run_row(w, opener=opener, server_url=server_url) for w in body.get("results") or []],
+            "error": ""}
 
 
 def _ranks(wf: dict) -> list[list[dict]]:
@@ -195,23 +229,42 @@ def _ranks(wf: dict) -> list[list[dict]]:
 def run_view(run: str, *, blackboard_dir: str | None = None, opener=None, server_url: str | None = None) -> dict:
     """Everything the console's run page shows, in one read: lifecycle from Conductor, the board, the
     live snapshot (phase, agents working now, recent events), and a program's rank strip."""
+    import live as live_mod
     import swarm_state
     status, wf = _conductor("GET", f"/workflow/{run}?includeTasks=true", opener=opener, server_url=server_url)
     wf = wf if status == 200 and isinstance(wf, dict) else {}
     inp = wf.get("input") or {}
     view = board_json(run, ceiling_usd=inp.get("ceilingUsd"), blackboard_dir=blackboard_dir)
-    snap = swarm_state.snapshot(run, blackboard_dir=blackboard_dir, wf=wf, view=view)
+
+    def fetch(wid):
+        st, body = _conductor("GET", f"/workflow/{wid}?includeTasks=true", opener=opener, server_url=server_url)
+        return body if st == 200 and isinstance(body, dict) else None
+
+    # Every session and step of the run and its child runs, from the orchestrator: what is being done
+    # right now, by which role, for how long; the page's "working now" and its timeline.
+    live = live_mod.collect({**wf, "workflowId": run}, fetch) if wf else {"sessions": [], "steps": [], "running": [], "roles": []}
+    snap = swarm_state.snapshot(run, blackboard_dir=blackboard_dir, wf=wf, view=view, live=live)
     row = _run_row({**wf, "workflowId": run}) if wf else {"id": run, "title": run, "status": "unknown"}
     try:
         result = run_result({**wf, "workflowId": run}, opener=opener, server_url=server_url) if wf else None
     except Exception as e:  # noqa: BLE001 - a broken result card must not take the run page down
         result = {"error": str(e), "actions": {}}
-    return {"run": row, "snapshot": snap, "board": view, "ranks": _ranks(wf) if wf else [], "result": result,
+    return {"run": row, "snapshot": snap, "board": view, "ranks": _ranks(wf) if wf else [], "result": result, "live": live,
+            "architect": architect_view(run, blackboard_dir=blackboard_dir),
             "actions": lifecycle_actions(wf) if wf else {"retry": False, "startOver": False, "editAndRun": False},
             "workflowInput": inp if wf and lifecycle_actions(wf)["editAndRun"] else {},
             "parent": inp.get("parentCorrelationId") or "", "input": {k: inp.get(k) for k in (
                 "repoPath", "description", "request", "ceilingUsd", "maxWidth", "subsystemId") if k in inp},
             "conductor": "" if wf else "Conductor did not return this run; showing the board only."}
+
+
+def architect_view(run: str, *, blackboard_dir: str | None = None) -> dict:
+    """The program's definition of done as the page shows it: each check's state and latest output,
+    the score climbing per evaluation, the ladder rung, pending amendments and open needs. Empty for a
+    run without a contract (a team, a request, or a program defined before the Architect)."""
+    board_mod._use_board_dir(blackboard_dir)
+    from common import architect
+    return architect.board_view(run)
 
 
 def _required(spec, name: str) -> set[str]:
@@ -350,11 +403,27 @@ def _retry_unfinished(run: str, wf: dict, *, author: str, opener=None, server_ur
     values[field] = (str(values.get(field) or "").strip()
                      + (f"\n\nThe previous attempt did not finish. Its report:\n{report}" if report else "")
                      + "\n\nFinish everything this request still needs.")
+    # A program that ended on a budget need resumes with the ceiling a human raised for it (a ``budget``
+    # steer on its board); the Architect's state carries over through the continuation's lineage.
+    raised = _raised_ceiling(run)
+    if raised:
+        values["ceilingUsd"] = raised
     out = launch({"workflow": name, "values": values, "continueFrom": run}, author=author,
                  opener=opener, server_url=server_url)
     if not out.get("ok"):
         return out
     return {"ok": True, "run": out["run"], "from": run, "workflow": name}
+
+
+def _raised_ceiling(run: str) -> float:
+    from common import architect
+    from common import blackboard as bb
+    best = 0.0
+    for f in bb.read_facts(run, kind=architect.STEER_KIND):
+        d = f.get("data") or {}
+        if d.get("shape") == "budget":
+            best = max(best, float(d.get("ceilingUsd") or 0))
+    return best
 
 
 def start_over(run: str, *, opener=None, server_url: str | None = None) -> dict:
@@ -385,8 +454,8 @@ def start_over(run: str, *, opener=None, server_url: str | None = None) -> dict:
 # open a pull request (a GitHub remote is configured), or merge it into the branch it started from.
 CONTINUE_PREFIX = "continue:"
 SHIP_PREFIX = "ship:"
-_TEXT_FIELD = {"cc_program": "description", "sdlc_intake": "request"}
-_BRANCHED = ("cc_program", "sdlc_intake", "team_build", "bug_fix")
+_TEXT_FIELD = {"swarm": "description", "cc_program": "description", "sdlc_intake": "request"}
+_BRANCHED = ("swarm", "cc_program", "sdlc_intake", "team_build", "bug_fix")
 
 
 def _handoff(wf: dict) -> dict:
@@ -487,6 +556,10 @@ def run_result(wf: dict, *, opener=None, server_url: str | None = None) -> dict 
 
 def _follow_up(text: str, prior: dict, branch: str) -> str:
     title = _title(str(prior.get("workflowName") or ""), prior.get("input") or {})
+    # A continuation of a continuation keeps one preamble: the previous one is dropped, not nested
+    # ("Follow-up to (\"Follow-up to (\"Follow-up to ...", run 6cc1a23b).
+    if text.strip().startswith("Follow-up to an earlier swarm run"):
+        text = text.strip().split("\n\n", 1)[1] if "\n\n" in text.strip() else ""
     return (f"Follow-up to an earlier swarm run (\"{title}\"). Its delivered work is already in this "
             f"repository on branch {branch}: build on it, keep what works, and do not rebuild what exists.\n\n"
             f"{text.strip()}")
@@ -578,7 +651,17 @@ def settings_view() -> dict:
                        "body": e.body} for e in templates.list_templates()],
         "templateTargets": templates.targets(), "templatesDir": str(templates.templates_dir()),
         "builtins": templates.builtins(),
+        # Which credential each backend runs with on this host (a login or a key); never a key's value.
+        "auth": _backend_auth(),
     }
+
+
+def _backend_auth() -> list[dict]:
+    try:
+        from common import backend_auth
+        return backend_auth.report()
+    except Exception as e:  # noqa: BLE001 - the settings page must render without the workers' module
+        return [{"backend": b, "mode": "unknown", "detail": str(e)} for b in ("claude", "codex", "gemini")]
 
 
 def default_prompt_for(workflow: str, field: str) -> str:
@@ -651,6 +734,34 @@ def apply_steer(payload: dict, *, blackboard_dir: str | None = None, author: str
                                      blackboard_dir=blackboard_dir)
     elif action == "terminate":
         extra = board_mod.terminate_run(run, text, author=author)
+    elif action in ("run", "team"):
+        # ONE board per run: a steer to everyone (`run`) or to one team (`team:<subsystem>`) is a
+        # directive on the run board; every agent's running session takes it at its next step and the
+        # next standup of every team carries it.
+        from common import team_board
+        if not text:
+            return {"ok": False, "error": "write the note first"}
+        target = "run" if action == "run" else f"team:{str(payload.get('team') or item or '').strip()}"
+        board_mod._use_board_dir(blackboard_dir)
+        team_board.post_directive(run, author, target, text,
+                                  authority="human" if str(author).startswith("human") else "agent", sticky=True)
+        extra = {"target": target}
+    elif action == "architect":
+        # Steer the Architect: feedback it reads at its next evaluation, accept a check (a human
+        # amendment that counts it as passing), decide a pending amendment, or raise the budget for the
+        # continuation. A fact on the board; nothing waits on it.
+        from common import architect
+        shape = str(payload.get("shape") or "").strip()
+        why = architect.steer_problems(shape, payload)
+        if why:
+            return {"ok": False, "error": why}
+        board_mod._use_board_dir(blackboard_dir)
+        from common import blackboard as bb
+        data = {"shape": shape, "text": text, "check": str(payload.get("check") or item or ""),
+                "amendment": str(payload.get("amendment") or ""), "decision": str(payload.get("decision") or ""),
+                "ceilingUsd": float(payload.get("ceilingUsd") or 0), "by": author}
+        bb.post_fact(run, author, architect.STEER_KIND, {k: v for k, v in data.items() if v not in ("", 0.0)})
+        extra = {"shape": shape}
     else:
         return {"ok": False, "error": f"unknown action {action!r}"}
     return {"ok": True, "action": action, "item": item, "author": author, **extra}
@@ -720,6 +831,30 @@ def handle_get(path: str, query: dict, blackboard_dir: str | None = None,
         import swarm_state
         return 200, "application/json", json.dumps(swarm_state.snapshot(run, blackboard_dir=blackboard_dir),
                                                    default=str).encode("utf-8")
+    if path == "/api/discussion":
+        # The ONE board of the run: lessons, questions, decisions, steers and exceptions from the program
+        # and every team, oldest first.
+        run = (query.get("run") or [""])[0]
+        if not run:
+            return 400, "application/json", b'{"error":"run required"}'
+        board_mod._use_board_dir(blackboard_dir)
+        from common import blackboard as bb
+        runs = [(run, "")] + [(str((f.get("data") or {}).get("childRun")), str((f.get("data") or {}).get("subsystem") or ""))
+                              for f in bb.read_facts(run, kind="child") if (f.get("data") or {}).get("childRun")]
+        rows = []
+        for rid, team in runs:
+            for kind in ("directive", "lesson", "decision", "decision_request", "exception"):
+                for f in bb.read_facts(rid, kind=kind)[-80:]:
+                    d = f.get("data") or {}
+                    if d.get("op") in ("lift", "exempt"):
+                        continue
+                    text = d.get("text") or d.get("question") or d.get("decision") or d.get("mechanism") or ""
+                    if kind == "decision":
+                        text = f"DECISION: {d.get('decision')}" + (f" — {d.get('rationale')}" if d.get("rationale") else "")
+                    rows.append({"ts": f.get("ts"), "kind": kind, "by": d.get("by") or f.get("author"), "team": team,
+                                 "target": d.get("target") or "", "text": str(text)[:800]})
+        rows.sort(key=lambda r: r["ts"] or 0)
+        return _json(200, {"run": run, "posts": rows[-200:]})
     if path == "/api/trace":
         run = (query.get("run") or [""])[0]
         item = (query.get("item") or [""])[0]

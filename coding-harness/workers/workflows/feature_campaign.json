@@ -711,8 +711,6 @@
         "candidateCommit": "${campaign_commit.output.commit}",
         "testMode": "full",
         "allowHeavySuites": true,
-        "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
-        "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
         "maxFixAttempts": "${workflow.input.maxFixAttempts}",
         "maxTurns": "${workflow.input.maxTurns}",
         "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
@@ -769,7 +767,6 @@
         "testsPassed": "${campaign_tests.output.testsPassed}",
         "tested": "${campaign_tests.output.candidateCommit}",
         "committed": "${campaign_commit.output.commit}",
-        "agentAuthoredTest": "${campaign_tests.output.agentAuthoredTest}",
         "requestedTitle": "${workflow.input.prTitle}",
         "requestedBody": "${workflow.input.prBody}",
         "issueTitle": "${workflow.variables.issueTitle}",
@@ -1274,16 +1271,6 @@
           "type": "integer",
           "default": 2,
           "description": "Upper bound on human-requested PR revision rounds forwarded to pr_draft_approval before a still-pending approval is relabeled revision_exhausted."
-        },
-        "allowAgentTestPlan": {
-          "type": "boolean",
-          "default": true,
-          "description": "Forwarded to the final full-suite test_cycle sub-workflow: when true and deterministic discovery is configuration_blocked, lets a coding agent search for and propose an existing test command as a last resort."
-        },
-        "allowAgentAuthoredTests": {
-          "type": "boolean",
-          "default": true,
-          "description": "Forwarded to the final full-suite test_cycle sub-workflow: when true and allowAgentTestPlan's search also finds nothing, lets a coding agent author exactly one new test file, accepted only after a red/green check (fails against the pre-candidate baseline, passes against the real candidate change)."
         }
       },
       "required": []
@@ -1579,7 +1566,8 @@
             "no_tests_required",
             "tests_failed_fix_unavailable",
             "tests_failed_after_fix_budget",
-            "command_discovery_blocked",
+            "no_tests_found",
+            "verification_input_invalid",
             "candidate_commit_missing",
             "runtime_unavailable",
             "verifier_worker_unavailable",
@@ -1697,9 +1685,7 @@
     "useImportedPlan",
     "workspacePath",
     "maxFixAttempts",
-    "finalMaxRevisions",
-    "allowAgentTestPlan",
-    "allowAgentAuthoredTests"
+    "finalMaxRevisions"
   ],
   "outputParameters": {
     "branch": "${campaign_summary.output.branch}",
@@ -1854,9 +1840,7 @@
     "modelOverrides": {},
     "maxFixAttempts": 4,
     "finalMaxRevisions": 3,
-    "maxApprovalRevisions": 2,
-    "allowAgentTestPlan": true,
-    "allowAgentAuthoredTests": true
+    "maxApprovalRevisions": 2
   },
   "overwriteTags": false,
   "enforceSchema": false

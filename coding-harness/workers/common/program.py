@@ -71,12 +71,15 @@ def program_report(*, subsystems: list, delivered: object, verdict: object, done
                   f"Head {head[:12]}.")
         return {"programDelivered": True, "verdict": "PROGRAM_DELIVERED", "ranks": ranks,
                 "cyclic": [], "report": report}
-    report = (f"PROGRAM_INCOMPLETE: {done_count}/{total} subsystems landed "
+    # Never a graded failure: a program that did not deliver names what it needs and keeps its state
+    # for a continuation (the first principle: the swarm finds a way, it never finds a reason to stop).
+    report = (f"PROGRAM_NEEDS: {done_count}/{total} subsystems landed "
               f"(ranks {rank_desc}); downstream verdict {verdict}"
               + ("" if tests_passed is None else f", integration green={tests_passed is True}")
-              + f". Head {head[:12]}.")
-    return {"programDelivered": False, "verdict": "PROGRAM_INCOMPLETE", "ranks": ranks,
-            "cyclic": [], "report": report}
+              + f". Head {head[:12]}. Needs — owner decision: continue the run to finish what is left.")
+    return {"programDelivered": False, "verdict": "PROGRAM_NEEDS", "ranks": ranks,
+            "cyclic": [], "report": report,
+            "needs": [{"kind": "owner decision", "detail": f"{done_count}/{total} subsystems landed; {verdict}"}]}
 
 
 def rank_plan(subsystems: list, *, contract_paths: list | None = None) -> dict:

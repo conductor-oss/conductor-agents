@@ -1,6 +1,6 @@
 {
   "name": "cc_program",
-  "description": "Roadmap Phase 6 (G4) program build as TEAMS OF TEAMS (H3, closure plan WP5) + (G5) lasting memory. Plans the program into subsystems (each optionally split into its team's items), gates the decomposition (bounded replan, H14), seeds a PROGRAM board with one item per subsystem, and builds the subsystems rank by rank: every subsystem of a rank is built CONCURRENTLY by its own child team_build (its own board, Lead, monitor, reviewers) on the shared program branch, with program-scoped file ownership and serialized continuous integration; a subsystem that is itself a program recurses into a child cc_program (bounded by maxDepth). The program Lead folds only subsystem items and child rollups. Cross-subsystem integration is gated green by test_cycle (full); repo_memory is read before planning and written after.",
+  "description": "Roadmap Phase 6 (G4) program build as TEAMS OF TEAMS (H3) with an ARCHITECT. The Architect (the planner session) decomposes the program into subsystems and drafts the definition of done; scouts find and red-prove external checks (a real client suite, a scenario, a budget, a docs check) that the builders did not write; The scouts run beside the first rank's build (both read the plan's criteria, which fix the interface); once the contract is on the branch every later dispatch reads it from the checkout into its implementers' and reviewers' prompts, and the final contract run is the sign-off. Subsystems are built rank by rank, each by its own child team_build on the shared program branch; after every rank and at the final head the Architect runs the whole contract, scores the head (the weighted share of checks passing) and files items for the gaps. Under the threshold the convergence ladder takes rework, a change of approach, a second opinion and only then a named need: the only terminal verdict is PROGRAM_DELIVERED; PROGRAM_NEEDS ends the run with what it needs and a continuation resumes at the recorded rung. No WAIT, no human gate, no timeouts, one version.",
   "version": 1,
   "schemaVersion": 2,
   "ownerEmail": "viren@orkes.io",
@@ -30,8 +30,6 @@
     "branchRunId",
     "inPlace",
     "workspacePath",
-    "allowAgentTestPlan",
-    "allowAgentAuthoredTests",
     "modelProfile",
     "modelPolicy",
     "modelPolicySource",
@@ -39,14 +37,17 @@
     "modelsConfig",
     "modelOverrides",
     "maxTeamAttempts",
-    "branchName"
+    "branchName",
+    "externalChecks",
+    "maxRepairRounds",
+    "teamSize"
   ],
   "inputTemplate": {
     "description": "",
     "subsystems": [],
     "contractPaths": [],
     "ceilingUsd": 60,
-    "maxWidth": 6,
+    "maxWidth": 10,
     "maxWaves": 16,
     "maxReplan": 2,
     "maxDepth": 2,
@@ -54,7 +55,7 @@
     "parentCorrelationId": "",
     "subsystemId": "",
     "bestOf": 1,
-    "authorAcceptanceTests": true,
+    "authorAcceptanceTests": false,
     "codeModel": "",
     "maxTurns": 250,
     "maxBudgetUsd": 10,
@@ -62,8 +63,6 @@
     "branchRunId": "",
     "inPlace": false,
     "workspacePath": "",
-    "allowAgentTestPlan": true,
-    "allowAgentAuthoredTests": true,
     "modelProfile": "",
     "modelPolicy": {},
     "modelPolicySource": "",
@@ -71,7 +70,10 @@
     "modelsConfig": "",
     "modelOverrides": {},
     "maxTeamAttempts": 5,
-    "branchName": "program"
+    "branchName": "program",
+    "externalChecks": true,
+    "maxRepairRounds": 2,
+    "teamSize": 0
   },
   "variables": {
     "replanFeedback": "",
@@ -80,7 +82,11 @@
     "continue": true,
     "programHead": "",
     "planRoute": "",
-    "breakdown": {}
+    "breakdown": {},
+    "repairJoined": {},
+    "integrationPassed": "",
+    "lastRank": [],
+    "integrationReport": ""
   },
   "tasks": [
     {
@@ -103,6 +109,21 @@
       "type": "SIMPLE",
       "inputParameters": {
         "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "workspace_prepare",
+      "taskReferenceName": "workspace",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "branch": "${workflow.input.branchName}",
+        "branchRunId": "${workflow.input.branchRunId}",
+        "inPlace": "${workflow.input.inPlace}",
+        "preserveExisting": true,
+        "workflowId": "${workflow.workflowId}",
+        "workspacePath": "${workflow.input.workspacePath}",
+        "branchDefault": "program"
       }
     },
     {
@@ -146,7 +167,7 @@
                 "taskReferenceName": "program_plan",
                 "type": "SIMPLE",
                 "inputParameters": {
-                  "worktreePath": "${workflow.input.repoPath}",
+                  "worktreePath": "${workspace.output.worktreePath}",
                   "tools": [
                     "Read",
                     "Grep",
@@ -158,11 +179,13 @@
                   "model": "${workflow.input.codeModel}",
                   "maxTurns": 80,
                   "maxBudgetUsd": 4,
-                  "prompt": "You are the program planner for a software-construction harness. Read the repository and decompose this PROGRAM into subsystems, each of which will be built by its OWN team of agents (teams of teams):\n\n${workflow.input.description}\n\nReturn 'subtasks' as a list of subsystems {id, description, deliverable, files, dependsOn, acceptanceCriteria, items}. 'deliverable' is 'code' (source and tests) or 'docs' (design documents, specs, ADRs, research notes written as Markdown files, no code) — a design or research step is a 'docs' subsystem. 'dependsOn' lists subsystem ids that must be built first (a DAG). 'files' is EVERY repository-relative file the subsystem's team will edit. 'items' (optional) splits the subsystem into its team's work items {id, description, deliverable, files, dependsOn, acceptanceCriteria} (ids unique within the subsystem, dependsOn within the subsystem). Independent subsystems are built concurrently, so subsystems that are not ordered by dependsOn should not edit the same file. Also list contractPaths — ONLY pre-existing files that must NOT change (frozen interfaces or integration tests). NEVER list a file that any subsystem edits as a contract path. Subsystems that depend (directly or through others) on a 'docs' subsystem are re-sliced from those documents once they are written: give them files, dependsOn and acceptanceCriteria, and only provisional items.\n\nPrior knowledge about this repository (trust these; stale lessons were already dropped):\n${memory_read.output.digest}\n\n${workflow.variables.replanFeedback}",
+                  "prompt": "You are the ARCHITECT of a software-construction harness: you own the whole-system view of this PROGRAM from the request to the delivered branch. Read the repository and decompose this PROGRAM into subsystems, each of which will be built by its OWN team of agents (teams of teams):\n\n${workflow.input.description}\n\nReturn 'subtasks' as a list of subsystems {id, description, deliverable, files, dependsOn, acceptanceCriteria, items}. 'deliverable' is 'code' (source and tests) or 'docs' (design documents, specs, ADRs, research notes written as Markdown files, no code) \u2014 a design or research step is a 'docs' subsystem. 'dependsOn' lists subsystem ids that must be built first (a DAG). 'files' is EVERY repository-relative file the subsystem's team will edit. 'items' (optional) splits the subsystem into its team's work items {id, description, deliverable, files, dependsOn, acceptanceCriteria} (ids unique within the subsystem, dependsOn within the subsystem). Independent subsystems are built concurrently, so subsystems that are not ordered by dependsOn should not edit the same file. Size the cut to the request: a small program is ONE subsystem with one or two items, never a chain of 'module', then 'logic', then 'tests' (each dependent item costs a full build-review round in sequence; a calculator was cut into three dependent items and took three rounds for twenty lines of code). Every item includes its own unit tests in its files; a separate 'tests' item is never planned. Split only along real parallelism (independent files, independent claims). Also list contractPaths \u2014 ONLY pre-existing files that must NOT change (frozen interfaces or integration tests). NEVER list a file that any subsystem edits as a contract path. Subsystems that depend (directly or through others) on a 'docs' subsystem are re-sliced from those documents once they are written: give them files, dependsOn and acceptanceCriteria, and only provisional items.\n\nAlso return 'contract': the DEFINITION OF DONE this program will be scored against. The teams' own frozen acceptance tests and the repository's test suite are always part of it; you add the checks the builders will NOT write: 'checks' as a list of {kind, claim, weight, hint} where kind is one of\n- client: a real client, driver or conformance suite run against what is built (for a redis-compatible server: redis-cli and a slice of the redis-py test suite against its port; for a pg-compatible database: a Postgres driver's tests; for an HTTP API: a real client library or an OpenAPI conformance check);\n- scenario: an end-to-end scenario script that exercises the request's main flow as a user would;\n- budget: a measurable limit the request implies (latency, memory, binary size, startup time);\n- docs: a check that the documentation the request asks for exists and matches the behavior.\nEach 'claim' is a claim of the request in the request's own words (never \"works\" or \"ok\"), 'weight' is 1..5 (how much of done this claim is), 'hint' tells a scout what to look for and install. Set 'threshold' (0 < threshold <= 1, normally 1.0) to the weighted share of checks that must pass for the program to be delivered; lower it only when a budget or docs check is advisory. Scouts will find, install and run each check against the untouched repository before any team builds; a check that already passes is vacuous and is dropped, so claim only what the work must change.\n\nPrior knowledge about this repository (trust these; stale lessons were already dropped):\n${memory_read.output.digest}\n\n${workflow.variables.replanFeedback}",
                   "promptContext": {
                     "description": "${workflow.input.description}",
                     "digest": "${memory_read.output.digest}",
-                    "replanFeedback": "${workflow.variables.replanFeedback}"
+                    "replanFeedback": "${workflow.variables.replanFeedback}",
+                    "maxWidth": "${workflow.input.maxWidth}",
+                    "teamSize": "${workflow.input.teamSize}"
                   },
                   "promptTemplate": "",
                   "promptTemplateSource": "",
@@ -267,6 +290,11 @@
                                   "acceptanceCriteria"
                                 ]
                               }
+                            },
+                            "agents": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "description": "how many agents this team's swarm runs in parallel: the number of parallel items you cut for it, sized by the subsystem's complexity"
                             }
                           },
                           "required": [
@@ -285,12 +313,88 @@
                       },
                       "summary": {
                         "type": "string"
+                      },
+                      "contract": {
+                        "type": "object",
+                        "properties": {
+                          "threshold": {
+                            "type": "number",
+                            "description": "the weighted share of checks that must pass for the program to be delivered; 1.0 unless a budget or docs check is advisory"
+                          },
+                          "checks": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "client",
+                                    "scenario",
+                                    "budget",
+                                    "docs"
+                                  ]
+                                },
+                                "claim": {
+                                  "type": "string",
+                                  "description": "the claim of the request this check proves, in the request's own words"
+                                },
+                                "weight": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 5
+                                },
+                                "hint": {
+                                  "type": "string",
+                                  "description": "what a scout should look for: a client, a conformance suite, a scenario, a budget, a docs check"
+                                },
+                                "command": {
+                                  "type": "string",
+                                  "description": "the one argv line that runs the check from the repository root (no shell operators), e.g. `node .cc/checks/scenario.mjs`; with 'script', required"
+                                },
+                                "setup": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "description": "argv lines that install what the command needs under .cc-cache/ (idempotent; run before every check run)"
+                                },
+                                "interface": {
+                                  "type": "string",
+                                  "description": "the exact user-facing interface the check drives, in one paragraph: invocation, ports, paths, labels, expected output"
+                                },
+                                "script": {
+                                  "type": "object",
+                                  "description": "the check's script, WRITTEN NOW by the Architect: a path under .cc/checks/ (.mjs, .cjs, .sh or .py, never .js) and its full content. A check with a script needs no scout: it is committed before the first team forks",
+                                  "properties": {
+                                    "path": {
+                                      "type": "string"
+                                    },
+                                    "content": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "path",
+                                    "content"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "claim"
+                              ]
+                            }
+                          }
+                        }
                       }
                     },
                     "required": [
                       "subtasks"
                     ]
-                  }
+                  },
+                  "modelTier": "${plan_loop.output.iteration}",
+                  "modelTierOrigin": 1
                 }
               },
               {
@@ -322,21 +426,6 @@
       "defaultCase": []
     },
     {
-      "name": "workspace_prepare",
-      "taskReferenceName": "workspace",
-      "type": "SIMPLE",
-      "inputParameters": {
-        "repoPath": "${workflow.input.repoPath}",
-        "branch": "${workflow.input.branchName}",
-        "branchRunId": "${workflow.input.branchRunId}",
-        "inPlace": "${workflow.input.inPlace}",
-        "preserveExisting": true,
-        "workflowId": "${workflow.workflowId}",
-        "workspacePath": "${workflow.input.workspacePath}",
-        "branchDefault": "program"
-      }
-    },
-    {
       "name": "program_rank_init",
       "taskReferenceName": "rank_init",
       "type": "SIMPLE",
@@ -347,7 +436,9 @@
         "depth": "${workflow.input.depth}",
         "parentCorrelationId": "${workflow.input.parentCorrelationId}",
         "subsystemId": "${workflow.input.subsystemId}",
-        "maxTeamAttempts": "${workflow.input.maxTeamAttempts}"
+        "maxTeamAttempts": "${workflow.input.maxTeamAttempts}",
+        "workspacePath": "${workspace.output.worktreePath}",
+        "externalChecks": "${workflow.input.externalChecks}"
       }
     },
     {
@@ -446,145 +537,373 @@
       "defaultCase": []
     },
     {
-      "name": "rank_loop_init",
-      "taskReferenceName": "rank_loop_init",
-      "type": "SET_VARIABLE",
-      "inputParameters": {
-        "continue": true,
-        "programHead": "${workspace.output.baseCommit}",
-        "breakdown": {}
-      }
-    },
-    {
-      "name": "rank_loop",
-      "taskReferenceName": "rank_loop",
-      "type": "DO_WHILE",
-      "evaluatorType": "graaljs",
-      "loopCondition": "(function(){ var cur = $.rank_loop[String($.rank_loop['iteration'])] || {}; var go = (cur['apply_rank'] || {})['continue']; return $.rank_loop['iteration'] < $.max_iterations && go === true; })();",
-      "inputParameters": {
-        "rank_count": "${rank_init.output.rankCount}",
-        "rank_loop": "${rank_loop.output}",
-        "max_iterations": "${rank_init.output.maxRankIterations}"
-      },
-      "loopOver": [
-        {
-          "name": "program_rank_build",
-          "taskReferenceName": "rank_build",
-          "type": "SIMPLE",
-          "inputParameters": {
-            "correlationId": "${workflow.workflowId}",
-            "repoPath": "${workflow.input.repoPath}",
-            "workspacePath": "${workspace.output.worktreePath}",
-            "ceilingUsd": "${workflow.input.ceilingUsd}",
-            "maxDepth": "${workflow.input.maxDepth}",
-            "maxWidth": "${workflow.input.maxWidth}",
-            "maxWaves": "${workflow.input.maxWaves}",
-            "bestOf": "${workflow.input.bestOf}",
-            "authorAcceptanceTests": "${workflow.input.authorAcceptanceTests}",
-            "codeModel": "${workflow.input.codeModel}",
-            "maxTurns": "${workflow.input.maxTurns}",
-            "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
-            "maxFixAttempts": "${workflow.input.maxFixAttempts}",
-            "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
-            "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
-            "modelProfile": "${workflow.input.modelProfile}",
-            "modelPolicy": "${workflow.input.modelPolicy}",
-            "modelPolicySource": "${workflow.input.modelPolicySource}",
-            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
-            "modelsConfig": "${workflow.input.modelsConfig}",
-            "modelOverrides": "${workflow.input.modelOverrides}",
-            "breakdown": "${workflow.variables.breakdown}"
-          }
-        },
-        {
-          "name": "rank_fan_out",
-          "taskReferenceName": "rank_fan_out",
-          "type": "FORK_JOIN_DYNAMIC",
-          "optional": true,
-          "inputParameters": {
-            "dynamicTasks": "${rank_build.output.dynamicTasks}",
-            "dynamicTasksInput": "${rank_build.output.dynamicTasksInput}"
+      "name": "define_and_build",
+      "taskReferenceName": "define_and_build",
+      "type": "FORK_JOIN",
+      "forkTasks": [
+        [
+          {
+            "name": "check_scout_build",
+            "taskReferenceName": "scout_build",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "correlationId": "${workflow.workflowId}",
+              "workspacePath": "${workspace.output.worktreePath}",
+              "lineage": "${workflow.correlationId}",
+              "draft": "${workflow.variables.programPlan.contractDraft}",
+              "description": "${workflow.input.description}",
+              "externalChecks": "${workflow.input.externalChecks}",
+              "maxRepairRounds": "${workflow.input.maxRepairRounds}",
+              "codeModel": "${workflow.input.codeModel}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}",
+              "modelResolution": "${model_policy.output}"
+            }
           },
-          "dynamicForkTasksParam": "dynamicTasks",
-          "dynamicForkTasksInputParamName": "dynamicTasksInput"
-        },
-        {
-          "name": "rank_join",
-          "taskReferenceName": "rank_join",
-          "type": "JOIN",
-          "optional": true
-        },
-        {
-          "name": "program_apply_rank",
-          "taskReferenceName": "apply_rank",
-          "type": "SIMPLE",
-          "inputParameters": {
-            "correlationId": "${workflow.workflowId}",
-            "repoPath": "${workspace.output.worktreePath}",
-            "rank": "${rank_build.output.rank}",
-            "joined": "${rank_join.output}",
-            "description": "${workflow.input.description}",
-            "memoryDigest": "${memory_read.output.digest}",
-            "maxTeamAttempts": "${workflow.input.maxTeamAttempts}",
-            "ceilingUsd": "${workflow.input.ceilingUsd}"
-          }
-        },
-        {
-          "name": "breakdown_gate",
-          "taskReferenceName": "breakdown_gate",
-          "type": "SWITCH",
-          "evaluatorType": "value-param",
-          "expression": "breakdown",
-          "inputParameters": {
-            "breakdown": "${apply_rank.output.breakdown}"
+          {
+            "name": "scout_gate",
+            "taskReferenceName": "scout_gate",
+            "type": "SWITCH",
+            "evaluatorType": "value-param",
+            "expression": "scouts",
+            "inputParameters": {
+              "scouts": "${scout_build.output.scouts}"
+            },
+            "decisionCases": {
+              "yes": [
+                {
+                  "name": "scouts",
+                  "taskReferenceName": "scouts",
+                  "type": "FORK_JOIN_DYNAMIC",
+                  "optional": true,
+                  "inputParameters": {
+                    "dynamicTasks": "${scout_build.output.dynamicTasks}",
+                    "dynamicTasksInput": "${scout_build.output.dynamicTasksInput}"
+                  },
+                  "dynamicForkTasksParam": "dynamicTasks",
+                  "dynamicForkTasksInputParamName": "dynamicTasksInput"
+                },
+                {
+                  "name": "scouts_join",
+                  "taskReferenceName": "scouts_join",
+                  "type": "JOIN",
+                  "joinMode": "SYNC",
+                  "optional": true
+                }
+              ]
+            },
+            "defaultCase": []
           },
-          "decisionCases": {
-            "yes": [
+          {
+            "name": "define_gate",
+            "taskReferenceName": "define_gate",
+            "type": "SWITCH",
+            "evaluatorType": "value-param",
+            "expression": "define",
+            "inputParameters": {
+              "define": "${scout_build.output.define}"
+            },
+            "decisionCases": {
+              "yes": [
+                {
+                  "name": "contract_fold",
+                  "taskReferenceName": "contract_fold",
+                  "type": "SIMPLE",
+                  "inputParameters": {
+                    "correlationId": "${workflow.workflowId}",
+                    "workspacePath": "${workspace.output.worktreePath}",
+                    "scouts": "${scouts_join.output}",
+                    "draft": "${workflow.variables.programPlan.contractDraft}",
+                    "externalChecks": "${workflow.input.externalChecks}"
+                  }
+                }
+              ]
+            },
+            "defaultCase": []
+          }
+        ],
+        [
+          {
+            "name": "rank_loop_init",
+            "taskReferenceName": "rank_loop_init",
+            "type": "SET_VARIABLE",
+            "inputParameters": {
+              "continue": true,
+              "programHead": "${workspace.output.baseCommit}",
+              "breakdown": {}
+            }
+          },
+          {
+            "name": "rank_loop",
+            "taskReferenceName": "rank_loop",
+            "type": "DO_WHILE",
+            "evaluatorType": "graaljs",
+            "loopCondition": "(function(){ var cur = $.rank_loop[String($.rank_loop['iteration'])] || {}; var go = (cur['apply_rank'] || {})['continue']; return $.rank_loop['iteration'] < $.max_iterations && go === true; })();",
+            "inputParameters": {
+              "rank_count": "${rank_init.output.rankCount}",
+              "rank_loop": "${rank_loop.output}",
+              "max_iterations": "${rank_init.output.maxRankIterations}"
+            },
+            "loopOver": [
               {
-                "name": "coding_agent",
-                "taskReferenceName": "rank_breakdown",
-                "type": "SIMPLE",
-                "optional": true,
-                "inputParameters": {
-                  "worktreePath": "${workspace.output.worktreePath}",
-                  "tools": [
-                    "Read",
-                    "Grep",
-                    "Glob"
+                "name": "rank_step",
+                "taskReferenceName": "rank_step",
+                "type": "FORK_JOIN",
+                "forkTasks": [
+                  [
+                    {
+                      "name": "contract_run",
+                      "taskReferenceName": "rank_contract_run",
+                      "type": "SIMPLE",
+                      "inputParameters": {
+                        "correlationId": "${workflow.workflowId}",
+                        "workspacePath": "${workspace.output.worktreePath}",
+                        "stage": "rank",
+                        "description": "${workflow.input.description}",
+                        "ceilingUsd": "${workflow.input.ceilingUsd}",
+                        "maxRepairRounds": "${workflow.input.maxRepairRounds}",
+                        "rank": "${workflow.variables.lastRank}",
+                        "testsPassed": ""
+                      }
+                    },
+                    {
+                      "name": "rank_eval_gate",
+                      "taskReferenceName": "rank_eval_gate",
+                      "type": "SWITCH",
+                      "evaluatorType": "value-param",
+                      "expression": "evaluate",
+                      "inputParameters": {
+                        "evaluate": "${rank_contract_run.output.evaluate}"
+                      },
+                      "decisionCases": {
+                        "yes": [
+                          {
+                            "name": "coding_agent",
+                            "taskReferenceName": "rank_architect",
+                            "type": "SIMPLE",
+                            "optional": true,
+                            "inputParameters": {
+                              "worktreePath": "${rank_contract_run.output.worktree}",
+                              "tools": [
+                                "Read",
+                                "Grep",
+                                "Glob",
+                                "Bash"
+                              ],
+                              "allowedTools": [
+                                "Read",
+                                "Grep",
+                                "Glob",
+                                "Bash"
+                              ],
+                              "templateKey": "architect_evaluate",
+                              "feedbackCorrelationId": "${workflow.workflowId}",
+                              "feedbackItem": "architect",
+                              "prompt": "${rank_contract_run.output.evaluatePrompt}",
+                              "promptContext": "${rank_contract_run.output.evaluateContext}",
+                              "schema": "${rank_contract_run.output.evaluateSchema}",
+                              "promptTemplate": "",
+                              "promptTemplateSource": "",
+                              "modelRole": "plan",
+                              "modelTier": "${rank_contract_run.output.tier}",
+                              "maxTurns": 30,
+                              "maxBudgetUsd": 1.5,
+                              "modelResolution": "${model_policy.output}",
+                              "model": "${workflow.input.codeModel}",
+                              "modelProfile": "${workflow.input.modelProfile}",
+                              "modelPolicy": "${workflow.input.modelPolicy}",
+                              "modelPolicySource": "${workflow.input.modelPolicySource}",
+                              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                              "modelsConfig": "${workflow.input.modelsConfig}",
+                              "modelOverrides": "${workflow.input.modelOverrides}"
+                            }
+                          },
+                          {
+                            "name": "architect_fold",
+                            "taskReferenceName": "rank_architect_fold",
+                            "type": "SIMPLE",
+                            "inputParameters": {
+                              "correlationId": "${workflow.workflowId}",
+                              "workspacePath": "${workspace.output.worktreePath}",
+                              "stage": "rank",
+                              "repoPath": "${workflow.input.repoPath}",
+                              "run": "${rank_contract_run.output}",
+                              "evaluation": "${rank_architect.output}",
+                              "ceilingUsd": "${workflow.input.ceilingUsd}",
+                              "maxRepairRounds": "${workflow.input.maxRepairRounds}",
+                              "description": "${workflow.input.description}",
+                              "codeModel": "${workflow.input.codeModel}",
+                              "maxTurns": "${workflow.input.maxTurns}",
+                              "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+                              "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+                              "maxWidth": "${workflow.input.maxWidth}",
+                              "maxWaves": "${workflow.input.maxWaves}",
+                              "bestOf": "${workflow.input.bestOf}",
+                              "authorAcceptanceTests": "${workflow.input.authorAcceptanceTests}",
+                              "modelProfile": "${workflow.input.modelProfile}",
+                              "modelPolicy": "${workflow.input.modelPolicy}",
+                              "modelPolicySource": "${workflow.input.modelPolicySource}",
+                              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                              "modelsConfig": "${workflow.input.modelsConfig}",
+                              "modelOverrides": "${workflow.input.modelOverrides}",
+                              "rank": "${workflow.variables.lastRank}"
+                            }
+                          }
+                        ]
+                      },
+                      "defaultCase": []
+                    }
                   ],
-                  "templateKey": "program_breakdown",
-                  "modelRole": "plan",
-                  "modelResolution": "${model_policy.output}",
-                  "model": "${workflow.input.codeModel}",
-                  "modelProfile": "${workflow.input.modelProfile}",
-                  "modelPolicy": "${workflow.input.modelPolicy}",
-                  "modelPolicySource": "${workflow.input.modelPolicySource}",
-                  "modelPolicySha256": "${workflow.input.modelPolicySha256}",
-                  "modelsConfig": "${workflow.input.modelsConfig}",
-                  "modelOverrides": "${workflow.input.modelOverrides}",
-                  "maxTurns": 60,
-                  "maxBudgetUsd": 4,
-                  "prompt": "${apply_rank.output.breakdownPrompt}",
-                  "schema": "${apply_rank.output.breakdownSchema}",
-                  "promptContext": "${apply_rank.output.breakdownContext}",
-                  "promptTemplate": "",
-                  "promptTemplateSource": ""
+                  [
+                    {
+                      "name": "program_rank_build",
+                      "taskReferenceName": "rank_build",
+                      "type": "SIMPLE",
+                      "inputParameters": {
+                        "correlationId": "${workflow.workflowId}",
+                        "repoPath": "${workflow.input.repoPath}",
+                        "workspacePath": "${workspace.output.worktreePath}",
+                        "ceilingUsd": "${workflow.input.ceilingUsd}",
+                        "maxDepth": "${workflow.input.maxDepth}",
+                        "maxWidth": "${workflow.input.maxWidth}",
+                        "maxWaves": "${workflow.input.maxWaves}",
+                        "bestOf": "${workflow.input.bestOf}",
+                        "authorAcceptanceTests": "${workflow.input.authorAcceptanceTests}",
+                        "codeModel": "${workflow.input.codeModel}",
+                        "maxTurns": "${workflow.input.maxTurns}",
+                        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+                        "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+                        "modelProfile": "${workflow.input.modelProfile}",
+                        "modelPolicy": "${workflow.input.modelPolicy}",
+                        "modelPolicySource": "${workflow.input.modelPolicySource}",
+                        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                        "modelsConfig": "${workflow.input.modelsConfig}",
+                        "modelOverrides": "${workflow.input.modelOverrides}",
+                        "breakdown": "${workflow.variables.breakdown}",
+                        "teamSize": "${workflow.input.teamSize}"
+                      }
+                    },
+                    {
+                      "name": "rank_fan_out",
+                      "taskReferenceName": "rank_fan_out",
+                      "type": "FORK_JOIN_DYNAMIC",
+                      "optional": true,
+                      "inputParameters": {
+                        "dynamicTasks": "${rank_build.output.dynamicTasks}",
+                        "dynamicTasksInput": "${rank_build.output.dynamicTasksInput}"
+                      },
+                      "dynamicForkTasksParam": "dynamicTasks",
+                      "dynamicForkTasksInputParamName": "dynamicTasksInput"
+                    },
+                    {
+                      "name": "rank_join",
+                      "taskReferenceName": "rank_join",
+                      "type": "JOIN",
+                      "joinMode": "SYNC",
+                      "optional": true
+                    }
+                  ]
+                ]
+              },
+              {
+                "name": "rank_step_join",
+                "taskReferenceName": "rank_step_join",
+                "type": "JOIN",
+                "joinMode": "SYNC",
+                "joinOn": [
+                  "rank_eval_gate",
+                  "rank_join"
+                ]
+              },
+              {
+                "name": "program_apply_rank",
+                "taskReferenceName": "apply_rank",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "correlationId": "${workflow.workflowId}",
+                  "repoPath": "${workspace.output.worktreePath}",
+                  "rank": "${rank_build.output.rank}",
+                  "joined": "${rank_join.output}",
+                  "description": "${workflow.input.description}",
+                  "memoryDigest": "${memory_read.output.digest}",
+                  "maxTeamAttempts": "${workflow.input.maxTeamAttempts}",
+                  "ceilingUsd": "${workflow.input.ceilingUsd}"
+                }
+              },
+              {
+                "name": "breakdown_gate",
+                "taskReferenceName": "breakdown_gate",
+                "type": "SWITCH",
+                "evaluatorType": "value-param",
+                "expression": "breakdown",
+                "inputParameters": {
+                  "breakdown": "${apply_rank.output.breakdown}"
+                },
+                "decisionCases": {
+                  "yes": [
+                    {
+                      "name": "coding_agent",
+                      "taskReferenceName": "rank_breakdown",
+                      "type": "SIMPLE",
+                      "optional": true,
+                      "inputParameters": {
+                        "worktreePath": "${workspace.output.worktreePath}",
+                        "tools": [
+                          "Read",
+                          "Grep",
+                          "Glob"
+                        ],
+                        "templateKey": "program_breakdown",
+                        "modelRole": "plan",
+                        "modelResolution": "${model_policy.output}",
+                        "model": "${workflow.input.codeModel}",
+                        "modelProfile": "${workflow.input.modelProfile}",
+                        "modelPolicy": "${workflow.input.modelPolicy}",
+                        "modelPolicySource": "${workflow.input.modelPolicySource}",
+                        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                        "modelsConfig": "${workflow.input.modelsConfig}",
+                        "modelOverrides": "${workflow.input.modelOverrides}",
+                        "maxTurns": 60,
+                        "maxBudgetUsd": 4,
+                        "prompt": "${apply_rank.output.breakdownPrompt}",
+                        "schema": "${apply_rank.output.breakdownSchema}",
+                        "promptContext": "${apply_rank.output.breakdownContext}",
+                        "promptTemplate": "",
+                        "promptTemplateSource": ""
+                      }
+                    }
+                  ]
+                },
+                "defaultCase": []
+              },
+              {
+                "name": "capture_rank",
+                "taskReferenceName": "capture_rank",
+                "type": "SET_VARIABLE",
+                "inputParameters": {
+                  "continue": "${apply_rank.output.continue}",
+                  "programHead": "${apply_rank.output.head}",
+                  "breakdown": "${rank_breakdown.output}",
+                  "lastRank": "${rank_build.output.rank}"
                 }
               }
             ]
-          },
-          "defaultCase": []
-        },
-        {
-          "name": "capture_rank",
-          "taskReferenceName": "capture_rank",
-          "type": "SET_VARIABLE",
-          "inputParameters": {
-            "continue": "${apply_rank.output.continue}",
-            "programHead": "${apply_rank.output.head}",
-            "breakdown": "${rank_breakdown.output}"
           }
-        }
+        ]
+      ]
+    },
+    {
+      "name": "define_and_build_join",
+      "taskReferenceName": "define_and_build_join",
+      "type": "JOIN",
+      "joinMode": "SYNC",
+      "joinOn": [
+        "define_gate",
+        "rank_loop"
       ]
     },
     {
@@ -599,8 +918,6 @@
         "repoPath": "${workspace.output.worktreePath}",
         "candidateCommit": "${workflow.variables.programHead}",
         "testMode": "full",
-        "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
-        "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
         "maxFixAttempts": "${workflow.input.maxFixAttempts}",
         "model": "${workflow.input.codeModel}",
         "maxTurns": "${workflow.input.maxTurns}",
@@ -612,6 +929,358 @@
         "modelsConfig": "${workflow.input.modelsConfig}",
         "modelOverrides": "${workflow.input.modelOverrides}"
       }
+    },
+    {
+      "name": "convergence_init",
+      "taskReferenceName": "convergence_init",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "repairJoined": {},
+        "integrationPassed": "${tests.output.testsPassed}",
+        "integrationReport": "${tests.output.testReport}"
+      }
+    },
+    {
+      "name": "convergence_loop",
+      "taskReferenceName": "convergence_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ var cur = $.convergence_loop[String($.convergence_loop['iteration'])] || {}; var go = (cur['architect_fold'] || {})['continue']; return $.convergence_loop['iteration'] < $.max_iterations && go === true; })();",
+      "inputParameters": {
+        "max_iterations": "${scout_build.output.maxConvergenceIterations}",
+        "convergence_loop": "${convergence_loop.output}"
+      },
+      "loopOver": [
+        {
+          "name": "contract_run",
+          "taskReferenceName": "final_contract_run",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "correlationId": "${workflow.workflowId}",
+            "workspacePath": "${workspace.output.worktreePath}",
+            "stage": "final",
+            "description": "${workflow.input.description}",
+            "ceilingUsd": "${workflow.input.ceilingUsd}",
+            "maxRepairRounds": "${workflow.input.maxRepairRounds}",
+            "testsPassed": "${workflow.variables.integrationPassed}",
+            "repairJoined": "${workflow.variables.repairJoined}",
+            "testReport": "${workflow.variables.integrationReport}"
+          }
+        },
+        {
+          "name": "evaluate_gate",
+          "taskReferenceName": "evaluate_gate",
+          "type": "SWITCH",
+          "evaluatorType": "value-param",
+          "expression": "evaluate",
+          "inputParameters": {
+            "evaluate": "${final_contract_run.output.evaluate}"
+          },
+          "decisionCases": {
+            "yes": [
+              {
+                "name": "coding_agent",
+                "taskReferenceName": "architect_evaluate",
+                "type": "SIMPLE",
+                "optional": true,
+                "inputParameters": {
+                  "worktreePath": "${final_contract_run.output.worktree}",
+                  "tools": [
+                    "Read",
+                    "Grep",
+                    "Glob",
+                    "Bash"
+                  ],
+                  "allowedTools": [
+                    "Read",
+                    "Grep",
+                    "Glob",
+                    "Bash"
+                  ],
+                  "templateKey": "architect_evaluate",
+                  "feedbackCorrelationId": "${workflow.workflowId}",
+                  "feedbackItem": "architect",
+                  "prompt": "${final_contract_run.output.evaluatePrompt}",
+                  "promptContext": "${final_contract_run.output.evaluateContext}",
+                  "schema": "${final_contract_run.output.evaluateSchema}",
+                  "promptTemplate": "",
+                  "promptTemplateSource": "",
+                  "modelRole": "plan",
+                  "modelTier": "${final_contract_run.output.tier}",
+                  "maxTurns": 80,
+                  "maxBudgetUsd": 4,
+                  "modelResolution": "${model_policy.output}",
+                  "model": "${workflow.input.codeModel}",
+                  "modelProfile": "${workflow.input.modelProfile}",
+                  "modelPolicy": "${workflow.input.modelPolicy}",
+                  "modelPolicySource": "${workflow.input.modelPolicySource}",
+                  "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                  "modelsConfig": "${workflow.input.modelsConfig}",
+                  "modelOverrides": "${workflow.input.modelOverrides}"
+                }
+              }
+            ]
+          },
+          "defaultCase": []
+        },
+        {
+          "name": "architect_fold",
+          "taskReferenceName": "architect_fold",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "correlationId": "${workflow.workflowId}",
+            "workspacePath": "${workspace.output.worktreePath}",
+            "stage": "final",
+            "repoPath": "${workflow.input.repoPath}",
+            "run": "${final_contract_run.output}",
+            "evaluation": "${architect_evaluate.output}",
+            "ceilingUsd": "${workflow.input.ceilingUsd}",
+            "maxRepairRounds": "${workflow.input.maxRepairRounds}",
+            "description": "${workflow.input.description}",
+            "codeModel": "${workflow.input.codeModel}",
+            "maxTurns": "${workflow.input.maxTurns}",
+            "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+            "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+            "maxWidth": "${workflow.input.maxWidth}",
+            "maxWaves": "${workflow.input.maxWaves}",
+            "bestOf": "${workflow.input.bestOf}",
+            "authorAcceptanceTests": "${workflow.input.authorAcceptanceTests}",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}"
+          }
+        },
+        {
+          "name": "ladder",
+          "taskReferenceName": "ladder",
+          "type": "SWITCH",
+          "evaluatorType": "value-param",
+          "expression": "act",
+          "inputParameters": {
+            "act": "${architect_fold.output.act}"
+          },
+          "decisionCases": {
+            "repair": [
+              {
+                "name": "repair_fan_out",
+                "taskReferenceName": "repair_fan_out",
+                "type": "FORK_JOIN_DYNAMIC",
+                "optional": true,
+                "inputParameters": {
+                  "dynamicTasks": "${architect_fold.output.dynamicTasks}",
+                  "dynamicTasksInput": "${architect_fold.output.dynamicTasksInput}"
+                },
+                "dynamicForkTasksParam": "dynamicTasks",
+                "dynamicForkTasksInputParamName": "dynamicTasksInput"
+              },
+              {
+                "name": "repair_join",
+                "taskReferenceName": "repair_join",
+                "type": "JOIN",
+                "joinMode": "SYNC",
+                "optional": true
+              },
+              {
+                "name": "contract_run",
+                "taskReferenceName": "repair_head",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "correlationId": "${workflow.workflowId}",
+                  "workspacePath": "${workspace.output.worktreePath}",
+                  "stage": "final",
+                  "description": "${workflow.input.description}",
+                  "ceilingUsd": "${workflow.input.ceilingUsd}",
+                  "maxRepairRounds": "${workflow.input.maxRepairRounds}",
+                  "mode": "head",
+                  "repairJoined": "${repair_join.output}"
+                }
+              },
+              {
+                "name": "test_cycle",
+                "taskReferenceName": "repair_tests",
+                "type": "SUB_WORKFLOW",
+                "optional": true,
+                "subWorkflowParam": {
+                  "name": "test_cycle"
+                },
+                "inputParameters": {
+                  "repoPath": "${workspace.output.worktreePath}",
+                  "candidateCommit": "${repair_head.output.head}",
+                  "testMode": "full",
+                  "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+                  "model": "${workflow.input.codeModel}",
+                  "maxTurns": "${workflow.input.maxTurns}",
+                  "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+                  "modelProfile": "${workflow.input.modelProfile}",
+                  "modelPolicy": "${workflow.input.modelPolicy}",
+                  "modelPolicySource": "${workflow.input.modelPolicySource}",
+                  "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                  "modelsConfig": "${workflow.input.modelsConfig}",
+                  "modelOverrides": "${workflow.input.modelOverrides}"
+                }
+              }
+            ],
+            "second_opinion": [
+              {
+                "name": "coding_agent",
+                "taskReferenceName": "second_opinion",
+                "type": "SIMPLE",
+                "optional": true,
+                "inputParameters": {
+                  "worktreePath": "${final_contract_run.output.worktree}",
+                  "tools": [
+                    "Read",
+                    "Grep",
+                    "Glob",
+                    "Bash"
+                  ],
+                  "allowedTools": [
+                    "Read",
+                    "Grep",
+                    "Glob",
+                    "Bash"
+                  ],
+                  "templateKey": "second_opinion",
+                  "feedbackCorrelationId": "${workflow.workflowId}",
+                  "feedbackItem": "second-opinion",
+                  "prompt": "${architect_fold.output.opinionPrompt}",
+                  "promptContext": "${architect_fold.output.opinionContext}",
+                  "schema": "${final_contract_run.output.opinionSchema}",
+                  "promptTemplate": "",
+                  "promptTemplateSource": "",
+                  "modelRole": "judge",
+                  "modelTier": 1,
+                  "maxTurns": 80,
+                  "maxBudgetUsd": 4,
+                  "modelResolution": "${model_policy.output}",
+                  "model": "${workflow.input.codeModel}",
+                  "modelProfile": "${workflow.input.modelProfile}",
+                  "modelPolicy": "${workflow.input.modelPolicy}",
+                  "modelPolicySource": "${workflow.input.modelPolicySource}",
+                  "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                  "modelsConfig": "${workflow.input.modelsConfig}",
+                  "modelOverrides": "${workflow.input.modelOverrides}"
+                }
+              },
+              {
+                "name": "opinion_fold",
+                "taskReferenceName": "opinion_fold",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "correlationId": "${workflow.workflowId}",
+                  "workspacePath": "${workspace.output.worktreePath}",
+                  "worktree": "${final_contract_run.output.worktree}",
+                  "opinion": "${second_opinion.output}"
+                }
+              }
+            ],
+            "amend": [
+              {
+                "name": "coding_agent",
+                "taskReferenceName": "amendment_review",
+                "type": "SIMPLE",
+                "optional": true,
+                "inputParameters": {
+                  "worktreePath": "${final_contract_run.output.worktree}",
+                  "tools": [
+                    "Read",
+                    "Grep",
+                    "Glob"
+                  ],
+                  "templateKey": "contract_review",
+                  "feedbackCorrelationId": "${workflow.workflowId}",
+                  "feedbackItem": "amendment-review",
+                  "prompt": "Approve or reject the proposed amendments of the definition of done: ${architect_fold.output.amendText}",
+                  "promptContext": "${architect_fold.output.amendContext}",
+                  "promptTemplate": "",
+                  "promptTemplateSource": "",
+                  "schema": {
+                    "type": "object",
+                    "properties": {
+                      "verdict": {
+                        "type": "string",
+                        "enum": [
+                          "approve",
+                          "reject"
+                        ]
+                      },
+                      "findings": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "weights": {
+                        "type": "array",
+                        "description": "on reject: the weight each named check should have (0 drops it)",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "check": {
+                              "type": "string"
+                            },
+                            "weight": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 5
+                            }
+                          },
+                          "required": [
+                            "check",
+                            "weight"
+                          ]
+                        }
+                      }
+                    },
+                    "required": [
+                      "verdict"
+                    ]
+                  },
+                  "modelRole": "review",
+                  "maxTurns": 40,
+                  "maxBudgetUsd": 2,
+                  "modelResolution": "${model_policy.output}",
+                  "model": "${workflow.input.codeModel}",
+                  "modelProfile": "${workflow.input.modelProfile}",
+                  "modelPolicy": "${workflow.input.modelPolicy}",
+                  "modelPolicySource": "${workflow.input.modelPolicySource}",
+                  "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                  "modelsConfig": "${workflow.input.modelsConfig}",
+                  "modelOverrides": "${workflow.input.modelOverrides}"
+                }
+              },
+              {
+                "name": "contract_review_fold",
+                "taskReferenceName": "amendment_review_fold",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "correlationId": "${workflow.workflowId}",
+                  "workspacePath": "${workspace.output.worktreePath}",
+                  "mode": "amendments",
+                  "review": "${amendment_review.output}",
+                  "round": 1,
+                  "maxRounds": 1
+                }
+              }
+            ]
+          },
+          "defaultCase": []
+        },
+        {
+          "name": "capture_convergence",
+          "taskReferenceName": "capture_convergence",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "repairJoined": "${repair_join.output}",
+            "integrationPassed": "${repair_tests.output.testsPassed}",
+            "programHead": "${final_contract_run.output.head}",
+            "integrationReport": "${repair_tests.output.testReport}"
+          }
+        }
+      ]
     },
     {
       "name": "program_outcome",
@@ -636,25 +1305,27 @@
     {
       "name": "run_retrospective",
       "taskReferenceName": "retrospective",
-      "type": "SUB_WORKFLOW",
+      "type": "START_WORKFLOW",
       "optional": true,
-      "subWorkflowParam": {
-        "name": "run_retrospective"
-      },
       "inputParameters": {
-        "correlationId": "${workflow.workflowId}",
-        "repoPath": "${workflow.input.repoPath}",
-        "parentCorrelationId": "${workflow.input.parentCorrelationId}",
-        "verdict": "${outcome.output.verdict}",
-        "report": "${outcome.output.report}",
-        "codeModel": "${workflow.input.codeModel}",
-        "modelProfile": "${workflow.input.modelProfile}",
-        "modelPolicy": "${workflow.input.modelPolicy}",
-        "modelPolicySource": "${workflow.input.modelPolicySource}",
-        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
-        "modelsConfig": "${workflow.input.modelsConfig}",
-        "modelOverrides": "${workflow.input.modelOverrides}",
-        "workspacePath": "${workspace.output.worktreePath}"
+        "startWorkflow": {
+          "name": "run_retrospective",
+          "input": {
+            "correlationId": "${workflow.workflowId}",
+            "repoPath": "${workflow.input.repoPath}",
+            "parentCorrelationId": "${workflow.input.parentCorrelationId}",
+            "verdict": "${outcome.output.verdict}",
+            "report": "${outcome.output.report}",
+            "codeModel": "${workflow.input.codeModel}",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}",
+            "workspacePath": "${workspace.output.worktreePath}"
+          }
+        }
       }
     }
   ],
@@ -684,7 +1355,13 @@
     },
     "memoryWritten": "${memory_write.output}",
     "branch": "${workspace.output.branch}",
-    "retrospective": "${retrospective.output}"
+    "retrospective": "${retrospective.output}",
+    "score": "${outcome.output.score}",
+    "threshold": "${outcome.output.threshold}",
+    "needs": "${outcome.output.needs}",
+    "checks": "${outcome.output.checks}",
+    "scoreHistory": "${outcome.output.scoreHistory}",
+    "rung": "${outcome.output.rung}"
   },
   "failureWorkflow": "run_retrospective"
 }

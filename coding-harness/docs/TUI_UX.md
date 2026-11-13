@@ -57,7 +57,7 @@ respond overlay.)
 ┌ Conductor Coding Harness ─────────── server ✓ · workers: coding_agent ✓ 2s · gitops ✓ 1s ┐
 │                                                                                          │
 │  ▶ RUNNING    pr_review     0b22b6  acme/app PR#7       02:14   11.5k tok  $0.05        │
-│  ▶ RUNNING    code_parallel 4c5fe1  /tmp/cp_oracle      41:02  1.2M tok   $3.41         │
+│  ▶ RUNNING    code_parallel 4c5fe1  /tmp/cp_check      41:02  1.2M tok   $3.41         │
 │  ✓ COMPLETED  issue_to_pr   d8e56e  acme/app #3 → PR#4  04:41   54.8k tok  $0.13        │
 │  ✗ FAILED     address_pr    f548a9  acme/app PR#4       01:02   terminate/retry →       │
 │  … 50 most recent, newest first, live-refresh 5s                                        │
@@ -297,3 +297,26 @@ local `gh` exactly like the CLI does).
    §Notifications).
 3. **History depth**: 50 most recent runs — sufficient; no paging in v1.
 4. **`github_demo` hidden** from the launcher (still on the Dashboard, still CLI-runnable).
+
+## Run detail: what the agents are doing now (2026-11-10)
+
+The run page used to read done-or-not-done while a team worked: a Codex session posts no per-tool
+activity on the board, so "Agents working" showed 0 through a four-minute build and nothing said what
+was happening (run f83293f5). The page now reads the orchestrator's own record of the run and its
+child runs (`tui/live.py`, `live` on `/api/run`):
+
+- **Working now** lists every open agent session with its role (planner, scout, contract reviewer,
+  test author, implementer, reviewer, test repairer, architect), the item, elapsed time, the number of
+  commands it ran, tokens and cost so far, its last words and its last command. Above it the roster
+  shows how many sessions of each role ran or are running, so "is only one agent working?" is answered
+  at a glance. The phase line says the same in one sentence.
+- **Timeline** (a new tab) lists every step of the run and its teams in start order, nested by run,
+  with when it began, how long it took, what is running now and the cost of each agent session, so
+  "where is the time going?" is read off the page instead of asked.
+
+Both refresh with the page; nothing waits on a human.
+
+**Steady refresh.** The page polls every four seconds but re-renders only when something the reader
+can see has changed (`viewKey`: elapsed times and timestamps do not count); elapsed times tick in
+place. When it does re-render, every panel the reader had opened stays open and the scroll position
+is kept. Before this every poll rebuilt the page, collapsing open panels and resetting the scroll.

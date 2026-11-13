@@ -110,7 +110,8 @@
         {
           "name": "fan_join_artifacts",
           "taskReferenceName": "fan_join_artifacts",
-          "type": "JOIN"
+          "type": "JOIN",
+          "joinMode": "SYNC"
         },
         {
           "name": "openspec_merge_pass_progress",

@@ -272,7 +272,7 @@ def test_swarm_run_list_titles_nests_children_and_falls_back_to_the_board(monkey
     assert rows["prog-1"]["repoName"] == "resp-cache" and rows["prog-1"]["ceilingUsd"] == 150
     assert rows["team-1"]["parent"] == "prog-1" and rows["team-1"]["subsystem"] == "store"
     assert rows["team-1"]["verdict"] == "DELIVERED" and rows["team-1"]["spendUsd"] == 2.5
-    assert "workflowType IN (cc_program,team_build,sdlc_intake)" in __import__("urllib.parse").parse.unquote(
+    assert "workflowType IN (swarm,cc_program,team_build,sdlc_intake)" in __import__("urllib.parse").parse.unquote(
         fake.calls[0][1])
     # Conductor unreachable: the endpoint still lists the runs on the board, and says why.
     monkeypatch.setenv("CONDUCTOR_SERVER_URL", "http://127.0.0.1:9/api")
@@ -301,32 +301,32 @@ def test_launchers_come_from_the_catalog_and_launch_is_signed_and_validated(monk
     bb, cid = _seed(monkeypatch, tmp_path)
     s, _, body = console.handle_get("/api/launchers", {}, bb)
     forms = {f["workflow"]: f for f in json.loads(body)["launchers"]}
-    assert set(forms) == {"cc_program", "sdlc_intake"}
-    fields = {f["name"]: f for f in forms["cc_program"]["fields"]}
+    assert set(forms) == {"swarm"}
+    fields = {f["name"]: f for f in forms["swarm"]["fields"]}
     assert fields["repoPath"]["required"] is True and fields["ceilingUsd"]["default"] == 60
-    assert fields["maxDepth"]["advanced"] is True
+    assert fields["maxRounds"]["advanced"] is True
     # Unsigned launches are refused like any other write.
-    body = json.dumps({"workflow": "cc_program", "values": {"repoPath": str(tmp_path), "description": "x"}}).encode()
+    body = json.dumps({"workflow": "swarm", "values": {"repoPath": str(tmp_path), "description": "x"}}).encode()
     assert console.handle_post("/api/launch", body, bb)[0] == 401
     # Validation: a missing description, a repo that is not a directory, a workflow the console cannot start.
     fake = _FakeConductor()
-    out = console.launch({"workflow": "cc_program", "values": {"repoPath": str(tmp_path), "description": ""}},
+    out = console.launch({"workflow": "swarm", "values": {"repoPath": str(tmp_path), "description": ""}},
                          author="human:a@b", opener=fake)
-    assert out["ok"] is False and "Program description" in out["error"]
-    out = console.launch({"workflow": "cc_program", "values": {"repoPath": str(tmp_path / "nope"),
+    assert out["ok"] is False and "What to build" in out["error"]
+    out = console.launch({"workflow": "swarm", "values": {"repoPath": str(tmp_path / "nope"),
                                                                 "description": "build it"}}, author="h", opener=fake)
     assert out["ok"] is False and "not a directory" in out["error"]
     assert console.launch({"workflow": "team_build", "values": {}}, author="h", opener=fake)["ok"] is False
     assert fake.calls == []  # nothing reached Conductor
     # A valid launch starts the workflow without a version and sends only changed optional fields.
-    out = console.launch({"workflow": "cc_program", "values": {
+    out = console.launch({"workflow": "swarm", "values": {
         "repoPath": str(tmp_path), "description": "build it", "ceilingUsd": 60, "maxWidth": 8}},
         author="human:a@b", opener=fake, server_url="http://c/api")
-    assert out == {"ok": True, "run": "new-run-1", "workflow": "cc_program", "author": "human:a@b"}
+    assert out == {"ok": True, "run": "new-run-1", "workflow": "swarm", "author": "human:a@b"}
     method, url, payload = fake.calls[-1]
     assert method == "POST" and url == "http://c/api/workflow"  # no version anywhere in the start
     # The result branch reads as what was asked for (the run id is appended by the workspace).
-    assert payload == {"name": "cc_program", "input": {"repoPath": str(tmp_path), "description": "build it",
+    assert payload == {"name": "swarm", "input": {"repoPath": str(tmp_path), "description": "build it",
                                                        "maxWidth": 8, "branchName": "swarm/run"}}
 
 
@@ -380,7 +380,7 @@ def test_a_run_that_did_not_deliver_is_retried_on_its_own_branch(monkeypatch, tm
     repo = str(tmp_path / "repo")
     git.ensure_ready(repo)
     git.git(repo, "branch", "swarm/x-prog")
-    undelivered = {**_program("prog-i"), "status": "COMPLETED", "workflowName": "cc_program",
+    undelivered = {**_program("prog-i"), "status": "COMPLETED", "workflowName": "swarm",
                    "output": {"delivered": False, "verdict": "PROGRAM_INCOMPLETE", "report": "resp-reader blocked",
                               "sourceHandoff": {"branch": "swarm/x-prog", "sourceRepoPath": repo}}}
     undelivered["input"] = {**undelivered["input"], "repoPath": repo, "description": "Build a cache",
@@ -394,10 +394,10 @@ def test_a_run_that_did_not_deliver_is_retried_on_its_own_branch(monkeypatch, tm
 
     fake = _FakeConductor({"prog-i": undelivered, "prog-d": delivered}, start_id="retry-1")
     out = console.retry_run("prog-i", opener=fake, server_url="http://c/api")
-    assert out == {"ok": True, "run": "retry-1", "from": "prog-i", "workflow": "cc_program"}
+    assert out == {"ok": True, "run": "retry-1", "from": "prog-i", "workflow": "swarm"}
     method, url, body = fake.calls[-1]
     assert (method, url) == ("POST", "http://c/api/workflow") and body["correlationId"] == "continue:prog-i"
-    assert body["name"] == "cc_program" and body["input"]["ceilingUsd"] == 100
+    assert body["name"] == "swarm" and body["input"]["ceilingUsd"] == 100
     text = body["input"]["description"]
     assert "Build a cache" in text and "resp-reader blocked" in text and "swarm/x-prog" in text
     assert body["input"]["repoPath"] != repo and git._current_branch(body["input"]["repoPath"]) == "swarm/x-prog"
@@ -414,7 +414,7 @@ def test_a_run_that_did_not_deliver_is_retried_on_its_own_branch(monkeypatch, tm
 def test_finished_runs_offer_retry_start_over_and_run_again(monkeypatch, tmp_path):
     """Retry resumes the same run from the failed step; start over is a NEW run with the same input,
     because Conductor's restart reuses the run id and the board is keyed by it (old items, spend twice)."""
-    failed = {**_program("prog-f"), "status": "FAILED", "workflowName": "cc_program"}
+    failed = {**_program("prog-f"), "status": "FAILED", "workflowName": "swarm"}
     assert console.lifecycle_actions(failed) == {"retry": True, "retryUnfinished": False, "startOver": True, "editAndRun": True}
     assert console.lifecycle_actions({**failed, "status": "TERMINATED"})["retry"] is True
     done = {**failed, "status": "COMPLETED"}
@@ -434,9 +434,9 @@ def test_finished_runs_offer_retry_start_over_and_run_again(monkeypatch, tmp_pat
     refused = console.retry_run("prog-r", opener=fake, server_url="http://c/api")
     assert refused["ok"] is False and "running" in refused["error"]
     out = console.start_over("prog-f", opener=fake, server_url="http://c/api")
-    assert out == {"ok": True, "run": "prog-new", "from": "prog-f", "workflow": "cc_program"}
+    assert out == {"ok": True, "run": "prog-new", "from": "prog-f", "workflow": "swarm"}
     method, url, body = fake.calls[-1]
-    assert method == "POST" and url == "http://c/api/workflow" and body == {"name": "cc_program",
+    assert method == "POST" and url == "http://c/api/workflow" and body == {"name": "swarm",
                                                                             "input": failed["input"]}
     # The run view tells the page which actions apply and hands it the input to prefill a new run.
     bb, cid = _seed(monkeypatch, tmp_path)
@@ -467,7 +467,7 @@ def _delivered_repo(tmp_path):
     (wt / "db.py").write_text("print('db')\n")
     _git(wt, "add", ".")
     _git(wt, "commit", "-m", "the database")
-    done = {"workflowId": "prog-done", "workflowName": "cc_program", "workflowType": "cc_program",
+    done = {"workflowId": "prog-done", "workflowName": "swarm", "workflowType": "swarm",
             "status": "COMPLETED", "input": {"repoPath": str(repo), "description": "Build a pg database"},
             "output": {"verdict": "DELIVERED", "report": "Built the database.\n\nDetails.", "sourceHandoff": {
                 "sourceRepoPath": str(repo), "repoPath": str(wt), "branch": "swarm/pg-database-progdone",
@@ -495,7 +495,7 @@ def test_a_finished_runs_result_is_its_branch_with_what_comes_next(monkeypatch, 
 def test_continue_builds_a_follow_up_run_on_the_finished_runs_branch(monkeypatch, tmp_path):
     repo, wt, done = _delivered_repo(tmp_path)
     fake = _FakeConductor({"prog-done": done}, start_id="prog-next")
-    out = console.launch({"workflow": "cc_program", "continueFrom": "prog-done",
+    out = console.launch({"workflow": "swarm", "continueFrom": "prog-done",
                           "values": {"repoPath": "/ignored", "description": "Add docs for the wire protocol"}},
                          author="human:a@b", opener=fake, server_url="http://c/api")
     follow = repo / ".cc-worktrees" / "continue-swarm-pg-database-progdone"
@@ -507,11 +507,14 @@ def test_continue_builds_a_follow_up_run_on_the_finished_runs_branch(monkeypatch
     assert url == "http://c/api/workflow" and start["correlationId"] == "continue:prog-done"
     assert start["input"]["repoPath"] == str(follow)
     assert start["input"]["description"].startswith("Follow-up to an earlier swarm run")
+    # A continuation of a continuation keeps one preamble, never a nested one.
+    nested = console._follow_up(start["input"]["description"], {"workflowName": "cc_program", "input": {"description": "x"}}, "b2")
+    assert nested.count("Follow-up to an earlier swarm run") == 1 and "on branch b2" in nested
     assert start["input"]["description"].endswith("Add docs for the wire protocol")
     assert start["input"]["branchName"] == "swarm/docs-wire-protocol"
     # A running run cannot be continued yet; the reason is said.
     fake.runs["prog-run"] = {**done, "workflowId": "prog-run", "status": "RUNNING"}
-    out = console.launch({"workflow": "cc_program", "continueFrom": "prog-run",
+    out = console.launch({"workflow": "swarm", "continueFrom": "prog-run",
                           "values": {"repoPath": str(repo), "description": "more"}}, author="h", opener=fake)
     assert out["ok"] is False and "still working" in out["error"]
     # The follow-up's result names the run it continues and merges into the chain's first base.
@@ -576,7 +579,7 @@ def test_settings_edit_the_model_policy_every_launch_uses(monkeypatch, tmp_path)
     s, _, b = console.handle_post("/api/models", json.dumps({"data": data}).encode(), None)
     assert s == 401  # signed writes only
     fake = _FakeConductor()
-    out = console.launch({"workflow": "cc_program", "values": {"repoPath": str(tmp_path), "description": "x y"}},
+    out = console.launch({"workflow": "swarm", "values": {"repoPath": str(tmp_path), "description": "x y"}},
                          author="h", opener=fake, server_url="http://c/api")
     sent = fake.calls[-1][2]["input"]
     assert out["ok"] and sent["modelProfile"] == "anthropic-standard"
@@ -611,3 +614,143 @@ def test_settings_list_every_built_in_prompt_and_where_it_runs():
     assert b["team_review"]["repoOverride"] == ".conductor/team_review.md" and b["team_review"]["copyable"] is False
     assert b["pr_review"]["copyable"] is True and "senior code reviewer" in b["pr_review"]["body"]
     assert all(x["body"].strip() for x in b.values()) and all(x["usedBy"] for x in b.values())
+
+
+def test_program_run_shows_its_definition_of_done_and_takes_architect_steer(monkeypatch, tmp_path):
+    """The Architect's contract, score, rung and needs on the run page; a human steers the Architect
+    with facts it reads at its next evaluation (never a gate); a budget steer raises the continuation's
+    ceiling; a PROGRAM_NEEDS run renders as a need, not a failure, and offers Continue."""
+    from common import architect, git
+    from common import blackboard as bb
+    bbdir, cid = _seed(monkeypatch, tmp_path)
+    contract = architect.fold_contract({"threshold": 1.0}, [
+        {"kind": "client", "found": True, "claim": "redis-py string tests pass", "command": "sh .cc/checks/redis.sh", "weight": 4}],
+        {"sh .cc/checks/redis.sh": {"exitCode": 1, "output": "FAILED"}})
+    bb.post_fact(cid, "architect", architect.CONTRACT_KIND, contract)
+    bb.post_fact(cid, "architect", architect.RESULT_KIND, {"check": "integration", "state": "green", "head": "h1"})
+    bb.post_fact(cid, "architect", architect.RESULT_KIND, {"check": "client-redis-py-string-tests-pass", "state": "red",
+                                                           "tail": "AssertionError: SETRANGE", "mechanism": "exited 1", "head": "h1"})
+    bb.post_fact(cid, "architect", architect.EVALUATION_KIND, {"stage": "rank", "rank": ["resp"], "score": 0.3, "rung": "", "revision": 1})
+    bb.post_fact(cid, "architect", architect.EVALUATION_KIND, {"stage": "final", "rank": "final", "score": 0.3, "rung": "needs", "revision": 1,
+                                                               "needs": [{"kind": "budget", "detail": "$12.00 of $10.00 spent"}]})
+    bb.post_fact(cid, "architect", architect.NEED_KIND, {"kind": "budget", "detail": "$12.00 of $10.00 spent", "evaluation": 2})
+    bb.post_fact(cid, "architect", architect.AMENDMENT_KIND, {"id": "arch-2-1", "op": "drop", "check": "client-redis-py-string-tests-pass",
+                                                              "reason": "SETRANGE is out of scope", "by": "architect"})
+    # No contract → no panel (a team run); with one → checks, score, rung, pending amendment, needs.
+    assert console.architect_view("team-x", blackboard_dir=bbdir) == {}
+    v = console.architect_view(cid, blackboard_dir=bbdir)
+    states = {o["id"]: o["state"] for o in v["checks"]}
+    assert states == {"acceptance": "red", "integration": "green", "client-redis-py-string-tests-pass": "red"}
+    assert v["score"] == 0.3 and v["rung"] == "needs" and v["needs"] == [{"kind": "budget", "detail": "$12.00 of $10.00 spent"}]
+    assert v["pendingAmendments"][0]["id"] == "arch-2-1" and [h["score"] for h in v["history"]] == [0.3, 0.3]
+    assert "SETRANGE" in [o for o in v["checks"] if o["id"].startswith("client")][0]["tail"]
+    # The run view carries it; a run that Conductor does not know still shows its contract from the board.
+    rv = console.run_view(cid, blackboard_dir=bbdir, opener=_FakeConductor({}), server_url="http://c/api")
+    assert rv["architect"]["rung"] == "needs"
+    # Steer: every shape is a signed board write with the actor as author; a bad shape is refused.
+    for payload in ({"shape": "feedback", "text": "SETRANGE is in scope, keep the check"},
+                    {"shape": "accept", "check": "acceptance", "text": "tests come later"},
+                    {"shape": "amend", "amendment": "arch-2-1", "decision": "reject"},
+                    {"shape": "budget", "ceilingUsd": 40}):
+        s, _, b = console.handle_post("/api/steer", json.dumps({"run": cid, "action": "architect", **payload}).encode(), bbdir, headers=AUTH)
+        assert s == 200 and json.loads(b)["ok"] is True, payload
+    s, _, b = console.handle_post("/api/steer", json.dumps({"run": cid, "action": "architect", "shape": "budget", "ceilingUsd": 0}).encode(),
+                                  bbdir, headers=AUTH)
+    assert s == 400 and json.loads(b)["ok"] is False and "ceilingUsd" in json.loads(b)["error"]
+    assert console.handle_post("/api/steer", json.dumps({"run": cid, "action": "architect", "shape": "feedback", "text": "x"}).encode(), bbdir)[0] == 401
+    steer = [f["data"] for f in bb.read_facts(cid, kind=architect.STEER_KIND)]
+    assert [s["shape"] for s in steer] == ["feedback", "accept", "amend", "budget"] and all(f["author"] == "human:ops@example.com" for f in bb.read_facts(cid, kind=architect.STEER_KIND))
+    folded = architect.fold_steer([{"key": str(f["ts"]), "author": f["author"], "data": f["data"]} for f in bb.read_facts(cid, kind=architect.STEER_KIND)])
+    assert folded["accepts"][0]["check"] == "acceptance" and folded["decisions"] == {"arch-2-1": {"decision": "reject", "by": "human:ops@example.com"}}
+    assert folded["ceilingUsd"] == 40
+    # Continue from a need: the continuation carries the raised ceiling and the lineage the Architect copies from.
+    repo = str(tmp_path / "repo")
+    git.ensure_ready(repo)
+    git.git(repo, "branch", "swarm/x-needs")
+    needs_run = {**_program(cid), "status": "COMPLETED", "workflowName": "swarm",
+                 "output": {"delivered": False, "verdict": "PROGRAM_NEEDS", "report": "PROGRAM_NEEDS: budget",
+                            "needs": [{"kind": "budget", "detail": "$12.00 of $10.00 spent"}],
+                            "sourceHandoff": {"branch": "swarm/x-needs", "sourceRepoPath": repo}}}
+    needs_run["input"] = {**needs_run["input"], "repoPath": repo, "description": "Build a cache", "ceilingUsd": 10, "branchName": "swarm/x"}
+    assert console.lifecycle_actions(needs_run)["retryUnfinished"] is True
+    fake = _FakeConductor({cid: needs_run}, start_id="cont-1")
+    out = console.retry_run(cid, opener=fake, server_url="http://c/api")
+    assert out["ok"] is True and out["from"] == cid
+    body = fake.calls[-1][2]
+    assert body["correlationId"] == f"continue:{cid}" and body["input"]["ceilingUsd"] == 40
+    assert "PROGRAM_NEEDS: budget" in body["input"]["description"]
+    assert "needs" in json.dumps(console.PAGE) and "Definition of done" in console.PAGE and "steerArchitect" in console.PAGE
+
+
+def test_run_view_shows_every_agent_session_and_step_of_the_run_and_its_teams(monkeypatch, tmp_path):
+    """Through a four-minute Codex build the page read "Agents working: 0": a Codex session posts no
+    per-tool activity on the board. The orchestrator knows: the run view walks the run and its child
+    runs, lists every agent session with its role, item, elapsed and last commands, and every step with
+    its timing (run f83293f5)."""
+    import time as _t
+    bb, cid = _seed(monkeypatch, tmp_path)
+    now = _t.time()
+    ms = lambda s: int((now - s) * 1000)  # noqa: E731
+    parent = {**_program(cid), "tasks": [
+        {"referenceTaskName": "program_plan__1", "taskType": "coding_agent", "status": "COMPLETED",
+         "startTime": ms(600), "endTime": ms(550), "inputData": {"templateKey": "program_plan"},
+         "outputData": {"costUsd": 0.1, "numTurns": 3, "tokenUsed": 1000, "turns": []}},
+        {"referenceTaskName": "team_calc__1", "taskType": "SUB_WORKFLOW", "status": "IN_PROGRESS",
+         "startTime": ms(500), "subWorkflowId": "team-1"},
+    ]}
+    team = {"workflowId": "team-1", "workflowName": "team_build", "status": "RUNNING", "input": {"subsystemId": "calc"}, "tasks": [
+        {"referenceTaskName": "standup__1", "taskType": "SIMPLE", "status": "COMPLETED", "startTime": ms(500), "endTime": ms(499)},
+        {"referenceTaskName": "alpha__1", "taskType": "SUB_WORKFLOW", "status": "IN_PROGRESS", "startTime": ms(300),
+         "subWorkflowId": "sub-1"},
+    ]}
+    sub = {"workflowId": "sub-1", "workflowName": "code_subtask", "status": "RUNNING", "input": {"name": "alpha"}, "tasks": [
+        {"referenceTaskName": "wt", "taskType": "SIMPLE", "status": "COMPLETED", "startTime": ms(300), "endTime": ms(299)},
+        {"referenceTaskName": "code", "taskType": "coding_agent", "status": "IN_PROGRESS", "startTime": ms(290), "updateTime": ms(3),
+         "inputData": {"templateKey": "team_implement", "feedbackItem": "alpha"},
+         "outputData": {"numTurns": 1, "tokenUsed": 455000, "turns": [
+             {"turn": 1, "commands": ["$ npm install", "edit src/calculator.js"], "text": "Creating the parser from scratch"}]}},
+    ]}
+    fake = _FakeConductor({cid: parent, "team-1": team, "sub-1": sub})
+    v = console.run_view(cid, blackboard_dir=bb, opener=fake, server_url="http://c/api")
+    live = v["live"]
+    assert [(s["role"], s["item"], s["status"]) for s in live["sessions"]] == [("planner", "", "done"), ("implementer", "alpha", "running")]
+    impl = live["sessions"][1]
+    assert impl["lastCommands"] == ["$ npm install", "edit src/calculator.js"] and impl["commands"] == 2 and impl["tokens"] == 455000
+    assert 285 <= impl["seconds"] <= 295 and impl["run"] == "sub-1" and "parser" in impl["lastText"]
+    assert [r["role"] for r in live["roles"]] == ["implementer", "planner"] and live["roles"][0]["running"] == 1
+    steps = [(s["ref"], s["depth"], s["status"]) for s in live["steps"]]
+    assert steps == [("program_plan__1", 0, "done"), ("team_calc__1", 0, "running"), ("standup__1", 1, "done"),
+                     ("alpha__1", 1, "running"), ("wt", 2, "done"), ("code", 2, "running")]
+    assert next(s for s in live["steps"] if s["ref"] == "code")["item"] == "alpha"
+    # The snapshot's working agents include the Codex session (no board activity), and the phase says what it does.
+    agents = v["snapshot"]["activeAgents"]
+    assert [(a["item"], a["role"]) for a in agents] == [("alpha", "implementer")] and agents[0]["toolCalls"] == 2
+    assert "implementer on alpha for 4 min, 2 commands: Creating the parser" in v["snapshot"]["phase"]
+    # Without Conductor there is nothing live, and the page still renders.
+    v2 = console.run_view(cid, blackboard_dir=bb, opener=_FakeConductor({}), server_url="http://c/api")
+    assert v2["live"] == {"sessions": [], "steps": [], "running": [], "roles": []}
+
+
+def test_a_finished_run_whose_verdict_the_search_index_mangled_is_read_back_as_json(monkeypatch, tmp_path):
+    """Conductor's search index serialises the output as Map.toString(); a check's output tail holding
+    a brace ended the parse before `verdict`, and the delivered run 8fb0cf98 was listed red."""
+    _seed(monkeypatch, tmp_path)
+    mangled = "{needs=[], checks=[{id=docs, tail=a } b}], verdict=PROGRAM_DELIVERED, spendUsd=8.5}"
+    searched = {"workflowId": "prog-9", "workflowType": "cc_program", "status": "COMPLETED", "startTime": 1,
+                "endTime": 2, "input": "{repoPath=/work/app}", "output": mangled}
+    full = {**searched, "input": {"repoPath": "/work/app"},
+            "output": {"verdict": "PROGRAM_DELIVERED", "spendUsd": 8.5}}
+
+    class Fake(_FakeConductor):
+        def __call__(self, req):
+            if "/workflow/search" in req.full_url:
+                self.calls.append(("GET", req.full_url, None))
+                return _Resp({"results": [searched]})
+            return super().__call__(req)
+
+    fake = Fake({"prog-9": full})
+    console._FINISHED_OUTPUT.clear()
+    rows = {r["id"]: r for r in console.list_swarm_runs(opener=fake, server_url="http://c/api")["items"]}
+    assert rows["prog-9"]["verdict"] == "PROGRAM_DELIVERED" and rows["prog-9"]["spendUsd"] == 8.5
+    console.list_swarm_runs(opener=fake, server_url="http://c/api")
+    assert sum(1 for c in fake.calls if "/workflow/prog-9" in c[1]) == 1  # read once, then remembered

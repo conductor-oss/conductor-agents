@@ -1,0 +1,59 @@
+{
+  "name": "team_gate_refresh",
+  "description": "Team cycle: once the acceptance-test authoring branch and the wave loop have both joined, re-read from the board what the final test cycle must prove (the done items' frozen acceptance-test commands), may repair (the team's write roots) and which head it verifies. Frozen tests authored beside the first wave can land after the last wave captured these, leaving the final cycle with no command for them (run 884f7eec).",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "team_gate_refresh_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "correlationId": {
+          "type": "string"
+        },
+        "sharedRepo": {
+          "type": "string",
+          "description": "The shared run worktree; its current head is the head the final cycle verifies."
+        },
+        "parentCorrelationId": {
+          "type": "string",
+          "description": "Set for a program's team: gated on its own frozen tests, never a repository-wide command."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "team_gate_refresh_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "finalHead": {
+          "type": "string"
+        },
+        "acceptanceCommands": {
+          "type": "array"
+        },
+        "writeRoots": {
+          "type": "array"
+        },
+        "gateCommands": {
+          "type": "array"
+        },
+        "gateMode": {
+          "type": "string"
+        },
+        "testMode": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

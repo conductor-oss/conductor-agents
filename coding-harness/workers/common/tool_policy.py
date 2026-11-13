@@ -23,6 +23,15 @@ DEFAULT_ALLOWED_TOOLS = [
     # while the deny list below still wins for destructive/global variants.
     "Bash(git mv *)", "Bash(git rm *)", "Bash(mv *)", "Bash(rm *)",
     "Bash(mkdir *)", "Bash(cp *)", "Bash(touch *)",
+    # What the swarm itself puts in the tree: the board client and the Architect's frozen checks
+    # (`bash .cc/checks/scenario.sh`), and the program the agent just built (`./target/release/pgdb
+    # --port 2345`). A Claude session on run 1cabdcac was denied all three and shipped a Postgres
+    # server it had never started; the OS sandbox, not this list, is what contains these commands.
+    "Bash(.cc-cache/bin/*)", "Bash(bash .cc/checks/*)", "Bash(sh .cc/checks/*)", "Bash(./*)",
+    # Drive what was built the way the request says a user will (a database or HTTP client), and the
+    # small glue a readiness loop needs.
+    "Bash(psql *)", "Bash(curl *)", "Bash(sleep *)", "Bash(echo *)", "Bash(command -v *)", "Bash(which *)",
+    "Bash(kill *)", "Bash(lsof *)",
 ]
 
 DEFAULT_DISALLOWED_TOOLS = [

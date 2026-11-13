@@ -351,6 +351,18 @@ def _r_team_build(o: dict) -> ResultCard:
     return ResultCard("Team delivered" if o.get("delivered") else "Team build incomplete", rows, None)
 
 
+def _r_swarm(o: dict) -> ResultCard:
+    handoff = o.get("sourceHandoff") or {}
+    rows = [
+        ("verdict", str(o.get("verdict") or "?")),
+        ("branch", str(handoff.get("branch") or o.get("branch") or "missing")),
+        ("rounds", str(o.get("rounds") or "?")),
+        ("spend", f"${float(o.get('spendUsd') or 0):.2f}"),
+    ]
+    return ResultCard("Delivered" if o.get("delivered") is True or o.get("verdict") == "DELIVERED"
+                      else "Incomplete", rows, None)
+
+
 def _r_cc_program(o: dict) -> ResultCard:
     handoff = o.get("sourceHandoff") or {}
     kids = o.get("children") or []
@@ -580,7 +592,7 @@ CATALOG: dict[str, WorkflowSpec] = {
             Field("inPlace", "Integrate into this checkout", "bool", False),
             Field("ceilingUsd", "Spend ceiling $", "float", 40,
                   help="hard budget for the whole run, every role included"),
-            Field("maxWidth", "Max parallel agents", "int", 6),
+            Field("maxWidth", "Max parallel agents", "int", 10),
             Field("bestOf", "Best-of-N per item", "int", 1, advanced=True),
             Field("maxReplan", "Decomposition re-plans", "int", 2, advanced=True),
             Field("forceSingle", "Always use one agent", "bool", False, advanced=True),
@@ -592,6 +604,23 @@ CATALOG: dict[str, WorkflowSpec] = {
         target=_t_local,
         result=_r_sdlc_intake,
     ),
+    "swarm": WorkflowSpec(
+        name="swarm",
+        action="Build with a swarm",
+        blurb="An architect agent designs, writes the acceptance checks and splits the work; a team of "
+              "agents builds it in parallel in one shared clone and works out conflicts themselves; the "
+              "architect judges each round until the checks pass. The result is a branch in your repo.",
+        fields=(
+            Field("repoPath", "Repo path", "text", help="local directory"),
+            Field("description", "What to build", "multiline", help="the whole request"),
+            Field("ceilingUsd", "Spend ceiling $", "float", 60),
+            Field("maxWidth", "Max parallel agents", "int", 10, advanced=True),
+            Field("maxRounds", "Max rounds", "int", 8, advanced=True),
+            _MODEL_PROFILE,
+        ),
+        target=_t_local,
+        result=_r_swarm,
+    ),
     "cc_program": WorkflowSpec(
         name="cc_program",
         action="Build a program with teams of teams",
@@ -602,12 +631,11 @@ CATALOG: dict[str, WorkflowSpec] = {
             Field("description", "Program description", "multiline", "", help="the whole thing to build"),
             Field("inPlace", "Integrate into this checkout", "bool", False),
             Field("ceilingUsd", "Program spend ceiling $", "float", 60),
-            Field("maxWidth", "Max parallel agents per team", "int", 6),
+            Field("teamSize", "Agents per team (0 = the Architect decides)", "int", 0),
+            Field("maxWidth", "Max parallel agents per team", "int", 10, advanced=True),
             Field("maxDepth", "Max nesting depth", "int", 2, advanced=True),
             Field("maxWaves", "Max waves per team", "int", 16, advanced=True),
             Field("maxReplan", "Decomposition re-plans", "int", 2, advanced=True),
-            Field("bestOf", "Best-of-N per item", "int", 1, advanced=True),
-            Field("authorAcceptanceTests", "Independent acceptance tests", "bool", True, advanced=True),
             Field("codeModel", "Code model", "text", "", advanced=True),
             _MODEL_PROFILE,
             *_caps(250, 10.0),
@@ -730,11 +758,11 @@ CATALOG: dict[str, WorkflowSpec] = {
 }
 
 # Launcher order (github_demo intentionally excluded — plumbing smoke test, UX decision 4).
-LAUNCHABLE = ["local_review", "pr_review", "issue_to_pr", "address_pr", "pr_review_sweep", "pr_address_sweep", "issue_resolution_sweep", "openspec_development", "feature_campaign", "code_parallel", "sdlc_intake", "cc_program"]
+LAUNCHABLE = ["local_review", "pr_review", "issue_to_pr", "address_pr", "pr_review_sweep", "pr_address_sweep", "issue_resolution_sweep", "openspec_development", "feature_campaign", "code_parallel", "swarm"]
 
 # Workflow types the dashboard lists (all user-facing runs, incl. github_demo which still
 # appears once run via the CLI).
-DASHBOARD_TYPES = ["local_review", "pr_review", "issue_to_pr", "address_pr", "pr_review_sweep", "pr_address_sweep", "issue_resolution_sweep", "automation_dispatch", "automation_reset", "openspec_development", "feature_campaign", "code_parallel", "sdlc_intake", "team_build", "cc_program", "github_demo"]
+DASHBOARD_TYPES = ["local_review", "pr_review", "issue_to_pr", "address_pr", "pr_review_sweep", "pr_address_sweep", "issue_resolution_sweep", "automation_dispatch", "automation_reset", "openspec_development", "feature_campaign", "code_parallel", "sdlc_intake", "team_build", "cc_program", "swarm", "github_demo"]
 
 
 def target_for(workflow: str, input_data: dict) -> str:
