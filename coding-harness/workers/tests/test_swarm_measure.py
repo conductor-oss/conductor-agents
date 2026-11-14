@@ -70,3 +70,25 @@ def test_the_round_review_starts_where_round_reviews_delivered_and_climbs_per_un
     decide("r1", 1, False)
     decide("r1", 2, True)
     assert fold(1)["roundReviewRung"] == 2 and fold(3)["roundReviewRung"] == 2  # learned, and capped at the top
+
+
+def test_authoring_writes_the_checks_list_and_starts_one_cheap_author_per_check_and_the_adapter(tmp_path, monkeypatch,
+                                                                                               fake_task_input):
+    """Planning took 17+ minutes when the architect also wrote every check on the design model; it now
+    lists them and authors write them in parallel on the code role's cheapest rung."""
+    monkeypatch.setenv("SWARM_BLACKBOARD_DIR", str(tmp_path / "board"))
+    from swarm.tasks import swarm_authoring
+    work = tmp_path / "clone"
+    (work / "design" / "spec").mkdir(parents=True)
+    (work / "design" / "spec" / "abstraction.json").write_text("{}")
+    plan = {"structured": {"items": [], "checks": [
+        {"id": "strings", "file": ".cc/checks/strings.mjs", "command": "node .cc/checks/strings.mjs", "scenario": "SET then GET"},
+        {"id": "lists", "file": ".cc/checks/lists.mjs", "command": "node .cc/checks/lists.mjs", "scenario": "LPUSH then LRANGE"}]}}
+    out = swarm_authoring(fake_task_input(workdir=str(work), plan=plan, runId="r1", ceilingUsd=40)).output_data
+    assert json.loads((work / ".cc" / "checks.json").read_text()) == [
+        {"id": "strings", "command": "node .cc/checks/strings.mjs"}, {"id": "lists", "command": "node .cc/checks/lists.mjs"}]
+    refs = [t["taskReferenceName"] for t in out["dynamicTasks"]]
+    assert refs == ["author_check_strings", "author_check_lists", "author_adapter"]
+    ins = out["dynamicTasksInput"]
+    assert all(ins[r]["modelRole"] == "code" and ins[r]["modelTier"] == 0 and ins[r]["maxBudgetUsd"] > 0 for r in refs)
+    assert ins["author_adapter"]["templateKey"] == "swarm_author_adapter" and "SET then GET" in ins["author_check_strings"]["promptContext"]["check"]

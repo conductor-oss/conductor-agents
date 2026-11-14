@@ -371,7 +371,7 @@ def targets() -> dict:
 
 # Defaults whose steps are composed in code rather than declared in a workflow's tasks.
 _CODE_BUILT_USES = {
-    "swarm_work": ("swarm",),
+    "swarm_work": ("swarm",), "swarm_author_check": ("swarm",), "swarm_author_adapter": ("swarm",),
     "team_implement": ("team_build",), "team_rescue": ("team_build",), "team_review": ("team_build",),
     "team_acceptance_tests": ("team_build",), "convergence_subtask": ("convergence_spike",),
     # The Architect's scouts are forked dynamically (check_scout_build), one per external check kind.

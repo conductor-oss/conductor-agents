@@ -8,7 +8,7 @@ What each item's agent reported this round, and its review's verdict (an item no
 
 {{reports}}
 
-The harness has just committed this round's tree and run your checks on it, independently:
+The harness has just committed this round's tree and run your checks on it, independently. Two of them prove the program against your formal spec: `spec-proof` (TLC: the invariants hold in every reachable state, every mutant is caught) and `spec-conformance` (the program replayed through the adapter against every transition of the bounded model; a divergence is shown as the shortest action sequence that reveals it):
 
 {{measurement}}
 
@@ -24,4 +24,4 @@ THE MODEL LADDER. Each item runs on a rung of the team's model ladder ({{ladder}
 What earlier runs on this repository measured (items done in one session, per kind and rung):
 {{history}}
 
-The design documents are part of the delivery: when the round changed the design (an interface, a decision, the layout), update the document that describes it so it matches what was built. Return `delivered: true` only when the request is fully met, the design documents describe what was built, and every check passes (on the harness's measurement, or on its re-measurement of what you changed). Otherwise return the next items for the team, sized to similar amounts of work (the round lasts as long as its biggest item): each concrete, naming the evidence (failing output, file, behaviour) and what done looks like. Never repeat an item that already failed the same way without saying what changes this time.
+A conformance divergence means the code does not do what the spec says: fix the code, or, only if the spec itself is wrong, fix the spec and say why (it is proven again before it counts). The design documents are part of the delivery: when the round changed the design (an interface, a decision, the layout), update the document that describes it so it matches what was built. Return `delivered: true` only when the request is fully met, the design documents describe what was built, and every check passes (on the harness's measurement, or on its re-measurement of what you changed). Otherwise return the next items for the team, sized to similar amounts of work (the round lasts as long as its biggest item): each concrete, naming the evidence (failing output, file, behaviour) and what done looks like. Never repeat an item that already failed the same way without saying what changes this time.

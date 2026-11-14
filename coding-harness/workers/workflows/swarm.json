@@ -57,41 +57,118 @@
       }
     },
     {
-      "name": "coding_agent",
-      "taskReferenceName": "plan",
+      "name": "formal_feedback_init",
+      "taskReferenceName": "formal_feedback_init",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "formalFeedback": ""
+      }
+    },
+    {
+      "name": "planning",
+      "taskReferenceName": "planning",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ var cur = $.planning[String($.planning['iteration'])] || {}; var proven = (cur['formal'] || {})['ok']; return $.planning['iteration'] < $.max_tries && proven !== true; })();",
+      "inputParameters": {
+        "max_tries": 3,
+        "planning": "${planning.output}"
+      },
+      "loopOver": [
+        {
+          "name": "coding_agent",
+          "taskReferenceName": "plan",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "worktreePath": "${setup.output.workdir}",
+            "modelRole": "design",
+            "sharedTree": true,
+            "allowedWriteRoots": [],
+            "allowedTools": "${setup.output.allowedTools}",
+            "disallowedTools": "${setup.output.disallowedTools}",
+            "feedbackCorrelationId": "${workflow.workflowId}",
+            "feedbackRunId": "${workflow.workflowId}",
+            "feedbackItem": "architect",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "templateKey": "swarm_plan",
+            "promptContext": {
+              "request": "${workflow.input.description}",
+              "branch": "${setup.output.branch}",
+              "memory": "${memory_read.output.digest}",
+              "history": "${setup.output.history}",
+              "ladder": "${setup.output.ladder}",
+              "maxRung": "${setup.output.maxRung}",
+              "formalFeedback": "${workflow.variables.formalFeedback}"
+            },
+            "schema": "${setup.output.schemas.plan}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}",
+            "modelResolution": "${model_policy.output}",
+            "promptTemplate": "",
+            "promptTemplateSource": "",
+            "spendRunId": "${workflow.workflowId}",
+            "spendAuthor": "architect"
+          }
+        },
+        {
+          "name": "swarm_formal",
+          "taskReferenceName": "formal",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "workdir": "${setup.output.workdir}"
+          }
+        },
+        {
+          "name": "formal_feedback",
+          "taskReferenceName": "formal_feedback",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "formalFeedback": "${formal.output.feedback}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "swarm_authoring",
+      "taskReferenceName": "authoring",
       "type": "SIMPLE",
       "inputParameters": {
-        "worktreePath": "${setup.output.workdir}",
-        "modelRole": "design",
-        "sharedTree": true,
-        "allowedWriteRoots": [],
-        "allowedTools": "${setup.output.allowedTools}",
-        "disallowedTools": "${setup.output.disallowedTools}",
-        "feedbackCorrelationId": "${workflow.workflowId}",
-        "feedbackRunId": "${workflow.workflowId}",
-        "feedbackItem": "architect",
+        "workdir": "${setup.output.workdir}",
+        "plan": "${plan.output}",
+        "runId": "${workflow.workflowId}",
+        "description": "${workflow.input.description}",
+        "branch": "${setup.output.branch}",
+        "ceilingUsd": "${workflow.input.ceilingUsd}",
         "modelProfile": "${workflow.input.modelProfile}",
         "modelPolicy": "${workflow.input.modelPolicy}",
         "modelPolicySource": "${workflow.input.modelPolicySource}",
         "modelPolicySha256": "${workflow.input.modelPolicySha256}",
-        "templateKey": "swarm_plan",
-        "promptContext": {
-          "request": "${workflow.input.description}",
-          "branch": "${setup.output.branch}",
-          "memory": "${memory_read.output.digest}",
-          "history": "${setup.output.history}",
-          "ladder": "${setup.output.ladder}",
-          "maxRung": "${setup.output.maxRung}"
-        },
-        "schema": "${setup.output.schemas.items}",
         "modelsConfig": "${workflow.input.modelsConfig}",
         "modelOverrides": "${workflow.input.modelOverrides}",
-        "modelResolution": "${model_policy.output}",
-        "promptTemplate": "",
-        "promptTemplateSource": "",
-        "spendRunId": "${workflow.workflowId}",
-        "spendAuthor": "architect"
+        "modelResolution": "${model_policy.output}"
       }
+    },
+    {
+      "name": "authors",
+      "taskReferenceName": "authors",
+      "type": "FORK_JOIN_DYNAMIC",
+      "optional": true,
+      "inputParameters": {
+        "dynamicTasks": "${authoring.output.dynamicTasks}",
+        "dynamicTasksInput": "${authoring.output.dynamicTasksInput}"
+      },
+      "dynamicForkTasksParam": "dynamicTasks",
+      "dynamicForkTasksInputParamName": "dynamicTasksInput"
+    },
+    {
+      "name": "authors_join",
+      "taskReferenceName": "authors_join",
+      "type": "JOIN",
+      "joinMode": "SYNC",
+      "optional": true
     },
     {
       "name": "seed_round",

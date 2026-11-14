@@ -33,6 +33,7 @@ ROLES = {
     # The swarm: the architect plans and, after every round, reviews the whole tree; implementers build.
     "swarm_plan": "architect (planning)", "swarm_evaluate": "architect (reviewing the round)",
     "swarm_work": "implementer", "swarm_review_item": "reviewer (item)",
+    "swarm_author_check": "check author", "swarm_author_adapter": "adapter author",
 }
 # Steps whose reference names say what they are, for the timeline's labels.
 _STEP_LABELS = (
@@ -41,6 +42,7 @@ _STEP_LABELS = (
     ("work_join", "waiting for the round's agents"), ("fold", "collecting the round"),
     ("measure", "running the checks on the committed tree"), ("decide", "committing and deciding"),
     ("finish", "handing the branch back"), ("prep", "preparing the item"),
+    ("authoring", "starting the check authors"), ("formal", "proving the formal spec"), ("planning", "planning"),
     ("release", "starting what waited on the item"), ("dependents", "dependent items"),
     ("program_plan", "planning"), ("scout_", "scout"), ("contract_fold", "red-proof and fold"),
     ("contract_review", "contract review"), ("rank_build", "forking the rank's teams"),

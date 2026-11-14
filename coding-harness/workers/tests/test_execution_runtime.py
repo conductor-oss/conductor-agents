@@ -125,6 +125,9 @@ def test_every_production_subprocess_uses_a_shared_runtime_environment():
         # and outlives the worker call that first needed it, so it is a detached Popen with the
         # inherited runtime environment; its installs go through exec.run.
         root / "common" / "browser_service.py",
+        # The conformance adapter answers one JSON line per step of every trace for a whole replay: a
+        # long-running interactive process, started with the inherited runtime environment.
+        root / "common" / "conformance.py",
     }
     direct_launchers = []
     for source in root.rglob("*.py"):
@@ -140,6 +143,7 @@ def test_every_production_subprocess_uses_a_shared_runtime_environment():
         assert "env=check_execution.inherited_environment(" in source.read_text(encoding="utf-8")
     for source in (root / "common" / "source_watch.py", root / "common" / "browser_service.py"):
         assert "check_execution.inherited_environment()" in source.read_text(encoding="utf-8")
+    assert "check_execution.inherited_environment(env)" in (root / "common" / "conformance.py").read_text(encoding="utf-8")
 
 
 def test_runtime_health_contract_covers_required_language_families():

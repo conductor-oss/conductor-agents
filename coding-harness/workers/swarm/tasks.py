@@ -47,6 +47,19 @@ ROUND_KIND, REPORT_KIND, CLAIM_KIND = "swarm_round", "swarm_report", "swarm_clai
 # Integrating a round is the same job whatever the repository: the round review's ladder learns across
 # all of them (every run of a request in a fresh folder would otherwise start from nothing).
 ROUND_REVIEW_REPO = "*any repository*"
+# The architect's plan: the items, and the acceptance checks it decided on, each written afterwards by
+# its own author session (planning took 17+ minutes when one session also wrote every check).
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        **ITEMS_SCHEMA["properties"],
+        "checks": {"type": "array", "items": {"type": "object", "properties": {
+            "id": {"type": "string"}, "file": {"type": "string"}, "command": {"type": "string"},
+            "scenario": {"type": "string"}},
+            "required": ["id", "file", "command", "scenario"]}},
+    },
+    "required": ["items", "checks"],
+}
 EVALUATE_SCHEMA = {
     "type": "object",
     "properties": {"delivered": {"type": "boolean"}, "assessment": {"type": "string"},
@@ -132,7 +145,7 @@ def swarm_setup(task):
                          "originalBranch": original_branch, "originalHead": original_head,
                          "ladder": _ladder_text(resolution), "maxRung": _ladder_top(resolution),
                          "history": _history_text(repo), "schemas": {
-            "items": ITEMS_SCHEMA, "work": WORK_SCHEMA, "evaluate": EVALUATE_SCHEMA},
+            "items": ITEMS_SCHEMA, "plan": PLAN_SCHEMA, "work": WORK_SCHEMA, "evaluate": EVALUATE_SCHEMA},
             "allowedTools": SWARM_ALLOWED_TOOLS, "disallowedTools": SWARM_DISALLOWED_TOOLS},
             [f"[swarm_setup] {work} on {branch}"])
     except Exception as e:  # noqa: BLE001
@@ -397,6 +410,79 @@ def swarm_item_release(task):
         return fail(task, "swarm_item_release", e)
 
 
+@worker_task(task_definition_name="swarm_formal")
+def swarm_formal(task):
+    """Prove the architect's formal spec before anyone builds from it: TLC checks every invariant in every
+    reachable state of the bounded model, every mutant must break its invariant, and the state graph
+    becomes the trace suite the code is later replayed against (docs/FORMAL_SPEC_DESIGN.md)."""
+    i = task.input_data or {}
+    try:
+        from common import formal
+        proof = formal.prove(str(i["workdir"]))
+        out = {k: proof.get(k) for k in ("ok", "summary", "states", "transitions", "traces", "mutants", "module", "missing")}
+        # What the architect reads in its next attempt (the plan prompt's {{formalFeedback}}).
+        out["feedback"] = ("" if proof.get("ok") else
+                           "THE HARNESS REJECTED YOUR LAST FORMAL SPEC; fix it (the files are still in design/spec/):\n"
+                           + str(proof.get("feedback") or proof.get("summary") or ""))
+        return ok(task, out,
+                  [f"[swarm_formal] {'proven' if proof.get('ok') else 'not proven'}: {proof.get('summary')}"])
+    except Exception as e:  # noqa: BLE001
+        return fail(task, "swarm_formal", e)
+
+
+AUTHOR_SCHEMA = {
+    "type": "object",
+    "properties": {"summary": {"type": "string"}, "files": {"type": "array", "items": {"type": "string"}},
+                   "failsNow": {"type": "boolean"}},
+    "required": ["summary", "files", "failsNow"],
+}
+
+
+@worker_task(task_definition_name="swarm_authoring")
+def swarm_authoring(task):
+    """After the architect decided: write ``.cc/checks.json`` from its list, and start one author session
+    per check, plus one for the conformance adapter when there is a formal spec, all at once on the code
+    role's cheapest rung. Authoring is execution, not design: it needs neither the architect's model nor
+    its turn, and in one session it made planning the longest phase of a run."""
+    i = task.input_data or {}
+    try:
+        from common import budget_gate
+        work = str(i["workdir"])
+        plan = _mapping(_mapping(i.get("plan")).get("structured"))
+        checks = [_mapping(c) for c in _list(plan.get("checks")) if _mapping(c).get("id") and _mapping(c).get("command")]
+        os.makedirs(os.path.join(work, ".cc"), exist_ok=True)
+        with open(os.path.join(work, ".cc", "checks.json"), "w", encoding="utf-8") as fh:
+            json.dump([{"id": c["id"], "command": c["command"]} for c in checks], fh, indent=1)
+        run = str(i.get("runId") or "")
+        jobs = [("swarm_author_check", f"check_{_slug(c['id'])}", {"check": json.dumps(c, indent=1)}, f"check:{c['id']}")
+                for c in checks]
+        if os.path.isfile(os.path.join(work, "design", "spec", "abstraction.json")):
+            jobs.append(("swarm_author_adapter", "adapter", {}, "adapter"))
+        spent = budget_gate.read_spend(run)["usd"] if run else 0.0
+        ceiling = float(i.get("ceilingUsd") or 0)
+        cap = round(max((ceiling - spent) / max(4 * len(jobs), 1), 0.5), 2) if ceiling > 0 else None
+        base = {"request": i.get("description") or "", "branch": i.get("branch") or ""}
+        tasks, inputs = [], {}
+        for key, ref, ctx, author in jobs:
+            tasks.append({"name": "coding_agent", "taskReferenceName": f"author_{ref}", "type": "SIMPLE", "optional": True})
+            inputs[f"author_{ref}"] = {
+                "worktreePath": work, "templateKey": key, "modelRole": "code", "modelTier": 0,
+                "promptContext": {**base, **ctx}, "schema": AUTHOR_SCHEMA, "sharedTree": True, "allowedWriteRoots": [],
+                "allowedTools": SWARM_ALLOWED_TOOLS, "disallowedTools": SWARM_DISALLOWED_TOOLS,
+                "feedbackCorrelationId": run, "feedbackRunId": run, "feedbackItem": author,
+                **{k: i.get(k) for k in ("modelProfile", "modelPolicy", "modelPolicySource", "modelPolicySha256",
+                                         "modelsConfig", "modelOverrides", "modelResolution")},
+                "promptTemplate": "", "promptTemplateSource": "",
+                **({"maxBudgetUsd": cap} if cap is not None else {}),
+                "spendRunId": run, "spendAuthor": f"author:{author}",
+            }
+        return ok(task, {"dynamicTasks": tasks, "dynamicTasksInput": inputs, "checks": len(checks),
+                         "authors": len(tasks)},
+                  [f"[swarm_authoring] {len(checks)} check(s) listed in .cc/checks.json; {len(tasks)} author session(s)"])
+    except Exception as e:  # noqa: BLE001
+        return fail(task, "swarm_authoring", e)
+
+
 @worker_task(task_definition_name="swarm_measure")
 def swarm_measure(task):
     """Commit the shared tree, then run each of the architect's checks on it once: exit code and output,
@@ -452,6 +538,12 @@ def swarm_measure(task):
         threading.Thread(target=_progress, daemon=True).start()
         try:
             _run_checks(checks, results, current, work, env, check_execution, architect)
+            try:
+                _run_formal(results, current, work, env)
+            except Exception as e:  # noqa: BLE001 - a fault in the proof machinery is a red check, never a failed run
+                results.append({"id": "spec-conformance", "command": "replay the spec's traces through the adapter",
+                                "exitCode": 1, "seconds": 0, "stalled": False,
+                                "output": f"the harness could not check the spec: {type(e).__name__}: {e}"})
         finally:
             stop.set()
             reporter.stop()
@@ -475,6 +567,28 @@ def _run_checks(checks, results, current, work, env, check_execution, architect)
                             "output": ((r.stdout or "") + (r.stderr or ""))[-3000:]})
         except (ValueError, OSError) as e:
             results.append({"id": c.get("id"), "command": c.get("command"), "exitCode": None, "output": str(e)})
+
+
+def _run_formal(results, current, work, env) -> None:
+    """With a formal spec: the proof (cached by the spec's hash, so it re-runs only when the spec
+    changed) and, once proven, the conformance of the program to every transition of the bounded model."""
+    import time as _time
+    from common import conformance, formal
+    if not os.path.isfile(os.path.join(work, formal.SPEC_DIR, "abstraction.json")):
+        return
+    current.update(n=len(results) + 1, check={"id": "spec-proof", "command": "TLC model check"}, since=_time.monotonic())
+    started = _time.monotonic()
+    proof = formal.prove(work)
+    results.append({"id": "spec-proof", "command": "TLC model check of design/spec", "exitCode": 0 if proof.get("ok") else 1,
+                    "seconds": round(_time.monotonic() - started, 1), "stalled": False,
+                    "output": (proof.get("summary") or "") + ("\n" + proof["feedback"] if proof.get("feedback") else "")})
+    if not proof.get("ok"):
+        return
+    current.update(n=len(results) + 1, check={"id": "spec-conformance", "command": "replay every trace"}, since=_time.monotonic())
+    r = conformance.run(work, env=env)
+    results.append({"id": "spec-conformance", "command": "replay the spec's traces through the adapter",
+                    "exitCode": 0 if r.get("ok") else 1, "seconds": r.get("seconds") or 0, "stalled": False,
+                    "output": conformance.report(r)[-3000:]})
 
 
 def _measured(task, results, *, tree: str, commit: str, changes: str = ""):
