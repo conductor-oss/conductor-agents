@@ -263,6 +263,14 @@ h3{font-size:14px;font-weight:600;margin:0 0 10px}
 .retro{margin-top:24px;padding:16px;border-left:3px solid var(--done);background:var(--sheet);border-radius:0 8px 8px 0}
 
 /* board */
+.files-tab{display:grid;grid-template-columns:minmax(220px,320px) 1fr;gap:16px;align-items:start}
+.files-tab .list{max-height:70vh;overflow:auto;border:1px solid var(--rule);border-radius:8px;padding:6px 0}
+.files-tab .list h4{margin:10px 12px 4px;font-size:12.5px;color:var(--ink-3);font-weight:600}
+.files-tab .list button{display:block;width:100%;text-align:left;border:0;background:none;padding:3px 12px;font-family:var(--mono);font-size:12.5px;cursor:pointer;overflow-wrap:anywhere}
+.files-tab .list button:hover,.files-tab .list button.on{background:var(--sunk)}
+.files-tab .list b{display:inline-block;width:14px;color:var(--ink-3);font-weight:600}
+.files-tab .view pre{margin:0;max-height:70vh;overflow:auto;background:var(--sunk);border-radius:8px;padding:12px;font-family:var(--mono);font-size:12.5px;white-space:pre-wrap;overflow-wrap:anywhere}
+@media (max-width:860px){.files-tab{grid-template-columns:1fr}}
 .kanban{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(220px,1fr);gap:14px;overflow-x:auto;padding-bottom:12px}
 .col h4{margin:0 0 8px;font-size:13px;font-weight:600;display:flex;gap:8px;align-items:center}
 .col h4 .c{color:var(--ink-3);font-weight:400}
@@ -634,7 +642,10 @@ function renderRun(){
   const page = $("#page");
   // A poll that changed nothing the reader can see re-renders nothing: the refresh used to rebuild the
   // page every four seconds, collapsing every open panel and resetting the scroll position.
-  const key = viewKey(v);
+  // The Files tab's own state (a folder listed, a file opened) is part of what the reader sees: left out,
+  // a loaded folder never drew and the tab sat on "Loading the run's files…".
+  const key = viewKey(v) + (TAB==="files" ? "|files:" + [FILES.run, FILES.at, FILES.dir, FILES.folder?FILES.folder.dir+":"+(FILES.folder.entries||[]).length:"",
+    FILES.open, FILES.file?(FILES.file.path||"")+":"+((FILES.file.content||"").length):""].join("|") : "");
   if(page.dataset.run===CURRENT && page.dataset.tab===TAB && page.dataset.key===key){ tickLive(); return; }
   const openDetails = new Set([...page.querySelectorAll("details[open]")].map(d=>d.querySelector("summary")?.textContent.trim()).filter(Boolean));
   const openClamps = new Set([...page.querySelectorAll(".open")].map(e=>e.textContent.trim().slice(0,120)).filter(Boolean));
@@ -688,7 +699,7 @@ function renderRun(){
     ${renderStrip(v)}
     <div class="tabs" role="tablist">
       ${tab("activity","Activity", (v.live?.running||[]).length || null, (v.live?.running||[]).length>0)}${tab("timeline","Timeline", (v.live?.steps||[]).length || null)}${tab("board","Board", (board.items||[]).length)}
-      ${tab("escalations","Escalations", escs.length, escs.length>0)}${tab("constraints","Constraints", cons.length)}${tab("learnings","Lessons", (board.lessons||[]).length)}
+      ${tab("escalations","Escalations", escs.length, escs.length>0)}${tab("constraints","Constraints", cons.length)}${tab("learnings","Lessons", (board.lessons||[]).length)}${tab("files","Files", FILES.run===CURRENT && FILES.overview ? FILES.overview.changedTotal || null : null)}
     </div>
     <div class="panel" role="tabpanel">${renderTab(v)}</div>`;
   if(page.querySelector("#msg")){ page.querySelector("#msg").value = keepComposer; if(focusMsg) page.querySelector("#msg").focus(); }
@@ -887,6 +898,35 @@ function renderTab(v){
     }).join("");
     return `<p class="dim" style="margin-top:0">Every step of this run and its teams, in start order: when it began, how long it took, and what is running now (the agents are marked). Hover a row for the step's internal name.</p><div class="steps">${rows}</div>`;
   }
+  if(TAB==="files"){
+    if(FILES.run!==CURRENT){ FILES = {run: CURRENT, overview: null, dir: "", folder: null, open: "", file: null, at: 0}; }
+    const live = runState(v.run)[0]==="running";
+    if(!FILES.overview || (live && Date.now()-FILES.at > 15000)) loadFiles();
+    const O = FILES.overview;
+    if(!O) return `<div class="empty">Loading the run's files…</div>`;
+    if(!O.source) return `<div class="empty">${esc(O.note||"No files to show for this run yet.")}</div>`;
+    const q = p => esc(p).replace(/'/g,"&#39;");
+    const fileBtn = (p, mark, label) => `<button type="button" class="${FILES.open===p?"on":""}" onclick="openFile('${q(p)}')">${mark?`<b>${esc(mark)}</b>`:"<b></b>"}${esc(label||p)}</button>`;
+    const arts = O.artifacts||[], byStatus = O.changedByStatus||{};
+    const totals = [["A","added"],["M","modified"],["D","deleted"],["R","renamed"]].filter(([k])=>byStatus[k]).map(([k,w])=>`${byStatus[k]} ${w}`).join(", ");
+    const F = FILES.folder;
+    const crumbs = [`<a href="javascript:void(0)" onclick="openDir('')">${esc((O.ref||"").slice(0,8) || "root")}</a>`].concat(
+      FILES.dir ? FILES.dir.split("/").map((part, n, all) => `<a href="javascript:void(0)" onclick="openDir('${q(all.slice(0,n+1).join("/"))}')">${esc(part)}</a>`) : []).join(" / ");
+    const browse = !F ? `<div class="dim" style="padding:2px 12px;font-size:12.5px">Loading…</div>`
+      : (F.entries||[]).map(e => e.type==="dir"
+          ? `<button type="button" onclick="openDir('${q(e.path)}')"><b>${esc(e.changed||"")}</b>📁 ${esc(e.name)}/</button>`
+          : e.deleted ? `<button type="button" disabled style="opacity:.6;text-decoration:line-through"><b>D</b>${esc(e.name)}</button>`
+          : fileBtn(e.path, e.changed, e.name)).join("") || `<div class="dim" style="padding:2px 12px;font-size:12.5px">empty folder</div>`;
+    const view = FILES.file ? (FILES.file.error ? `<div class="empty">${esc(FILES.file.error)}</div>`
+        : FILES.file.binary ? `<div class="empty">${esc(FILES.file.path)} is a binary file (${esc(String(FILES.file.bytes))} bytes).</div>`
+        : `<div class="dim" style="margin-bottom:6px"><span class="mono">${esc(FILES.file.path)}</span>${FILES.file.truncated?" (first 512 KB)":""}</div><pre>${esc(FILES.file.content||"")}</pre>`)
+      : `<div class="empty">Pick a file. The design documents are listed first; browse the folders below them.</div>`;
+    return `<p class="dim" style="margin-top:0">Reading from ${esc(O.note||O.source)}.${live?" Refreshes while the run works.":""} This run: ${totals||"no changes"}. Marks: <b>A</b> added, <b>M</b> modified, <b>D</b> deleted, <b>•</b> a folder with changes.</p>
+      <div class="files-tab"><div class="list">
+        <h4>Design &amp; artifacts (${arts.length})</h4>${arts.length?arts.map(p=>fileBtn(p,"")).join(""):`<div class="dim" style="padding:2px 12px;font-size:12.5px">none</div>`}
+        <h4>Browse</h4><div class="dim mono" style="padding:0 12px 6px;font-size:12px;overflow-wrap:anywhere">${crumbs}</div>${browse}
+      </div><div class="view">${view}</div></div>`;
+  }
   if(TAB==="board"){
     const items = board.items||[];
     if(!items.length) return `<div class="empty">The board fills in once the plan is cut into work items.</div>`;
@@ -901,7 +941,7 @@ function renderTab(v){
       <div class="col"><h4><i style="background:var(--${{in_progress:"working",review:"review",reopened:"reopened",ready:"queued",backlog:"queued",blocked:"blocked",done:"done"}[s]})"></i>${label}<span class="c">${(by[s]||[]).length}</span></h4>
         ${(by[s]||[]).map(it=>`<button class="card" type="button" onclick="openItem('${esc(it.id)}')"><div class="id">${esc(it.id)}</div>
           <div class="d">${esc(it.title||it.description||"")}</div>
-          <div class="f">${it.deliverable==="docs"?"<span>documents</span>":""}${it.attempt?`<span>attempt ${it.attempt+1}</span>`:""}${it.rung!=null?`<span title="${esc(it.rungReason||"")}">rung ${esc(String(it.rung))}</span>`:""}${(it.files||[]).length?`<span>${it.files.length} file${it.files.length>1?"s":""}</span>`:""}</div></button>`).join("")}
+          <div class="f">${it.deliverable==="docs"?"<span>documents</span>":""}${it.attempt?`<span>attempt ${it.attempt+1}</span>`:""}${it.rung!=null?`<span title="${esc(it.rungReason||"")}">rung ${esc(String(it.rung))}</span>`:""}${(it.files||[]).length?`<span>${it.files.length} file${it.files.length>1?"s":""}</span>`:""}${(it.dependsOn||[]).length?`<span title="${esc(it.dependsOn.join(", "))}">waits for ${esc(it.dependsOn.join(", "))}</span>`:""}</div>${["backlog","blocked","reopened"].includes(it.state)&&it.reason?`<div class="d faint" style="font-size:12.5px">${esc(it.reason)}</div>`:""}</button>`).join("")}
       </div>`).join("")}</div>`;
   }
   if(TAB==="escalations"){
@@ -1022,6 +1062,28 @@ async function openItem(id){
   renderDrawerState(); await refreshDrawerTrace();
 }
 let DRAWER_ITEM_TRACE = null, DRAWER_TRACE_BUSY = false;
+// The run's files and artifacts (the Files tab), one folder at a time, wherever they live now:
+// the delivered commit, its branch, or the run's checkout (live while it runs).
+let FILES = {run: null, overview: null, dir: "", folder: null, open: "", file: null, at: 0}, FILES_BUSY = false;
+const filesUrl = (run, extra) => `/api/files?run=${encodeURIComponent(run)}${extra||""}`;
+async function loadFiles(){
+  if(FILES_BUSY) return; FILES_BUSY = true; const run = CURRENT, dir = FILES.dir;
+  try{ const r = await api(filesUrl(run));
+       if(FILES.run!==run) return; FILES.overview = r.body||{}; FILES.at = Date.now();
+       if(dir===""){ FILES.folder = r.body; } else { await loadDir(dir, true); }
+       if(TAB==="files") renderRun(); }
+  finally{ FILES_BUSY = false; }
+}
+async function loadDir(dir, quiet){
+  const run = CURRENT; const r = await api(filesUrl(run, `&dir=${encodeURIComponent(dir)}`));
+  if(FILES.run!==run || FILES.dir!==dir) return; FILES.folder = r.body||{entries:[]}; if(!quiet) renderRun();
+}
+function openDir(dir){ FILES.dir = dir; FILES.folder = null; renderRun(); if(dir===""){ FILES.overview = null; loadFiles(); } else loadDir(dir); }
+async function openFile(path){
+  FILES.open = path; FILES.file = null; renderRun(); const run = CURRENT;
+  const r = await api(filesUrl(run, `&path=${encodeURIComponent(path)}`));
+  if(FILES.run!==run || FILES.open!==path) return; FILES.file = r.body||{error:"could not read it"}; renderRun();
+}
 async function refreshDrawerTrace(){
   if(!DRAWER_ITEM || DRAWER_TRACE_BUSY) return;
   const id = DRAWER_ITEM; DRAWER_TRACE_BUSY = true;
@@ -1059,6 +1121,7 @@ function renderDrawerState(){
       ${it.description||it.title ? `<section><div>${esc(it.description||it.title)}</div></section>`:""}
       <section id="drawerLatest">${drawerLatestHtml(it)}</section>
       ${(it.acceptanceCriteria||[]).length ? `<section><h3>Done when</h3><ul style="margin:0;padding-left:18px">${it.acceptanceCriteria.map(c=>`<li>${esc(c)}</li>`).join("")}</ul></section>`:""}
+      ${(it.dependsOn||[]).length ? `<section><h3>Depends on</h3><div>${it.dependsOn.map(d=>`<a href="javascript:void(0)" onclick="openItem('${esc(d)}')">${esc(d)}</a>`).join(", ")}: it starts the moment the last of these is accepted by its review.</div></section>`:""}
       ${(it.files||[]).length ? `<section><h3>Files</h3><div class="files">${it.files.map(esc).join("<br>")}</div></section>`:""}
       ${(it.acceptanceTests||[]).length ? `<section><h3>Acceptance tests</h3><div class="files">${it.acceptanceTests.map(esc).join("<br>")}</div></section>`:""}
       <section class="steer"><h3>Steer this item</h3>
@@ -1329,7 +1392,7 @@ function route(){
   const m = location.hash.match(/^#\/run\/([^/]+)(?:\/([a-z]+))?(?:\/(.+))?$/);
   const next = m ? decodeURIComponent(m[1]) : null;
   if(next!==CURRENT){ CURRENT=next; VIEW=null; closeDrawer(); TAB="activity"; $("#rail").classList.remove("open"); }
-  if(m && m[2] && ["activity","timeline","board","escalations","constraints","learnings"].includes(m[2])) TAB=m[2];
+  if(m && m[2] && ["activity","timeline","board","escalations","constraints","learnings","files"].includes(m[2])) TAB=m[2];
   renderRuns();
   if(CURRENT){ if(!VIEW) $("#page").innerHTML = `<div class="empty">Loading the run…</div>`; loadRun().then(()=>{ if(m && m[3]) openItem(decodeURIComponent(m[3])); }); }
   else { document.title="Conductor Software Factory"; renderHome(); }

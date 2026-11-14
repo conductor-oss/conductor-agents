@@ -98,8 +98,7 @@
       "taskReferenceName": "seed_round",
       "type": "SET_VARIABLE",
       "inputParameters": {
-        "items": "${plan.output.structured.items}",
-        "measurement": "(no measurement yet: this is the first round)"
+        "items": "${plan.output.structured.items}"
       }
     },
     {
@@ -131,8 +130,8 @@
             "modelPolicySha256": "${workflow.input.modelPolicySha256}",
             "modelsConfig": "${workflow.input.modelsConfig}",
             "modelOverrides": "${workflow.input.modelOverrides}",
-            "modelResolution": "${model_policy.output}",
-            "ceilingUsd": "${workflow.input.ceilingUsd}"
+            "ceilingUsd": "${workflow.input.ceilingUsd}",
+            "repoPath": "${workflow.input.repoPath}"
           }
         },
         {
@@ -159,11 +158,19 @@
           "taskReferenceName": "fold",
           "type": "SIMPLE",
           "inputParameters": {
-            "joined": "${work_join.output}",
-            "items": "${workflow.variables.items}",
-            "round": "${rounds.output.iteration}",
             "runId": "${workflow.workflowId}",
-            "repoPath": "${workflow.input.repoPath}"
+            "round": "${rounds.output.iteration}",
+            "repoPath": "${workflow.input.repoPath}",
+            "modelResolution": "${model_policy.output}"
+          }
+        },
+        {
+          "name": "swarm_measure",
+          "taskReferenceName": "measure",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "workdir": "${setup.output.workdir}",
+            "label": "swarm round ${rounds.output.iteration}"
           }
         },
         {
@@ -172,7 +179,7 @@
           "type": "SIMPLE",
           "inputParameters": {
             "worktreePath": "${setup.output.workdir}",
-            "modelRole": "design",
+            "modelRole": "review",
             "sharedTree": true,
             "allowedWriteRoots": [],
             "allowedTools": "${setup.output.allowedTools}",
@@ -194,7 +201,8 @@
               "maxRung": "${setup.output.maxRung}",
               "round": "${rounds.output.iteration}",
               "reports": "${fold.output.reports}",
-              "measurement": "${workflow.variables.measurement}"
+              "measurement": "${measure.output.summary}",
+              "changes": "${measure.output.changes}"
             },
             "schema": "${setup.output.schemas.evaluate}",
             "modelsConfig": "${workflow.input.modelsConfig}",
@@ -202,18 +210,19 @@
             "modelResolution": "${model_policy.output}",
             "promptTemplate": "",
             "promptTemplateSource": "",
-            "modelTier": "${rounds.output.iteration}",
-            "modelTierOrigin": 1,
+            "modelTier": "${fold.output.roundReviewRung}",
             "spendRunId": "${workflow.workflowId}",
             "spendAuthor": "architect"
           }
         },
         {
           "name": "swarm_measure",
-          "taskReferenceName": "measure",
+          "taskReferenceName": "remeasure",
           "type": "SIMPLE",
           "inputParameters": {
-            "workdir": "${setup.output.workdir}"
+            "workdir": "${setup.output.workdir}",
+            "label": "swarm round ${rounds.output.iteration}: architect review",
+            "previous": "${measure.output}"
           }
         },
         {
@@ -222,11 +231,12 @@
           "type": "SIMPLE",
           "inputParameters": {
             "evaluation": "${evaluate.output}",
-            "allGreen": "${measure.output.allGreen}",
+            "allGreen": "${remeasure.output.allGreen}",
             "ceilingUsd": "${workflow.input.ceilingUsd}",
-            "workdir": "${setup.output.workdir}",
+            "runId": "${workflow.workflowId}",
             "round": "${rounds.output.iteration}",
-            "runId": "${workflow.workflowId}"
+            "repoPath": "${workflow.input.repoPath}",
+            "roundReviewRung": "${fold.output.roundReviewRung}"
           }
         },
         {
@@ -237,8 +247,7 @@
             "items": "${decide.output.items}",
             "delivered": "${decide.output.delivered}",
             "assessment": "${decide.output.assessment}",
-            "spentUsd": "${decide.output.spentUsd}",
-            "measurement": "${measure.output.summary}"
+            "spentUsd": "${decide.output.spentUsd}"
           }
         }
       ]

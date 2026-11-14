@@ -27,6 +27,8 @@ ORCHESTRATORS = {
     "cc_program",
 }
 NESTED_BRANCH_CONSUMERS = {
+    # swarm_item owns no branch: it builds one item in its swarm's private clone, which the swarm owns.
+    "swarm_item",
     "campaign_subtask", "code_subtask", "design_docs",
     "merge_remediation", "openspec_artifact_drain", "openspec_generate_artifact",
     # test_cycle owns no branch: it commits its fixes to whatever branch the

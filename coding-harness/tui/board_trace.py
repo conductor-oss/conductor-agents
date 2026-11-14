@@ -18,7 +18,7 @@ if str(_WORKERS) not in sys.path:
 from common import blackboard as bb  # noqa: E402
 
 _KINDS = ("item", "state", "dispatch", "session", "delivery", "review", "directive", "lesson",
-          "exception", "contract_proposal", "contract_event", "contract", "spend")
+          "exception", "contract_proposal", "contract_event", "contract", "spend", "swarm_report")
 
 
 def _about(kind: str, author: str, data: dict, item: str) -> bool:
@@ -40,10 +40,31 @@ def _summary(kind: str, d: dict) -> str:
     if kind == "state":
         return f"{d.get('state')}" + (f" — {d.get('reason')}" if d.get("reason") else "") + f" (by {d.get('by')})"
     if kind == "dispatch":
-        return (f"dispatched {d.get('candidate')} attempt {d.get('attempt')} on {str(d.get('waveBase'))[:12]} "
-                f"(contract rev {d.get('contractRevision')}, prompt {str(d.get('promptSha256'))[:12]}, "
-                f"{len(d.get('lessons') or [])} lessons, {len(d.get('directives') or [])} directives)"
+        # Say only what the record holds: a swarm item's start names its round, rungs and cap; the team
+        # pipeline's names its candidate, base, contract revision and prompt. Fields a record lacks were
+        # printed as "None" ("dispatched None attempt None on None ...", run 649fa3c8).
+        if d.get("candidate") is None and d.get("round") is not None:
+            return (f"started in round {d.get('round')} on rung {d.get('rung')} ({d.get('rungReason') or 'no reason given'})"
+                    + (f"; its reviewer on rung {d.get('reviewRung')} ({d.get('reviewRungReason')})"
+                       if d.get("reviewRung") is not None else "")
+                    + (f"; spend cap ${float(d['capUsd']):.2f} per session" if d.get("capUsd") is not None else ""))
+        parts = [f"dispatched {d.get('candidate') or d.get('item') or ''}".strip()]
+        if d.get("attempt") is not None:
+            parts.append(f"attempt {d.get('attempt')}")
+        if d.get("waveBase"):
+            parts.append(f"on {str(d.get('waveBase'))[:12]}")
+        extra = [x for x in (
+            f"contract rev {d.get('contractRevision')}" if d.get("contractRevision") is not None else "",
+            f"prompt {str(d.get('promptSha256'))[:12]}" if d.get("promptSha256") else "",
+            f"{len(d.get('lessons') or [])} lessons" if "lessons" in d else "",
+            f"{len(d.get('directives') or [])} directives" if "directives" in d else "") if x]
+        return (" ".join(parts) + (f" ({', '.join(extra)})" if extra else "")
                 + (f"; rung {d.get('rung')}: {d.get('rungReason')}" if d.get("rung") is not None else ""))
+    if kind == "swarm_report":
+        return (f"agent: {'done' if d.get('done') else 'not done'}: {d.get('summary') or ''}"
+                + (f" ({len(d.get('files') or [])} files)" if d.get("files") else "")
+                + f"; review {'accepted' if d.get('accepted') else 'did not accept'}"
+                + (f": {d.get('reviewNotes')}" if d.get("reviewNotes") else ""))
     if kind == "session":
         inj = d.get("feedbackInjections") or []
         return (f"session {d.get('candidate')}: delivered={d.get('delivered')} tests={d.get('testsPassed')} "

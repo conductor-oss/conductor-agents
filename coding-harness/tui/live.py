@@ -18,7 +18,7 @@ _CONTROL = {"SWITCH", "JOIN", "SET_VARIABLE", "DECISION", "INLINE", "TERMINATE",
             "DO_WHILE", "START_WORKFLOW", "EXCLUSIVE_JOIN", "EVENT", "WAIT"}
 _RUNNING = {"IN_PROGRESS", "SCHEDULED"}
 _FAILED = {"FAILED", "FAILED_WITH_TERMINAL_ERROR", "TIMED_OUT"}
-_MAX_DEPTH = 4
+_MAX_DEPTH = 10  # a swarm's dependency chain nests one sub-workflow per link
 _MAX_STEPS = 400
 
 # The prompt key a session was dispatched with names its role.
@@ -32,7 +32,7 @@ ROLES = {
     "bug_repro": "reproducer", "local_review": "reviewer", "pr_review": "reviewer", "address_pr": "implementer",
     # The swarm: the architect plans and, after every round, reviews the whole tree; implementers build.
     "swarm_plan": "architect (planning)", "swarm_evaluate": "architect (reviewing the round)",
-    "swarm_work": "implementer",
+    "swarm_work": "implementer", "swarm_review_item": "reviewer (item)",
 }
 # Steps whose reference names say what they are, for the timeline's labels.
 _STEP_LABELS = (
@@ -40,7 +40,8 @@ _STEP_LABELS = (
     ("setup", "preparing the run's clone"), ("seed_round", "starting round 1"), ("dispatch", "dispatching the round"),
     ("work_join", "waiting for the round's agents"), ("fold", "collecting the round"),
     ("measure", "running the checks on the committed tree"), ("decide", "committing and deciding"),
-    ("finish", "handing the branch back"),
+    ("finish", "handing the branch back"), ("prep", "preparing the item"),
+    ("release", "starting what waited on the item"), ("dependents", "dependent items"),
     ("program_plan", "planning"), ("scout_", "scout"), ("contract_fold", "red-proof and fold"),
     ("contract_review", "contract review"), ("rank_build", "forking the rank's teams"),
     ("team_", "team"), ("accept_", "test author"), ("acceptance_", "acceptance tests"),
@@ -138,7 +139,9 @@ def collect(wf: dict, fetch, *, _depth: int = 0, _label_hint: str = "", _item_hi
     run = str(wf.get("workflowId") or "")
     kind = str(wf.get("workflowName") or wf.get("workflowType") or "")
     inp = wf.get("input") if isinstance(wf.get("input"), dict) else {}
-    item_hint = str(inp.get("name") or inp.get("subsystemId") or "") if kind in ("code_subtask", "team_build") else _item_hint
+    item_hint = (str(inp.get("name") or inp.get("subsystemId") or "") if kind in ("code_subtask", "team_build")
+                 else str((inp.get("item") or {}).get("id") or "") if kind == "swarm_item" and isinstance(inp.get("item"), dict)
+                 else _item_hint)
     for t in wf.get("tasks") or []:
         if not isinstance(t, dict) or t.get("taskType") in _CONTROL:
             continue

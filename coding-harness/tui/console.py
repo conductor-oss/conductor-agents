@@ -855,6 +855,22 @@ def handle_get(path: str, query: dict, blackboard_dir: str | None = None,
                                  "target": d.get("target") or "", "text": str(text)[:800]})
         rows.sort(key=lambda r: r["ts"] or 0)
         return _json(200, {"run": run, "posts": rows[-200:]})
+    if path == "/api/files":
+        # A run's files and artifacts, wherever they live now: its delivered commit (on its branch, merged
+        # into master, or only in the repository), else its branch, else its own checkout; live while running.
+        run = (query.get("run") or [""])[0]
+        if not run:
+            return 400, "application/json", b'{"error":"run required"}'
+        import run_files
+        wf = _get_run(run, tasks=True)
+        if not wf:
+            return 404, "application/json", b'{"error":"Conductor does not know this run"}'
+        loc = run_files.locate(wf, _handoff(wf))
+        want = (query.get("path") or [""])[0]
+        folder = (query.get("dir") or [None])[0]
+        body = (run_files.read(loc, want) if want
+                else run_files.listing(loc, folder or "", overview=folder is None))
+        return 200, "application/json", json.dumps(body, default=str).encode("utf-8")
     if path == "/api/trace":
         run = (query.get("run") or [""])[0]
         item = (query.get("item") or [""])[0]
@@ -918,6 +934,9 @@ def make_handler(blackboard_dir: str | None = None):
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
+            # Never serve a stale page or answer: after the console restarts with a new page, a cached copy
+            # kept showing the old Files tab until a hard reload.
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 

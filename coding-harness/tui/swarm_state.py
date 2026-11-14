@@ -75,6 +75,25 @@ def _phase(wf: dict, view: dict) -> str:
         return "final verification (full test suite)"
     if any(r.startswith(("plan", "program_plan", "classify")) for r in running) and not view["items"]:
         return "planning"
+    if (wf.get("workflowName") or wf.get("workflowType")) == "swarm":
+        # The swarm's round, said as what it is doing: its items sit in "review" while the architect
+        # judges them, and a done-count alone read "building (0/3 done)" through the whole review.
+        rnd = next((r.rsplit("__", 1)[1] for r in running if "__" in r), "")
+        label = f"round {rnd}" if rnd.isdigit() else "this round"
+        waiting = sum(1 for it in view["items"] if it.get("state") == "review")
+        if any(r.startswith("evaluate") for r in running):
+            return f"reviewing {label} ({waiting} item{'s' if waiting != 1 else ''} awaiting the architect)"
+        if any(r.startswith(("measure", "remeasure")) for r in running):
+            return f"measuring {label}: committing the tree and running the checks"
+        if any(r.startswith(("memory_write", "finish")) for r in running):
+            return "handing the branch back"
+        states = [it.get("state") for it in view["items"]]
+        parts = [f"{n} {label}" for label, n in (
+            ("working", states.count("in_progress")), ("waiting on dependencies", states.count("backlog")),
+            ("reviewed", states.count("review")), ("held", states.count("blocked")),
+            ("reopened", states.count("reopened")), ("done", states.count("done"))) if n]
+        if parts:
+            return f"building {label}: " + ", ".join(parts)
     r = view["rollup"]
     if not r.get("total"):
         return "starting" if status else "unknown (no board yet)"
