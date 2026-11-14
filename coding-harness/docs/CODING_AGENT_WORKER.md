@@ -249,6 +249,8 @@ never raises for an agent that merely didn't finish):
 | `filesChanged` | string[] | Files created/modified in the worktree (git status diff before→after). |
 | `result` | string | The agent's final text (capped), when not using a schema. |
 | `structured` | object \| null | Validated JSON when `schema` was passed. |
+| `structuredAttempts` | array | The last three StructuredOutput payloads the agent submitted, whole (the turn log caps each command at 300 chars), including the ones the CLI's validator rejected. |
+| `structuredSalvaged` | boolean | `true` when the session ended `error_max_structured_output_retries` and the worker salvaged `structured` from a rejected payload instead (`common/structured_output.py`: the payload emitted as tagged text inside one string, or raw input the CLI could not parse — untangled and validated against `schema`). The task then reports `status: success`. |
 | `sessionId` | string | Session id for resume (present on success **and** error). |
 | `turns` | object[] | Per-turn trace: one entry per assistant turn with `turn` (1-based), `commands` (the tool calls run that turn, e.g. `"$ go run main.go"`, `"Write main.go"`), `tools` (raw tool names), `text` (short prose slice), and `tokens`. |
 | `numTurns` | int | Scalar count of tool-use round trips the agent took. |
@@ -553,7 +555,7 @@ CONDUCTOR_SERVER_URL=http://localhost:8080/api WORKER_MODULES=coding_agent,gitop
 
 conductor task create workers/workflows/taskdefs/prepare_repo.json  # new taskdef
 conductor workflow create workers/workflows/code_subtask.json       # register sub-workflow FIRST
-conductor workflow create workers/workflows/code_parallel.json      # (the stub pins version:1)
+conductor workflow create workers/workflows/code_parallel.json
 
 conductor workflow start -w code_parallel -i '{
   "repoPath": "/path/to/repo",
@@ -573,7 +575,7 @@ progress (§ Progress reporting) is visible per branch, and so is the planner's 
   where the worker runs.
 - **Worker gate.** The worker must poll `gitops` (for `prepare_repo`/`create_branch`/
   `worktree_add`/`commit`/`merge_worktrees`) in addition to `coding_agent`, or those steps hang.
-- **Register `code_subtask` before `code_parallel`** — the fork stub pins `version:1`.
+- **Register `code_subtask` before `code_parallel`** — the fork stub starts it by name.
 - **Git prep + concurrency are handled.** `prepare_repo` guarantees an inited repo with an
   identity and a HEAD commit; `worktree_add`/`commit` serialize on the shared git dir
   (`fcntl.flock` in `common/git.py`) with a git-lock retry, so the simultaneous worktree burst

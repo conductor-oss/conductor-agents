@@ -46,6 +46,12 @@ class Field:
         return self.default is None
 
     @property
+    def must_fill(self) -> bool:
+        """An interactive start must supply a non-blank value: a required field, or an explicit text
+        field whose server-side default is only a blank placeholder (sdlc_intake's ``request``)."""
+        return self.required or (self.explicit and self.kind in ("text", "multiline"))
+
+    @property
     def form_default(self) -> object:
         """The value the launcher initializes the widget to (tui_default if set)."""
         return self.tui_default if self.tui_default is not None else self.default
@@ -164,12 +170,13 @@ AT_LEAST_ONE_OF_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("repo", "repoPath", "workspacePath"),
         ("instruction", "issueNumber"),
     ),
+    # A program is described in prose or given as an explicit subsystem list.
+    "cc_program": (("description", "subsystems"),),
 }
 
 
 # --------------------------------------------------------------------------- shared field sets
 
-_BACKENDS = ("claude", "codex", "gemini")
 FEATURE_CAMPAIGN_HINT = (
     "Use feature_campaign instead when tasks depend on or overlap each other, the change "
     "needs migrations or rollout planning, implementation will take multiple waves, or "
@@ -318,6 +325,56 @@ def _r_code_parallel(o: dict) -> ResultCard:
         ("code prompt", _prompt_source(o.get("codePromptTemplates"))),
     ]
     return ResultCard("Change coded & merged", rows, None)
+
+
+def _r_sdlc_intake(o: dict) -> ResultCard:
+    rows = [
+        ("kind", str(o.get("kind") or "?")),
+        ("route", str(o.get("route") or "?")),
+        ("mode", str(o.get("mode") or "?")),
+        ("confidence", str(o.get("confidence") if o.get("confidence") is not None else "?")),
+        ("summary", str(o.get("summary") or "")[:120]),
+    ]
+    return ResultCard(f"Routed to {o.get('route') or '?'}", rows, None)
+
+
+def _r_team_build(o: dict) -> ResultCard:
+    handoff = o.get("sourceHandoff") or {}
+    rows = [
+        ("verdict", str(o.get("verdict") or "?")),
+        ("branch", str(handoff.get("branch") or o.get("branch") or "missing")),
+        ("items", f"{o.get('doneCount', 0)}/{o.get('total', 0)} done, {o.get('blockedCount', 0)} blocked"),
+        ("tests", "green" if o.get("testsPassed") else str(o.get("testCycleState") or "not green")),
+        ("exceptions", str(o.get("openExceptions") or 0)),
+        ("spend", f"${float(o.get('spendUsd') or 0):.2f}"),
+    ]
+    return ResultCard("Team delivered" if o.get("delivered") else "Team build incomplete", rows, None)
+
+
+def _r_swarm(o: dict) -> ResultCard:
+    handoff = o.get("sourceHandoff") or {}
+    rows = [
+        ("verdict", str(o.get("verdict") or "?")),
+        ("branch", str(handoff.get("branch") or o.get("branch") or "missing")),
+        ("rounds", str(o.get("rounds") or "?")),
+        ("spend", f"${float(o.get('spendUsd') or 0):.2f}"),
+    ]
+    return ResultCard("Delivered" if o.get("delivered") is True or o.get("verdict") == "DELIVERED"
+                      else "Incomplete", rows, None)
+
+
+def _r_cc_program(o: dict) -> ResultCard:
+    handoff = o.get("sourceHandoff") or {}
+    kids = o.get("children") or []
+    rows = [
+        ("verdict", str(o.get("verdict") or "?")),
+        ("branch", str(handoff.get("branch") or o.get("branch") or "missing")),
+        ("child teams", str(len(kids) if isinstance(kids, list) else kids)),
+        ("ranks", str(len(o.get("ranks") or []))),
+        ("tests", "green" if o.get("testsPassed") else str(o.get("testCycleState") or "not green")),
+        ("spend", f"${float(o.get('spendUsd') or 0):.2f}"),
+    ]
+    return ResultCard("Program delivered" if o.get("delivered") else "Program incomplete", rows, None)
 
 
 def _r_feature_campaign(o: dict) -> ResultCard:
@@ -522,6 +579,70 @@ CATALOG: dict[str, WorkflowSpec] = {
         target=_t_pr,
         result=_r_address_pr,
     ),
+    "sdlc_intake": WorkflowSpec(
+        name="sdlc_intake",
+        action="Build with the agent swarm",
+        blurb="One front door: classify the request, gate the decomposition, then route it to a single "
+              "agent, parallel agents, or a collaborating team on one shared branch (board + reviews).",
+        fields=(
+            Field("repoPath", "Repo path", "text", help="local directory"),
+            Field("request", "Request", "multiline", "", explicit=True, help="what to build or fix"),
+            Field("forceTeam", "Always use the team swarm", "bool", False,
+                  help="skip auto-routing and run the collaborating team (team_build) even for small requests"),
+            Field("inPlace", "Integrate into this checkout", "bool", False),
+            Field("ceilingUsd", "Spend ceiling $", "float", 40,
+                  help="hard budget for the whole run, every role included"),
+            Field("maxWidth", "Max parallel agents", "int", 10),
+            Field("bestOf", "Best-of-N per item", "int", 1, advanced=True),
+            Field("maxReplan", "Decomposition re-plans", "int", 2, advanced=True),
+            Field("forceSingle", "Always use one agent", "bool", False, advanced=True),
+            Field("confidenceThreshold", "Clarify below confidence", "float", 0.5, advanced=True),
+            Field("codeModel", "Code model", "text", "", advanced=True),
+            _MODEL_PROFILE,
+            *_caps(250, 10.0),
+        ),
+        target=_t_local,
+        result=_r_sdlc_intake,
+    ),
+    "swarm": WorkflowSpec(
+        name="swarm",
+        action="Build with a swarm",
+        blurb="An architect agent designs, writes the acceptance checks and splits the work; a team of "
+              "agents builds it in parallel in one shared clone and works out conflicts themselves; the "
+              "architect judges each round until the checks pass. The result is a branch in your repo.",
+        fields=(
+            Field("repoPath", "Repo path", "text", help="local directory"),
+            Field("description", "What to build", "multiline", help="the whole request"),
+            Field("ceilingUsd", "Spend ceiling $", "float", 60),
+            Field("maxWidth", "Max parallel agents", "int", 10, advanced=True),
+            Field("maxRounds", "Max rounds", "int", 8, advanced=True),
+            _MODEL_PROFILE,
+        ),
+        target=_t_local,
+        result=_r_swarm,
+    ),
+    "cc_program": WorkflowSpec(
+        name="cc_program",
+        action="Build a program with teams of teams",
+        blurb="Plan a multi-subsystem build, gate the cut, then run one agent team per subsystem in "
+              "dependency ranks on a shared program branch, under one program budget.",
+        fields=(
+            Field("repoPath", "Repo path", "text", help="local directory"),
+            Field("description", "Program description", "multiline", "", help="the whole thing to build"),
+            Field("inPlace", "Integrate into this checkout", "bool", False),
+            Field("ceilingUsd", "Program spend ceiling $", "float", 60),
+            Field("teamSize", "Agents per team (0 = the Architect decides)", "int", 0),
+            Field("maxWidth", "Max parallel agents per team", "int", 10, advanced=True),
+            Field("maxDepth", "Max nesting depth", "int", 2, advanced=True),
+            Field("maxWaves", "Max waves per team", "int", 16, advanced=True),
+            Field("maxReplan", "Decomposition re-plans", "int", 2, advanced=True),
+            Field("codeModel", "Code model", "text", "", advanced=True),
+            _MODEL_PROFILE,
+            *_caps(250, 10.0),
+        ),
+        target=_t_local,
+        result=_r_cc_program,
+    ),
     "code_parallel": WorkflowSpec(
         name="code_parallel",
         action="Code a change in a local repo",
@@ -530,7 +651,7 @@ CATALOG: dict[str, WorkflowSpec] = {
             Field("repoPath", "Repo path", "text", help="local directory"),
             Field("instruction", "Instruction", "multiline", help="the coding goal"),
             Field("inPlace", "Integrate into this checkout", "bool", False,
-                  help="create a new branch in this checkout, include its current changes, and merge there; no push or PR"),
+                  help="create a new branch in this checkout, include its current changes, and merge there"),
             Field("contextPaths", "Context files or directories", "multiline", [], advanced=True,
                   help="live read-only absolute paths; contents are not attached to prompts"),
             Field("changeBranch", "New branch", "text", "",
@@ -551,7 +672,7 @@ CATALOG: dict[str, WorkflowSpec] = {
     "feature_campaign": WorkflowSpec(
         name="feature_campaign",
         action="Run an interactive feature campaign",
-        blurb="Design, approve a dependency DAG, implement in resumable waves, commit a local branch, and optionally open a PR.",
+        blurb="Design, approve a dependency DAG, implement in resumable waves, commit a local branch, then approve a PR draft before it is pushed and opened.",
         fields=(
             Field("repo", "Repo (URL or owner/name)", "text", "",
                   help="clone a fresh temp workspace instead of an existing repoPath checkout"),
@@ -570,14 +691,12 @@ CATALOG: dict[str, WorkflowSpec] = {
                   help="retain the resumable campaign workspace"),
             Field("changeBranch", "New branch", "text", "",
                   help="blank derives a unique feature-campaign/<workflow-id> branch"),
-            Field("createPr", "Create pull request", "bool", False,
-                  help="push the verified branch and open a PR only when enabled"),
-            Field("requirePrApproval", "Require human PR approval", "bool", False, advanced=True,
-                  help="gate the PR draft behind a human approval/revision loop before it's pushed"),
-            Field("prBase", "PR base branch", "text", "main", advanced=True),
+            Field("prBase", "PR base branch", "text", "main", advanced=True,
+                  help="every run pauses on a PR draft for approval; nothing is pushed until it is approved"),
             Field("prTitle", "PR title", "text", "", advanced=True,
-                  help="blank derives the title/body from commits"),
-            Field("prBody", "PR body", "multiline", "", advanced=True),
+                  help="blank falls back to the issue title, then the instruction's first line"),
+            Field("prBody", "PR body", "multiline", "", advanced=True,
+                  help="blank falls back to the effective instruction (issue title+body for an issue-driven run)"),
             Field("prDraft", "Draft PR", "bool", False, advanced=True),
             _MODEL_PROFILE,
             Field("designDir", "Design docs", "text", "docs/design", advanced=True),
@@ -639,11 +758,11 @@ CATALOG: dict[str, WorkflowSpec] = {
 }
 
 # Launcher order (github_demo intentionally excluded — plumbing smoke test, UX decision 4).
-LAUNCHABLE = ["local_review", "pr_review", "issue_to_pr", "address_pr", "pr_review_sweep", "pr_address_sweep", "issue_resolution_sweep", "openspec_development", "feature_campaign", "code_parallel"]
+LAUNCHABLE = ["local_review", "pr_review", "issue_to_pr", "address_pr", "pr_review_sweep", "pr_address_sweep", "issue_resolution_sweep", "openspec_development", "feature_campaign", "code_parallel", "swarm"]
 
 # Workflow types the dashboard lists (all user-facing runs, incl. github_demo which still
 # appears once run via the CLI).
-DASHBOARD_TYPES = ["local_review", "pr_review", "issue_to_pr", "address_pr", "pr_review_sweep", "pr_address_sweep", "issue_resolution_sweep", "automation_dispatch", "automation_reset", "openspec_development", "feature_campaign", "code_parallel", "github_demo"]
+DASHBOARD_TYPES = ["local_review", "pr_review", "issue_to_pr", "address_pr", "pr_review_sweep", "pr_address_sweep", "issue_resolution_sweep", "automation_dispatch", "automation_reset", "openspec_development", "feature_campaign", "code_parallel", "sdlc_intake", "team_build", "cc_program", "swarm", "github_demo"]
 
 
 def target_for(workflow: str, input_data: dict) -> str:
@@ -659,11 +778,17 @@ def target_for(workflow: str, input_data: dict) -> str:
         or i.get("repoUrl") or "—"
 
 
+# Result cards for runs the dashboard lists but the launcher does not start directly (team_build is
+# reached through sdlc_intake's team route or as a cc_program child team).
+_RESULT_ONLY = {"team_build": _r_team_build}
+
+
 def result_for(workflow: str, output_data: dict) -> ResultCard | None:
     spec = CATALOG.get(workflow)
-    if not spec:
+    render = spec.result if spec else _RESULT_ONLY.get(workflow)
+    if not render:
         return None
     try:
-        return spec.result(output_data or {})
+        return render(output_data or {})
     except Exception:  # noqa: BLE001
         return None

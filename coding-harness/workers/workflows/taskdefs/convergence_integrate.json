@@ -1,0 +1,50 @@
+{
+  "name": "convergence_integrate",
+  "description": "Convergence spike (roadmap H1): finalize one wave — rebase its forks onto the moving shared branch head (NO big-bang merge), RELEASE the wave's file ownership so blocked items can dispatch next wave, and RECORD each agent's real spend on the blackboard so budget_gate_check can gate the next wave. A fork that edited the frozen contract becomes a controlled event (reopened, not merged); a rebase conflict reopens its item with the precise mechanism.",
+  "retryCount": 0,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "convergence_integrate_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "sharedRepo": {"type": "string", "description": "The shared run worktree whose branch head advances as forks integrate."},
+        "sharedBranch": {"type": "string", "description": "The shared branch name being advanced by fast-forward only."},
+        "correlationId": {"type": "string", "description": "Run id; reopen/controlled-event facts are posted here."},
+        "contractPaths": {"type": ["array", "string"], "description": "Frozen contract paths; a fork touching these is a controlled event."},
+        "groupIds": {"type": "string", "description": "Comma-separated fork ids dispatched this wave (from convergence_build_forks)."},
+        "dispatched": {"type": ["array", "string"], "description": "This wave's dispatched items [{id, description, files, attempt}]; their ownership is released after integration and failed ones may be re-queued."},
+        "remaining": {"type": ["array", "string"], "description": "Items build_forks did not dispatch this wave (blocked by a live owner); carried into nextPending unchanged."},
+        "maxAttempts": {"type": ["integer", "string"], "description": "Per-item attempt cap: a retryable failure (empty_delivery/rebase_conflict) is re-queued until attempts reach this, then becomes a terminal reopen."},
+        "joined": {"type": "object", "description": "The wave's FORK_JOIN_DYNAMIC output; per-fork costUsd/tokenUsed/model are recorded as spend facts."}
+      },
+      "required": ["sharedRepo", "sharedBranch", "groupIds"]
+    }
+  },
+  "outputSchema": {
+    "name": "convergence_integrate_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "integrated": {"type": "array", "description": "Forks that delivered a commit, rebased cleanly, and advanced the shared head, in order."},
+        "reopened": {"type": "array", "description": "TERMINAL failures only (frozen-contract edit, or a retryable failure that exhausted its attempt budget), each naming the precise mechanism."},
+        "retry": {"type": "array", "description": "Retryable failures (empty_delivery/rebase_conflict) under the attempt cap, re-queued with attempt+1."},
+        "nextPending": {"type": "array", "description": "The next wave's pending set: this wave's undispatched 'remaining' plus the re-queued 'retry' items."},
+        "controlledEvents": {"type": "array", "description": "Subset of reopened that edited the frozen contract."},
+        "big_bang_merge": {"type": "boolean", "description": "Always false — the integrator never does a big-bang merge; this is the H1 invariant under test."},
+        "final_head": {"type": "string", "description": "The shared branch head after continuous integration."},
+        "releasedFiles": {"type": "integer", "description": "Count of file-ownership releases emitted for this wave's dispatched items."},
+        "spendRecorded": {"type": "integer", "description": "Count of per-fork spend facts recorded on the blackboard for this wave."}
+      },
+      "required": ["integrated", "reopened", "big_bang_merge", "final_head"]
+    }
+  }
+}

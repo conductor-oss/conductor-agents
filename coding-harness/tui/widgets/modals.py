@@ -16,7 +16,6 @@ from textual.widgets import Button, Input, Label, RichLog, Static, Switch, TextA
 from ..gates import gate_contract
 
 
-
 class LogsModal(ModalScreen):
     BINDINGS = [Binding("escape,q,l", "dismiss", "close")]
 
@@ -169,46 +168,6 @@ class FilePreviewModal(ModalScreen):
             self._on_open(self._path)
 
     def action_dismiss(self) -> None:
-        self.app.pop_screen()
-
-
-class TemplatePickerModal(ModalScreen):
-    """Pick a saved prompt template. Calls on_pick(entry) with a templates.TemplateEntry."""
-
-    BINDINGS = [Binding("escape", "cancel", "cancel")]
-
-    def __init__(self, entries, on_pick=None):
-        super().__init__()
-        self._entries = entries
-        self._on_pick = on_pick
-
-    def compose(self) -> ComposeResult:
-        from textual.containers import Vertical
-        from textual.widgets import ListView
-        with Vertical(id="box"):
-            yield Label("Load a prompt template — enter to load · esc cancel")
-            yield ListView(id="picker_list")
-
-    def on_mount(self) -> None:
-        from textual.widgets import ListItem, ListView
-        lv = self.query_one("#picker_list", ListView)
-        for e in self._entries:
-            scope = f" · {', '.join(e.workflows)}" if e.workflows else " · all"
-            desc = f"\n  [dim]{e.description}[/dim]" if e.description else ""
-            item = ListItem(Label(f"{e.name}[dim]{scope}[/dim]{desc}"))
-            item.data = e
-            lv.append(item)
-        if self._entries:
-            lv.index = 0
-        lv.focus()
-
-    def on_list_view_selected(self, event) -> None:
-        entry = getattr(event.item, "data", None)
-        self.app.pop_screen()
-        if entry is not None and self._on_pick:
-            self._on_pick(entry)
-
-    def action_cancel(self) -> None:
         self.app.pop_screen()
 
 

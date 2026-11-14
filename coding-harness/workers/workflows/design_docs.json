@@ -301,7 +301,12 @@
                 "modelPolicySha256": "${workflow.input.modelPolicySha256}",
                 "modelsConfig": "${workflow.input.modelsConfig}",
                 "modelOverrides": "${workflow.input.modelOverrides}",
-                "modelResolution": "${model_policy.output}"
+                "modelResolution": "${model_policy.output}",
+                "promptContext": {
+                  "designDir": "${workflow.input.designDir}",
+                  "instruction": "${workflow.input.instruction}",
+                  "designResult": "${design.output.result}"
+                }
               }
             },
             {

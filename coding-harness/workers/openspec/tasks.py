@@ -15,7 +15,6 @@ import re
 import shutil
 import socket
 import tarfile
-import tempfile
 import urllib.parse
 import urllib.request
 import zipfile

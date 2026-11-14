@@ -8,8 +8,6 @@ is inspectable/retryable/resumable the same way git_clone or worktree_add are.
 
 from __future__ import annotations
 
-import json
-import tempfile
 from pathlib import Path
 
 from conductor.client.worker.worker_task import worker_task
@@ -18,8 +16,6 @@ from common import (check_execution, openspec_artifact_drain, openspec_cli, open
                     openspec_generate_artifact, plan_validation, polling, pr_description)
 from common.results import fail, ok
 from common.tasks_md import TasksMdError, parse_tasks_md
-
-_CHECK_OUTPUT_TAIL = 8000
 
 
 def _bool(value: object, default: bool = False) -> bool:
@@ -123,44 +119,6 @@ def openspec_read_proposal(task):
         return fail(task, "openspec_read_proposal", e)
 
 
-@worker_task(task_definition_name="openspec_validate_change")
-def openspec_validate_change(task):
-    """Run `openspec validate <id> --strict` for real without raising on
-    failure — the deterministic spec-validity check the verification loop folds
-    into its pass/fail gate, so a broken proposal/design/specs/tasks.md gets
-    fixed by the loop's fixup pass instead of crashing later when `archive_change`
-    (openspec_finalize) runs the same validate immediately before archiving."""
-    i = task.input_data or {}
-    repo_path = i.get("repoPath") or ""
-    change_id = i.get("changeId") or ""
-    try:
-        if "skip" in i and str(i.get("skip") or "").strip().lower() not in {"true", "1", "yes", "on"}:
-            return ok(task, {"valid": True, "skipped": True, "exitCode": 0, "issues": [], "log": ""}, [
-                "[openspec_validate_change] skipped: generic document plan"
-            ])
-        if not repo_path or not change_id:
-            raise ValueError("repoPath and changeId are required")
-        argv = [openspec_cli.BIN, "validate", change_id, "--type", "change",
-                "--strict", "--no-interactive", "--json"]
-        with tempfile.TemporaryDirectory(prefix="conductor-openspec-validate-") as state_dir:
-            env = check_execution.isolated_environment(state_dir)
-            proc = check_execution.execute(argv, cwd=repo_path, env=env)
-        try:
-            data = json.loads(proc.stdout) if proc.stdout.strip() else {}
-        except json.JSONDecodeError:
-            data = {}
-        items = data.get("items") or []
-        issues = (items[0].get("issues") if items else None) or []
-        log = ((proc.stdout or "") + (proc.stderr or ""))[-_CHECK_OUTPUT_TAIL:]
-        valid = proc.exit_code == 0
-        return ok(task, {"valid": valid, "exitCode": proc.exit_code, "issues": issues, "log": log}, [
-            f"[openspec_validate_change] {change_id} -> {'valid' if valid else 'INVALID'} "
-            f"(exit {proc.exit_code}, {len(issues)} issue(s))"
-        ])
-    except Exception as e:  # noqa: BLE001
-        return fail(task, "openspec_validate_change", e)
-
-
 @worker_task(task_definition_name="execution_runtime_health")
 def execution_runtime_health(task):
     """Live proof that the broad execution worker has every supported runtime."""
@@ -230,6 +188,7 @@ def openspec_usage(task):
 @worker_task(task_definition_name="openspec_build_prompt")
 def openspec_build_prompt(task):
     i = task.input_data or {}
-    prompt = openspec_generate_artifact.build_prompt(
-        instr=i.get("instr"), goal=i.get("goal"), feedback=i.get("feedback"))
-    return ok(task, {"prompt": prompt}, ["[openspec_build_prompt] composed"])
+    args = {"instr": i.get("instr"), "goal": i.get("goal"), "feedback": i.get("feedback")}
+    return ok(task, {"prompt": openspec_generate_artifact.build_prompt(**args),
+                     "promptContext": openspec_generate_artifact.prompt_context(**args)},
+              ["[openspec_build_prompt] composed"])

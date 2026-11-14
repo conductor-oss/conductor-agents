@@ -23,6 +23,20 @@
           "type": "string",
           "default": "conductor-code change",
           "description": "Commit message; defaults to 'conductor-code change' when omitted."
+        },
+        "allowedWriteRoots": {
+          "type": [
+            "array",
+            "string"
+          ],
+          "description": "The item's write roots: a changed path outside them (and outside acceptanceTests) is left unstaged and reported as outsideScope, never committed."
+        },
+        "acceptanceTests": {
+          "type": [
+            "array",
+            "string"
+          ],
+          "description": "The item's frozen acceptance tests, writable so a wrong assertion can be amended."
         }
       },
       "required": [
@@ -61,6 +75,13 @@
         "reason": {
           "type": "string",
           "description": "Explanation for a no-op commit; present only when noOp is true."
+        },
+        "outsideScope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Changed paths outside the write roots that were not staged (the Lead's scope-widening evidence)."
         }
       },
       "required": [

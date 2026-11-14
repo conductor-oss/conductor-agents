@@ -108,6 +108,10 @@
         "modelOverrides": {
           "type": "object",
           "description": "Per-agent model overrides, passed through unchanged to each fork."
+        },
+        "singleSubtask": {
+          "type": "boolean",
+          "description": "Fold the plan into one work item."
         }
       }
     }

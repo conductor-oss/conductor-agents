@@ -1,0 +1,133 @@
+{
+  "name": "budget_gate_check",
+  "description": "Aggregate per-run spend gate (roadmap H5): folds the blackboard's spend facts, decides ok/warn/halt against a ceiling, and enforces the not-startable rule for swarm-mode runs. Spend limit only, never a wall-clock deadline.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "budget_gate_check_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "correlationId": {
+          "type": "string",
+          "description": "Run/campaign id whose spend facts are folded from the shared blackboard."
+        },
+        "ceilingUsd": {
+          "type": [
+            "number",
+            "string",
+            "null"
+          ],
+          "description": "Aggregate USD ceiling for the whole run. Blank/absent/<=0 means no enforceable ceiling (state 'unbounded'); a swarm-mode run with no ceiling is not startable."
+        },
+        "warnFraction": {
+          "type": [
+            "number",
+            "string",
+            "null"
+          ],
+          "description": "Fraction of the ceiling at which the gate reports 'warn' (default 0.8)."
+        },
+        "swarmMode": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "True (default) applies the not-startable rule. False = single-agent mode, which keeps per-agent caps and is exempt."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "budget_gate_check_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "warn",
+            "halt",
+            "unbounded"
+          ],
+          "description": "Gate decision from accumulated spend vs. the ceiling."
+        },
+        "enforceable": {
+          "type": "boolean",
+          "description": "Whether an enforceable ceiling was configured."
+        },
+        "startable": {
+          "type": "boolean",
+          "description": "False when a swarm-mode run lacks an enforceable ceiling (roadmap H5)."
+        },
+        "dispatchNewWork": {
+          "type": "boolean",
+          "description": "True only while below the ceiling and startable; on 'halt'/'unbounded' the caller dispatches no new work and lets in-flight work reach a durable boundary."
+        },
+        "spend_usd": {
+          "type": "number",
+          "description": "Accumulated run-level spend in USD."
+        },
+        "ceiling_usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "The enforced ceiling, or null when unbounded."
+        },
+        "warn_at_usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "The USD spend at which 'warn' begins."
+        },
+        "percent": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Percent of the ceiling consumed."
+        },
+        "report": {
+          "type": "object",
+          "description": "Truthful cost report folded from the append-only spend facts: total usd/tokens and breakdowns by author and by model.",
+          "properties": {
+            "usd": {
+              "type": "number"
+            },
+            "tokens": {
+              "type": "integer"
+            },
+            "by_author": {
+              "type": "object"
+            },
+            "by_model": {
+              "type": "object"
+            },
+            "ceiling_usd": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          }
+        }
+      },
+      "required": [
+        "state",
+        "startable",
+        "dispatchNewWork"
+      ]
+    }
+  }
+}

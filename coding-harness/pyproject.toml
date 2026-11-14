@@ -6,3 +6,13 @@ dependencies = [
     "claude-agent-sdk>=0.2.110",
     "conductor-python>=1.3.11",
 ]
+
+[tool.pytest.ini_options]
+# Both test roots must be initial arguments, not directories pytest happens to
+# walk into: workers/tests/conftest.py is what puts workers/ on sys.path, and
+# tui/tests imports common.model_policy from there. Given no arguments, pytest
+# loads a conftest only when it reaches that directory, so it collected
+# tui/tests first and died with "No module named 'common'" -- which is exactly
+# what a bare `pytest` (verification's build-system-inference fallback for this
+# repository) did, making every campaign's test cycle fail and every PR a draft.
+testpaths = ["tui/tests", "workers/tests"]

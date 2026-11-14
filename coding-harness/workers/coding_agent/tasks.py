@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import fcntl
 import hashlib
 import json as _json
 import os
@@ -63,6 +64,7 @@ import posixpath
 import re
 import shutil
 import stat
+import tempfile
 import threading
 
 from conductor.client.worker.worker_task import worker_task
@@ -75,6 +77,7 @@ from common.results import cap, fail, ok
 from common.session_store import store_from_env
 from common.templating import resolve_prompt_details
 from common.tool_policy import denied_without_changes
+from common.verification import is_generated_path
 
 # Operator knob (doc §10 item 5): which filesystem settings load. Default "project"
 # loads the repo's CLAUDE.md conventions but also its .claude/settings.json
@@ -240,6 +243,38 @@ def _within_write_roots(path: str, roots: list[str] | None) -> bool:
     return False
 
 
+_LOCKFILES = frozenset({"go.sum", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock",
+                        "Pipfile.lock", "Gemfile.lock", "composer.lock", "uv.lock"})
+
+
+def denied_write_paths(paths: list[str], worktree: str, write_roots: list[str] | None) -> list[str]:
+    """Repo-relative paths the worktree guard refused because they lie outside this task's write roots.
+
+    This is the Lead's evidence that an item's scope was sliced too narrowly: st-lru's acceptance
+    criteria needed eviction hooks in ``store/store.go`` (owned by a sibling item), every attempt was
+    denied there, and the item exhausted its review rounds re-wiring eviction elsewhere (run fc6467b7).
+    ``team_standup`` widens the item's write roots from this record once the owning item has landed.
+    Paths that escape the worktree are a different denial (never widened) and are left out, as are
+    generated files (bytecode, build output) and lockfiles a tool rewrites as a side effect (go.sum after
+    `go mod tidy`), which no item owns; with no write roots the guard denies nothing on scope, so the
+    list is empty.
+    """
+    if not write_roots:
+        return []
+    root = os.path.realpath(worktree)
+    out: list[str] = []
+    for raw in paths or []:
+        raw = str(raw)
+        target = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(root, raw))
+        if target == root or not target.startswith(root + os.sep):
+            continue
+        rel = os.path.relpath(target, root).replace(os.sep, "/")
+        if (not _within_write_roots(rel, write_roots) and not is_generated_path(rel)
+                and os.path.basename(rel) not in _LOCKFILES and rel not in out):
+            out.append(rel)
+    return sorted(out)
+
+
 def _worktree_target(worktree: str, path: str) -> str:
     """Resolve a Git-reported path lexically without allowing worktree escape."""
     norm = _normalize_repo_path(path)
@@ -308,13 +343,30 @@ def _reconcile_agent_changes(
     index_before: tuple[str, bytes | None],
     branch_before: str,
     head_before: str,
+    can_commit: bool = True,
+    shared: bool = False,
 ) -> dict:
-    """Fail closed after every agent exit, including exceptions and cancellation."""
+    """Fail closed after every agent exit, including exceptions and cancellation.
+
+    ``can_commit`` is False for a session with no Bash tool (a planner with Read/Grep/Glob): it
+    cannot have moved HEAD, so a moved HEAD is another actor's commit on the shared worktree and
+    is left alone (run 57f8d275, where resetting it erased the contract commits)."""
     branch_after = git.git(
         worktree, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip()
     head_after = git.head(worktree)
     branch_changed = branch_after != branch_before
     head_changed = head_after != head_before
+    if shared:
+        # ONE tree per team: teammates commit (HEAD moves), stage (the index changes) and write their own
+        # files beside this session the whole time. None of that is this agent's doing and none of it
+        # may be reset, restored or reverted; its own delivery is whatever it touched within its roots.
+        after_codes = git.status_changes(worktree, untracked_files_all=True)
+        after = set(after_codes)
+        after_states = {path: _path_state(worktree, path) for path in set(before_states) | after}
+        touched = (after - set(before_states)) | {p for p in before_states if after_states[p] != before_states[p]}
+        changed = sorted(p for p in touched if _within_write_roots(p, write_roots))
+        return {"changed": changed, "afterCodes": after_codes, "unauthorized": [], "indexChanged": False,
+                "branchChanged": False, "headChanged": False}
     if branch_changed:
         # A coding session has no authority to change branches. Return to the
         # starting branch and restore caller-owned dirty files exactly. Any
@@ -333,10 +385,12 @@ def _reconcile_agent_changes(
             git.git(worktree, "reset", "--mixed", head_before)
         for path, state in before_states.items():
             _restore_path_state(worktree, path, state)
-    elif head_changed:
+    elif head_changed and can_commit:
         # Agents hand uncommitted files to the dedicated commit worker. Moving
         # HEAD would otherwise hide paths from status-based scope enforcement.
         git.git(worktree, "reset", "--mixed", head_before)
+    elif head_changed:
+        head_changed = False
 
     index_after = git.index_snapshot(worktree)
     index_changed = index_after[1] != index_before[1]
@@ -371,6 +425,21 @@ def _reconcile_agent_changes(
         "branchChanged": branch_changed,
         "headChanged": head_changed,
     }
+
+
+# Paths a session's report never lists one by one: an installed dependency tree, a build cache, a
+# virtualenv. An implementer's `npm install` put 2,960 node_modules paths in filesChanged, the
+# sub-workflow stored that report in a variable, and Conductor refused the 731 KB payload (its
+# limit is 256 KB): the item failed with its work done (run a8167484, team 4d5b18ce).
+_REPORT_SKIP = ("node_modules/", ".venv/", "venv/", "__pycache__/", ".cc-cache/", ".gradle/", ".pytest_cache/",
+                ".mypy_cache/", ".tox/", ".next/", ".turbo/", "target/debug/", "target/release/")
+_REPORT_CAP = 400
+
+
+def report_paths(changed: list[str]) -> list[str]:
+    """The changed paths a report carries: no dependency or cache tree, at most ``_REPORT_CAP``."""
+    kept = [p for p in changed if not any(f"/{skip}" in f"/{p}" for skip in _REPORT_SKIP)]
+    return kept[:_REPORT_CAP]
 
 
 def _resolve_setting_sources(task_val):
@@ -503,13 +572,37 @@ def _append_context_paths(prompt: str, paths: list[dict]) -> str:
         "requires it, or treat them as repository files.")
 
 
-@worker_task(task_definition_name="coding_agent", thread_count=8)
+_HOST_FLIGHT_DIR = os.path.join(tempfile.gettempdir(), "conductor-code-task-flights")
+
+
+def _host_flight_lock(task_id: str):
+    """A host-wide, cross-process claim on one Conductor task: the open, exclusively flocked file
+    (held until the primary finishes), or None when another process holds it."""
+    os.makedirs(_HOST_FLIGHT_DIR, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", task_id)
+    fh = open(os.path.join(_HOST_FLIGHT_DIR, f"{safe}.lock"), "a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return fh, False
+    return fh, True
+
+
+@worker_task(task_definition_name="coding_agent", thread_count=16)  # 16 agent sessions at once per fleet
 def coding_agent(task):
     """Run the async agent implementation under the ordinary task runner.
 
     The SDK's AsyncTaskRunner can re-poll an unacknowledged task on this local
     Conductor release, launching duplicate agent sessions.  The normal runner
     atomically claims the task before this per-task event loop is entered.
+
+    The claim is held across worker GENERATIONS too: a source reload starts a successor fleet
+    beside the draining one, the task was re-polled by the successor, and the duplicate planner
+    session ran in the same worktree as the primary; when it ended, its scope gate reset HEAD to
+    the commit it had started from and erased two contract commits the harness had made meanwhile,
+    so the first implementer's fork read as "edited the frozen contract" and the whole correct
+    build was discarded (run 57f8d275). The duplicate now waits for the primary's host-wide lock
+    and returns without a session; Conductor ignores an update to a task that is already terminal.
     """
     task_id = str(task.task_id)
     owner, event, cached = _claim_task_flight(task_id)
@@ -524,10 +617,25 @@ def coding_agent(task):
         if result is not None:
             return result
         return fail(task, "coding_agent", "duplicate delivery ended without a primary result")
+    host_lock, primary = _host_flight_lock(task_id)
+    if not primary:
+        try:
+            fcntl.flock(host_lock.fileno(), fcntl.LOCK_EX)  # the primary, in another process, finishes first
+        finally:
+            host_lock.close()
+        result = fail(task, "coding_agent",
+                      "duplicate delivery: another worker process ran this task to completion; its result stands")
+        _finish_task_flight(task_id, event, result)
+        return result
     try:
         result = asyncio.run(_coding_agent(task))
     except Exception as exc:  # noqa: BLE001
         result = fail(task, "coding_agent", exc)
+    finally:
+        try:
+            fcntl.flock(host_lock.fileno(), fcntl.LOCK_UN)
+        finally:
+            host_lock.close()
     _finish_task_flight(task_id, event, result)
     return result
 
@@ -538,17 +646,29 @@ async def _coding_agent(task):
         wt = i.get("worktreePath") or ""
         if not wt:
             return fail(task, "coding_agent", "worktreePath is required")
+        if not os.path.isdir(wt):
+            return fail(task, "coding_agent", f"worktreePath {wt} is not a directory on this machine")
+        # A planner or classifier may be the first step to touch a fresh project directory.
+        initialized_repo = await asyncio.to_thread(git.ensure_repo, wt)
         role = str(i.get("modelRole") or "code").strip().lower()
         try:
             model_tier, model_resolution = select_role_tier(i, role=role, worktree=wt)
         except ModelPolicyError as exc:
             return fail(task, "coding_agent", exc)
+        # A dynamically forked task's prompt arrives as a file (common/prompt_files): the inline copy
+        # went through Conductor's ${...} substitution and lost every template literal it quoted.
+        prompt_in, context_in = (i.get("prompt") or ""), i.get("promptContext")
+        if str(i.get("promptPath") or "").strip():
+            from common import prompt_files
+            stashed_prompt, stashed_context = prompt_files.load(str(i.get("promptPath")))
+            if stashed_prompt.strip():
+                prompt_in, context_in = stashed_prompt, (stashed_context or context_in)
         # Effective prompt: explicit promptTemplate > repo .conductor/<key>.md > built-in prompt.
         prompt_resolution = resolve_prompt_details(
-            (i.get("prompt") or "").strip(),
+            str(prompt_in).strip(),
             template=i.get("promptTemplate"),
             template_key=i.get("templateKey"),
-            context=i.get("promptContext"),
+            context=context_in,
             worktree=wt,
         )
         prompt = prompt_resolution.prompt
@@ -595,17 +715,35 @@ async def _coding_agent(task):
         domains = i.get("allowedDomains")
         if isinstance(domains, str):
             domains = [d.strip() for d in domains.split(",") if d.strip()]
+        if not domains:
+            from common.coding_agent import DEFAULT_ALLOWED_DOMAINS
+            domains = list(DEFAULT_ALLOWED_DOMAINS)
         # Campaign runs can stay active for days; a 10-second heartbeat keeps task
         # ownership visible through worker restarts and long model turns.
         reporter = ProgressReporter(task, heartbeat_s=10.0).start()
         scope_result = None
+        # In-session team feedback + checkpoints (closure plan WP2, H11/H17): only when the caller names
+        # the board run and item (team_build implementers) or asks for checkpoints.
+        from common.feedback import FeedbackWatcher
+        def _decider(req: dict) -> None:
+            from common import architect_decide
+            try:
+                architect_decide.decide(req, inputs=i, worktree=wt)
+            except Exception as e:  # noqa: BLE001
+                log.warning("architect decision failed: %s", e)
+        watcher = FeedbackWatcher(
+            str(i.get("feedbackCorrelationId") or ""), str(i.get("feedbackItem") or ""),
+            since_ts=float(i.get("feedbackSince") or 0) or None,
+            every=int(i.get("feedbackEveryTurns") if i.get("feedbackEveryTurns") not in (None, "") else 1),
+            checkpoint_every=int(i.get("checkpointEveryTurns") or 0), worktree=wt,
+            run_id=str(i.get("feedbackRunId") or ""), team=str(i.get("feedbackTeam") or ""), decider=_decider)
         try:
             res = await run_coding_agent(
                 prompt,
                 worktree=wt,
                 model=model_tier.get("model") or None,
                 fallback_model=i.get("fallbackModel") or None,
-                effort=i.get("effort") or None,
+                effort=i.get("effort") or model_tier.get("effort") or None,
                 max_turns=int(model_tier.get("maxTurns") or 50),
                 max_budget_usd=(float(model_tier["maxBudgetUsd"]) if model_tier.get("maxBudgetUsd") is not None else 50.0),
                 resume_session_id=i.get("resumeSessionId") or None,
@@ -634,6 +772,7 @@ async def _coding_agent(task):
                 backend=model_tier["agent"],
                 write_roots=write_roots,
                 context_paths=[entry["path"] for entry in agent_context_paths],
+                feedback=watcher if watcher.active else None,
             )
         finally:
             try:
@@ -652,6 +791,8 @@ async def _coding_agent(task):
                     index_before,
                     branch_before,
                     head_before,
+                    (not _as_list(i.get("tools"))) or ("Bash" in _as_list(i.get("tools"))),
+                    str(i.get("sharedTree") or "").strip().lower() in ("1", "true", "yes"),
                 )
         if scope_result["branchChanged"]:
             res["ok"] = False
@@ -681,8 +822,10 @@ async def _coding_agent(task):
                 res["ok"] = False
                 res["status"] = "invalid_plan"
                 res["error"] = "; ".join(plan_validation["errors"])
-        # Per-file status (A/M/D/R) for the changed set — additive, for review UIs.
-        file_changes = [{"path": p, "status": after_codes.get(p, "M")} for p in changed]
+        # Per-file status (A/M/D/R) for the changed set — additive, for review UIs. Both lists are
+        # bounded (no dependency tree, at most _REPORT_CAP paths); filesChangedTotal keeps the count.
+        reported = report_paths(changed)
+        file_changes = [{"path": p, "status": after_codes.get(p, "M")} for p in reported]
 
         logs = [
             f"[coding_agent] backend={backend} model={res.get('model') or '(default)'} status={res['status']} "
@@ -694,6 +837,9 @@ async def _coding_agent(task):
             f"[coding_agent] changed={len(changed)} {changed} turns={res['num_turns']} "
             f"tokens={res['tokens']} cost=${res['cost_usd']:.4f}",
         ]
+        if initialized_repo:
+            logs.append(f"[coding_agent] {wt} was not a git repository: initialized it (empty base commit, "
+                        f"files untouched)")
         for entry in res.get("turn_log") or []:
             logs.append(f"[coding_agent] {entry}")
         for d in res.get("denials") or []:
@@ -701,6 +847,7 @@ async def _coding_agent(task):
 
         out = {
             "status": res["status"],
+            "initializedRepo": initialized_repo,
             # Session completion is only evidence that the agent stopped. It is
             # intentionally distinct from independent build/test verification.
             "agentCompleted": bool(res.get("ok")),
@@ -715,10 +862,16 @@ async def _coding_agent(task):
                 "sources": model_resolution.get("sources", []),
                 "warnings": model_resolution.get("warnings", []),
             },
-            "filesChanged": changed,
+            "filesChanged": reported,
+            "filesChangedTotal": len(changed),
             "fileChanges": file_changes,
             "result": cap(res.get("result"), 2000),
             "structured": res.get("structured"),
+            # The last StructuredOutput payloads the agent submitted, whole — including the ones the
+            # validator rejected — so a consumer can salvage a mangled payload (run a062184f's
+            # retrospective) instead of recording the placeholder the agent sent to get past it.
+            "structuredAttempts": res.get("structured_attempts") or [],
+            "structuredSalvaged": bool(res.get("structured_salvaged")),
             "planValidation": plan_validation or {},
             "sessionId": res.get("session_id") or "",
             # `turns` is the per-turn array (turn number + commands run + tokens);
@@ -728,6 +881,16 @@ async def _coding_agent(task):
             "tokenUsed": res.get("tokens", 0),
             "costUsd": res.get("cost_usd", 0.0),
             "denials": res.get("denials") or [],
+            # Files inside the worktree the guard refused as outside this task's write roots: the
+            # Lead's signal to widen the item's scope (team_standup), kept apart from the log lines.
+            # Both ways a write is refused count. Codex edits through its shell, past the file-tool guard,
+            # so its out-of-scope edits appear only as reverted changes: a correct fix to reader.go was
+            # undone repeatedly and the item never widened (run 1177c2d2).
+            "deniedWrites": denied_write_paths([*(res.get("denied_writes") or []), *unauthorized], wt, write_roots),
+            "feedbackInjections": res.get("feedbackInjections") or [],
+            "interruptedBy": res.get("interruptedBy"),
+            "checkpoints": res.get("checkpoints") or [],
+            "restoredCheckpoint": res.get("restoredCheckpoint"),
             "contextPaths": context_paths,
             "promptTemplate": {
                 "requestedSource": str(i.get("promptTemplateSource") or "auto"),
@@ -741,7 +904,22 @@ async def _coding_agent(task):
         # The SDK marks that as ok even though no work was produced. Fail closed so parent
         # workflows cannot commit/push a partial PR fix and announce that all feedback was
         # addressed (the PR #6 regression).
-        if denied_without_changes(changed, out["denials"]):
+        # A session asked for a structured answer (a scout, the Architect, a reviewer) is judged by that
+        # answer: "found nothing runnable" with no file changed is its outcome, not a failure to retry
+        # three times at sixty turns each (run 6cc1a23b).
+        # A run that keeps its spend on its board (the swarm) has it recorded the moment each session
+        # ends, so the console shows live spend and the next dispatch sizes its caps on the truth.
+        spend_run = str(i.get("spendRunId") or "").strip()
+        if spend_run:
+            try:
+                from common import budget_gate
+                budget_gate.record_spend(spend_run, str(i.get("spendAuthor") or "agent"),
+                                         usd=float(out.get("costUsd") or 0.0),
+                                         tokens=int(out.get("tokenUsed") or 0), model=str(out.get("model") or ""))
+            except Exception as e:  # noqa: BLE001 - a board write failure must not fail the session
+                logs.append(f"[coding_agent] spend not recorded: {e}")
+        answered = bool(i.get("schema")) and bool(out.get("structured"))
+        if denied_without_changes(changed, out["denials"]) and not answered:
             err = "agent made no changes after one or more tool denials"
             logs.append(f"[coding_agent] error: {err}")
             out["retryable"] = False

@@ -1,0 +1,45 @@
+{
+  "name": "team_review_build",
+  "description": "Team cycle (roadmap Phase 2, §4.3 review): build read-only peer-review forks for the items integrated this wave (H8). The reviewer is a different agent than the implementer (H13 — author is not the check); it reviews each item's isolated diff (waveBase..finalHead for the item's files) against its acceptance criteria and returns a structured lgtm/changes verdict. Items already reviewed maxReviewRounds times are not re-reviewed.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "team_review_build_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "sharedRepo": {"type": "string"},
+        "correlationId": {"type": "string"},
+        "reviewing": {"type": ["array", "string"], "description": "Item ids integrated this wave, awaiting review."},
+        "waveBase": {"type": "string", "description": "Shared head before the wave — the diff base."},
+        "finalHead": {"type": "string", "description": "Shared head after the wave."},
+        "maxReviewRounds": {"type": ["integer", "string"], "description": "Bound on review rounds per item (H8)."},
+        "codeModel": {"type": "string"},
+        "reviewMaxTurns": {"type": ["integer", "string"]},
+        "reviewMaxBudgetUsd": {"type": ["number", "string"]}
+      },
+      "required": ["sharedRepo"]
+    }
+  },
+  "outputSchema": {
+    "name": "team_review_build_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "dynamicTasks": {"type": "array", "description": "FORK_JOIN_DYNAMIC descriptors, one read-only coding_agent reviewer per item."},
+        "dynamicTasksInput": {"type": "object", "description": "Per-reviewer input keyed by review_<id>."},
+        "reviewed": {"type": "array", "items": {"type": "string"}, "description": "Item ids a reviewer was dispatched for this wave."},
+        "reviewCount": {"type": "integer"}
+      },
+      "required": ["dynamicTasks", "dynamicTasksInput", "reviewed"]
+    }
+  }
+}

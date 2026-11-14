@@ -1,0 +1,109 @@
+{
+  "name": "team_apply_reviews",
+  "description": "Team cycle (roadmap Phase 2, \u00a74.3 learn \u2192 re-plan): apply the wave's peer-review verdicts. 'lgtm' (or a review item accepted at the round cap) moves the item to 'done' and posts a lesson to the learning board; 'changes' under the round cap reopens the item with the findings posted as a directive the next standup injects. Folds the board and reports whether it is drained so the loop can terminate honestly.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "team_apply_reviews_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "correlationId": {
+          "type": "string"
+        },
+        "sharedRepo": {
+          "type": "string",
+          "description": "The shared run worktree; an approved acceptance-test amendment is merged onto it here."
+        },
+        "sharedBranch": {
+          "type": "string",
+          "description": "The shared branch the amendment is merged onto."
+        },
+        "reviewed": {
+          "type": [
+            "array",
+            "string"
+          ],
+          "description": "Item ids reviewed this wave."
+        },
+        "maxReviewRounds": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "joined": {
+          "type": [
+            "object",
+            "string"
+          ],
+          "description": "The review FORK_JOIN_DYNAMIC join output (verdict/findings per reviewer)."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "team_apply_reviews_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "drained": {
+          "type": "boolean",
+          "description": "True when no board item is in an open state (loop may stop)."
+        },
+        "allDone": {
+          "type": "boolean",
+          "description": "True when every item reached done."
+        },
+        "rollup": {
+          "type": "object",
+          "description": "Human-digestible board summary (H7)."
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Items reopened by a changes verdict."
+        },
+        "changesCount": {
+          "type": "integer"
+        },
+        "doneCount": {
+          "type": "integer"
+        },
+        "finalHead": {
+          "type": "string",
+          "description": "The shared branch head after this step \u2014 after any approved acceptance-test amendment was merged. The wave's finalHead (the final test cycle's candidate and the outcome's tamper check) is read from here, not from the integrate step that ran before the merge."
+        },
+        "acceptanceCommands": {
+          "type": "array",
+          "description": "The frozen acceptance-test commands of the items DONE after this round: the final test cycle's carried obligation next to the repository's own command."
+        },
+        "writeRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Every file this team's items span: the final test cycle's repair agent writes nowhere else."
+        },
+        "gateCommands": {
+          "type": "array",
+          "description": "For a program child team, the frozen-test commands of its done items: the final test cycle gate (testCommands). Empty for a standalone team (the repository command applies)."
+        }
+      },
+      "required": [
+        "drained",
+        "allDone"
+      ]
+    }
+  }
+}

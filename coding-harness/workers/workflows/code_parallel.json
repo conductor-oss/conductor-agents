@@ -85,8 +85,7 @@
             "decisionCases": {},
             "defaultCase": [],
             "subWorkflowParam": {
-              "name": "design_docs",
-              "version": 1
+              "name": "design_docs"
             }
           }
         ]
@@ -153,8 +152,7 @@
             "decisionCases": {},
             "defaultCase": [],
             "subWorkflowParam": {
-              "name": "openspec_plan",
-              "version": 1
+              "name": "openspec_plan"
             }
           },
           {
@@ -196,8 +194,7 @@
           "decisionCases": {},
           "defaultCase": [],
           "subWorkflowParam": {
-            "name": "document_plan",
-            "version": 1
+            "name": "document_plan"
           }
         },
         {
@@ -345,7 +342,12 @@
                     ]
                   },
                   "templateKey": "code-parallel-plan-repair",
-                  "worktreePath": "${workspace.output.worktreePath}"
+                  "worktreePath": "${workspace.output.worktreePath}",
+                  "promptContext": {
+                    "instruction": "${workflow.input.instruction}",
+                    "planJson": "${plan_repair_context.output.planJson}",
+                    "issuesJson": "${plan_repair_context.output.issuesJson}"
+                  }
                 }
               },
               {
@@ -502,7 +504,8 @@
         "modelPolicySource": "${workflow.input.modelPolicySource}",
         "modelPolicySha256": "${workflow.input.modelPolicySha256}",
         "modelsConfig": "${workflow.input.modelsConfig}",
-        "modelOverrides": "${workflow.input.modelOverrides}"
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "singleSubtask": "${workflow.input.singleSubtask}"
       },
       "type": "SIMPLE"
     },
@@ -524,6 +527,7 @@
       "name": "fan_join",
       "taskReferenceName": "fan_join",
       "type": "JOIN",
+      "joinMode": "SYNC",
       "optional": true,
       "decisionCases": {},
       "defaultCase": []
@@ -557,8 +561,7 @@
       "decisionCases": {},
       "defaultCase": [],
       "subWorkflowParam": {
-        "name": "merge_remediation",
-        "version": 1
+        "name": "merge_remediation"
       }
     },
     {
@@ -581,20 +584,27 @@
       "defaultCase": []
     },
     {
+      "name": "test_mode_select",
+      "taskReferenceName": "post_merge_mode",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "candidateCommit": "${workflow.variables.candidateCommit}"
+      }
+    },
+    {
       "name": "test_cycle",
       "taskReferenceName": "post_merge_tests",
       "type": "SUB_WORKFLOW",
       "optional": true,
       "subWorkflowParam": {
-        "name": "test_cycle",
-        "version": 1
+        "name": "test_cycle"
       },
       "inputParameters": {
         "repoPath": "${workspace.output.worktreePath}",
         "candidateCommit": "${workflow.variables.candidateCommit}",
-        "testMode": "targeted",
-        "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
-        "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}",
+        "testMode": "${post_merge_mode.output.testMode}",
         "maxFixAttempts": "${workflow.input.maxFixAttempts}",
         "allowedWriteRoots": "${build_forks.output.allowedWriteRoots}",
         "maxTurns": "${workflow.input.maxTurns}",
@@ -721,8 +731,7 @@
     "workspacePath",
     "contextPaths",
     "maxFixAttempts",
-    "allowAgentTestPlan",
-    "allowAgentAuthoredTests"
+    "singleSubtask"
   ],
   "outputParameters": {
     "agentCompleted": true,
@@ -781,7 +790,10 @@
     "testCycleState": "${post_merge_tests.output.testCycleState}",
     "testsPassed": "${post_merge_tests.output.testsPassed}",
     "testRunCount": "${post_merge_tests.output.testRunCount}",
-    "testReport": "${post_merge_tests.output.testReport}"
+    "testReport": "${post_merge_tests.output.testReport}",
+    "deliveredAndTested": "${verification_outcome.output.deliveredAndTested}",
+    "verdict": "${verification_outcome.output.verdict}",
+    "report": "${verification_outcome.output.report}"
   },
   "schemaVersion": 2,
   "restartable": true,
@@ -836,8 +848,7 @@
     "usePrecomputedPlan": false,
     "workspacePath": "",
     "maxFixAttempts": 4,
-    "allowAgentTestPlan": true,
-    "allowAgentAuthoredTests": true
+    "singleSubtask": false
   },
   "overwriteTags": false,
   "inputSchema": {
@@ -1057,15 +1068,10 @@
           "default": 4,
           "description": "Upper bound on structured fix/commit/re-test passes performed by the post-merge test_cycle sub-workflow."
         },
-        "allowAgentTestPlan": {
+        "singleSubtask": {
           "type": "boolean",
-          "default": true,
-          "description": "Forwarded to the post-merge test_cycle sub-workflow: when true and deterministic discovery is configuration_blocked, lets a coding agent search for and propose an existing test command as a last resort."
-        },
-        "allowAgentAuthoredTests": {
-          "type": "boolean",
-          "default": true,
-          "description": "Forwarded to the post-merge test_cycle sub-workflow: when true and allowAgentTestPlan's search also finds nothing, lets a coding agent author exactly one new test file, accepted only after a red/green check (fails against the pre-candidate baseline, passes against the real candidate change)."
+          "default": false,
+          "description": "Fold the validated plan into one work item, built by one agent."
         }
       },
       "required": [
@@ -1444,7 +1450,8 @@
             "no_tests_required",
             "tests_failed_fix_unavailable",
             "tests_failed_after_fix_budget",
-            "command_discovery_blocked",
+            "no_tests_found",
+            "verification_input_invalid",
             "candidate_commit_missing",
             "runtime_unavailable",
             "verifier_worker_unavailable"

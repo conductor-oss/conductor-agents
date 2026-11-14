@@ -16,6 +16,30 @@ The worker records the actual `requestedSource`, `resolvedSource`, template key,
 `output.promptTemplate`. A paired `*PromptTemplateSource` input is provenance only; it does not
 grant file access or override the resolved content.
 
+## Every agent step has a default
+
+Each agent step of every workflow and sub-workflow has its own file in `workers/defaults/prompts/`,
+named after its template key. Workflows with no agent step, such as `ship_run`, need none.
+`workers/tests/test_prompt_defaults.py` fails if a step has no default or a default needs a value its
+step does not supply. Steps composed in code render from these files too, so the swarm's prompts are
+ordinary templates:
+
+| Key | Step |
+|---|---|
+| `program_plan`, `program_breakdown` | `cc_program` planning and post-design breakdown |
+| `intake_classify` | `sdlc_intake` classification |
+| `team_implement`, `team_rescue` | a team item, and the stronger teammate sent to a stuck item |
+| `team_review`, `team_acceptance_tests` | peer review, and the tests written before implementation |
+| `convergence_subtask` | `convergence_spike` items |
+| `bug_repro`, `project_scaffold` | `bug_fix` reproduction, `project_bootstrap` skeleton |
+| `delivery_repair`, `test_repair`, `merge_conflict` | completing a delivery, failing tests, git conflicts |
+| `retrospective`, `openspec_artifact` | end-of-run learnings, one OpenSpec artifact |
+
+To change any of them for one repository, commit `.conductor/<key>.md`; it can use the same
+placeholders. Steps with a `*PromptTemplate` input can also take a user-library template at launch.
+The web console (Settings, Prompt templates) and the TUI (`b` on the templates screen) list every
+default with the workflows that run it.
+
 ## Roles and context
 
 Common inputs are `reviewPromptTemplate`, `planPromptTemplate`, `codePromptTemplate`,

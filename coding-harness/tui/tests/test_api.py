@@ -169,12 +169,17 @@ async def test_client_signal_rejects_successful_noop():
 
 
 @pytest.mark.asyncio
-async def test_client_signal_explains_legacy_human_checkpoint():
+async def test_client_signals_a_human_task_like_any_other():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/tasks/w1/review_gate/COMPLETED/sync"
+        return httpx.Response(200, json={"workflowId": "w1"})
+
     client = api.ConductorClient("http://x/api")
-    with pytest.raises(api.ConductorError, match="legacy HUMAN checkpoint"):
-        await client.signal_task(
-            "w1", "review_gate", "COMPLETED", {"approved": True}, task_type="HUMAN"
-        )
+    client._client = httpx.AsyncClient(base_url="http://x/api",
+                                       transport=httpx.MockTransport(handler))
+    await client.signal_task(
+        "w1", "review_gate", "COMPLETED", {"approved": True}, task_type="HUMAN"
+    )
     await client.aclose()
 
 
@@ -295,6 +300,34 @@ async def test_client_uses_env_key_secret_for_every_api_request(monkeypatch):
         ("POST", "/api/token"),
         ("GET", "/api/workflow/search"),
         ("POST", "/api/workflow/code_parallel"),
+    ]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_treats_missing_token_endpoint_as_no_auth(monkeypatch):
+    monkeypatch.setenv("CONDUCTOR_AUTH_KEY", "test-key")
+    monkeypatch.setenv("CONDUCTOR_AUTH_SECRET", "test-secret")
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        if request.url.path == "/api/token":
+            return httpx.Response(404)
+        assert "X-Authorization" not in request.headers
+        if request.method == "GET":
+            return httpx.Response(200, json={"results": []})
+        return httpx.Response(200, text="wf-open")
+
+    client = api.ConductorClient("http://x/api")
+    client._client = httpx.AsyncClient(base_url="http://x/api",
+                                       transport=httpx.MockTransport(handler))
+    assert await client.search_runs() == []
+    assert await client.start("issue_to_pr", {"repo": "o/r"}) == "wf-open"
+    assert seen == [
+        ("POST", "/api/token"),
+        ("GET", "/api/workflow/search"),
+        ("POST", "/api/workflow/issue_to_pr"),
     ]
     await client.aclose()
 

@@ -1,0 +1,546 @@
+{
+  "name": "sdlc_intake",
+  "description": "Roadmap Phase 4 (G1) single front door: classify a raw request (feature|bug|refactor|chore|greenfield, size, confidence), proceed on the best classification without pausing (humans are passive observers), normalize it into the downstream artifact, and route two-dimensionally — by kind (bug_fix / team_build / code_parallel / greenfield) and by execution mode (single vs team, read off the decomposition, H9/H12). Pure composition over the existing stage engines; owns no branch of its own.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "restartable": true,
+  "inputParameters": [
+    "repoPath",
+    "request",
+    "confidenceThreshold",
+    "forceSingle",
+    "forceTeam",
+    "ceilingUsd",
+    "maxWidth",
+    "reproTestPath",
+    "maxReplan",
+    "bestOf",
+    "codeModel",
+    "maxTurns",
+    "maxBudgetUsd",
+    "maxFixAttempts",
+    "branchRunId",
+    "inPlace",
+    "workspacePath",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides",
+    "branchName"
+  ],
+  "inputTemplate": {
+    "request": "",
+    "confidenceThreshold": 0.5,
+    "forceSingle": false,
+    "forceTeam": false,
+    "ceilingUsd": 40,
+    "maxWidth": 10,
+    "reproTestPath": "test_bug_repro.py",
+    "codeModel": "",
+    "maxTurns": 250,
+    "maxBudgetUsd": 10,
+    "maxFixAttempts": 2,
+    "branchRunId": "",
+    "inPlace": false,
+    "workspacePath": "",
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {},
+    "maxReplan": 2,
+    "bestOf": 1,
+    "branchName": ""
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "plan_loop",
+      "taskReferenceName": "plan_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ var cur = $.plan_loop[String($.plan_loop['iteration'])] || {}; var r = (cur['route'] || {})['route']; return $.plan_loop['iteration'] <= $.max_replan && r === 'replan'; })();",
+      "inputParameters": {
+        "max_replan": "${workflow.input.maxReplan}",
+        "plan_loop": "${plan_loop.output}"
+      },
+      "loopOver": [
+        {
+          "name": "coding_agent",
+          "taskReferenceName": "classify",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "worktreePath": "${workflow.input.repoPath}",
+            "tools": [
+              "Read",
+              "Grep",
+              "Glob"
+            ],
+            "templateKey": "intake_classify",
+            "modelRole": "plan",
+            "modelResolution": "${model_policy.output}",
+            "model": "${workflow.input.codeModel}",
+            "maxTurns": 60,
+            "maxBudgetUsd": 3,
+            "prompt": "You are the intake classifier for a software-construction harness. Read the repository and classify this raw request:\n\n${workflow.input.request}\n\nReturn: kind (one of feature, bug, refactor, chore, greenfield); size (small|medium|large); confidence (0..1 that you understand the scope); a one-line summary; a normalized instruction; acceptanceCriteria; and, for non-bug work, a decomposition 'subtasks' as a list of {id, description, deliverable, files, dependsOn, acceptanceCriteria} (dependsOn lists item ids that must be done first) where 'deliverable' is 'code' (source and tests) or 'docs' (design documents, specs, ADRs, research notes as Markdown, no code) and 'files' are the repository-relative files each item edits (items may legitimately share a file). Also list contractPaths (interfaces/tests that must be frozen) if any. For a bug, put the reproduction/expected behavior in 'instruction' and leave subtasks empty.\n\n${workflow.variables.replanFeedback}",
+            "promptContext": {
+              "request": "${workflow.input.request}",
+              "replanFeedback": "${workflow.variables.replanFeedback}"
+            },
+            "promptTemplate": "",
+            "promptTemplateSource": "",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "feature",
+                    "bug",
+                    "refactor",
+                    "chore",
+                    "greenfield"
+                  ]
+                },
+                "size": {
+                  "type": "string",
+                  "enum": [
+                    "small",
+                    "medium",
+                    "large"
+                  ]
+                },
+                "confidence": {
+                  "type": "number"
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "instruction": {
+                  "type": "string"
+                },
+                "acceptanceCriteria": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "subtasks": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "deliverable": {
+                        "type": "string",
+                        "enum": [
+                          "code",
+                          "docs"
+                        ]
+                      },
+                      "files": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "dependsOn": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "acceptanceCriteria": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "reviewCriteria": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "description",
+                      "files",
+                      "acceptanceCriteria"
+                    ]
+                  }
+                },
+                "contractPaths": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "kind",
+                "confidence",
+                "instruction"
+              ]
+            }
+          }
+        },
+        {
+          "name": "intake_route",
+          "taskReferenceName": "route",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "classification": "${classify.output}",
+            "confidenceThreshold": "${workflow.input.confidenceThreshold}",
+            "forceSingle": "${workflow.input.forceSingle}",
+            "forceTeam": "${workflow.input.forceTeam}",
+            "priorPlanUsage": "${workflow.variables.planUsage}"
+          }
+        },
+        {
+          "name": "capture_plan",
+          "taskReferenceName": "capture_plan",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "replanFeedback": "${route.output.replanPrompt}",
+            "routeDecision": "${route.output}",
+            "planUsage": "${route.output.planUsage}",
+            "planRoute": "${route.output.route}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "route_switch",
+      "taskReferenceName": "route_switch",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "route",
+      "inputParameters": {
+        "route": "${workflow.variables.routeDecision.route}"
+      },
+      "decisionCases": {
+        "bug": [
+          {
+            "name": "bug_fix",
+            "taskReferenceName": "run_bug",
+            "type": "SUB_WORKFLOW",
+            "subWorkflowParam": {
+              "name": "bug_fix"
+            },
+            "inputParameters": {
+              "repoPath": "${workflow.input.repoPath}",
+              "bugReport": "${workflow.variables.routeDecision.instruction}",
+              "reproTestPath": "${workflow.input.reproTestPath}",
+              "codeModel": "${workflow.input.codeModel}",
+              "maxTurns": "${workflow.input.maxTurns}",
+              "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+              "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+              "inPlace": "${workflow.input.inPlace}",
+              "workspacePath": "${workflow.input.workspacePath}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}",
+              "branchName": "${workflow.input.branchName}"
+            }
+          },
+          {
+            "name": "terminate_bug",
+            "taskReferenceName": "terminate_bug",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "COMPLETED",
+              "workflowOutput": {
+                "kind": "bug",
+                "route": "bug",
+                "delivered": "${run_bug.output.fixed}",
+                "verdict": "${run_bug.output.verdict}",
+                "report": "${run_bug.output.report}",
+                "branch": "${run_bug.output.branch}",
+                "sourceHandoff": "${run_bug.output.sourceHandoff}"
+              }
+            }
+          }
+        ],
+        "team": [
+          {
+            "name": "team_build",
+            "taskReferenceName": "run_team",
+            "type": "SUB_WORKFLOW",
+            "subWorkflowParam": {
+              "name": "team_build"
+            },
+            "inputParameters": {
+              "repoPath": "${workflow.input.repoPath}",
+              "subtasks": "${workflow.variables.routeDecision.subtasks}",
+              "contractPaths": "${workflow.variables.routeDecision.contractPaths}",
+              "forceTeam": true,
+              "ceilingUsd": "${workflow.input.ceilingUsd}",
+              "maxWidth": "${workflow.input.maxWidth}",
+              "codeModel": "${workflow.input.codeModel}",
+              "maxTurns": "${workflow.input.maxTurns}",
+              "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+              "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+              "inPlace": "${workflow.input.inPlace}",
+              "workspacePath": "${workflow.input.workspacePath}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}",
+              "bestOf": "${workflow.input.bestOf}",
+              "planUsage": "${workflow.variables.planUsage}",
+              "branchName": "${workflow.input.branchName}"
+            }
+          },
+          {
+            "name": "terminate_team",
+            "taskReferenceName": "terminate_team",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "COMPLETED",
+              "workflowOutput": {
+                "kind": "${workflow.variables.routeDecision.kind}",
+                "route": "team",
+                "delivered": "${run_team.output.delivered}",
+                "verdict": "${run_team.output.verdict}",
+                "report": "${run_team.output.report}",
+                "branch": "${run_team.output.branch}",
+                "sourceHandoff": "${run_team.output.sourceHandoff}",
+                "routeEvidence": "${workflow.variables.routeDecision.routeEvidence}"
+              }
+            }
+          }
+        ],
+        "single": [
+          {
+            "name": "code_parallel",
+            "taskReferenceName": "run_single",
+            "type": "SUB_WORKFLOW",
+            "subWorkflowParam": {
+              "name": "code_parallel"
+            },
+            "inputParameters": {
+              "repoPath": "${workflow.input.repoPath}",
+              "instruction": "${workflow.variables.routeDecision.instruction}",
+              "callerWorkflow": "sdlc_intake",
+              "codeModel": "${workflow.input.codeModel}",
+              "maxTurns": "${workflow.input.maxTurns}",
+              "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+              "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+              "inPlace": "${workflow.input.inPlace}",
+              "workspacePath": "${workflow.input.workspacePath}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}",
+              "changeBranch": "${workflow.input.branchName}",
+              "singleSubtask": true
+            }
+          },
+          {
+            "name": "terminate_single",
+            "taskReferenceName": "terminate_single",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "COMPLETED",
+              "workflowOutput": {
+                "kind": "${workflow.variables.routeDecision.kind}",
+                "route": "single",
+                "delivered": "${run_single.output.deliveredAndTested}",
+                "verdict": "${run_single.output.verdict}",
+                "report": "${run_single.output.report}",
+                "branch": "${run_single.output.branch}",
+                "sourceHandoff": "${run_single.output.sourceHandoff}"
+              }
+            }
+          }
+        ],
+        "greenfield": [
+          {
+            "name": "project_bootstrap",
+            "taskReferenceName": "run_bootstrap",
+            "type": "SUB_WORKFLOW",
+            "subWorkflowParam": {
+              "name": "project_bootstrap"
+            },
+            "inputParameters": {
+              "repoPath": "${workflow.input.repoPath}",
+              "description": "${workflow.variables.routeDecision.summary}",
+              "firstFeature": "${workflow.variables.routeDecision.instruction}",
+              "codeModel": "${workflow.input.codeModel}",
+              "maxTurns": "${workflow.input.maxTurns}",
+              "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+              "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+              "inPlace": "${workflow.input.inPlace}",
+              "workspacePath": "${workflow.input.workspacePath}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}",
+              "branchName": "${workflow.input.branchName}",
+              "branchRunId": "${workflow.input.branchRunId}"
+            }
+          },
+          {
+            "name": "terminate_bootstrap",
+            "taskReferenceName": "terminate_bootstrap",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "COMPLETED",
+              "workflowOutput": {
+                "kind": "greenfield",
+                "route": "greenfield",
+                "delivered": "${run_bootstrap.output.bootstrapped}",
+                "verdict": "${run_bootstrap.output.verdict}",
+                "report": "${run_bootstrap.output.report}",
+                "branch": "${run_bootstrap.output.branch}",
+                "sourceHandoff": "${run_bootstrap.output.sourceHandoff}"
+              }
+            }
+          }
+        ],
+        "parallel": [
+          {
+            "name": "code_parallel",
+            "taskReferenceName": "run_parallel",
+            "type": "SUB_WORKFLOW",
+            "subWorkflowParam": {
+              "name": "code_parallel"
+            },
+            "inputParameters": {
+              "repoPath": "${workflow.input.repoPath}",
+              "instruction": "${workflow.variables.routeDecision.instruction}",
+              "callerWorkflow": "sdlc_intake",
+              "codeModel": "${workflow.input.codeModel}",
+              "maxTurns": "${workflow.input.maxTurns}",
+              "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+              "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+              "inPlace": "${workflow.input.inPlace}",
+              "workspacePath": "${workflow.input.workspacePath}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}",
+              "usePrecomputedPlan": true,
+              "precomputedPlan": "${workflow.variables.routeDecision.precomputedPlan}",
+              "changeBranch": "${workflow.input.branchName}"
+            }
+          },
+          {
+            "name": "terminate_single",
+            "taskReferenceName": "terminate_parallel",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "COMPLETED",
+              "workflowOutput": {
+                "kind": "${workflow.variables.routeDecision.kind}",
+                "route": "parallel",
+                "delivered": "${run_parallel.output.deliveredAndTested}",
+                "verdict": "${run_parallel.output.verdict}",
+                "report": "${run_parallel.output.report}",
+                "branch": "${run_parallel.output.branch}",
+                "sourceHandoff": "${run_parallel.output.sourceHandoff}",
+                "routeEvidence": "${workflow.variables.routeDecision.routeEvidence}"
+              }
+            }
+          }
+        ],
+        "replan": [
+          {
+            "name": "terminate_plan_rejected",
+            "taskReferenceName": "terminate_plan_rejected",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "COMPLETED",
+              "workflowOutput": {
+                "kind": "${workflow.variables.routeDecision.kind}",
+                "route": "replan",
+                "delivered": false,
+                "verdict": "PLAN_REJECTED",
+                "report": "The decomposition gate rejected every plan (maxReplan rounds); no agent was spawned. Reasons are in replanReasons.",
+                "replanReasons": "${workflow.variables.routeDecision.replanReasons}",
+                "routeEvidence": "${workflow.variables.routeDecision.routeEvidence}"
+              }
+            }
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "terminate_unrouted",
+          "taskReferenceName": "terminate_unrouted",
+          "type": "TERMINATE",
+          "inputParameters": {
+            "terminationStatus": "COMPLETED",
+            "workflowOutput": {
+              "kind": "${workflow.variables.routeDecision.kind}",
+              "route": "${workflow.variables.routeDecision.route}",
+              "delivered": false,
+              "verdict": "UNROUTED",
+              "report": "intake_route produced a route that no route_switch case handles; nothing was built.",
+              "confidence": "${workflow.variables.routeDecision.confidence}",
+              "summary": "${workflow.variables.routeDecision.summary}"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "outputParameters": {
+    "kind": "${workflow.variables.routeDecision.kind}",
+    "route": "${workflow.variables.routeDecision.route}",
+    "confidence": "${workflow.variables.routeDecision.confidence}",
+    "summary": "${workflow.variables.routeDecision.summary}",
+    "mode": "${workflow.variables.routeDecision.mode}",
+    "routeEvidence": "${workflow.variables.routeDecision.routeEvidence}"
+  },
+  "enforceSchema": false,
+  "variables": {
+    "replanFeedback": "",
+    "routeDecision": {},
+    "planUsage": {},
+    "planRoute": ""
+  }
+}

@@ -5,16 +5,31 @@ from pathlib import Path
 
 
 WF = Path(__file__).resolve().parents[1] / "workflows"
-LOCAL_BRANCH_OWNERS = {"code_parallel", "feature_campaign", "openspec_development"}
-REMOTE_BRANCH_OWNERS = {"github_demo", "issue_to_pr", "publish_salvage"}
+LOCAL_BRANCH_OWNERS = {"code_parallel", "convergence_spike", "feature_campaign", "openspec_development", "team_build", "bug_fix", "project_bootstrap"}
+# The swarm works in a private clone (its agents' git data must sit inside their sandbox) and fetches
+# its branch into the repository when it finishes: it owns a branch without the linked-worktree
+# workspace contract.
+CLONE_BRANCH_OWNERS = {"swarm"}
+REMOTE_BRANCH_OWNERS = {"github_demo", "issue_to_pr", "publish_salvage", "ship_run"}
 EXISTING_PR_BRANCH_UPDATERS = {"address_pr", "address_pr_repair", "address_pr_approval", "publish_verified_pr"}
-READ_ONLY = {"local_review", "pr_review", "document_plan", "openspec_plan", "runtime_health"}
+# run_retrospective reads the repository and writes only to the learnings board.
+READ_ONLY = {"local_review", "pr_review", "document_plan", "openspec_plan", "runtime_health", "run_retrospective"}
 ORCHESTRATORS = {
     "automation_dispatch", "automation_reset", "issue_resolution_sweep",
     "pr_address_sweep", "pr_review_sweep",
+    # sdlc_intake owns no branch: it classifies a raw request and routes to a
+    # stage workflow (bug_fix / team_build / code_parallel), each of which owns
+    # its own workspace/branch. intake itself only reads the repo to classify.
+    "sdlc_intake",
+    # cc_program owns no feature branch: it plans subsystems and builds them
+    # through team_build (which owns the program workspace/branch); it only
+    # reads/commits the repo_memory metadata file on the base repo.
+    "cc_program",
 }
 NESTED_BRANCH_CONSUMERS = {
-    "campaign_subtask", "code_revision_loop", "code_subtask", "design_docs",
+    # swarm_item owns no branch: it builds one item in its swarm's private clone, which the swarm owns.
+    "swarm_item",
+    "campaign_subtask", "code_subtask", "design_docs",
     "merge_remediation", "openspec_artifact_drain", "openspec_generate_artifact",
     # test_cycle owns no branch: it commits its fixes to whatever branch the
     # caller's repoPath is already on, exactly like the loop it replaces.
@@ -22,7 +37,7 @@ NESTED_BRANCH_CONSUMERS = {
     # agent-assisted discovery/authoring fallback) and inherits the same
     # property: it commits an authored test to test_cycle's own branch, never
     # creates or pushes one of its own.
-    "test_cycle", "test_agent_fallback",
+    "test_cycle",
     # pr_draft_approval owns no branch either: a requested revision's
     # code_parallel call is pinned to the caller's already-existing candidate
     # branch (changeBranch), the same pre-publish local branch issue_to_pr
@@ -61,7 +76,7 @@ def _walk(value):
 
 def test_every_workflow_has_an_explicit_branch_ownership_classification():
     classified = set().union(
-        LOCAL_BRANCH_OWNERS, REMOTE_BRANCH_OWNERS, EXISTING_PR_BRANCH_UPDATERS,
+        LOCAL_BRANCH_OWNERS, CLONE_BRANCH_OWNERS, REMOTE_BRANCH_OWNERS, EXISTING_PR_BRANCH_UPDATERS,
         READ_ONLY, ORCHESTRATORS, NESTED_BRANCH_CONSUMERS,
     )
     actual = {path.stem for path in WF.glob("*.json")}
@@ -155,14 +170,13 @@ def test_local_branch_is_prepared_before_any_target_mutation():
                 assert owner_index < index, f"{name}: {task.get('taskReferenceName')} mutates before branch ownership"
 
 
-def test_nested_workflows_pin_current_versions_and_inherit_parent_workspace():
+def test_nested_workflows_never_pin_versions_and_inherit_parent_workspace():
     for name in ("issue_to_pr", "address_pr", "openspec_development"):
         workflow = _load(name)
         children = [node for node in _walk(workflow) if node.get("type") == "SUB_WORKFLOW"]
         assert children
         for child in children:
-            target = child["subWorkflowParam"]["name"]
-            assert child["subWorkflowParam"]["version"] == _load(target)["version"]
+            assert "version" not in child["subWorkflowParam"]
         if name == "openspec_development":
             assert "workspacePath" in json.dumps(workflow)
 
@@ -173,17 +187,13 @@ def test_nested_workflows_pin_current_versions_and_inherit_parent_workspace():
     build_forks = next(node for node in _walk(code_parallel)
                        if node.get("taskReferenceName") == "build_forks")
     assert build_forks["name"] == "code_parallel_build_forks"
-    # The dynamic-fork pin used to be a literal string in a jq expression that
-    # register.sh's stale-version regex could grep for; it is Python now, so
-    # the pin is asserted directly against the function that builds it.
     forks = code_parallel_logic.build_forks(
         repo_path="/tmp", subtasks=[{"id": "a", "description": "d", "files": ["a.py"]}],
         change_dir="", code_model="", code_prompt_template="", code_prompt_template_source="",
         spec_context_path="", context_paths=[], max_turns=1, max_budget_usd=1,
         model_profile="", model_policy={}, model_policy_source="", model_policy_sha256="",
         models_config="", model_overrides={})
-    assert forks["dynamicTasks"][0]["subWorkflowParam"] == \
-        {"name": "code_subtask", "version": _load("code_subtask")["version"]}
+    assert forks["dynamicTasks"][0]["subWorkflowParam"] == {"name": "code_subtask"}
 
 
 def test_code_parallel_returns_source_handoff_after_plan_validation_and_merge():
@@ -261,3 +271,12 @@ def test_github_flows_require_a_remote_repository_identifier():
         workflow = _load(name)
         assert "repo" in workflow["inputParameters"]
         assert "repoPath" not in workflow["inputTemplate"]
+
+
+def test_a_clone_branch_owner_names_its_branch_after_the_run_and_hands_it_back():
+    for name in CLONE_BRANCH_OWNERS:
+        workflow = _load(name)
+        setup = next(t for t in workflow["tasks"] if t["name"] == "swarm_setup")
+        assert setup["inputParameters"]["runId"] == "${workflow.workflowId}"
+        assert workflow["tasks"][-1]["name"] == "swarm_finish"
+        assert workflow["outputParameters"]["sourceHandoff"] == "${finish.output.sourceHandoff}"

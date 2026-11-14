@@ -1,0 +1,12 @@
+{
+  "name": "retro_evidence",
+  "description": "Gather a finished run's board evidence (and its child teams') and build the retrospective prompt; skips child teams of a program.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

@@ -10,11 +10,11 @@ returned and always produces a well-formed result.
 from __future__ import annotations
 
 import json
-from typing import Any
 
-# test_run emits six outcomes: verify_candidate's four plus the two the task
-# layer adds. Anything else means the verifier itself did not report.
+# The states in which commands actually executed. Anything outside the mapping in cycle_outcome
+# means the verifier itself did not report.
 _RAN = {"tests_passed", "tests_failed_after_fix_budget", "tests_failed_fix_unavailable"}
+_NOTHING_TO_RUN = {"no_tests_required", "no_tests_found"}
 
 
 def _text(value: object) -> str:
@@ -102,19 +102,16 @@ def template_commands(value: object) -> list[dict]:
 
 def resolve_plan(*, discovered: object, prior: object, user: object,
                  discovery_outcome: object, discovery_reason: object,
-                 selection: object, template: object = None, agent: object = None) -> dict:
+                 selection: object, template: object = None) -> dict:
     """Choose the command plan and record which authority supplied it.
 
     Precedence is the operator override first -- a structured ``testCommands``
     array over an inline ``testPlanTemplate`` string when both are given,
     since the structured form cannot suffer a JSON-parsing surprise -- then
-    whatever discovery found, merged with any obligations the caller carried
-    in, and only when that is empty, an already-validated agent proposal:
-    deterministic evidence first, an agent last resort.
+    whatever discovery found, merged with any obligations the caller carried in.
     """
     required = clean_commands(prior)
     supplied = user_commands(user) or template_commands(template)
-    from_agent = False
     if supplied:
         commands, source = supplied, "user_template"
     else:
@@ -127,20 +124,15 @@ def resolve_plan(*, discovered: object, prior: object, user: object,
         elif commands:
             source = "build_system_inference"
         else:
-            # discovery and every carried obligation came up empty -- the one
-            # case where an already-validated agent proposal is the plan.
-            commands = clean_commands(agent)
-            from_agent = bool(commands)
-            source = "agent_proposal" if from_agent else "none"
+            source = "none"
 
     outcome = _text(discovery_outcome)
-    if outcome in {"discovered", "no_tests_required"} and commands:
+    if commands:
+        # Commands exist, whatever discovery said: an operator override runs even in a repository
+        # discovery found no test command in.
         outcome = "discovered"
-    elif (supplied or from_agent) and outcome in {"", "configuration_blocked"}:
-        # An operator override or an accepted agent proposal is itself the
-        # authority; a repository whose build graph discovery cannot map must
-        # still be able to run the given command.
-        outcome = "discovered"
+    elif outcome not in {"no_tests_required", "invalid_input", "infra_blocked"}:
+        outcome = "no_tests_found"
     return {"commands": commands, "required": required, "requiredCount": len(required),
             "commandSource": source, "discoveryOutcome": outcome,
             "discoveryReason": _text(discovery_reason)}
@@ -183,6 +175,10 @@ def record_repair(*, current_candidate: object, agent: object, commit: object) -
         "candidate": candidate,
         "report": {
             "agentStatus": agent_report.get("status") or "unavailable",
+            # Repair agents spend real money; callers fold this into their run budget (H5).
+            "costUsd": agent_report.get("costUsd") if isinstance(agent_report.get("costUsd"), (int, float)) else 0.0,
+            "tokenUsed": agent_report.get("tokenUsed") if isinstance(agent_report.get("tokenUsed"), int) else 0,
+            "model": str(agent_report.get("model") or ""),
             "agentCompleted": agent_report.get("agentCompleted") is True,
             "stagedPaths": staged, "rejectedPaths": rejected,
             "sandboxDenials": denials, "commandFailures": failures,
@@ -220,13 +216,13 @@ def cycle_outcome(*, outcome: object, candidate: object, advanced: object,
     has_candidate = not _blank(candidate)
     if reported == "passed":
         state = "tests_passed"
-    elif reported == "no_tests_required":
-        state = "no_tests_required"
+    elif reported in _NOTHING_TO_RUN:
+        state = reported
     elif reported == "code_failed":
         state = ("tests_failed_fix_unavailable" if advanced is False
                  else "tests_failed_after_fix_budget")
-    elif reported == "configuration_blocked":
-        state = "command_discovery_blocked" if has_candidate else "candidate_commit_missing"
+    elif reported == "invalid_input":
+        state = "verification_input_invalid" if has_candidate else "candidate_commit_missing"
     elif reported in {"infra_blocked", "cancelled"}:
         state = "runtime_unavailable"
     else:
@@ -242,7 +238,7 @@ def cycle_outcome(*, outcome: object, candidate: object, advanced: object,
     return {
         "testCycleState": state,
         "testsRan": state in _RAN,
-        "testsPassed": state in {"tests_passed", "no_tests_required"},
+        "testsPassed": state == "tests_passed" or state in _NOTHING_TO_RUN,
         "testRunCount": run_count,
         "fixAttempts": fixes,
         "commandSource": resolved_source,

@@ -23,6 +23,15 @@ DEFAULT_ALLOWED_TOOLS = [
     # while the deny list below still wins for destructive/global variants.
     "Bash(git mv *)", "Bash(git rm *)", "Bash(mv *)", "Bash(rm *)",
     "Bash(mkdir *)", "Bash(cp *)", "Bash(touch *)",
+    # What the swarm itself puts in the tree: the board client and the Architect's frozen checks
+    # (`bash .cc/checks/scenario.sh`), and the program the agent just built (`./target/release/pgdb
+    # --port 2345`). A Claude session on run 1cabdcac was denied all three and shipped a Postgres
+    # server it had never started; the OS sandbox, not this list, is what contains these commands.
+    "Bash(.cc-cache/bin/*)", "Bash(bash .cc/checks/*)", "Bash(sh .cc/checks/*)", "Bash(./*)",
+    # Drive what was built the way the request says a user will (a database or HTTP client), and the
+    # small glue a readiness loop needs.
+    "Bash(psql *)", "Bash(curl *)", "Bash(sleep *)", "Bash(echo *)", "Bash(command -v *)", "Bash(which *)",
+    "Bash(kill *)", "Bash(lsof *)",
 ]
 
 DEFAULT_DISALLOWED_TOOLS = [
@@ -37,33 +46,3 @@ def denied_without_changes(changed, denials) -> bool:
     return not changed and bool(denials)
 
 
-def test_command_allow_pattern(test_cmd: str) -> str | None:
-    """Derive a scoped Bash allow-pattern from a `tasks.md`-declared `Test:` command's
-    first whitespace-delimited token, e.g. ``"make check"`` -> ``"Bash(make *)"``.
-
-    Known limitation: a compound command (``cd tests && pytest``, or anything else
-    chained with `&&`/`;`) only matches on its literal first token, so `cd` (not
-    itself allowed) would make the whole command fall through to denial. `Test:`
-    commands are expected to be single invocations, per `TASKS_RULE`'s own example
-    (`Test: pytest path/to/test_a.py`); this is a documented authoring constraint,
-    not something this function resolves.
-    """
-    token = test_cmd.strip().split(maxsplit=1)[0] if test_cmd.strip() else ""
-    if not token:
-        return None
-    return f"Bash({token} *)"
-
-
-def allowed_tools_for_test_command(test_cmd: str) -> list[str]:
-    """`DEFAULT_ALLOWED_TOOLS` plus a pattern derived from ``test_cmd``, for a
-    `coding_agent` call that must run a subtask's declared `Test:` command.
-
-    Must be passed as the full `allowedTools` list, never merged after the fact:
-    `coding_agent`'s `allowedTools` input replaces the default list rather than
-    extending it, so omitting the defaults here would silently deny everything
-    else (git, file edits) for that call.
-    """
-    pattern = test_command_allow_pattern(test_cmd)
-    if pattern is None or pattern in DEFAULT_ALLOWED_TOOLS:
-        return list(DEFAULT_ALLOWED_TOOLS)
-    return [*DEFAULT_ALLOWED_TOOLS, pattern]

@@ -374,7 +374,6 @@
             "modelOverrides": "${workflow.input.modelOverrides}",
             "modelResolution": "${model_policy.output}"
           },
-          "type": "SIMPLE",
           "decisionCases": {},
           "defaultCase": []
         },

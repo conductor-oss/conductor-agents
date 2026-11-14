@@ -1,11 +1,10 @@
 """Coalesce Conductor's occasional same-task redelivery for non-idempotent work.
 
 Conductor can redeliver a still-SCHEDULED task before a worker's final result is
-posted -- confirmed live: two concurrent executions of
-test_authored_test_commit_verify both ran `git commit` against the same repo for
-the same task_id; the second saw nothing left to stage (the first had already
-committed it) and its "no committable change" result overwrote the first's real
-"accepted" result. coding_agent/tasks.py already guards its own worker the same
+posted -- confirmed live: two concurrent executions of one commit-and-verify task
+both ran `git commit` against the same repo for the same task_id; the second saw
+nothing left to stage (the first had already committed it) and its "no committable
+change" result overwrote the first's real "accepted" result. coding_agent/tasks.py already guards its own worker the same
 way this module generalizes: any worker task whose body is expensive and NOT
 safe to run twice against the same checkout (a git commit, a real command
 execution, an LLM session) should coalesce concurrent deliveries of the same

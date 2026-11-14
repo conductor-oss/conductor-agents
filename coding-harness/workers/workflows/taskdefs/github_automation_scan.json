@@ -83,10 +83,6 @@
                 "type": "string",
                 "description": "Name of the child workflow to launch (pr_review, address_pr, or issue_to_pr)."
               },
-              "childWorkflowVersion": {
-                "type": "integer",
-                "description": "Version of the child workflow to launch."
-              },
               "number": {
                 "type": "integer",
                 "description": "PR or issue number."

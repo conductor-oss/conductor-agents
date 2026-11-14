@@ -28,6 +28,8 @@ def _apply_model_choice(workflow: str, inputs: dict) -> dict:
     lowered = model.lower()
     if workflow in {"code_parallel", "issue_to_pr"}:
         result.update({"planModel": model, "codeModel": model})
+    elif workflow in {"sdlc_intake", "cc_program"}:
+        result["codeModel"] = model
     elif workflow == "feature_campaign":
         result.update({"designModel": model, "planModel": model, "codeModel": model, "reviewModel": model})
     else:
@@ -41,7 +43,7 @@ def _required_inputs(workflow: str) -> list[str]:
         return []
     keys: list[str] = []
     for f in spec.fields:
-        if f.required:
+        if f.must_fill:
             keys.extend(f.targets)
     return keys
 
@@ -94,18 +96,22 @@ TOOLS = [
             "they want. Workflows and their REQUIRED inputs: "
             "local_review{repoPath}, pr_review{repo, prNumber}, issue_to_pr{repo, issueNumber, design}, "
             "address_pr{repo, prNumber}, code_parallel{repoPath, instruction}, "
+            "sdlc_intake{repoPath, request} -- the agent swarm front door: routes to one agent, parallel "
+            "agents, or a collaborating team on a shared board; forceTeam:true always runs the team; "
+            "cc_program{repoPath, description} -- teams of teams for a multi-subsystem program, "
             "feature_campaign{one of repo/repoPath/workspacePath, one of instruction/issueNumber} "
             "-- repoPath is a local directory the user names, repo is a GitHub URL/owner-name slug "
             "to clone fresh; never put one under the other's key, "
             "openspec_development{specSource, changeId, repoPath?}; useSpecSourceWorkspace:true selects a local "
-            "checked-out spec repository as the implementation worktree and publishes a draft PR. feature_campaign is checkpoint-first, "
-            "keeps its verified branch local by default, and pushes/opens a PR only with explicit createPr:true. "
+            "checked-out spec repository as the implementation worktree and publishes a draft PR. feature_campaign is checkpoint-first "
+            "and always pauses at a pr_draft checkpoint to ask whether to open a PR, pushing and opening one only on approval. "
             "openspec_development accepts local paths, Git remotes, or public HTTPS archives, "
             "routes automatically unless executionMode is set, and may pause when it selects a campaign. "
             "Every coding workflow accepts keepWorktree (default true). GitHub workflows also "
             "accept optional repoPath for a local source checkout; the run uses an isolated worktree. "
             "For direct local implementation use code_parallel{repoPath,inPlace:true,contextPaths?} "
-            "or feature_campaign{repoPath,inPlace:true,contextPaths?}; inPlace never pushes or creates a PR. "
+            "or feature_campaign{repoPath,inPlace:true,contextPaths?}; code_parallel inPlace never pushes, "
+            "while feature_campaign still asks at its pr_draft checkpoint before pushing. "
             "Planning uses OpenSpec only when repoPath already contains openspec/; otherwise "
             "contextPaths may point to Markdown, text, or document folders and are used directly. "
             "For issue_to_pr, design must be an explicit boolean supplied by the user; never infer it. "
@@ -130,7 +136,7 @@ TOOLS = [
         "name": "register_workflows",
         "description": (
             "Register or update all harness task and workflow definitions on the selected "
-            "Conductor server, then run the SIMPLE-task worker gate. Use this when the user "
+            "Conductor server. Use this when the user "
             "asks to register, re-register, update, or refresh workflows. Requires confirmation."
         ),
         "input_schema": {"type": "object", "properties": {}},
@@ -219,10 +225,35 @@ TOOLS = [
             "number": {"type": "integer"}, "revision": {"type": "string"},
         }, "required": ["repo", "kind", "number", "revision"]},
     },
+    {
+        "name": "message_swarm",
+        "description": (
+            "Deliver the user's steering or feedback to a running agent swarm/team (sdlc_intake, team_build, "
+            "cc_program). Use whenever the user tells the team what to do, change, stop, terminate, or prefer "
+            "while it is working. Pass the user's words VERBATIM as message -- do not rephrase or split; the "
+            "harness routes it to the right item, child team, or the whole team and records it under the "
+            "user's identity. Omit runId when exactly one swarm run is active. No confirmation needed: the "
+            "user's own message is the instruction."),
+        "input_schema": {
+            "type": "object",
+            "properties": {"message": {"type": "string"}, "runId": {"type": "string"}},
+            "required": ["message"],
+        },
+    },
+    {
+        "name": "swarm_state",
+        "description": (
+            "Get the CURRENT state of a running agent swarm (phase, progress, teams, what each agent is doing "
+            "right now, escalations, spend), or answer a question about it. Use whenever the user asks how it "
+            "is going, where it is, what a team or agent is doing, or why something is stuck. Pass the user's "
+            "question verbatim as question for a direct answer; omit it for the structured state. Omit runId "
+            "when exactly one swarm run is active."),
+        "input_schema": {
+            "type": "object",
+            "properties": {"question": {"type": "string"}, "runId": {"type": "string"}},
+        },
+    },
 ]
-
-MUTATIONS = {"start_workflow", "register_workflows", "terminate_run", "retry_run",
-             "decide_approval", "save_schedule", "schedule_action", "reset_automation_item"}
 
 
 @dataclass
@@ -249,6 +280,10 @@ async def _run(name: str, i: dict, ctx: ToolContext) -> str:
         return await _list_runs(i, ctx)
     if name == "get_run":
         return await _get_run(i, ctx)
+    if name == "message_swarm":
+        return await _message_swarm(i, ctx)
+    if name == "swarm_state":
+        return await _swarm_state(i, ctx)
     if name == "start_workflow":
         return await _start(i, ctx)
     if name == "register_workflows":
@@ -294,6 +329,75 @@ async def _list_runs(i: dict, ctx: ToolContext) -> str:
         return "no runs match."
     lines = [f"{r.id}  {r.status:10} {r.workflow:13} {r.target}" for r in picked]
     return "\n".join(lines)
+
+
+SWARM_WORKFLOWS = ("sdlc_intake", "team_build", "cc_program")
+
+
+async def _board_run(run_id: str, workflow: str, ctx: ToolContext) -> str:
+    """The run whose board takes steering: sdlc_intake hands its build to a child team_build."""
+    if workflow != "sdlc_intake":
+        return run_id
+    d = await ctx.client.get_run(run_id, recurse=False, only_running=False)
+    child = next((t.sub_workflow_id for t in d.tasks if t.ref == "run_team" and t.sub_workflow_id), None)
+    if not child:
+        raise ValueError(f"{run_id} did not route to a team (no shared board to steer)")
+    return child
+
+
+async def _resolve_swarm_run(i: dict, ctx: ToolContext) -> str:
+    """The board run a swarm tool acts on: ``runId`` when given, else the one active swarm run. Raises
+    ValueError with a user-facing message when there is none or several."""
+    run_id = str(i.get("runId") or "").strip()
+    if run_id:
+        d = await ctx.client.get_run(run_id, recurse=False, only_running=False)
+        return await _board_run(run_id, d.run.workflow, ctx)
+    runs = [r for r in await ctx.client.search_runs(limit=50)
+            if r.workflow in SWARM_WORKFLOWS and r.running and not (r.input or {}).get("parentCorrelationId")]
+    boards: dict[str, str] = {}
+    for r in runs:
+        try:
+            boards.setdefault(await _board_run(r.id, r.workflow, ctx), f"{r.workflow} {r.id}")
+        except ValueError:
+            continue
+    if not boards:
+        raise ValueError("no swarm run is active -- start one (sdlc_intake or cc_program) or pass runId")
+    if len(boards) > 1:
+        raise ValueError("several swarm runs are active; ask the user which one: "
+                         + "; ".join(f"{label} (board {b})" for b, label in boards.items()))
+    return next(iter(boards))
+
+
+async def _message_swarm(i: dict, ctx: ToolContext) -> str:
+    import asyncio
+    from .. import board as board_mod
+    from .. import steer_message
+    message = str(i.get("message") or "").strip()
+    if not message:
+        return "error: message is empty"
+    try:
+        target = await _resolve_swarm_run(i, ctx)
+    except ValueError as e:
+        return f"error: {e}"
+    result = await asyncio.to_thread(steer_message.send, target, message, author=board_mod.current_author())
+    return f"delivered to run {target}: {steer_message.describe(result)}"
+
+
+async def _swarm_state(i: dict, ctx: ToolContext) -> str:
+    import asyncio
+    import json as _json
+    from .. import swarm_state
+    try:
+        target = await _resolve_swarm_run(i, ctx)
+    except ValueError as e:
+        return f"error: {e}"
+    question = str(i.get("question") or "").strip()
+    if question:
+        got = await asyncio.to_thread(swarm_state.ask, target, question)
+        return got.get("answer") or f"error: {got.get('error')}"
+    snap = await asyncio.to_thread(swarm_state.snapshot, target)
+    return snap["summary"] + "\n" + _json.dumps({k: snap[k] for k in ("phase", "progress", "teams",
+                                                                    "activeAgents", "escalations")}, default=str)[:3000]
 
 
 async def _get_run(i: dict, ctx: ToolContext) -> str:
@@ -344,8 +448,6 @@ async def _start(i: dict, ctx: ToolContext) -> str:
         inputs = _apply_model_choice(wf, inputs)
     except ProfileError as exc:
         return f"error: {exc} No workflow was started."
-    if inputs.get("inPlace") and inputs.get("createPr"):
-        return "inPlace execution is local-only: set createPr:false. No workflow was started."
     missing = [k for k in _required_inputs(wf) if k not in inputs or inputs.get(k) in (None, "")]
     missing_groups = _missing_at_least_one_groups(wf, inputs)
     if missing or missing_groups:

@@ -130,7 +130,7 @@ def independent_pr_verification(repo: str, pr_number: int, *, workdir: Path) -> 
     try:
         outcome = verification.verify_candidate(str(clone_dir), sha, scope="repository", allow_heavy=True)
     except verification.VerificationBlocked as exc:
-        outcome = {"verificationState": "blocked", "executionOutcome": "configuration_blocked",
+        outcome = {"verificationState": "blocked", "executionOutcome": "invalid_input",
                   "reason": str(exc), "commands": []}
     return {"pr": pr, "verification": outcome}
 

@@ -402,6 +402,7 @@
           "name": "wave_join",
           "taskReferenceName": "wave_join",
           "type": "JOIN",
+          "joinMode": "SYNC",
           "decisionCases": {},
           "defaultCase": []
         },

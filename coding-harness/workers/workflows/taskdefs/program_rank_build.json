@@ -1,0 +1,12 @@
+{
+  "name": "program_rank_build",
+  "description": "Closure plan WP5 (H3): fork the next unbuilt rank as concurrent child teams (team_build, or a nested cc_program within maxDepth), each with a share of the remaining program budget.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

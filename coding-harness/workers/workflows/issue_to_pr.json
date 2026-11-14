@@ -28,8 +28,6 @@
     "codePromptTemplateSource",
     "maxTurns",
     "maxBudgetUsd",
-    "allowAgentTestPlan",
-    "allowAgentAuthoredTests",
     "modelOverrides",
     "modelPolicy",
     "modelPolicySha256",
@@ -56,8 +54,6 @@
     "codePromptTemplateSource": "",
     "maxTurns": 300,
     "maxBudgetUsd": 50,
-    "allowAgentTestPlan": true,
-    "allowAgentAuthoredTests": true,
     "modelProfile": "",
     "modelPolicy": {},
     "modelPolicySource": "",
@@ -93,8 +89,7 @@
     "prDraft": true,
     "pushed": false,
     "prNumber": 0,
-    "prUrl": "",
-    "agentAuthoredTest": false
+    "prUrl": ""
   },
   "tasks": [
     {
@@ -146,8 +141,7 @@
       "type": "SUB_WORKFLOW",
       "optional": true,
       "subWorkflowParam": {
-        "name": "code_parallel",
-        "version": 1
+        "name": "code_parallel"
       },
       "inputParameters": {
         "callerWorkflow": "issue_to_pr",
@@ -217,8 +211,7 @@
       "type": "SUB_WORKFLOW",
       "optional": true,
       "subWorkflowParam": {
-        "name": "test_cycle",
-        "version": 1
+        "name": "test_cycle"
       },
       "inputParameters": {
         "repoPath": "${publication_workspace.output.worktreePath}",
@@ -236,9 +229,7 @@
         "modelOverrides": "${workflow.input.modelOverrides}",
         "maxFixAttempts": 4,
         "testMode": "full",
-        "allowHeavySuites": true,
-        "allowAgentTestPlan": "${workflow.input.allowAgentTestPlan}",
-        "allowAgentAuthoredTests": "${workflow.input.allowAgentAuthoredTests}"
+        "allowHeavySuites": true
       }
     },
     {
@@ -265,7 +256,6 @@
         "candidateCommit": "${normalize_verified_delivery.output.commit}",
         "verificationState": "${normalize_verified_delivery.output.state}",
         "deliveryOutcome": "${normalize_verified_delivery.output.state}",
-        "agentAuthoredTest": "${normalize_verified_delivery.output.verification.agentAuthoredTest}",
         "deliveryRepairAttempts": "${normalize_verified_delivery.output.repairAttempts}",
         "deliveryReports": "${normalize_verified_delivery.output.reports}",
         "missingPaths": "${normalize_verified_delivery.output.missingPaths}",
@@ -295,8 +285,7 @@
             "taskReferenceName": "pr_draft_approval",
             "type": "SUB_WORKFLOW",
             "subWorkflowParam": {
-              "name": "pr_draft_approval",
-              "version": 1
+              "name": "pr_draft_approval"
             },
             "inputParameters": {
               "callerWorkflow": "issue_to_pr",
@@ -380,8 +369,7 @@
       "type": "SIMPLE",
       "optional": true,
       "inputParameters": {
-        "deliveryOutcome": "${workflow.variables.deliveryOutcome}",
-        "agentAuthoredTest": "${workflow.variables.agentAuthoredTest}"
+        "deliveryOutcome": "${workflow.variables.deliveryOutcome}"
       }
     },
     {
@@ -480,8 +468,7 @@
     "prNumber": "${workflow.variables.prNumber}",
     "prUrl": "${workflow.variables.prUrl}",
     "prDraft": "${workflow.variables.prDraft}",
-    "publicationReason": "${workflow.variables.publicationReason}",
-    "agentAuthoredTest": "${workflow.variables.agentAuthoredTest}"
+    "publicationReason": "${workflow.variables.publicationReason}"
   },
   "inputSchema": {
     "name": "issue_to_pr_input",
@@ -593,16 +580,6 @@
           "type": "number",
           "default": 50,
           "description": "USD budget ceiling forwarded to code_parallel and test_cycle coding sessions."
-        },
-        "allowAgentTestPlan": {
-          "type": "boolean",
-          "default": true,
-          "description": "Forwarded to the final full-suite test_cycle sub-workflow: when true and deterministic discovery is configuration_blocked, lets a coding agent search for and propose an existing test command as a last resort."
-        },
-        "allowAgentAuthoredTests": {
-          "type": "boolean",
-          "default": true,
-          "description": "Forwarded to the final full-suite test_cycle sub-workflow: when true and allowAgentTestPlan's search also finds nothing, lets a coding agent author exactly one new test file, accepted only after a red/green check (fails against the pre-candidate baseline, passes against the real candidate change)."
         },
         "modelOverrides": {
           "type": "object",
@@ -857,10 +834,6 @@
         "publicationReason": {
           "type": "string",
           "description": "Explanation for the chosen publication plan; empty when the delivery outcome was 'passed'."
-        },
-        "agentAuthoredTest": {
-          "type": "boolean",
-          "description": "True only when the final test_cycle accepted a coding-agent-authored test (no pre-existing test covered the change); forces prDraft=true as defense in depth alongside the red/green check that already proved the test isn't vacuous."
         }
       },
       "required": [
@@ -890,8 +863,7 @@
         "prNumber",
         "prUrl",
         "prDraft",
-        "publicationReason",
-        "agentAuthoredTest"
+        "publicationReason"
       ]
     }
   },

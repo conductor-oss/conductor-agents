@@ -142,43 +142,6 @@ def test_template_still_defers_to_discovery_when_it_is_at_prefixed():
     assert resolved["commandSource"] == "build_system_inference"
 
 
-def test_agent_proposal_is_used_only_when_discovery_and_carried_obligations_are_both_empty():
-    resolved = test_plan.resolve_plan(
-        discovered=[], prior=None, user=None,
-        agent=[{"argv": ["pytest", "agent.py"], "source": "agent-proposal", "kind": "agent"}],
-        discovery_outcome="configuration_blocked", discovery_reason="unmapped", selection=None)
-    assert [c["argv"] for c in resolved["commands"]] == [["pytest", "agent.py"]]
-    assert resolved["commandSource"] == "agent_proposal"
-    assert resolved["discoveryOutcome"] == "discovered"
-
-
-def test_agent_proposal_never_outranks_a_deterministic_or_operator_source():
-    # Deterministic discovery present -> the agent proposal is not even consulted.
-    resolved = test_plan.resolve_plan(
-        discovered=[{"argv": ["go", "test", "./x"], "source": "build-metadata:go"}],
-        prior=None, user=None, agent=[{"argv": ["pytest", "agent.py"]}],
-        discovery_outcome="discovered", discovery_reason=None, selection="changed-scope")
-    assert resolved["commandSource"] == "build_system_inference"
-
-    # An operator override present -> same, the agent proposal is not consulted.
-    resolved = test_plan.resolve_plan(
-        discovered=[], prior=None, user=[["pytest", "operator.py"]],
-        agent=[{"argv": ["pytest", "agent.py"]}],
-        discovery_outcome="configuration_blocked", discovery_reason=None, selection=None)
-    assert resolved["commandSource"] == "user_template"
-    assert [c["argv"] for c in resolved["commands"]] == [["pytest", "operator.py"]]
-
-
-def test_an_empty_or_malformed_agent_proposal_never_raises_and_leaves_the_plan_blocked():
-    for junk in (None, [], "not a list", [None], [{}]):
-        resolved = test_plan.resolve_plan(
-            discovered=[], prior=None, user=None, agent=junk,
-            discovery_outcome="configuration_blocked", discovery_reason="unmapped", selection=None)
-        assert resolved["commands"] == []
-        assert resolved["commandSource"] == "none"
-        assert resolved["discoveryOutcome"] == "configuration_blocked"
-
-
 def test_carried_obligations_merge_with_discovery_and_dedupe():
     resolved = test_plan.resolve_plan(
         discovered=[{"argv": ["pytest", "a.py"]}],
@@ -226,8 +189,8 @@ def test_run_count_reports_executions_not_attempts():
 
 
 def test_every_outcome_and_flag_combination_yields_a_declared_state():
-    declared = {"tests_passed", "no_tests_required", "tests_failed_after_fix_budget",
-                "tests_failed_fix_unavailable", "command_discovery_blocked",
+    declared = {"tests_passed", "no_tests_required", "no_tests_found", "tests_failed_after_fix_budget",
+                "tests_failed_fix_unavailable", "verification_input_invalid",
                 "runtime_unavailable", "candidate_commit_missing",
                 "verifier_worker_unavailable"}
     produced = {
@@ -235,7 +198,7 @@ def test_every_outcome_and_flag_combination_yields_a_declared_state():
                                 attempts=0, runs=1, source="none",
                                 verification={"commands": []}, mode="targeted")["testCycleState"]
         for outcome, candidate, advanced in itertools.product(
-            ("passed", "no_tests_required", "code_failed", "configuration_blocked",
+            ("passed", "no_tests_required", "no_tests_found", "code_failed", "invalid_input",
              "infra_blocked", "cancelled", "pending", None),
             ("abc", "", None), (True, False, None))
     }

@@ -1,0 +1,82 @@
+{
+  "name": "bootstrap_outcome",
+  "description": "Greenfield on-ramp (roadmap Phase 5, G3): fold the run into an honest verdict. The scaffolded skeleton must be green under its own documented test command before the team hand-off counts; then the first feature's own delivery decides BOOTSTRAPPED vs FEATURE_INCOMPLETE; a run with no requested feature ends SKELETON_READY.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "bootstrap_outcome_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "skeletonGreen": {
+          "type": [
+            "boolean",
+            "string"
+          ]
+        },
+        "featureDelivered": {
+          "type": [
+            "boolean",
+            "string",
+            "null"
+          ]
+        },
+        "featureVerdict": {
+          "type": "string"
+        },
+        "finalHead": {
+          "type": "string"
+        },
+        "featureTestsPassed": {
+          "type": [
+            "boolean",
+            "string",
+            "null"
+          ]
+        },
+        "featureTestState": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "bootstrap_outcome_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "bootstrapped": {
+          "type": "boolean"
+        },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "BOOTSTRAPPED",
+            "SKELETON_READY",
+            "SKELETON_NOT_GREEN",
+            "FEATURE_INCOMPLETE"
+          ]
+        },
+        "report": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "bootstrapped",
+        "verdict",
+        "report"
+      ]
+    }
+  }
+}

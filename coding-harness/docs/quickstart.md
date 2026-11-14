@@ -19,7 +19,7 @@ From `coding-harness/`:
 ```
 
 The script creates the worker environment, starts a local Conductor server when needed,
-registers or updates task/workflow definitions, runs the SIMPLE-task worker gate, and starts the
+registers or updates task/workflow definitions and starts the
 workers. Set `CONDUCTOR_SERVER_URL` first to use a remote server.
 
 ## Run a local coding workflow
@@ -70,10 +70,20 @@ conductor workflow start --workflow feature_campaign -i \
   '{"repoPath":"/absolute/path/to/repo","instruction":"Implement the new subsystem"}'
 ```
 
+Pass `repo` instead of `repoPath` to clone from GitHub rather than use a local checkout, and
+`issueNumber` instead of `instruction` to take the instruction from a GitHub issue. Each pair is
+"at least one of", enforced at the start of the run:
+
+```bash
+conductor workflow start --workflow feature_campaign -i \
+  '{"repo":"acme/app","issueNumber":3997}'
+```
+
 The branch defaults to `feature-campaign/<workflow-id>` and is committed after successful final
 verification. Open the run in the TUI to respond to design, plan, wave, attached-server, and
-final-verification checkpoints. Set `createPr: true` to push the verified branch and open a PR;
-otherwise the campaign remains local.
+final-verification checkpoints. The campaign then always asks, at a PR-draft checkpoint,
+whether to open a PR; approving pushes the verified branch and opens it, and anything else leaves
+the branch local.
 
 To drive development from an apply-ready OpenSpec change in the same repository:
 

@@ -1,0 +1,21 @@
+[project]
+name = "swarm-substrate"
+version = "0.1.0"
+description = "Generic, harness-agnostic swarm substrate (append-only blackboard: facts, artifacts, lock-free budget, message bus) shared by the coding and security harnesses."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+s3 = ["boto3"]
+test = ["pytest"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["swarm_substrate"]
+package-dir = {"swarm_substrate" = "."}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

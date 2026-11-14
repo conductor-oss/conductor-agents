@@ -1,0 +1,301 @@
+{
+  "name": "swarm",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "The simple swarm: an architect agent designs, writes acceptance checks and splits the work; a team of agents builds the items in parallel in ONE shared private clone, committing and combining their own work and reasoning about any conflict; the harness measures the architect's checks and the architect judges each round and names the next items, until delivered or the budget is spent. The harness provisions, fans out, measures and loops; it makes no judgments.",
+  "inputParameters": [
+    "repoPath",
+    "description",
+    "branchName",
+    "maxRounds",
+    "maxWidth",
+    "ceilingUsd",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "restartable": true,
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "repo_memory_read",
+      "taskReferenceName": "memory_read",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "swarm_setup",
+      "taskReferenceName": "setup",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "description": "${workflow.input.description}",
+        "runId": "${workflow.workflowId}",
+        "branchName": "${workflow.input.branchName}",
+        "modelResolution": "${model_policy.output}"
+      }
+    },
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "plan",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "worktreePath": "${setup.output.workdir}",
+        "modelRole": "design",
+        "sharedTree": true,
+        "allowedWriteRoots": [],
+        "allowedTools": "${setup.output.allowedTools}",
+        "disallowedTools": "${setup.output.disallowedTools}",
+        "feedbackCorrelationId": "${workflow.workflowId}",
+        "feedbackRunId": "${workflow.workflowId}",
+        "feedbackItem": "architect",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "templateKey": "swarm_plan",
+        "promptContext": {
+          "request": "${workflow.input.description}",
+          "branch": "${setup.output.branch}",
+          "memory": "${memory_read.output.digest}",
+          "history": "${setup.output.history}",
+          "ladder": "${setup.output.ladder}",
+          "maxRung": "${setup.output.maxRung}"
+        },
+        "schema": "${setup.output.schemas.items}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelResolution": "${model_policy.output}",
+        "promptTemplate": "",
+        "promptTemplateSource": "",
+        "spendRunId": "${workflow.workflowId}",
+        "spendAuthor": "architect"
+      }
+    },
+    {
+      "name": "seed_round",
+      "taskReferenceName": "seed_round",
+      "type": "SET_VARIABLE",
+      "inputParameters": {
+        "items": "${plan.output.structured.items}"
+      }
+    },
+    {
+      "name": "rounds",
+      "taskReferenceName": "rounds",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ var cur = $.rounds[String($.rounds['iteration'])] || {}; var stop = (cur['decide'] || {})['stop']; return $.rounds['iteration'] < $.max_rounds && stop !== true; })();",
+      "inputParameters": {
+        "max_rounds": "${workflow.input.maxRounds}",
+        "rounds": "${rounds.output}"
+      },
+      "loopOver": [
+        {
+          "name": "swarm_dispatch",
+          "taskReferenceName": "dispatch",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "items": "${workflow.variables.items}",
+            "round": "${rounds.output.iteration}",
+            "workdir": "${setup.output.workdir}",
+            "branch": "${setup.output.branch}",
+            "description": "${workflow.input.description}",
+            "runId": "${workflow.workflowId}",
+            "maxWidth": "${workflow.input.maxWidth}",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}",
+            "ceilingUsd": "${workflow.input.ceilingUsd}",
+            "repoPath": "${workflow.input.repoPath}"
+          }
+        },
+        {
+          "name": "work",
+          "taskReferenceName": "work",
+          "type": "FORK_JOIN_DYNAMIC",
+          "optional": true,
+          "inputParameters": {
+            "dynamicTasks": "${dispatch.output.dynamicTasks}",
+            "dynamicTasksInput": "${dispatch.output.dynamicTasksInput}"
+          },
+          "dynamicForkTasksParam": "dynamicTasks",
+          "dynamicForkTasksInputParamName": "dynamicTasksInput"
+        },
+        {
+          "name": "work_join",
+          "taskReferenceName": "work_join",
+          "type": "JOIN",
+          "joinMode": "SYNC",
+          "optional": true
+        },
+        {
+          "name": "swarm_round",
+          "taskReferenceName": "fold",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "runId": "${workflow.workflowId}",
+            "round": "${rounds.output.iteration}",
+            "repoPath": "${workflow.input.repoPath}",
+            "modelResolution": "${model_policy.output}"
+          }
+        },
+        {
+          "name": "swarm_measure",
+          "taskReferenceName": "measure",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "workdir": "${setup.output.workdir}",
+            "label": "swarm round ${rounds.output.iteration}"
+          }
+        },
+        {
+          "name": "coding_agent",
+          "taskReferenceName": "evaluate",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "worktreePath": "${setup.output.workdir}",
+            "modelRole": "review",
+            "sharedTree": true,
+            "allowedWriteRoots": [],
+            "allowedTools": "${setup.output.allowedTools}",
+            "disallowedTools": "${setup.output.disallowedTools}",
+            "feedbackCorrelationId": "${workflow.workflowId}",
+            "feedbackRunId": "${workflow.workflowId}",
+            "feedbackItem": "architect",
+            "modelProfile": "${workflow.input.modelProfile}",
+            "modelPolicy": "${workflow.input.modelPolicy}",
+            "modelPolicySource": "${workflow.input.modelPolicySource}",
+            "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+            "templateKey": "swarm_evaluate",
+            "promptContext": {
+              "request": "${workflow.input.description}",
+              "branch": "${setup.output.branch}",
+              "memory": "${memory_read.output.digest}",
+              "history": "${setup.output.history}",
+              "ladder": "${setup.output.ladder}",
+              "maxRung": "${setup.output.maxRung}",
+              "round": "${rounds.output.iteration}",
+              "reports": "${fold.output.reports}",
+              "measurement": "${measure.output.summary}",
+              "changes": "${measure.output.changes}"
+            },
+            "schema": "${setup.output.schemas.evaluate}",
+            "modelsConfig": "${workflow.input.modelsConfig}",
+            "modelOverrides": "${workflow.input.modelOverrides}",
+            "modelResolution": "${model_policy.output}",
+            "promptTemplate": "",
+            "promptTemplateSource": "",
+            "modelTier": "${fold.output.roundReviewRung}",
+            "spendRunId": "${workflow.workflowId}",
+            "spendAuthor": "architect"
+          }
+        },
+        {
+          "name": "swarm_measure",
+          "taskReferenceName": "remeasure",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "workdir": "${setup.output.workdir}",
+            "label": "swarm round ${rounds.output.iteration}: architect review",
+            "previous": "${measure.output}"
+          }
+        },
+        {
+          "name": "swarm_round",
+          "taskReferenceName": "decide",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "evaluation": "${evaluate.output}",
+            "allGreen": "${remeasure.output.allGreen}",
+            "ceilingUsd": "${workflow.input.ceilingUsd}",
+            "runId": "${workflow.workflowId}",
+            "round": "${rounds.output.iteration}",
+            "repoPath": "${workflow.input.repoPath}",
+            "roundReviewRung": "${fold.output.roundReviewRung}"
+          }
+        },
+        {
+          "name": "next",
+          "taskReferenceName": "next",
+          "type": "SET_VARIABLE",
+          "inputParameters": {
+            "items": "${decide.output.items}",
+            "delivered": "${decide.output.delivered}",
+            "assessment": "${decide.output.assessment}",
+            "spentUsd": "${decide.output.spentUsd}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "repo_memory_write",
+      "taskReferenceName": "memory_write",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "repoPath": "${setup.output.workdir}",
+        "correlationId": "${workflow.workflowId}"
+      }
+    },
+    {
+      "name": "swarm_finish",
+      "taskReferenceName": "finish",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "workdir": "${setup.output.workdir}",
+        "branch": "${setup.output.branch}",
+        "delivered": "${workflow.variables.delivered}",
+        "originalBranch": "${setup.output.originalBranch}",
+        "originalHead": "${setup.output.originalHead}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "verdict": "${finish.output.verdict}",
+    "delivered": "${finish.output.delivered}",
+    "sourceHandoff": "${finish.output.sourceHandoff}",
+    "branch": "${finish.output.branch}",
+    "head": "${finish.output.head}",
+    "assessment": "${workflow.variables.assessment}",
+    "spendUsd": "${workflow.variables.spentUsd}",
+    "rounds": "${rounds.output.iteration}"
+  },
+  "inputTemplate": {
+    "maxRounds": 8,
+    "maxWidth": 10,
+    "ceilingUsd": 60,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {},
+    "branchName": ""
+  }
+}

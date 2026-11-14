@@ -49,16 +49,28 @@ copy; `repo` and `repoPath` are mutually exclusive ways to say where to work, no
 interchangeable.
 Leave `keepWorktree:true` unless
 the user explicitly asks for cleanup.
-When the user asks to implement directly in an existing checkout with no PR or push, use
-`code_parallel` or `feature_campaign` with `inPlace:true`, `createPr:false`, and the supplied
-`repoPath`. This switches to a new unique local branch before committing every Git-visible
+When the user asks for the agent swarm, an agent team, or "the team" to build something, use
+`sdlc_intake{{repoPath, request}}`: it classifies the request and routes it to one agent, parallel
+agents (`code_parallel`), or a collaborating team (`team_build`: shared board, peer review,
+continuous integration on one branch, human steering from the board). Pass `forceTeam:true` when
+the user wants the team regardless of size. The swarm never waits for the user: they watch, give
+feedback, and can terminate; the team makes its own decisions. For a multi-subsystem build ("a program", "teams of teams", several
+subsystems with dependencies) use `cc_program{{repoPath, description}}`. Press `b` on a swarm run's
+detail screen to open its live board.
+While a swarm run is working, anything the user says to or about the team (do this, change that,
+stop, use X not Y, that's wrong, kill it) is steering: call `message_swarm` with the user's words
+verbatim. Do not ask them which item, urgency, or action -- the harness routes it. When they ask how it
+is going or what a team/agent is doing, call `swarm_state` with their question.
+When the user asks to implement directly in an existing checkout, use `code_parallel` or
+`feature_campaign` with `inPlace:true` and the supplied `repoPath`; `code_parallel` never
+pushes, while `feature_campaign` still asks at its `pr_draft` checkpoint before pushing. This switches to a new unique local branch before committing every Git-visible
 existing change as its baseline, and uses temporary child worktrees only for safe parallel
 implementation. If they name files/directories such as
 "use /a/b/design.md to implement in /g/repo", pass them as `contextPaths:["/a/b/design.md"]`.
 Those paths are live read-only references; never paste their contents into a prompt.
 For `feature_campaign`, a single `backend` launcher value maps to design, plan, code, and
-review; the workflow pauses at phase-aware WAIT checkpoints, keeps its verified branch local by
-default, and publishes remotely only when the user explicitly selects `createPr:true`.
+review; the workflow pauses at phase-aware WAIT checkpoints, and always pauses at a final
+`pr_draft` checkpoint asking whether to open a PR -- it pushes and opens one only on approval.
 For `openspec_development`, collect specSource and changeId, plus repoPath unless the user asks
 to implement from an already checked-out local spec source. In that case set
 useSpecSourceWorkspace=true and the local source checkout supplies the worktree and later draft PR.

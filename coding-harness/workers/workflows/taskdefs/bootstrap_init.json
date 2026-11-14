@@ -1,0 +1,15 @@
+{
+  "name": "bootstrap_init",
+  "description": "Greenfield on-ramp (roadmap Phase 5, G3): make an empty/new directory git-ready with an empty base commit (preserving any existing files) so the scaffold agent can commit the skeleton on top and workspace_prepare/test_cycle have a base from run one. Also reports whether a first feature was requested.",
+  "retryCount": 1, "retryLogic": "FIXED", "retryDelaySeconds": 1,
+  "timeoutSeconds": 0, "responseTimeoutSeconds": 0, "pollTimeoutSeconds": 0, "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {"name": "bootstrap_init_input", "type": "JSON", "data": {"type": "object", "properties": {
+    "repoPath": {"type": "string", "description": "The greenfield directory (empty or new)."},
+    "firstFeature": {"type": "string", "description": "Optional first feature to hand to the team after scaffolding."}
+  }, "required": ["repoPath"]}},
+  "outputSchema": {"name": "bootstrap_init_output", "type": "JSON", "data": {"type": "object", "properties": {
+    "repoPath": {"type": "string"}, "initialized": {"type": "boolean"}, "baseCommit": {"type": "string"},
+    "hasFeature": {"type": "boolean"}
+  }, "required": ["repoPath", "baseCommit"]}}
+}

@@ -107,22 +107,91 @@ def test_campaign_defaults_rejects_neither_instruction_nor_issue_given():
 
 
 def test_campaign_pr_closes_the_driving_issue_when_one_was_given():
+    """The issue link is appended by pr_create, never concatenated upstream.
+
+    pr_description keeps only the first prose block, so a ``Closes #n`` glued
+    onto the draft body was dropped during compaction the moment the body
+    carried any real prose in front of it.  Passing issueNumber through to
+    pr_create makes the link survive both compaction and a human edit.
+    """
     wf = _load("feature_campaign")
     defaults = next(x for x in _walk(wf) if x.get("taskReferenceName") == "campaign_defaults")
-    assert "closesLine" in defaults["inputParameters"]["expression"]
-    # pr_create itself reads the resolved publishBody variable (set either by
-    # skip_campaign_pr_approval directly, or by a human-approved/revised
-    # pr_draft_approval outcome) rather than composing the closes-line inline,
-    # so the same text reaches GitHub whichever path produced it.
-    skip = next(x for x in _walk(wf) if x.get("taskReferenceName") == "skip_campaign_pr_approval")
-    assert skip["inputParameters"]["publishBody"] == (
-        "${workflow.input.prBody}${campaign_publication_plan.output.agentAuthoredTestNote}"
-        "${campaign_defaults.output.result.closesLine}"
-    )
-    approval = next(x for x in _walk(wf) if x.get("taskReferenceName") == "campaign_pr_approval")
-    assert approval["inputParameters"]["body"] == skip["inputParameters"]["publishBody"]
+    assert "closesLine" not in defaults["inputParameters"]["expression"]
     pr = next(x for x in _walk(wf) if x.get("taskReferenceName") == "campaign_pr")
+    assert pr["inputParameters"]["issueNumber"] == "${workflow.input.issueNumber}"
+    # pr_create still reads the resolved publishBody variable (set by
+    # record_campaign_pr_approval from the human-approved -- possibly
+    # human-edited or revised -- pr_draft_approval outcome).
+    recorded = next(x for x in _walk(wf)
+                    if x.get("taskReferenceName") == "record_campaign_pr_approval")
+    assert recorded["inputParameters"]["publishBody"] == "${campaign_pr_approval.output.body}"
     assert pr["inputParameters"]["body"] == "${workflow.variables.publishBody}"
+
+
+def test_campaign_pr_draft_carries_composed_prose_not_a_bare_issue_link():
+    """prTitle/prBody are optional, so the draft must fall back to real prose.
+
+    Run 1e565754 published `## Summary\n\nCloses #4001` as its entire PR body:
+    both inputs were blank, the workflow passed them through verbatim, and the
+    auto-appended issue link was the only text left for the description policy
+    to compact.
+    """
+    wf = _load("feature_campaign")
+    approval = next(x for x in _walk(wf) if x.get("taskReferenceName") == "campaign_pr_approval")
+    assert approval["inputParameters"]["title"] == \
+        "${campaign_publication_plan.output.prTitle}"
+    assert approval["inputParameters"]["body"] == \
+        "${campaign_publication_plan.output.prBody}"
+    assert approval["inputParameters"]["summary"] == \
+        "${campaign_publication_plan.output.prSummary}"
+    plan = next(x for x in _walk(wf)
+                if x.get("taskReferenceName") == "campaign_publication_plan")
+    assert plan["inputParameters"]["requestedTitle"] == "${workflow.input.prTitle}"
+    assert plan["inputParameters"]["requestedBody"] == "${workflow.input.prBody}"
+    assert plan["inputParameters"]["issueTitle"] == "${workflow.variables.issueTitle}"
+    assert plan["inputParameters"]["instruction"] == "${workflow.variables.effectiveInstruction}"
+
+    from common import feature_campaign as logic
+    # An issue-driven run with neither input supplied: title from the issue,
+    # body from the effective instruction.
+    composed = logic.resolve_campaign_pr_description(
+        requested_title="", requested_body="", issue_title="Remove workflow introspection",
+        instruction="Resolve GitHub issue #4001: Remove workflow introspection\n\nDrop it.")
+    assert composed["prTitle"] == "Remove workflow introspection"
+    assert composed["prBody"] == "Drop it."
+    assert composed["prSummary"] == composed["prBody"]
+    # Explicit inputs always win.
+    explicit = logic.resolve_campaign_pr_description(
+        requested_title="Given title", requested_body="Given body",
+        issue_title="Issue", instruction="Instruction")
+    assert explicit["prTitle"] == "Given title"
+    assert explicit["prBody"] == "Given body"
+    # The synthetic issue preamble is not the summary: keeping it would make
+    # the published description a restatement of the PR title and throw away
+    # everything the issue actually asked for.
+    from_issue = logic.resolve_campaign_pr_description(
+        requested_title="", requested_body="", issue_title="Remove WorkflowIntrospection",
+        instruction=("Resolve GitHub issue #4001: Remove WorkflowIntrospection\n\n"
+                     "- Remove the class\n- Remove its usages"))
+    assert from_issue["prTitle"] == "Remove WorkflowIntrospection"
+    assert from_issue["prBody"] == "- Remove the class\n- Remove its usages"
+    # A preamble with nothing after it still yields a body rather than nothing.
+    bare = logic.resolve_campaign_pr_description(
+        requested_title="", requested_body="", issue_title="T",
+        instruction="Resolve GitHub issue #7: T")
+    assert bare["prBody"] == "Resolve GitHub issue #7: T"
+    # A line that merely mentions an issue is not a preamble.
+    mention = logic.resolve_campaign_pr_description(
+        requested_title="", requested_body="", issue_title="",
+        instruction="Fix the flake seen in issue #12\n\nDetails.")
+    assert mention["prBody"].startswith("Fix the flake seen in issue #12")
+
+    # A local instruction-only run still gets a title and a body.
+    local = logic.resolve_campaign_pr_description(
+        requested_title="", requested_body="", issue_title="",
+        instruction="Add durable signals\n\nMore detail here.")
+    assert local["prTitle"] == "Add durable signals"
+    assert local["prBody"].startswith("Add durable signals")
 
 
 def test_campaign_workspace_accepts_a_repo_to_clone_not_only_a_local_path():
@@ -166,7 +235,7 @@ def test_campaign_design_phase_delegates_to_design_docs():
     call = next(t for t in gate["decisionCases"]["run"]
                if t["taskReferenceName"] == "campaign_design_docs")
     assert call["type"] == "SUB_WORKFLOW"
-    assert call["subWorkflowParam"] == {"name": "design_docs", "version": 1}
+    assert call["subWorkflowParam"] == {"name": "design_docs"}
     assert call["inputParameters"]["repoPath"] == "${campaign_workspace.output.worktreePath}"
     assert call["inputParameters"]["instruction"] == "${workflow.variables.effectiveInstruction}"
     assert call["inputParameters"]["humanApproval"] == "${workflow.input.designHumanApproval}"
@@ -233,7 +302,7 @@ def test_campaign_plan_phase_delegates_to_dag_plan_approval():
     call = next(t for t in gate["decisionCases"]["run"]
                if t["taskReferenceName"] == "campaign_plan_approval")
     assert call["type"] == "SUB_WORKFLOW"
-    assert call["subWorkflowParam"] == {"name": "dag_plan_approval", "version": 1}
+    assert call["subWorkflowParam"] == {"name": "dag_plan_approval"}
     assert call["inputParameters"]["callerWorkflow"] == "feature_campaign"
     assert call["inputParameters"]["repoPath"] == "${campaign_workspace.output.worktreePath}"
     assert call["inputParameters"]["instruction"] == "${workflow.variables.effectiveInstruction}"
@@ -315,7 +384,7 @@ def test_campaign_implementation_phase_delegates_to_implementation_waves():
     call = next(t for t in gate["decisionCases"]["run"]
                if t["taskReferenceName"] == "campaign_implementation_waves")
     assert call["type"] == "SUB_WORKFLOW"
-    assert call["subWorkflowParam"] == {"name": "implementation_waves", "version": 1}
+    assert call["subWorkflowParam"] == {"name": "implementation_waves"}
     assert call["inputParameters"]["callerWorkflow"] == "feature_campaign"
     assert call["inputParameters"]["repoPath"] == "${campaign_workspace.output.worktreePath}"
     assert call["inputParameters"]["plan"] == "${workflow.variables.plan}"
@@ -381,7 +450,7 @@ def test_campaign_final_phase_delegates_to_final_verification():
     call = next(t for t in gate["decisionCases"]["run"]
                if t["taskReferenceName"] == "campaign_final_verification")
     assert call["type"] == "SUB_WORKFLOW"
-    assert call["subWorkflowParam"] == {"name": "final_verification", "version": 1}
+    assert call["subWorkflowParam"] == {"name": "final_verification"}
     assert call["inputParameters"]["callerWorkflow"] == "feature_campaign"
     assert call["inputParameters"]["repoPath"] == "${campaign_workspace.output.worktreePath}"
     assert call["inputParameters"]["instruction"] == "${workflow.variables.effectiveInstruction}"
@@ -528,9 +597,14 @@ def test_campaign_state_merge_uses_the_typed_worker_not_jq():
     assert "queryExpression" not in state_merge["inputParameters"]
 
 
-def test_campaign_commits_locally_and_only_publishes_when_requested():
+def test_campaign_commits_locally_and_only_publishes_once_a_human_approves():
     wf = _load("feature_campaign")
-    assert wf["inputTemplate"]["createPr"] is False
+    # No input can pre-decide publication: the pr_draft gate is the decision, so
+    # there is no createPr/requirePrApproval flag left to route around it.
+    assert "createPr" not in wf["inputTemplate"]
+    assert "createPr" not in wf["inputParameters"]
+    assert "requirePrApproval" not in wf["inputTemplate"]
+    assert "requirePrApproval" not in wf["inputParameters"]
     assert wf["inputTemplate"]["prBase"] == "main"
     commit = next(x for x in _walk(wf) if x.get("taskReferenceName") == "campaign_commit")
     assert commit["name"] == "commit"
@@ -543,26 +617,48 @@ def test_campaign_commits_locally_and_only_publishes_when_requested():
     assert "draft" in feature_campaign_logic.resolve_campaign_publication_plan(
         outcome="incomplete", requested_draft=False, test_state=None,
         tests_passed=None, tested=None, committed="c")
+    # The approval gate runs whenever there is a draft to approve, and only then: a campaign that
+    # stopped before implementation has no PR to park a human gate on, so its approval state resolves to
+    # suppressed and nothing is pushed.
+    refs = [task["taskReferenceName"] for task in wf["tasks"]]
+    assert refs.index("campaign_publication_plan") < refs.index("campaign_publish_needed_gate") \
+        < refs.index("campaign_publish_gate")
+    needed = next(x for x in _walk(wf) if x.get("taskReferenceName") == "campaign_publish_needed_gate")
+    assert needed["inputParameters"] == {"publish": "${campaign_publication_plan.output.publish}"}
+    assert [t["taskReferenceName"] for t in needed["decisionCases"]["yes"]] == [
+        "campaign_pr_approval", "record_campaign_pr_approval"]
+    assert needed["defaultCase"][0]["inputParameters"] == {"prApprovalState": "suppressed"}
+    approval = next(x for x in _walk(wf) if x.get("taskReferenceName") == "campaign_pr_approval")
+    recorded = next(x for x in _walk(wf)
+                    if x.get("taskReferenceName") == "record_campaign_pr_approval")
+    assert approval["type"] == "SUB_WORKFLOW"
+    assert approval["subWorkflowParam"] == {"name": "pr_draft_approval"}
+    # Publication is authorized by the human's answer and nothing else, and the
+    # push itself now sits inside that answer's branch -- an unapproved draft
+    # pushes nothing at all, where the old createPr path pushed first and only
+    # then consulted the approval.
     publish_gate = next(x for x in _walk(wf) if x.get("taskReferenceName") == "campaign_publish_gate")
-    assert publish_gate["inputParameters"]["createPr"] == "${workflow.input.createPr}"
-    publication = publish_gate["decisionCases"]["true"]
+    assert publish_gate["expression"] == "prApprovalState"
+    assert publish_gate["inputParameters"] == {
+        "prApprovalState": "${workflow.variables.prApprovalState}"}
+    publication = publish_gate["decisionCases"]["approved"]
     assert [task["name"] for task in publication] == ["git_push", "campaign_push_result_gate"]
+    assert [task["name"] for task in publish_gate["defaultCase"]] == \
+        ["campaign_capture_pr_not_approved"]
     # The post-commit test cycle can advance the candidate, so the exact-SHA
     # push guard reads a resolved publishCandidateCommit variable rather than
-    # the pre-test commit, which would now present as drift and block the
-    # push. When requirePrApproval is false (the default), skip_campaign_pr_approval
-    # sets that variable straight from the publication plan's head, so the
-    # guarantee is unchanged; when true, pr_draft_approval's own (possibly
-    # revised) candidateCommit flows through instead.
+    # the pre-test commit, which would now present as drift and block the push.
+    # record_campaign_pr_approval sets it from pr_draft_approval's own (possibly
+    # revised and re-verified) candidateCommit, which starts as the publication
+    # plan's head.
     assert publication[0]["inputParameters"]["expectedHead"] == \
         "${workflow.variables.publishCandidateCommit}"
-    skip = next(x for x in _walk(wf) if x.get("taskReferenceName") == "skip_campaign_pr_approval")
-    assert skip["inputParameters"]["publishCandidateCommit"] == \
+    assert approval["inputParameters"]["candidateCommit"] == \
         "${campaign_publication_plan.output.head}"
+    assert recorded["inputParameters"]["publishCandidateCommit"] == \
+        "${campaign_pr_approval.output.candidateCommit}"
     push_gate = publication[1]
-    outcome_gate = push_gate["decisionCases"]["true"][0]
-    assert outcome_gate["taskReferenceName"] == "campaign_pr_approval_outcome_gate"
-    assert [task["name"] for task in outcome_gate["decisionCases"]["approved"]] == \
+    assert [task["name"] for task in push_gate["decisionCases"]["true"]] == \
         ["pr_create", "campaign_capture_publication"]
     assert wf["outputParameters"]["prUrl"] == "${workflow.variables.prUrl}"
     handoff = wf["outputParameters"]["sourceHandoff"]

@@ -25,7 +25,8 @@ def code_parallel_build_forks(task):
         max_turns=i.get("maxTurns"), max_budget_usd=i.get("maxBudgetUsd"),
         model_profile=i.get("modelProfile"), model_policy=i.get("modelPolicy"),
         model_policy_source=i.get("modelPolicySource"), model_policy_sha256=i.get("modelPolicySha256"),
-        models_config=i.get("modelsConfig"), model_overrides=i.get("modelOverrides"))
+        models_config=i.get("modelsConfig"), model_overrides=i.get("modelOverrides"),
+        single_subtask=i.get("singleSubtask") is True)
     return ok(task, out, [f"[code_parallel_build_forks] {len(out['dynamicTasks'])} subtask(s)"])
 
 

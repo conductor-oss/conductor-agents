@@ -16,8 +16,8 @@ from pathlib import Path
 
 from conductor.client.worker.worker_task import worker_task
 
-from common import (code_subtask, gate_decision, git, github, issue_to_pr, pr_description,
-                    pr_review, pr_reply, publish_salvage)
+from common import (code_subtask, conductor_status, gate_decision, git, github, issue_to_pr,
+                    pr_description, pr_review, pr_reply, publish_salvage)
 from common.results import fail, ok
 
 
@@ -48,7 +48,13 @@ def _repo_paths(val) -> list[str]:
         path = Path(raw)
         if path.is_absolute() or ".." in path.parts or str(path) in {"", "."}:
             raise ValueError(f"repository paths must be safe and relative: {raw}")
-        paths.append(path.as_posix().lstrip("./"))
+        # Only a leading "./" comes off. str.lstrip("./") strips characters, so ".gitignore" became
+        # "gitignore": the audit never found the planned path, three repair agents each created a
+        # bogus `gitignore` file, and the item lost 3.6 minutes and $2.30 (run f83293f5).
+        rel = path.as_posix()
+        while rel.startswith("./"):
+            rel = rel[2:]
+        paths.append(rel)
     return sorted(set(paths))
 
 
@@ -83,6 +89,19 @@ def _command_failures(report: object) -> list[dict]:
     return unique
 
 
+def _ignore_rules(repo: str, paths: list[str]) -> dict[str, str]:
+    """``{path: "source:line:pattern"}`` for each of ``paths`` the repository's ignore rules exclude."""
+    if not paths:
+        return {}
+    out = git.git(repo, "check-ignore", "-v", "--", *paths, check=False).stdout
+    rules = {}
+    for line in out.splitlines():
+        rule, _, path = line.partition("\t")
+        if path:
+            rules[path] = rule
+    return rules
+
+
 @worker_task(task_definition_name="delivery_audit")
 def delivery_audit(task):
     """Compare a subtask's exact planned files with its live worktree changes.
@@ -96,22 +115,81 @@ def delivery_audit(task):
     try:
         repo = str(i["repoPath"])
         planned = _repo_paths(i.get("plannedPaths"))
+        # A path the subtask MAY write but need not — its frozen acceptance test, writable only so a
+        # wrong assertion can be amended — is never "missing": every item with a frozen test was audited
+        # incomplete_delivery and ran three no-op repair agents per fork (run a33d7061, 15 of 16 forks).
+        optional = _repo_paths(i.get("optionalPaths"))
         classified = git.vetted_changes(repo)
         actual = sorted(set(classified["changed"]))
-        missing = sorted(set(planned) - set(actual))
+        if _bool(i.get("sharedTree"), False):
+            # ONE tree per team: teammates' files are changing beside this item's; only the item's own
+            # planned paths are its delivery, nothing else in the tree is a rejected write.
+            mine = set(planned) | set(optional)
+            actual = sorted(p for p in actual if any(p == m or p.startswith(m.rstrip("/") + "/") for m in mine))
+            classified = {**classified, "rejected": []}
+        # A planned path already in HEAD's tree was delivered before this session — by an earlier
+        # attempt of a re-dispatched item, or it is a file the item modifies — so leaving it alone is
+        # not a missing delivery: store-hashes' review re-dispatch changed only hashes_test.go and ran
+        # three no-op repair agents for the hashes.go it had delivered a wave earlier (run ec0fb6dc).
+        present = sorted(set(git.tracked_at_head(repo, planned)) - set(actual))
+        missing = sorted(set(planned) - set(actual) - set(optional) - set(present))
+        # A planned file that is on disk yet neither changed nor tracked as git sees it: either the
+        # repository's ignore rules hide it (the plan or the item can fix that: say which rule), or the
+        # harness's own view of the tree is wrong, which no agent can repair. Six written backend files
+        # went unseen behind a truncated `git status`, and eight agents in turn were sent to write them
+        # (run a87e9ddb).
+        on_disk = [p for p in missing if os.path.isfile(os.path.join(repo, p))]
+        ignored = _ignore_rules(repo, on_disk)
+        staging_fault = [p for p in on_disk if p not in ignored]
         rejected = sorted(set(classified["rejected"]))
         denials = [str(value) for value in (report.get("denials") or []) if str(value)]
         command_failures = _command_failures(report)
+        command_failures.extend({"command": f"git check-ignore -v -- {path}", "exitCode": 0,
+                                 "stderr": f"planned file {path} is ignored by {rule}: a planned file must be "
+                                           f"committable, so change that ignore rule"}
+                                for path, rule in sorted(ignored.items()))
         complete = not missing and not rejected
-        state = "passed" if complete else "incomplete_delivery"
+        # The program's frozen external checks (the Architect's whole-app scenario) are NOT run here.
+        # They judge the PROGRAM, and an item's repair agents may write only that item's files: run
+        # here, the red landed on whichever item finished last. The root launcher item (start.sh,
+        # .gitignore) was audited red six times for a frontend form's duplicate accessible name and
+        # spent six repair sessions and 20 minutes on a defect it was not allowed to touch, while the
+        # program's evaluation routed the same red to UserForm.jsx and one repair fixed it (run
+        # 4dd8b865); the same gate drove repair loops in run 3e3991fc and hosted the scenario that
+        # hung a run for 8 hours (run 8064c234). It was added when no implementer could launch a
+        # browser (runs 82fe7c00, 806e18ba); every session now has the browser service and runs the
+        # scenario itself, and the program evaluation runs it on the integrated head and sends a red
+        # to the files that cause it.
+        # A session stopped by blocking feedback (closure plan WP2) is not an incomplete delivery to
+        # repair: a repair agent would finish exactly what a human said to stop.
+        interrupted = str(report.get("status") or "") == "interrupted"
+        # An implementer that pushed back on a directive (H16) made its case instead of the change; the
+        # Lead decides at integration. A repair agent would do the very work the pushback declined
+        # (resp-reader: one $0.57 repair agent rewrote reader.go after the implementer's pushback, and
+        # the Lead then discarded the fork, run ec0fb6dc).
+        structured = report.get("structured") if isinstance(report.get("structured"), dict) else {}
+        pushback = bool(structured.get("pushback"))
+        # An implementer that changed nothing because the shared branch already satisfies the item
+        # (a sibling delivered it) is not an incomplete delivery to repair: six repair agents re-verified
+        # cmd-dispatch's claim and created nothing, then the item blocked (run 90e5e3aa). The peer
+        # reviewer judges the claim at integration.
+        satisfied = bool(structured.get("alreadySatisfied")) and not actual
+        state = ("interrupted" if interrupted else "staging_fault" if staging_fault
+                 else "pushback" if pushback else "satisfied" if satisfied
+                 else "passed" if complete else "incomplete_delivery")
         out = {
             "auditAvailable": True,
             "state": state,
             "complete": complete,
             "plannedPaths": planned,
+            "optionalPaths": optional,
+            "presentPaths": present,
             "actualPaths": actual,
             "missingPaths": missing,
-            "rejectedPaths": rejected,
+            "stagingFault": staging_fault,
+            "ignoredPlanned": [{"path": p, "rule": r} for p, r in sorted(ignored.items())],
+            "rejectedPaths": git.path_sample(rejected),
+            "rejectedCount": len(rejected),
             "commandFailures": command_failures,
             "sandboxDenials": denials,
             "agentStatus": str(report.get("status") or "unknown"),
@@ -138,6 +216,8 @@ def delivery_audit(task):
             "state": "audit_unavailable",
             "complete": False,
             "plannedPaths": [],
+            "optionalPaths": [],
+            "presentPaths": [],
             "actualPaths": [],
             "missingPaths": [],
             "rejectedPaths": [],
@@ -245,14 +325,12 @@ def workspace_prepare(task):
     i = task.input_data or {}
     try:
         if _bool(i.get("inPlace"), False):
-            if _bool(i.get("createPr"), False):
-                raise ValueError("inPlace execution is local-only; createPr must be false")
             run_id = str(i.get("branchRunId") or i.get("workflowId")
                          or getattr(task, "workflow_instance_id", "")
                          or getattr(task, "task_id", "workspace"))
             prepared = git.prepare_inplace(
                 i.get("repoPath") or "", run_id=run_id,
-                branch_name=str(i.get("branch") or ""))
+                branch_name=str(i.get("branch") or i.get("branchDefault") or ""))
             git.exclude_worktrees(prepared["repoPath"])
             return ok(task, {
                 "sourceRepoPath": prepared["repoPath"],
@@ -349,20 +427,25 @@ def workspace_prepare(task):
             source_ref = github.clone_url(fetch_source) if fetch_source else "origin"
             git.fetch_source(source, source_ref, fetch_refspec)
 
+        run_id = str(i.get("branchRunId") or i.get("workflowId")
+                     or getattr(task, "workflow_instance_id", "")
+                     or getattr(task, "task_id", "workspace"))
         snapshot = git.snapshot_worktree(
             source,
-            run_id=str(i.get("branchRunId") or i.get("workflowId")
-                       or getattr(task, "workflow_instance_id", "")
-                       or getattr(task, "task_id", "workspace")),
+            run_id=run_id,
             original_branch=prepared["branch"],
             original_head=prepared["head"],
         )
+        # Finished runs leave their checkouts behind; their branches hold the work. Every registered
+        # worktree costs sandbox deny paths in every agent's Bash, and past a few dozen no agent can run
+        # a command at all (E2BIG, run ec0fb6dc) — so a new run first removes the worktrees of runs
+        # the server says are over (an unanswerable run is kept).
+        pruned = git.prune_finished_runs(source, keep_run_id=run_id,
+                                         prunable=conductor_status.workflow_prunable)
         out = git.workspace_add(
             source,
-            str(i.get("branchRunId") or i.get("workflowId")
-                or getattr(task, "workflow_instance_id", "")
-                or getattr(task, "task_id", "workspace")),
-            branch_name=str(i.get("branch") or "").strip() or None,
+            run_id,
+            branch_name=str(i.get("branch") or i.get("branchDefault") or "").strip() or None,
             start_point=snapshot["baselineCommit"],
             preserve_existing=_bool(i.get("preserveExisting"), True),
         )
@@ -384,11 +467,14 @@ def workspace_prepare(task):
             "sourceCloned": source_cloned,
             "sourceHead": prepared["head"],
             "inPlace": False,
+            "prunedRuns": pruned["removed"],
         }
         return ok(task, output, [
             f"[workspace_prepare] {source} -> {out['worktreePath']} branch={out['branch']}",
             f"[workspace_prepare] included source changes={len(snapshot['includedPaths'])} "
             f"materialized={len(materialized)} resumed={out['resumed']}",
+            f"[workspace_prepare] pruned finished runs={len(pruned['removed'])} "
+            f"kept={len(pruned['kept'])}",
         ])
     except Exception as e:  # noqa: BLE001
         return fail(task, "workspace_prepare", e)
@@ -440,7 +526,7 @@ def prepare_repo(task):
                          or getattr(task, "task_id", "code"))
             out = git.prepare_inplace(
                 i["repoPath"], run_id=run_id,
-                branch_name=str(i.get("branch") or ""))
+                branch_name=str(i.get("branch") or i.get("branchDefault") or ""))
             git.exclude_worktrees(out["repoPath"])
             return ok(task, out, [f"[prepare_repo] in-place branch={out['branch']} "
                                  f"baseline={out['baselineCommit'][:12]} created={out['baselineCreated']}"])
@@ -493,8 +579,19 @@ def inplace_guard(task):
 def commit(task):
     i = task.input_data or {}
     try:
-        out = git.commit(i["repoPath"], i.get("message", "conductor-code change"))
-        return ok(task, out, [f"[commit] HEAD={out['commit']} msg={i.get('message','')}"])
+        from common.shapes import listed
+        # The item's write roots (plus its frozen acceptance tests, writable so a wrong assertion can be
+        # amended) confine what a fork commits: Bash can write any file of the worktree, and an edit to a
+        # sibling's file must be refused here as the guard refuses it at the tool (run ba2491ff).
+        # No write roots means an unscoped fork (help for a stuck item may change any file): nothing is
+        # confined, not even to its frozen test — which alone would drop every source change (review 2).
+        roots = [str(p) for p in listed(i.get("allowedWriteRoots")) if str(p).strip()]
+        if roots:
+            roots += [str(p) for p in listed(i.get("acceptanceTests")) if str(p).strip() and str(p) not in roots]
+        out = git.commit(i["repoPath"], i.get("message", "conductor-code change"), write_roots=roots,
+                         atomic=_bool(i.get("atomic"), False))
+        return ok(task, out, [f"[commit] HEAD={out['commit']} msg={i.get('message','')}"
+                              + (f" outsideScope={out['outsideScope']}" if out.get("outsideScope") else "")])
     except Exception as e:  # noqa: BLE001
         return fail(task, "commit", e)
 
@@ -511,11 +608,9 @@ def _resolve_conflict_with_agent(repo: str, conflicted: list[str], *, source_lab
     """
     from common.claude import run_agent
     total_tokens, total_cost = 0, 0.0
-    prompt = (
-        f"Resolve ALL git merge conflicts in these files: {', '.join(conflicted)}. "
-        "Keep both sides' changes where possible. Remove every conflict marker "
-        "(<<<<<<<, =======, >>>>>>>). Edit only the conflicted files."
-    )
+    from common import templating
+    prompt = templating.resolve_prompt("", template="", template_key="merge_conflict",
+                                       context={"files": ", ".join(conflicted)}, worktree=repo)
     for attempt in range(1, max_attempts + 1):
         res = run_agent(prompt, cwd=repo, model=model, write=True, max_budget_usd=max_budget_usd)
         total_tokens += res["tokens"]
@@ -535,6 +630,9 @@ def _resolve_conflict_with_agent(repo: str, conflicted: list[str], *, source_lab
 def worktree_add(task):
     i = task.input_data or {}
     try:
+        if _bool(i.get("shared"), False):
+            out = git.worktree_shared(i["repoPath"])
+            return ok(task, out, [f"[worktree_add] shared tree {out['worktreePath']} on {out['branch']} HEAD={out['initialCommit'][:7]}"])
         out = git.worktree_add(i["repoPath"], i["name"],
                                preserve_existing=_bool(i.get("preserveExisting"), False))
         return ok(task, out, [f"[worktree_add] {out['branch']} -> {out['worktreePath']} HEAD={out['initialCommit'][:7]}"])
@@ -565,7 +663,7 @@ def merge_worktrees(task):
             trial = git.worktree_add(repo, name)
             try:
                 for gid in ids:
-                    branch = git.GROUP_BRANCH.format(name=gid)
+                    branch = git.group_branch(repo, gid)
                     probe = git.git(trial["worktreePath"], "merge", "--no-edit", branch, check=False)
                     if probe.code != 0:
                         git.git(trial["worktreePath"], "merge", "--abort", check=False)
@@ -575,7 +673,7 @@ def merge_worktrees(task):
             finally:
                 git.worktree_remove(repo, name)
         for gid in ids:
-            br = git.GROUP_BRANCH.format(name=gid)
+            br = git.group_branch(repo, gid)
             try:
                 git.git(repo, "merge", "--no-edit", br)
                 merged.append(br)
@@ -881,13 +979,15 @@ def pr_create(task):
         i["repoPath"],
         i.get("summary") or i.get("summaryFallback") or i.get("body") or i.get("title") or "",
         issue_body=i.get("issueBody") or "",
+        closes=i.get("issueNumber") or 0,
     )
     try:
         out = github.pr_create(i["repoPath"], title=i.get("title") or "",
                                body=description["body"], base=i.get("base") or None,
                                summary=description["summary"],
                                head_branch=i.get("head") or None,
-                               draft=_bool(i.get("draft")), fill=_bool(i.get("fill")))
+                               draft=_bool(i.get("draft")), fill=_bool(i.get("fill")),
+                               closes=i.get("issueNumber") or 0)
         out["publicationState"] = "published"
         return ok(task, out, [f"[pr_create] #{out['number']} {out['url']}"])
     except Exception as e:  # noqa: BLE001
@@ -968,36 +1068,6 @@ def pr_branch_guard(task):
         return ok(task, {"verificationState": "unknown", "expectedHeadSha": expected,
                          "actualHeadSha": "", "branch": i.get("branch") or "",
                          "reason": reason}, [f"[pr_branch_guard] BLOCKED: {reason}"])
-
-
-@worker_task(task_definition_name="pr_commit_checks")
-def pr_commit_checks(task):
-    """Return the aggregate state of every reported GitHub check for one SHA."""
-    i = task.input_data or {}
-    try:
-        if "pushed" in i and not _bool(i.get("pushed")):
-            state = str(i.get("publicationState") or "publication_blocked")
-            return ok(task, {"sha": str(i.get("sha") or ""), "checks": [], "links": [],
-                             "checkCount": 0, "verificationState": state,
-                             "reason": str(i.get("publicationReason") or
-                                           "candidate branch was not published")},
-                      [f"[pr_commit_checks] skipped: publication state={state}"])
-        out = github.commit_checks(i["repo"], str(i["sha"]))
-        # A blank or "empty" state means CI has not reported yet, which is a
-        # pending poll rather than a verdict. Naming it here removes the jq task
-        # that used to normalize it before the poll loop could read it.
-        reported = str(out.get("verificationState") or "").strip()
-        out["ciState"] = "pending" if not reported or reported == "empty" else reported
-        return ok(task, out, [f"[pr_commit_checks] sha={out['sha'][:12]} checks={out['checkCount']} state={out['verificationState']}"])
-    except Exception as e:  # noqa: BLE001
-        # CI observability is evidence gathering.  An exhausted GitHub retry is
-        # not proof that a candidate passed, but it also must not bypass the
-        # workflow's CI-blocked checkpoint by failing the worker outright.
-        sha = str(i.get("sha") or "")
-        reason = f"GitHub exact-SHA check lookup failed: {e}"
-        return ok(task, {"sha": sha, "checks": [], "links": [], "checkCount": 0,
-                         "verificationState": "unknown", "reason": reason},
-                  [f"[pr_commit_checks] BLOCKED: {reason}"])
 
 
 @worker_task(task_definition_name="pr_comment")
@@ -1096,8 +1166,7 @@ def issue_to_pr_verified_delivery(task):
 @worker_task(task_definition_name="issue_to_pr_publication_plan")
 def issue_to_pr_publication_plan(task):
     i = task.input_data or {}
-    out = issue_to_pr.resolve_publication_plan(
-        i.get("deliveryOutcome"), agent_authored_test=i.get("agentAuthoredTest"))
+    out = issue_to_pr.resolve_publication_plan(i.get("deliveryOutcome"))
     return ok(task, out, [f"[issue_to_pr_publication_plan] draft={out['draft']}"])
 
 
@@ -1232,5 +1301,5 @@ def code_subtask_delivery_outcome(task):
     out = code_subtask.resolve_delivery_outcome(
         planned_paths=i.get("plannedPaths"), commit=i.get("commit"), audit=i.get("audit"),
         agent=i.get("agent"), tested=i.get("tested"), test_state=i.get("testState"),
-        tests_passed=i.get("testsPassed"))
+        tests_passed=i.get("testsPassed"), optional_paths=i.get("optionalPaths"))
     return ok(task, out, [f"[code_subtask_delivery_outcome] state={out['state']} passed={out['passed']}"])

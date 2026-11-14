@@ -3,10 +3,22 @@
 The pinned SDK currently sends ``timeout=100`` for every batch poll regardless
 of the worker's ``poll_timeout`` setting.  Override that transport argument in
 one place so a task type still has one poller, while idle queues use long polls.
+
+The same patch bounds how long the poller waits for the poll *response*. The
+server answers a batch poll within its ``timeout`` (a task arrived, or the long
+poll expired), so a response that has not arrived well after that is a lost
+one, not a slow one. conductor-python 1.3.11 passes ``timeout=None`` to httpx
+for every request, which disables the client's 120 s default rather than
+applying it; the ``coding_agent`` poller (pid 60595, 2026-11-07) sat in
+``recv`` on a never-answered poll for over an hour with its queue holding a
+SCHEDULED task, and nothing in the fleet noticed. A poll is a queue-polling
+interval, not an execution deadline: when the bound trips the SDK logs the
+failure, backs off and polls again; no running task is touched.
 """
 
 from __future__ import annotations
 
+import time
 from functools import partial, update_wrapper
 import os
 
@@ -41,14 +53,35 @@ def poll_interval_ms() -> int:
         return 500
 
 
+POLL_RESPONSE_GRACE_S = 30.0
+POLL_CONNECT_BOUND_S = 10.0
+
+
+def poll_response_bound() -> tuple[float, float]:
+    """``(connect, read)`` seconds the poller waits for one batch-poll response.
+
+    The read bound is the server's own long-poll timeout plus a grace period,
+    so a healthy long poll can never trip it; only a response that is not
+    coming does. The value is a ``_request_timeout`` for the poll call alone.
+    """
+    return (POLL_CONNECT_BOUND_S, poll_timeout_ms() / 1000.0 + POLL_RESPONSE_GRACE_S)
+
+
+# No task type runs single-file: a program's ranks fork several teams whose board steps (standups,
+# integrations, commits, folds) arrive together, and one thread per type queued them behind each other.
+MIN_WORKER_THREADS = 4
+
+
 def worker_thread_count(task_name: str, current: int) -> int:
     """Resolve an operator concurrency floor for one task type.
 
     A concurrency bound is not an execution deadline: it decides how many tasks
     may run at once, never how long a running task may take. It only ever
-    *raises* the value a worker declared, so an explicit decorator setting made
-    for a heavy task can never be silently lowered by a broad env var.
+    *raises* the value a worker declared (never below ``MIN_WORKER_THREADS``), so an
+    explicit decorator setting made for a heavy task can never be silently lowered by a
+    broad env var.
     """
+    current = max(int(current or 1), MIN_WORKER_THREADS)
     specific = os.environ.get(f"CONDUCTOR_WORKER_THREADS_{task_name.upper()}")
     general = os.environ.get("CONDUCTOR_WORKER_THREADS")
     for value in (specific, general):
@@ -62,6 +95,11 @@ def worker_thread_count(task_name: str, current: int) -> int:
     return current
 
 
+def _draining() -> bool:
+    from common import source_watch
+    return source_watch.draining()
+
+
 def configure_sdk_polling() -> None:
     """Patch the SDK request boundary before worker processes are spawned."""
     from conductor.client.http.api.async_task_resource_api import AsyncTaskResourceApi
@@ -71,7 +109,12 @@ def configure_sdk_polling() -> None:
         original_sync = TaskResourceApi.batch_poll
 
         def batch_poll(self, tasktype, **kwargs):
+            if _draining():
+                # A reload is pending: claim nothing, let in-flight work finish (common.source_watch).
+                time.sleep(poll_interval_ms() / 1000.0)
+                return []
             kwargs["timeout"] = poll_timeout_ms()
+            kwargs["_request_timeout"] = poll_response_bound()
             return original_sync(self, tasktype, **kwargs)
 
         TaskResourceApi.batch_poll = batch_poll
@@ -81,7 +124,12 @@ def configure_sdk_polling() -> None:
         original_async = AsyncTaskResourceApi.batch_poll
 
         async def batch_poll(self, tasktype, **kwargs):
+            if _draining():
+                import asyncio
+                await asyncio.sleep(poll_interval_ms() / 1000.0)
+                return []
             kwargs["timeout"] = poll_timeout_ms()
+            kwargs["_request_timeout"] = poll_response_bound()
             return await original_async(self, tasktype, **kwargs)
 
         AsyncTaskResourceApi.batch_poll = batch_poll

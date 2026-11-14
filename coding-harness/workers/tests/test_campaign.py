@@ -69,7 +69,7 @@ def test_scheduler_forwards_resume_session_feedback_and_limits(fake_task_input):
     assert result["dynamicTasksInput"][ref]["feedback"] == "fix retry"
     assert result["dynamicTasksInput"][ref]["maxTurns"] == 900
     assert result["dynamicTasksInput"][ref]["specContextPath"].endswith("context.md")
-    assert result["dynamicTasks"][0]["subWorkflowParam"]["version"] == 1
+    assert "version" not in result["dynamicTasks"][0]["subWorkflowParam"]
 
 
 def test_scheduler_canonicalizes_planner_ids_and_allows_verification_only_tasks(fake_task_input):

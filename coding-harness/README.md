@@ -25,7 +25,7 @@ coding backend. Claude is the default; run `claude login` or set
 ```
 
 `run.sh` starts a local Conductor server when needed, creates the worker environment,
-registers/updates all definitions, runs the SIMPLE-task worker gate, and starts the workers.
+registers/updates all definitions and starts the workers.
 
 In a second terminal, point the harness at any local checkout:
 
@@ -96,8 +96,7 @@ CONDUCTOR_SERVER_URL=http://localhost:8080/api tui/.venv/bin/python -m tui --das
 ```
 
 Ask chat to “register/update the workflows”, use `/register`, or press `g` on the dashboard
-whenever definitions change. The TUI confirms the target server, updates the definitions, and
-runs the SIMPLE-task worker gate before reporting success. Chat starts at most one workflow per
+whenever definitions change. The TUI confirms the target server, and updates the definitions. Chat starts at most one workflow per
 user message; when the requested action is ambiguous, it asks which workflow you want first.
 Every `code_parallel` path always plans through OpenSpec first (proposal/specs/design/tasks) —
 there's no "skip planning" toggle. That plan goes through an iterative human review gate by
@@ -144,8 +143,8 @@ For larger work, `feature_campaign` adds durable WAIT checkpoints after design, 
 each integrated wave, and final verification. Its agents resume by session ID, DAG tasks
 run only when dependencies are complete and their planned files are disjoint, and checks
 come from `.conductor-code/checks.json` version 2. A campaign reports cumulative usage but
-does not impose a campaign-wide spend cap. It keeps the verified branch local by default;
-`createPr:true` explicitly enables push and PR creation.
+does not impose a campaign-wide spend cap. Every run then pauses on a PR draft: the branch
+is pushed and a PR opened only when a human approves that draft, and stays local otherwise.
 
 `openspec_development` accepts an OpenSpec project/change from the target repo, another local
 checkout, a Git remote, or a public HTTPS zip/tar bundle. It validates the change with the pinned
@@ -156,6 +155,8 @@ requirement-level verification it completes `tasks.md` and archives the change. 
 implementation worktree; it is then committed and opened as a draft PR. Other same-repo specs
 remain on the verified local branch; external GitHub specs are archived on a separate branch and
 opened as a draft PR. It never accepts credential values in workflow inputs.
+
+`cc_program` builds a program as teams of teams under an **Architect**. The Architect turns the request into a definition of done: the teams' own frozen acceptance tests and the repository's suite, plus external checks the builders did not write (a real client suite such as `redis-py` against the server, a scenario script, a budget, a docs check) that scouts find, install under the worktree's cache and prove red against the untouched head; a reviewer on another model approves the contract. After every integrated rank and at the final head the Architect runs every check and scores the head (the weighted share passing, the same for the same head), files items for the gaps between teams, and signs off. Under the threshold a convergence ladder takes rework, a change of approach, a second opinion and only then a precisely named need. The swarm's first principle is that it finds a way, never a reason to stop: its only terminal verdict is `PROGRAM_DELIVERED`; `PROGRAM_NEEDS` ends a run naming what it needs (budget, a credential, an owner decision), keeps the Architect's state, and Continue resumes at the recorded rung. Humans steer asynchronously through the console; nothing waits on them.
 
 ## Documentation
 
@@ -185,10 +186,13 @@ opened as a draft PR. It never accepts credential values in workflow inputs.
   [`docker-compose.postgres.yml`](docker-compose.postgres.yml) instead (requires Docker). Stop
   any already-running SQLite server first (`conductor server stop`) — a leftover process can
   keep answering on port 8080 and silently shadow the new container.
-- At least one authenticated backend:
-  - Claude: `claude login` or `ANTHROPIC_API_KEY`.
-  - Codex: `~/.codex/auth.json` or `OPENAI_API_KEY`.
-  - Gemini: Gemini CLI plus `GEMINI_API_KEY`.
+- At least one authenticated backend, with the account you already have or an API key:
+  - Claude: `claude login` (a claude.ai account) or `ANTHROPIC_API_KEY`.
+  - Codex: `codex login` (a ChatGPT account) or `OPENAI_API_KEY`.
+  - Gemini: the Gemini CLI signed in with Google (run `gemini` once, "Login with Google") or `GEMINI_API_KEY`.
+  `make auth` shows which credential each backend will use. By default a login is preferred over a
+  key; `CLAUDE_AUTH`, `CODEX_AUTH` and `GEMINI_AUTH` (`auto` | `login` | `key`) in `.env` decide per
+  backend, and in login mode a key inherited from your shell is withheld from that backend.
 - For GitHub workflows: authenticated `gh` CLI (`gh auth login` or a valid `GH_TOKEN`).
 - The target repository's own build/test toolchain.
 

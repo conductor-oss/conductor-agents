@@ -1,0 +1,203 @@
+{
+  "name": "swarm_item",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "One item of a swarm round: its implementer builds it, a reviewer on the review ladder judges it the moment it is done, and the item then starts every item of the round that was waiting on it (each its own swarm_item, so dependency chains of any depth run as nested sub-workflows). Started by swarm_dispatch for the items with nothing to wait for, and by swarm_item_release for the rest.",
+  "inputParameters": [
+    "item",
+    "round",
+    "runId",
+    "workdir",
+    "branch",
+    "description",
+    "repoPath",
+    "ceilingUsd",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "inputTemplate": {
+    "branch": "",
+    "description": "",
+    "repoPath": "",
+    "ceilingUsd": 0,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "restartable": true,
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "repoPath": "${workflow.input.workdir}"
+      }
+    },
+    {
+      "name": "swarm_item_prep",
+      "taskReferenceName": "prep",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "item": "${workflow.input.item}",
+        "round": "${workflow.input.round}",
+        "runId": "${workflow.input.runId}",
+        "workdir": "${workflow.input.workdir}",
+        "branch": "${workflow.input.branch}",
+        "description": "${workflow.input.description}",
+        "repoPath": "${workflow.input.repoPath}",
+        "ceilingUsd": "${workflow.input.ceilingUsd}",
+        "modelResolution": "${model_policy.output}"
+      }
+    },
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "work",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "worktreePath": "${workflow.input.workdir}",
+        "modelRole": "code",
+        "templateKey": "swarm_work",
+        "promptContext": "${prep.output.promptContext}",
+        "schema": "${prep.output.workSchema}",
+        "sharedTree": true,
+        "allowedWriteRoots": [],
+        "allowedTools": "${prep.output.allowedTools}",
+        "disallowedTools": "${prep.output.disallowedTools}",
+        "feedbackCorrelationId": "${workflow.input.runId}",
+        "feedbackRunId": "${workflow.input.runId}",
+        "feedbackItem": "${prep.output.itemId}",
+        "modelTier": "${prep.output.rung}",
+        "maxBudgetUsd": "${prep.output.capUsd}",
+        "spendRunId": "${workflow.input.runId}",
+        "spendAuthor": "${prep.output.agentAuthor}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelResolution": "${model_policy.output}",
+        "promptTemplate": "",
+        "promptTemplateSource": ""
+      }
+    },
+    {
+      "name": "swarm_item_reviewing",
+      "taskReferenceName": "reviewing",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "runId": "${workflow.input.runId}",
+        "itemId": "${prep.output.itemId}",
+        "round": "${workflow.input.round}",
+        "work": "${work.output}"
+      }
+    },
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "review",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "worktreePath": "${workflow.input.workdir}",
+        "modelRole": "review",
+        "templateKey": "swarm_review_item",
+        "promptContext": {
+          "request": "${workflow.input.description}",
+          "branch": "${workflow.input.branch}",
+          "round": "${workflow.input.round}",
+          "item": "${prep.output.reviewContext.item}",
+          "report": "${work.output.structured}"
+        },
+        "schema": "${prep.output.reviewSchema}",
+        "sharedTree": true,
+        "allowedWriteRoots": [],
+        "allowedTools": "${prep.output.allowedTools}",
+        "disallowedTools": "${prep.output.disallowedTools}",
+        "feedbackCorrelationId": "${workflow.input.runId}",
+        "feedbackRunId": "${workflow.input.runId}",
+        "feedbackItem": "${prep.output.itemId}",
+        "modelTier": "${prep.output.reviewRung}",
+        "maxBudgetUsd": "${prep.output.capUsd}",
+        "spendRunId": "${workflow.input.runId}",
+        "spendAuthor": "${prep.output.reviewAuthor}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelResolution": "${model_policy.output}",
+        "promptTemplate": "",
+        "promptTemplateSource": ""
+      }
+    },
+    {
+      "name": "swarm_item_release",
+      "taskReferenceName": "release",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "item": "${workflow.input.item}",
+        "round": "${workflow.input.round}",
+        "runId": "${workflow.input.runId}",
+        "workdir": "${workflow.input.workdir}",
+        "branch": "${workflow.input.branch}",
+        "description": "${workflow.input.description}",
+        "repoPath": "${workflow.input.repoPath}",
+        "ceilingUsd": "${workflow.input.ceilingUsd}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "work": "${work.output}",
+        "review": "${review.output}",
+        "rung": "${prep.output.rung}",
+        "reviewRung": "${prep.output.reviewRung}"
+      }
+    },
+    {
+      "name": "dependents",
+      "taskReferenceName": "dependents",
+      "type": "FORK_JOIN_DYNAMIC",
+      "optional": true,
+      "inputParameters": {
+        "dynamicTasks": "${release.output.dynamicTasks}",
+        "dynamicTasksInput": "${release.output.dynamicTasksInput}"
+      },
+      "dynamicForkTasksParam": "dynamicTasks",
+      "dynamicForkTasksInputParamName": "dynamicTasksInput"
+    },
+    {
+      "name": "dependents_join",
+      "taskReferenceName": "dependents_join",
+      "type": "JOIN",
+      "joinMode": "SYNC",
+      "optional": true
+    }
+  ],
+  "outputParameters": {
+    "item": "${prep.output.itemId}",
+    "accepted": "${release.output.accepted}",
+    "started": "${release.output.started}",
+    "held": "${release.output.held}"
+  }
+}

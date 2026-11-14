@@ -20,7 +20,6 @@ from openspecops.tasks import (
     openspec_read_proposal,
     openspec_status,
     openspec_tasks_to_subtasks,
-    openspec_validate_change,
 )
 
 
@@ -294,7 +293,6 @@ def test_openspec_read_proposal_fails_closed_on_missing_file(fake_task_input, tm
     assert _failed(result)
 
 
-# --- openspec_validate_change --------------------------------------------------
 
 class _FakeCompletedProcess:
     def __init__(self, returncode, stdout="", stderr=""):
@@ -304,70 +302,5 @@ class _FakeCompletedProcess:
         self.stderr = stderr
 
 
-def test_openspec_validate_change_reports_valid(monkeypatch, fake_task_input, tmp_path):
-    payload = {"items": [{"id": "add-x", "type": "change", "valid": True, "issues": []}]}
-
-    def fake_run(cmd, **kwargs):
-        assert cmd[:3] == [openspec_cli.BIN, "validate", "add-x"]
-        assert "--strict" in cmd and "--no-interactive" in cmd and "--json" in cmd
-        return _FakeCompletedProcess(0, stdout=json.dumps(payload))
-
-    monkeypatch.setattr(openspecops_tasks.check_execution, "execute", fake_run)
-    task = fake_task_input(repoPath=str(tmp_path), changeId="add-x")
-    result = openspec_validate_change(task)
-    assert _completed(result)
-    assert result.output_data["valid"] is True
-    assert result.output_data["issues"] == []
 
 
-def test_openspec_validate_change_reports_invalid_without_raising(monkeypatch, fake_task_input, tmp_path):
-    """A broken proposal/design/specs/tasks.md must surface as a failed check the
-    verification loop's fixup pass can act on — never a worker crash — or the
-    workflow dies at `archive_change` (openspec_finalize) time instead."""
-    payload = {"items": [{"id": "add-x", "type": "change", "valid": False,
-                          "issues": [{"message": "missing Scenario for Requirement X"}]}]}
-
-    def fake_run(cmd, **kwargs):
-        return _FakeCompletedProcess(1, stdout=json.dumps(payload), stderr="")
-
-    monkeypatch.setattr(openspecops_tasks.check_execution, "execute", fake_run)
-    task = fake_task_input(repoPath=str(tmp_path), changeId="add-x")
-    result = openspec_validate_change(task)
-    assert _completed(result)
-    assert result.output_data["valid"] is False
-    assert result.output_data["issues"] == [{"message": "missing Scenario for Requirement X"}]
-
-
-def test_openspec_validate_change_requires_repo_path_and_change_id(fake_task_input):
-    task = fake_task_input(repoPath="", changeId="")
-    result = openspec_validate_change(task)
-    assert _failed(result)
-
-
-def test_openspec_validate_change_skips_generic_document_plans(fake_task_input):
-    result = openspec_validate_change(fake_task_input(repoPath="/unused", changeId="generic", skip=False))
-    assert _completed(result)
-    assert result.output_data["valid"] is True
-    assert result.output_data["skipped"] is True
-
-
-# --- tool_policy.allowed_tools_for_test_command ------------------------------
-
-def test_allow_pattern_for_default_covered_command_is_a_noop():
-    assert tool_policy.allowed_tools_for_test_command("pytest tests/test_a.py") == \
-        tool_policy.DEFAULT_ALLOWED_TOOLS
-
-
-def test_allow_pattern_for_supported_build_command_is_a_noop():
-    # `make` is a supported, scoped build entrypoint in the default policy.
-    # It must not be appended a second time when an OpenSpec task declares it.
-    assert tool_policy.allowed_tools_for_test_command("make check") == \
-        tool_policy.DEFAULT_ALLOWED_TOOLS
-
-
-def test_allow_pattern_documented_compound_command_limitation():
-    # `cd` is not itself an allowed token, so a chained command's first token
-    # ("cd") produces a pattern that won't cover the rest of the chain — a known,
-    # documented limitation rather than something this helper resolves.
-    pattern = tool_policy.test_command_allow_pattern("cd tests && pytest")
-    assert pattern == "Bash(cd *)"

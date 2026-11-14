@@ -1,0 +1,126 @@
+{
+  "name": "team_standup",
+  "description": "Team cycle (roadmap Phase 2, §4.3 standup): the Lead folds the tracking board, computes dependency-ready work, sizes this wave from it (team_board.size_wave formula, throttled by the budget state), gates dispatch on shared-file ownership (H1), and dispatches implementer code_subtask forks with the live board rollup + teammates' lessons + the item's directives injected into each prompt.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "team_standup_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "The shared run worktree; each fork's worktree is created under it, rooted at the shared branch head."
+        },
+        "correlationId": {
+          "type": "string",
+          "description": "Run id for board/ownership facts."
+        },
+        "contractPaths": {
+          "type": [
+            "array",
+            "string"
+          ],
+          "description": "Frozen-contract paths injected into each prompt."
+        },
+        "maxWidth": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "Max concurrent implementers this wave (the team-size ceiling)."
+        },
+        "budgetState": {
+          "type": "string",
+          "description": "Last budget gate state (ok/warn/halt) — throttles team size."
+        },
+        "codeModel": {
+          "type": "string"
+        },
+        "maxTurns": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "maxBudgetUsd": {
+          "type": [
+            "number",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "team_standup_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "dynamicTasks": {
+          "type": "array",
+          "description": "FORK_JOIN_DYNAMIC descriptors, one code_subtask per dispatched item."
+        },
+        "dynamicTasksInput": {
+          "type": "object",
+          "description": "Per-fork input map keyed by item id."
+        },
+        "groupIds": {
+          "type": "string",
+          "description": "Comma-separated ids dispatched this wave."
+        },
+        "dispatched": {
+          "type": "array",
+          "description": "Items dispatched this wave [{id, description, files, attempt}]."
+        },
+        "contractPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "waveBase": {
+          "type": "string",
+          "description": "Shared branch head at standup — the base each item's peer-review diff is taken from."
+        },
+        "dispatchedCount": {
+          "type": "integer"
+        },
+        "readyCount": {
+          "type": "integer",
+          "description": "Dependency-ready items the standup considered."
+        },
+        "teamSize": {
+          "type": "integer",
+          "description": "Wave size the sizing formula chose."
+        },
+        "rollup": {
+          "type": "object",
+          "description": "Human-digestible board summary (H7)."
+        },
+        "drainedBefore": {
+          "type": "boolean",
+          "description": "True when the board had no open items before this wave (nothing left to do)."
+        }
+      },
+      "required": [
+        "dynamicTasks",
+        "dynamicTasksInput",
+        "groupIds",
+        "dispatched",
+        "dispatchedCount"
+      ]
+    }
+  }
+}

@@ -24,7 +24,9 @@ Kept import-light (stdlib only) so it's unit-testable without the agent backends
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -162,17 +164,42 @@ def read_repo_template(worktree: str, template_key) -> str | None:
     return None
 
 
+_PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
+
+
+def _context_text(value) -> str:
+    """How a context value reads in a prompt; lists and objects stay JSON, as Conductor renders them."""
+    if value is None:
+        return ""
+    return json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value)
+
+
+def render_default(template_key: str, context: dict) -> str:
+    """The shipped default for a key, filled from ``context``: how a prompt composed in code is built,
+    so its text lives in workers/defaults/prompts with every other default. A missing file is an
+    installation defect, so it raises rather than sending an agent an empty prompt."""
+    text = bundled_default(template_key)
+    if text is None:
+        raise FileNotFoundError(f"no shipped default prompt for {template_key!r}")
+    return render_template(text, context)
+
+
 def render_template(template: str, context: dict | None) -> str:
     """Fill {{key}} placeholders from `context`; append any UNUSED non-empty context
     entries in a delimited trailer. Placeholders with no matching context key are left
     as-is (never blindly blanked — a template may contain literal double braces)."""
-    ctx = {k: ("" if v is None else str(v)) for k, v in (context or {}).items()}
-    out, used = template, set()
-    for k, v in ctx.items():
-        ph = "{{" + k + "}}"
-        if ph in out:
-            out = out.replace(ph, v)
-            used.add(k)
+    ctx = {k: _context_text(v) for k, v in (context or {}).items()}
+    used = set()
+
+    def fill(match):
+        key = match.group(1)
+        if key not in ctx:
+            return match.group(0)
+        used.add(key)
+        return ctx[key]
+    # One pass over the template only: a value holding "{{files}}" (a Go template, a quoted diff, a
+    # request) is text to show the agent, never a placeholder to fill.
+    out = _PLACEHOLDER.sub(fill, template)
     leftover = [(k, ctx[k]) for k in ctx if k not in used and ctx[k].strip()]
     if leftover:
         out += "\n\n## Context" + "".join(f"\n\n### {k}\n{v}" for k, v in leftover)
@@ -217,7 +244,12 @@ def resolve_prompt_details(prompt: str, *, template, template_key, context,
         render_context = dict(context or {})
         if "{{subtask}}" in chosen and not str(render_context.get("subtask") or "").strip():
             render_context["subtask"] = prompt
-        return _resolution(render_template(chosen, render_context), source, template_key)
+        rendered = render_template(chosen, render_context)
+        if source.startswith("bundled:"):
+            # Our own files hold no literal placeholders, so one still unfilled is a value the engine
+            # dropped (a null input): blank, never "{{feedback}}" in front of an agent.
+            rendered = _PLACEHOLDER.sub("", rendered)
+        return _resolution(rendered, source, template_key)
     return _resolution(prompt, "workflow:inline-prompt", template_key)
 
 

@@ -9,7 +9,7 @@ from conductor.client.worker.worker_task import worker_task
 
 from common import check_execution, plan_validation, polling, test_plan, verification
 from common.progress import ProgressReporter
-from common.results import fail, ok
+from common.results import ok
 from common.task_flight import TaskFlight
 
 # Conductor may redeliver a still-SCHEDULED task before this worker's final
@@ -76,7 +76,8 @@ def test_discover(task):
         discovered = verification.discover_commands(
             str(i["repoPath"]), i.get("candidateCommit"), mode=mode, allow_heavy=allow_heavy,
             include_browser_tests=include_browser_tests)
-        state = "passed" if discovered.get("executionOutcome") == "no_tests_required" else "discovered"
+        state = ("passed" if discovered.get("executionOutcome") in {"no_tests_required", "no_tests_found"}
+                 else "discovered")
         # The write scope a repair may use: a declared override wins, else what
         # discovery resolved. Returning it here removes a whole workflow task.
         discovered["repairScope"] = test_plan.repair_scope(
@@ -86,21 +87,27 @@ def test_discover(task):
                    f"candidates={len(discovered['candidates'])} "
                    f"rejected={len(discovered.get('rejectedCandidates') or [])}"])
     except verification.VerificationBlocked as exc:
-        # allowAgentAuthoredTests' shape check needs the real candidate's
-        # changed paths even on a block -- this is precisely the outcome that
-        # gates authoring, so losing them here silently rejects every
-        # authored test regardless of its content.
-        return ok(task, {"verificationState": "blocked", "executionOutcome": "configuration_blocked",
+        # Discovery itself never blocks; this is an input the caller wired wrong (no candidate commit,
+        # a commit the repository does not have, a path that is not a git worktree).
+        return ok(task, {"verificationState": "blocked", "executionOutcome": "invalid_input",
                          "reason": str(exc), "candidates": [],
                          "changedPaths": list(getattr(exc, "changed_paths", None) or []),
                          "repairScope": test_plan.repair_scope(i.get("allowedWriteRoots"), [])},
-                  [f"[test_discover] BLOCKED: {exc}"])
+                  [f"[test_discover] INVALID INPUT: {exc}"])
     except Exception as exc:
         reason = f"test discovery infrastructure error: {exc}"
         return ok(task, {"verificationState": "blocked", "executionOutcome": "infra_blocked",
                          "reason": reason, "candidates": [],
                          "repairScope": test_plan.repair_scope(i.get("allowedWriteRoots"), [])},
                   [f"[test_discover] BLOCKED: {reason}"])
+
+
+@worker_task(task_definition_name="test_mode_select", thread_count=4)
+def test_mode_select(task):
+    """Choose how to test a merged change: targeted when it maps to exact tests, else the whole suite."""
+    i = task.input_data or {}
+    out = verification.integration_test_mode(str(i.get("repoPath") or ""), str(i.get("candidateCommit") or ""))
+    return ok(task, out, [f"[test_mode_select] {out['testMode']}: {out['reason']}"])
 
 
 # A parallel fan-out asks for one verification per subtask, and at thread_count
@@ -116,18 +123,22 @@ def test_run(task):
         if not candidate:
             raise verification.VerificationBlocked("candidateCommit is required")
         discovery_outcome = str(i.get("discoveryOutcome") or "discovered")
-        if discovery_outcome == "no_tests_required":
-            return ok(task, {"verificationState": "passed", "executionOutcome": "no_tests_required",
-                             "candidateCommit": candidate, "commands": [],
-                             "coverage": "not-applicable", "affectedUnits": [],
-                             "reason": "candidate changes only documentation or non-executable files"},
-                      ["[test_run] no tests required for this candidate"])
-        if discovery_outcome != "discovered":
-            raise verification.VerificationBlocked(str(i.get("discoveryReason") or
-                                                        "verification discovery did not produce a runnable plan"))
+        reason = str(i.get("discoveryReason") or "")
+        if discovery_outcome in {"invalid_input", "infra_blocked"}:
+            return ok(task, {"verificationState": "blocked", "executionOutcome": discovery_outcome,
+                             "candidateCommit": candidate, "commands": [], "reason": reason},
+                      [f"[test_run] not run: {discovery_outcome}: {reason}"])
         commands = i.get("commands")
-        if not isinstance(commands, list) or not commands:
-            raise verification.VerificationBlocked("verification discovery produced no runnable commands")
+        if discovery_outcome in {"no_tests_required", "no_tests_found"} or not (isinstance(commands, list) and commands):
+            # Nothing to run is a named, passed outcome: the candidate changed nothing executable, or the
+            # repository has no test command. Discovery already climbed every rung before saying so.
+            outcome = discovery_outcome if discovery_outcome in {"no_tests_required", "no_tests_found"} else "no_tests_found"
+            reason = reason or ("the candidate changes only documentation or non-executable files"
+                                if outcome == "no_tests_required" else "no test command found in the repository")
+            return ok(task, {"verificationState": "passed", "executionOutcome": outcome,
+                             "candidateCommit": candidate, "commands": [],
+                             "coverage": "not-applicable", "affectedUnits": [], "reason": reason},
+                      [f"[test_run] {outcome}: {reason}"])
         mode = _test_mode(i.get("testMode"))
         allow_heavy = mode == "full" and bool(i.get("allowHeavySuites"))
         # A real build/test command can run for a very long time as a single
@@ -141,7 +152,9 @@ def test_run(task):
             outcome = verification.verify_candidate(
                 str(i["repoPath"]), candidate, commands,
                 scope="repository" if mode == "full" else "changed", allow_heavy=allow_heavy,
-                on_progress=reporter.update)
+                on_progress=reporter.update,
+                sandbox=str(i.get("sandboxChecks", "")).strip().lower() in ("1", "true", "yes"),
+                in_place=str(i.get("sharedTree", "")).strip().lower() in ("1", "true", "yes"))
         finally:
             reporter.stop()
         outcome = {**outcome, "testMode": mode}
@@ -152,9 +165,9 @@ def test_run(task):
             logs.append("[test_run] failed: " + " ".join(failed[0]["argv"]) + "\n" + failed[0]["output"][-4000:])
         return ok(task, outcome, logs)
     except verification.VerificationBlocked as exc:
-        return ok(task, {"verificationState": "blocked", "executionOutcome": "configuration_blocked",
+        return ok(task, {"verificationState": "blocked", "executionOutcome": "invalid_input",
                          "reason": str(exc), "commands": []},
-                  [f"[test_run] BLOCKED: {exc}"])
+                  [f"[test_run] INVALID INPUT: {exc}"])
     except Exception as exc:
         reason = f"verification execution infrastructure error: {exc}"
         return ok(task, {"verificationState": "blocked", "executionOutcome": "infra_blocked", "candidateCommit": candidate,
@@ -170,133 +183,13 @@ def test_plan_resolve(task):
         discovered=i.get("discovered"), prior=i.get("priorVerification"),
         user=i.get("testCommands"), discovery_outcome=i.get("discoveryOutcome"),
         discovery_reason=i.get("discoveryReason"), selection=i.get("selection"),
-        template=i.get("testPlanTemplate"), agent=i.get("agentCommands"))
+        template=i.get("testPlanTemplate"))
     template_source = str(i.get("testPlanTemplateSource") or "").strip()
     logs = [f"[test_plan_resolve] {out['commandSource']} "
             f"commands={len(out['commands'])} outcome={out['discoveryOutcome']}"]
     if out["commandSource"] == "user_template" and not i.get("testCommands") and template_source:
         logs.append(f"[test_plan_resolve] testPlanTemplate supplied by: {template_source}")
     return ok(task, out, logs)
-
-
-@worker_task(task_definition_name="test_agent_plan_resolve", thread_count=4)
-def test_agent_plan_resolve(task):
-    """Validate a coding agent's last-resort test-command proposal.
-
-    Only reached when ``allowAgentTestPlan`` is true and deterministic
-    discovery could not map the candidate's changed files. This is the
-    strictest layer in the precedence order, and its output is carried
-    forward as an obligation rather than re-invoked after every repair.
-    """
-    i = task.input_data or {}
-    try:
-        mode = _test_mode(i.get("testMode"))
-        root = Path(str(i["repoPath"])).resolve()
-        changed_paths = i.get("changedPaths")
-        candidates = verification.validate_agent_argv(
-            i.get("proposal"), mode=mode, root=root,
-            changed_paths=changed_paths if isinstance(changed_paths, list) else [])
-        repair_roots = sorted({path for candidate in candidates
-                              for path in candidate.get("repairRoots", [])})
-        return ok(task, {"verificationState": "discovered", "executionOutcome": "discovered",
-                         "candidates": candidates, "selection": "agent-proposal",
-                         "coverage": "agent-asserted",
-                         "affectedUnits": [c["affectedUnit"] for c in candidates],
-                         "repairRoots": repair_roots},
-                  [f"[test_agent_plan_resolve] accepted {len(candidates)} agent-proposed command(s)"])
-    except verification.VerificationBlocked as exc:
-        return ok(task, {"verificationState": "blocked", "executionOutcome": "configuration_blocked",
-                         "reason": str(exc), "candidates": [], "repairRoots": []},
-                  [f"[test_agent_plan_resolve] BLOCKED: {exc}"])
-    except Exception as exc:
-        reason = f"agent plan validation infrastructure error: {exc}"
-        return ok(task, {"verificationState": "blocked", "executionOutcome": "infra_blocked",
-                         "reason": reason, "candidates": [], "repairRoots": []},
-                  [f"[test_agent_plan_resolve] BLOCKED: {reason}"])
-
-
-@worker_task(task_definition_name="test_authored_test_validate", thread_count=4)
-def test_authored_test_validate(task):
-    """Pre-check an agent-authored test file before spending a red/green run on it.
-
-    Only reached when allowAgentAuthoredTests is true and the read-only
-    propose_commands search also found nothing. Read-only itself: inspects
-    the working tree the author_missing_test agent step just left dirty, but
-    makes no mutation.
-    """
-    i = task.input_data or {}
-    try:
-        changed_paths = i.get("changedPaths")
-        agent_touched_paths = i.get("agentTouchedPaths")
-        result = verification.validate_authored_test_shape(
-            str(i["repoPath"]), candidate_commit=str(i["candidateCommit"]),
-            changed_paths=changed_paths if isinstance(changed_paths, list) else [],
-            agent_touched_paths=agent_touched_paths if isinstance(agent_touched_paths, list) else None)
-        return ok(task, result,
-                  [f"[test_authored_test_validate] accepted={result['accepted']} "
-                   f"path={result.get('authoredPath') or '(none)'} reason={result.get('reason') or ''}"])
-    except Exception as exc:
-        reason = f"authored-test shape validation infrastructure error: {exc}"
-        return ok(task, {"accepted": False, "reason": reason, "authoredPath": "",
-                         "touchedPaths": [], "matchedIdentifier": ""},
-                  [f"[test_authored_test_validate] BLOCKED: {reason}"])
-
-
-@worker_task(task_definition_name="test_authored_test_discard", thread_count=4)
-def test_authored_test_discard(task):
-    """Undo a rejected agent-authored test attempt so it never rides along on a
-    later, unrelated repair commit."""
-    i = task.input_data or {}
-    try:
-        paths = i.get("paths")
-        result = verification.discard_authored_test_attempt(
-            str(i["repoPath"]), paths if isinstance(paths, list) else [])
-        return ok(task, result, [f"[test_authored_test_discard] discarded={result['discarded']}"])
-    except Exception as exc:
-        reason = f"authored-test discard infrastructure error: {exc}"
-        return ok(task, {"discarded": []}, [f"[test_authored_test_discard] BLOCKED: {reason}"])
-
-
-@worker_task(task_definition_name="test_authored_test_commit_verify", thread_count=3)
-def test_authored_test_commit_verify(task):
-    """Commit a shape-validated authored test, discover it, and red/green-check it.
-
-    One task replaces what used to be three (commit, test_discover,
-    test_authored_test_redgreen) plus a SWITCH between them: the intermediate
-    states have no independent value to test_cycle, only the final
-    accepted/rejected verdict does. See
-    verification.commit_and_verify_authored_test for the exact mechanism,
-    including the automatic rollback on rejection.
-
-    A real commit plus command execution is not safe to run twice for the
-    same task_id (confirmed live: a redelivered duplicate raced the primary's
-    git commit and its "no committable change" result overwrote the primary's
-    real "accepted" one) -- coalesced through _COMMIT_VERIFY_FLIGHT.
-    """
-    def _run():
-        i = task.input_data or {}
-        reporter = ProgressReporter(task, heartbeat_s=10.0).start()
-        try:
-            try:
-                result = verification.commit_and_verify_authored_test(
-                    str(i["repoPath"]), pre_candidate_commit=str(i["preCandidateCommit"]),
-                    message=str(i.get("message") or "test_cycle: agent-authored test for previously unmapped changes"),
-                    test_mode=str(i.get("testMode") or "targeted"),
-                    allow_heavy_suites=bool(i.get("allowHeavySuites")),
-                    include_browser_tests=bool(i.get("includeBrowserTests")),
-                    on_progress=reporter.update)
-                return ok(task, result,
-                          [f"[test_authored_test_commit_verify] accepted={result['accepted']} "
-                           f"reason={result.get('reason') or ''}"])
-            except Exception as exc:
-                reason = f"authored-test commit/verify infrastructure error: {exc}"
-                return ok(task, {"accepted": False, "reason": reason, "commit": i.get("preCandidateCommit", ""),
-                                 "repairRoots": [], "commands": []},
-                          [f"[test_authored_test_commit_verify] BLOCKED: {reason}"])
-        finally:
-            reporter.stop()
-
-    return _COMMIT_VERIFY_FLIGHT.run(task, _run)
 
 
 @worker_task(task_definition_name="test_repair_record", thread_count=4)

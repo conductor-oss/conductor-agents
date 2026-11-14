@@ -21,6 +21,25 @@ def _identity(server_url: str, module: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
 
 
+_HELD: list = []  # the handles of this process's locks, so a draining generation can release them early
+
+
+def release_all() -> int:
+    """Release every lock this generation holds without ending its work: a generation that stopped
+    claiming new tasks (a reload is pending) hands the deployment to its successor, which starts
+    beside it while the in-flight work finishes. Returns how many locks were released."""
+    released = 0
+    for handle in list(_HELD):
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+            released += 1
+        except OSError:
+            pass
+        _HELD.remove(handle)
+    return released
+
+
 @contextmanager
 def singleton_worker(server_url: str, modules: list[str]) -> Iterator[Path]:
     """Prevent two identical module sets from polling the same Conductor host.
@@ -66,12 +85,16 @@ def singleton_worker(server_url: str, modules: list[str]) -> Iterator[Path]:
             handle.write(json.dumps({"pid": os.getpid(), "module": module, "server": server_url}))
             handle.flush()
             handles.append(handle)
+            _HELD.append(handle)
             paths.append(path)
         if hasattr(os, "register_at_fork"):
             os.register_at_fork(after_in_child=close_in_forked_child)
         yield paths[0]
     finally:
         for handle in reversed(handles):
+            if handle not in _HELD:
+                continue  # released early by the handover
+            _HELD.remove(handle)
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             finally:
