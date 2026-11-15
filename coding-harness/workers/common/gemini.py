@@ -110,11 +110,17 @@ def _tool_summary(stats: dict[str, Any]) -> tuple[int, list[str]]:
 
 
 def _run_once(args: list[str], worktree: str):
-    """Run the CLI once and return (rc, stdout, stderr_tail)."""
+    """Run the CLI once and return (rc, stdout, stderr_tail).
+
+    Gemini's own skill listing (``~/.gemini/skills``, ``~/.agents/skills``, its built-ins) is turned off
+    through a system-settings file: the harness lists the run's skills for every backend instead
+    (common/skills.py)."""
+    from . import skills
     proc = subprocess.Popen(
         args, cwd=worktree, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env=check_execution.inherited_environment(backend_auth.extra("gemini")),
+        env=check_execution.inherited_environment({**backend_auth.extra("gemini"),
+                                                   "GEMINI_CLI_SYSTEM_SETTINGS_PATH": skills.gemini_settings()}),
     )
     stdout, stderr = proc.communicate()
     return proc.returncode, stdout or "", (stderr or "")[-4000:]
@@ -129,8 +135,12 @@ def run_gemini_agent(
     output_schema: dict | None = None,
     resume_session_id: str | None = None,
     on_turn=None,
+    read_dirs: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run one headless Gemini CLI session to completion; return the uniform dict.
+
+    ``read_dirs`` are added to Gemini's workspace (``--include-directories``) so its file tools can read
+    them: the run's skills folder. Gemini's file tools refuse paths outside the workspace.
 
     ``write`` selects the surface: False → ``--approval-mode plan`` (read-only, the
     planner), True → ``--approval-mode yolo`` + ``--sandbox`` (auto-approved, edits
@@ -157,6 +167,8 @@ def run_gemini_agent(
         args += ["--approval-mode", "plan"]
     if resume_session_id:
         args += ["--resume", resume_session_id]
+    for folder in read_dirs or []:
+        args += ["--include-directories", folder]
 
     try:
         rc, stdout, stderr_tail = _run_once(args, worktree)

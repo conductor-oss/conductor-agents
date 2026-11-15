@@ -187,6 +187,11 @@ def _item_command(item: dict[str, Any]) -> str | None:
     return None
 
 
+# Codex lists the skills it finds itself ($CODEX_HOME/skills, ~/.agents/skills, its plugins) in every
+# session's instructions. The harness lists the run's skills for every backend instead (common/skills.py),
+# so Codex's own listing is off: the same skills on every backend and every host, none listed twice.
+NATIVE_SKILLS_OFF: dict[str, Any] = {"skills": {"include_instructions": False}}
+
 # --------------------------------------------------------------------------- SDK
 
 async def _run_codex_sdk(
@@ -221,8 +226,8 @@ async def _run_codex_sdk(
     # failure. This harness already isolates the agent to its own worktree
     # (write_roots, _worktree_guard); there is no additional safety this
     # specific restriction buys here, only false test failures.
-    session_config = ({"sandbox_workspace_write": {"network_access": True, **(
-        {"writable_roots": roots} if (roots := writable_roots(worktree, granted_roots)) else {})}} if write else None)
+    session_config: dict[str, Any] = {**NATIVE_SKILLS_OFF, **({"sandbox_workspace_write": {"network_access": True, **(
+        {"writable_roots": roots} if (roots := writable_roots(worktree, granted_roots)) else {})}} if write else {})}
     turn_kwargs: dict[str, Any] = {}
     if output_schema:
         turn_kwargs["output_schema"] = _strictify_schema(output_schema)
@@ -441,6 +446,7 @@ def _run_codex_cli(
     if resume_session_id:
         args += ["resume", resume_session_id]
     args += [prompt, "-C", worktree, "--skip-git-repo-check", "--json", "-s", sandbox]
+    args += ["-c", "skills.include_instructions=false"]  # NATIVE_SKILLS_OFF
     # See the matching comment in _run_codex_sdk: workspace-write denies network/
     # socket syscalls (including loopback) by default, which surfaces as a false
     # test failure, not a project-code one.

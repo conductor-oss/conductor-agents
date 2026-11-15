@@ -116,3 +116,14 @@ def _test_actor_registry(tmp_path_factory, monkeypatch):
     path.write_text(json.dumps({"tokens": {"test-token": {"name": "Ops", "email": "ops@example.com",
                                                           "authority": "human"}}}))
     monkeypatch.setenv("SWARM_ACTORS_FILE", str(path))
+
+
+@pytest.fixture(autouse=True)
+def _no_host_skills(tmp_path_factory, monkeypatch):
+    """Every test sees no installed skills and copies none into the operator's cache; a test that is
+    about skills points ``skills.USER_ROOTS`` at its own folders."""
+    from common import skills
+    monkeypatch.setattr(skills, "USER_ROOTS", ())
+    monkeypatch.setenv("CONDUCTOR_SKILLS_HOME", str(tmp_path_factory.mktemp("skills-home")))
+    monkeypatch.delenv("CONDUCTOR_SKILL_DIRS", raising=False)
+    monkeypatch.delenv("CONDUCTOR_SKILLS", raising=False)

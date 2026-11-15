@@ -192,6 +192,17 @@ def swarm_setup(task):
                 git.git(work, "switch", "-c", branch)
             _restore_harness_files(work, repo, str(i.get("restoreHarnessFrom") or "").strip())
         migrated = spec_mod.migrate_legacy(work)
+        # The run's skills, settled once: every agent of the run is offered the same ones. A name nobody
+        # installed stops the run here rather than quietly running without it.
+        from common import skills as skills_mod
+        chosen, missing = skills_mod.choose(skills_mod.discover(work), i.get("skills"))
+        if missing:
+            installed = ", ".join(sorted(s.name for s in skills_mod.discover(work))) or "none"
+            raise ValueError(f"skill(s) not installed on this worker: {', '.join(missing)} (installed: {installed})")
+        left_out = [s.name for s in chosen if skills_mod.too_large(s)]
+        if left_out and skills_mod.selection(i.get("skills")) != "all":
+            raise ValueError(f"skill(s) over {skills_mod.MAX_SKILL_BYTES // 2**20} MB, not copied: {', '.join(left_out)}")
+        chosen = [s for s in chosen if s.name not in left_out]
         have = spec_mod.existing_kind(work)
         guide = spec_mod.plan_guide(specs, design, have, spec_mod.read_checks(work), spec_mod.design_docs(work))
         for key in ("user.name", "user.email"):
@@ -202,10 +213,12 @@ def swarm_setup(task):
                          "originalBranch": original_branch, "originalHead": original_head,
                          "ladder": _ladder_text(resolution), "maxRung": _ladder_top(resolution),
                          "history": _history_text(repo), "specs": specs, "design": design,
-                         "existingSpec": have, "migratedSpec": migrated, **guide, "schemas": {
+                         "existingSpec": have, "migratedSpec": migrated, **guide,
+                         "skills": [s.name for s in chosen], "skillsLeftOut": left_out, "schemas": {
             "items": ITEMS_SCHEMA, "plan": PLAN_SCHEMA, "work": WORK_SCHEMA, "evaluate": EVALUATE_SCHEMA},
             "allowedTools": SWARM_ALLOWED_TOOLS, "disallowedTools": SWARM_DISALLOWED_TOOLS},
-            [f"[swarm_setup] {work} on {branch}"])
+            [f"[swarm_setup] {work} on {branch}; skills: {', '.join(s.name for s in chosen) or 'none'}"
+             + (f"; left out (over {skills_mod.MAX_SKILL_BYTES // 2**20} MB): {', '.join(left_out)}" if left_out else "")])
     except Exception as e:  # noqa: BLE001
         return fail(task, "swarm_setup", e)
 
@@ -272,7 +285,7 @@ def _item_flow(it: dict, ctx: dict) -> tuple[dict, dict]:
             {**ctx, "item": it})
 
 
-_CTX_KEYS = ("round", "runId", "workdir", "branch", "description", "repoPath", "ceilingUsd", "specBrief",
+_CTX_KEYS = ("round", "runId", "workdir", "branch", "description", "repoPath", "ceilingUsd", "specBrief", "skills",
              "modelProfile", "modelPolicy", "modelPolicySource", "modelPolicySha256", "modelsConfig", "modelOverrides")
 
 
@@ -546,7 +559,7 @@ def swarm_authoring(task):
                 "allowedTools": SWARM_ALLOWED_TOOLS, "disallowedTools": SWARM_DISALLOWED_TOOLS,
                 "feedbackCorrelationId": run, "feedbackRunId": run, "feedbackItem": author,
                 **{k: i.get(k) for k in ("modelProfile", "modelPolicy", "modelPolicySource", "modelPolicySha256",
-                                         "modelsConfig", "modelOverrides", "modelResolution")},
+                                         "modelsConfig", "modelOverrides", "modelResolution", "skills")},
                 "promptTemplate": "", "promptTemplateSource": "",
                 **({"maxBudgetUsd": cap} if cap is not None else {}),
                 "spendRunId": run, "spendAuthor": f"author:{author}",

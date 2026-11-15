@@ -519,8 +519,14 @@ async def _run_session(
     context_paths: list[str] | None = None,
     feedback: Any = None,
     granted_roots: list[str] | None = None,
+    skills: Any = None,
 ) -> dict[str, Any]:
     """Run one locked-down autonomous coding session to completion (async).
+
+    ``skills`` picks the skills the session may use, the same way for every backend (common/skills.py):
+    ``"all"``, ``"none"`` or names; unset is the worker's ``CONDUCTOR_SKILLS``, else all. The chosen ones
+    are listed in the prompt and their copied folder made readable; each CLI's own listing is off. The
+    result names them (``skills``) and any name asked for that no folder has (``skillsMissing``).
 
     ``feedback`` (a ``common.feedback.FeedbackWatcher``) makes the session take team feedback while it
     works (roadmap H11): after every tool call a PostToolUse hook injects new board directives for this
@@ -640,6 +646,23 @@ async def _run_session(
             prompt = (f"Repository guide ({name}) — authoritative conventions for building, "
                       f"testing, and reviewing this repository; follow it:\n\n{text}\n\n---\n\n{prompt}")
 
+    # The run's skills, listed the same way for every backend; the repository's own skills only when its
+    # project settings load (an untrusted repo's skills are as repo-controlled as its settings).
+    from . import skills as _skills
+    kit = await asyncio.to_thread(_skills.prepare, worktree_abs, skills,
+                                  repo="project" in (setting_sources if setting_sources is not None else ["project"]))
+    if kit["text"] and not resume_session_id:
+        prompt += "\n\n" + kit["text"]
+    skill_dirs = [kit["dir"]] if kit["dir"] else []
+
+    def _with_skills(res: dict[str, Any]) -> dict[str, Any]:
+        res["skills"] = kit["names"]
+        if kit["missing"] or kit["skipped"]:
+            res["skillsMissing"] = kit["missing"] + kit["skipped"]
+            res.setdefault("turn_log", []).append(
+                "skills not available on this worker: " + ", ".join(kit["missing"] + kit["skipped"]))
+        return res
+
     # Keep the boundary after repo-provided guidance and caller templates so it
     # cannot be displaced by either.  It prevents agents from burning turns on
     # futile sandbox workarounds such as disabling Gradle's cache-lock listener.
@@ -664,7 +687,7 @@ async def _run_session(
             res.update(feedback.report())
             if feedback.interrupted_by:
                 res["status"] = "interrupted"
-        return res
+        return _with_skills(res)
     if be == "gemini":
         from .gemini import run_gemini_agent
         # Blocking subprocess driver — a worker thread, not the shared event loop.
@@ -673,10 +696,10 @@ async def _run_session(
             prompt, worktree=worktree_abs, model=model,
             write=_is_write_surface(tools),
             output_schema=output_schema, resume_session_id=resume_session_id,
-            on_turn=on_turn,
+            on_turn=on_turn, read_dirs=skill_dirs,
         )
         res.setdefault("model", model or "")
-        return res
+        return _with_skills(res)
 
     system_prompt: dict[str, Any] = {
         "type": "preset",
@@ -694,7 +717,7 @@ async def _run_session(
         # Claude's SDK needs explicit additional roots to make user-supplied
         # references visible.  They are never write roots; the file-tool hook and
         # the OS sandbox continue to limit writes to ``worktree_abs``.
-        "add_dirs": [worktree_abs, *context_paths],
+        "add_dirs": [worktree_abs, *context_paths, *skill_dirs],
         "system_prompt": system_prompt,
         "setting_sources": setting_sources if setting_sources is not None else ["project"],
         # env MERGES on top of the inherited env in Python (doc gotcha #17), so this
@@ -715,6 +738,9 @@ async def _run_session(
                      if feedback is not None and feedback.active else {})},
         "max_turns": max_turns,
         "stderr": stderr_lines.append,
+        # Claude's own skill listing (and its Skill tool) off: the run's skills are listed in the prompt
+        # for every backend and read from their folder (common/skills.py).
+        "skills": [],
     }
     if session_store is not None:
         opts["session_store"] = session_store
@@ -751,6 +777,7 @@ async def _run_session(
     options = sdk.ClaudeAgentOptions(**opts)
 
     def _attach(d: dict[str, Any]) -> dict[str, Any]:
+        _with_skills(d)
         # Tail of subprocess stderr, capped, for diagnosing opaque failures.
         d["stderr"] = "".join(stderr_lines)[-4000:]
         d.setdefault("model", model or "")

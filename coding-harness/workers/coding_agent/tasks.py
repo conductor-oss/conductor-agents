@@ -777,6 +777,8 @@ async def _coding_agent(task):
                     granted_roots=_as_list(i.get("writableRoots")),
                     context_paths=[entry["path"] for entry in agent_context_paths],
                     feedback=watcher if watcher.active else None,
+                    # The run's skills (common/skills.py): all, none or names; unset = the worker's default.
+                    skills=i.get("skills"),
                 )
         finally:
             try:
@@ -885,6 +887,9 @@ async def _coding_agent(task):
             "tokenUsed": res.get("tokens", 0),
             "costUsd": res.get("cost_usd", 0.0),
             "denials": res.get("denials") or [],
+            # The skills the session was offered, and any asked for that this worker does not have.
+            "skills": res.get("skills") or [],
+            "skillsMissing": res.get("skillsMissing") or [],
             # Files inside the worktree the guard refused as outside this task's write roots: the
             # Lead's signal to widen the item's scope (team_standup), kept apart from the log lines.
             # Both ways a write is refused count. Codex edits through its shell, past the file-tool guard,

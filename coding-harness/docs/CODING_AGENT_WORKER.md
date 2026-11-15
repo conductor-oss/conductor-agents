@@ -140,6 +140,7 @@ Set on `task.input_data`. Only `prompt` and `worktreePath` are required.
 | `maxBudgetUsd` | float | `50.0` | Spend cap before the agent stops (`error_max_budget_usd`). |
 | `resumeSessionId` | string | none | Resume a prior session (retry-as-resume, §7). **Must** use the same `worktreePath` it was created in, or it silently starts fresh (unless a shared session store is configured — see §11). |
 | `schema` | dict \| JSON string | none | JSON Schema forcing a validated `structured` result instead of prose (§11 output). |
+| `skills` | list \| CSV \| `"all"` \| `"none"` | env or `"all"` | The skills the session may use, the same way on every backend (§16). Unset ⇒ the worker's `CONDUCTOR_SKILLS`, else all installed. |
 | `settingSources` | list \| CSV \| `"none"` | env or `["project"]` | Which filesystem config loads. `"none"`/`""`/`[]` loads nothing (untrusted-repo lockdown); overrides the `CODING_AGENT_SETTING_SOURCES` env default. |
 | `tools` / `allowedTools` / `disallowedTools` | list \| CSV | SDK defaults | Restrict the tool surface. `tools` is an availability gate (can only *remove* built-ins) — e.g. a read-only planner passes `tools: ["Read","Grep","Glob"]`. Tightening only. |
 | `includeFileTree` | bool | `true` | Prepend a bounded, `.gitignore`-respecting listing of the working dir to the prompt so the agent skips its reflexive first-turn `ls`/`Glob` (saves a round-trip + tokens). Skipped automatically on resume. Set `false` to disable. |
@@ -257,6 +258,8 @@ never raises for an agent that merely didn't finish):
 | `tokenUsed` | int | Total tokens (input + output + cache r/w). |
 | `costUsd` | float | Session cost in USD. |
 | `denials` | string[] | Tool calls blocked by the guard/permission layers. |
+| `skills` | string[] | The skills the session was offered (§16). |
+| `skillsMissing` | string[] | Skills asked for by name that this worker does not have (or that are over 20 MB). |
 | `retryable` | bool | (on failure) true for `error_max_turns` / `error_max_budget_usd` — resume instead of restart. |
 | `stderr` | string | (on failure) tail of the subprocess's stderr, for diagnosing opaque failures. |
 
@@ -365,6 +368,9 @@ Set on the worker process (not per task):
 | Env var | Effect |
 |---|---|
 | `CODING_AGENT_SETTING_SOURCES` | Default `settingSources` for all tasks. Set to `` (empty) or `none` to load **no** repo config (untrusted-repo lockdown); unset ⇒ `["project"]`. Per-task `settingSources` overrides it. |
+| `CONDUCTOR_SKILLS` | Default `skills` for all tasks: `all` (unset), `none`, or names (comma-separated). |
+| `CONDUCTOR_SKILL_DIRS` | Extra skill folders (path-separated), read after the repository's and before the user's. |
+| `CONDUCTOR_SKILLS_HOME` | Where the copied skill folders live (default `~/.cache/conductor-harness/skills`). |
 | `CODING_AGENT_SESSION_STORE_DIR` | Shared dir enabling cross-host resume (above). Unset ⇒ host-local sessions only. |
 | `ANTHROPIC_API_KEY` | Required — the SDK subprocess reads it from the environment. |
 
@@ -677,6 +683,7 @@ plus an `agent` field recording which ran.
 | Model | `-m` / `model` | `model` (thread param) | `-m` / `model` |
 | Session resume | `resume` session_id | `thread_resume(thread_id)` | `--resume <session_id>` (id from the JSON output) |
 | Progress / turns | `AssistantMessage` loop (per turn) | streamed SDK notifications (per item) | **final-only**: one synthesized summary turn from `stats.tools` (json mode has no per-turn stream); heartbeat covers liveness; `numTurns` ≈ tool-call count |
+| Skills | listed in the prompt; folder in `add_dirs`; own listing off (`skills: []`) | listed in the prompt (sandbox reads anywhere); own listing off (`skills.include_instructions=false`) | listed in the prompt; folder via `--include-directories`; own listing off (`skills.enabled=false` in a system-settings file) |
 | Cost | native USD | **estimated** from tokens (`cost.py` OpenAI rates) | **estimated** from tokens (`cost.py` Gemini rates) |
 | No-ops | — | `fallbackModel`, `settingSources`, `session_store`, `allowedDomains`, fine-grained `allowedTools`/`disallowedTools` (`effort` IS honored by the SDK driver) | `fallbackModel`, `effort`, `settingSources`, `session_store`, `allowedDomains`, fine-grained tool lists |
 
@@ -994,3 +1001,30 @@ conventions), the template is the *task prompt*.
 
 Put build/test/lint commands, architecture notes, and review priorities in `AGENTS.md`; every
 harness run on that repo — local or CI — picks them up automatically.
+
+## 16. Skills (every backend)
+
+A skill is a folder with a `SKILL.md` (front matter `name` and `description`, then instructions) and
+the scripts or references it ships. Each CLI finds skills on its own and in its own folders (Codex in
+`~/.codex/skills` and `~/.agents/skills`, Gemini in `~/.gemini/skills` and `~/.agents/skills`, Claude
+with only project settings in none), so the same run used to see different skills on each backend and
+each host. The worker keeps one list instead (`common/skills.py`):
+
+- **Where it looks**, the first skill of a name winning: the repository's `.agents/skills`,
+  `.claude/skills`, `.codex/skills`, `.gemini/skills` (only when the session loads project settings:
+  an untrusted repository's skills are as repo-controlled as its settings), then `CONDUCTOR_SKILL_DIRS`,
+  then `~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.gemini/skills`. A skill is a
+  direct sub-folder holding `SKILL.md`; dot-folders (Codex's `.system`) and the tools' plugin caches
+  are not read, since those skills drive one tool's own runtime (Codex's in-app browser, say).
+- **Which ones**: the `skills` input (`all`, `none` or names; unset is `CONDUCTOR_SKILLS`, else all).
+  A swarm run settles them once in `swarm_setup` (a name nobody installed stops the run there) and
+  hands the same list to every agent of the run (`skills` input of `swarm`).
+- **How**: the chosen skills are copied into a folder named by their content
+  (`~/.cache/conductor-harness/skills/<digest>`; `node_modules`, `.git` and virtualenvs left out, any
+  skill over 20 MB skipped and reported), so an agent never writes into the user's own skills and a
+  changed skill is a new folder; a copy whose content no longer matches its name is rebuilt. The
+  prompt lists each skill's name, description and `SKILL.md` path, for every backend the same way, and
+  tells the agent to read the whole `SKILL.md` when a part of its task matches. Claude gets the folder
+  as an additional directory, Gemini as an included directory; Codex's sandbox reads anywhere. Each
+  CLI's own listing is off, so nothing is listed twice and nothing the run did not choose appears.
+

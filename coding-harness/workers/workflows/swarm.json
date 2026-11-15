@@ -28,6 +28,7 @@
     "permissionWaitMinutes",
     "specs",
     "design",
+    "skills",
     "publishHarnessFiles",
     "restoreHarnessFrom"
   ],
@@ -86,6 +87,7 @@
         "startFrom": "${intake.output.startFrom}",
         "specs": "${workflow.input.specs}",
         "design": "${workflow.input.design}",
+        "skills": "${workflow.input.skills}",
         "restoreHarnessFrom": "${intake.output.restoreHarnessFrom}"
       }
     },
@@ -143,6 +145,7 @@
             "modelsConfig": "${workflow.input.modelsConfig}",
             "modelOverrides": "${workflow.input.modelOverrides}",
             "modelResolution": "${model_policy.output}",
+            "skills": "${setup.output.skills}",
             "promptTemplate": "",
             "promptTemplateSource": "",
             "spendRunId": "${workflow.workflowId}",
@@ -188,6 +191,7 @@
         "modelPolicySha256": "${workflow.input.modelPolicySha256}",
         "modelsConfig": "${workflow.input.modelsConfig}",
         "modelOverrides": "${workflow.input.modelOverrides}",
+        "skills": "${setup.output.skills}",
         "modelResolution": "${model_policy.output}",
         "specKind": "${formal.output.kind}"
       }
@@ -248,6 +252,7 @@
             "modelPolicySha256": "${workflow.input.modelPolicySha256}",
             "modelsConfig": "${workflow.input.modelsConfig}",
             "modelOverrides": "${workflow.input.modelOverrides}",
+            "skills": "${setup.output.skills}",
             "ceilingUsd": "${workflow.input.ceilingUsd}",
             "repoPath": "${intake.output.repoPath}",
             "specBrief": "${formal.output.brief}"
@@ -330,6 +335,7 @@
             "modelsConfig": "${workflow.input.modelsConfig}",
             "modelOverrides": "${workflow.input.modelOverrides}",
             "modelResolution": "${model_policy.output}",
+            "skills": "${setup.output.skills}",
             "promptTemplate": "",
             "promptTemplateSource": "",
             "modelTier": "${fold.output.roundReviewRung}",
@@ -503,6 +509,7 @@
               "modelOverrides": "${workflow.input.modelOverrides}",
               "specs": "${workflow.input.specs}",
               "design": "${workflow.input.design}",
+              "skills": "${workflow.input.skills}",
               "publishHarnessFiles": "${workflow.input.publishHarnessFiles}",
               "restoreHarnessFrom": "${publish.output.harnessRef}"
             }
@@ -531,7 +538,8 @@
       "why": "${formal.output.why}",
       "summary": "${formal.output.summary}"
     },
-    "designDocs": "${formal.output.designDocs}"
+    "designDocs": "${formal.output.designDocs}",
+    "skills": "${setup.output.skills}"
   },
   "inputTemplate": {
     "maxRounds": 8,
@@ -557,6 +565,7 @@
     "permissionWaitMinutes": 0,
     "specs": "auto",
     "design": "auto",
+    "skills": "",
     "publishHarnessFiles": false,
     "restoreHarnessFrom": ""
   }

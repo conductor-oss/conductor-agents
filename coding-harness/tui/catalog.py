@@ -369,6 +369,8 @@ def _r_swarm(o: dict) -> ResultCard:
     docs = o.get("designDocs") if isinstance(o.get("designDocs"), list) else None
     if docs is not None:
         rows.append(("design", ", ".join(map(str, docs)) or "none"))
+    if isinstance(o.get("skills"), list):
+        rows.append(("skills", ", ".join(map(str, o["skills"])) or "none"))
     pr = o.get("pullRequest") if isinstance(o.get("pullRequest"), dict) else {}
     if pr.get("url"):
         rows.append(("pull request", str(pr["url"])))
@@ -640,6 +642,9 @@ CATALOG: dict[str, WorkflowSpec] = {
                   "every transition; openspec: requirements and scenarios, each proven by a check; none"),
             Field("design", "Design documents", "enum", "auto", choices=("auto", "always", "none"),
                   help="auto: the architect writes them when the change needs them and skips them for small fixes"),
+            Field("skills", "Skills", "text", "", advanced=True,
+                  help="blank or all: every installed skill, for every agent (Claude, Codex, Gemini); none; "
+                  "or names, comma-separated"),
             Field("publishHarnessFiles", "Include the harness's files (.cc/) in the pull request", "bool", False,
                   advanced=True, help="off: the pull request carries only the project's own changes"),
             Field("publish", "Publish", "enum", "", choices=("", "pr", "branch", "none"), advanced=True,
