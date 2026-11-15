@@ -160,7 +160,8 @@ def swarm_intake(task):
                 raise ValueError("Give a link (an issue, pull request or repository), or a repository path and "
                                  "what to build.")
             out = {"repoPath": os.path.abspath(repo_path), "description": asked, "branchName": branch_name,
-                   "startFrom": "", "publish": publish, "ready": str(i.get("ready") or "ci"), "target": {}}
+                   "startFrom": "", "publish": publish, "ready": str(i.get("ready") or "ci"), "target": {},
+                   "restoreHarnessFrom": str(i.get("restoreHarnessFrom") or "")}
             if publish != "none":
                 origin = git.git(out["repoPath"], "remote", "get-url", "origin", check=False).stdout.strip()
                 if not origin:
@@ -211,7 +212,7 @@ def swarm_intake(task):
             ready = str(i.get("ready") or "ci")
         return ok(task, {"repoPath": work, "temporary": temporary, "description": description,
                          "branchName": branch_name, "startFrom": start, "publish": publish, "ready": ready,
-                         "target": target},
+                         "target": target, "restoreHarnessFrom": str(i.get("restoreHarnessFrom") or "")},
                   [f"[swarm_intake] {kind} {slug}{'#' + str(number) if number else ''} in "
                    f"{'a temporary checkout' if temporary else 'the given checkout'} {work}"])
     except Exception as e:  # noqa: BLE001
@@ -230,11 +231,19 @@ def _summary(i: dict, target: dict) -> str:
         if docs:
             bits.append("Design: " + ", ".join(docs[:6]) + ".")
         bits.append(f"{len(changed)} files changed.")
+    kind = str(i.get("specKind") or "")
     try:
-        with open(os.path.join(work, ".cc", "conformance", "proof.json"), encoding="utf-8") as fh:
-            proof = json.load(fh)
-        if proof.get("summary"):
-            bits.append(f"Formal spec: {str(proof['summary']).rstrip('.')}.")
+        if kind == "tla":
+            with open(os.path.join(work, ".cc", "conformance", "proof.json"), encoding="utf-8") as fh:
+                proof = json.load(fh)
+            if proof.get("summary"):
+                bits.append(f"TLA+ spec: {str(proof['summary']).rstrip('.')}.")
+        elif kind == "openspec":
+            from common import openspec_spec
+            from swarm import spec as spec_mod
+            proof = openspec_spec.prove(work, spec_mod.read_checks(work))
+            if proof.get("summary"):
+                bits.append(f"OpenSpec spec: {str(proof['summary']).rstrip('.')}.")
     except (OSError, ValueError):
         pass
     try:
@@ -242,6 +251,43 @@ def _summary(i: dict, target: dict) -> str:
     except (TypeError, ValueError):
         pass
     return " ".join(bits)
+
+
+def leave_out_harness_files(repo: str, *, branch: str, head: str, base: str, run_id: str,
+                            message: str) -> tuple[str, str]:
+    """The commit to publish without the coding factory's own files (``.cc/``: spec, checks, adapter, brief;
+    ``.conductor-code/``: repository memory), which mean nothing to the project's people. One commit on top
+    of ``base`` with the delivered tree, those paths as ``base`` has them. The local branch moves to it; the
+    full delivered commit is kept at ``refs/conductor/<run>/harness`` so a follow-up run carries its spec
+    and checks on. ``(commit, harness ref)``; unchanged (``head``, "") when there is nothing to leave out.
+    Deterministic (dates and author from ``head``), so a retried publish pushes the same commit."""
+    from swarm.tasks import HARNESS_PATHS
+    if not base:
+        return head, ""
+    git_dir = git.git(repo, "rev-parse", "--absolute-git-dir").stdout.strip()
+    index = os.path.join(git_dir, f"conductor-publish-{run_id[:8]}.index")
+    if os.path.exists(index):
+        os.remove(index)
+    env = {"GIT_INDEX_FILE": index}
+    git.git(repo, "read-tree", head, env=env)
+    for path in HARNESS_PATHS:
+        git.git(repo, "rm", "-r", "-f", "--cached", "--quiet", "--ignore-unmatch", "--", path, env=env)
+        for line in git.git(repo, "ls-tree", "-r", base, "--", path, check=False).stdout.splitlines():
+            meta, _, name = line.partition("\t")
+            mode, _kind, sha = meta.split()
+            git.git(repo, "update-index", "--add", "--cacheinfo", f"{mode},{sha},{name}", env=env)
+    tree = git.git(repo, "write-tree", env=env).stdout.strip()
+    os.remove(index)
+    if tree == git.git(repo, "rev-parse", f"{head}^{{tree}}").stdout.strip():
+        return head, ""
+    fmt = git.git(repo, "show", "-s", "--format=%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI", head).stdout.strip().split("\x00")
+    who = dict(zip(("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE", "GIT_COMMITTER_NAME",
+                    "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE"), fmt))
+    commit = git.git(repo, "commit-tree", tree, "-p", base, "-m", message, env=who).stdout.strip()
+    ref = f"refs/conductor/{run_id[:8]}/harness"
+    git.git(repo, "update-ref", ref, head)
+    git.git(repo, "update-ref", f"refs/heads/{branch}", commit)
+    return commit, ref
 
 
 @worker_task(task_definition_name="swarm_publish")
@@ -264,6 +310,12 @@ def swarm_publish(task):
         # push reported the checkout's HEAD (main, in a temporary checkout), and the CI watch waited for
         # GitHub to show a head the pull request never had (run c5fbbe5b).
         delivered_head = str(i.get("head") or "").strip() or None
+        harness_ref = ""
+        if delivered_head and not _truthy(i.get("publishHarnessFiles")):
+            delivered_head, harness_ref = leave_out_harness_files(
+                repo, branch=branch, head=delivered_head, base=str(i.get("base") or ""),
+                run_id=str(i.get("runId") or task.workflow_instance_id),
+                message=f"{str(target.get('title') or branch)[:120]}\n\n{summary}")
         if target.get("kind") == "pull":
             # Push to the pull request's own branch (in the fork, for a pull request from one). A plain push:
             # if someone pushed to it meanwhile, git refuses and the run reports it rather than overwrite.
@@ -274,14 +326,15 @@ def swarm_publish(task):
             github.pr_comment(repo, number, f"Pushed {pushed['head'][:12]} to this pull request. {summary}",
                               repo_ref=slug)
             pr = {"number": number, "url": target.get("url"), "head": pushed["head"], "created": False}
-            return ok(task, {"published": True, "pullRequest": pr, "pushed": pushed},
+            return ok(task, {"published": True, "pullRequest": pr, "pushed": pushed, "harnessRef": harness_ref},
                       [f"[swarm_publish] pushed {pushed['head'][:12]} to #{number}"])
         info = github.repo_info(slug)
         owner_repo = slug if info["canPush"] else github.ensure_fork(slug)
         pushed = git.push(repo, branch_name=branch, remote=github.clone_url(owner_repo), set_upstream=False,
                           expected_head=delivered_head)
         if publish == "branch":
-            return ok(task, {"published": True, "pullRequest": {}, "pushed": pushed, "pushedTo": owner_repo},
+            return ok(task, {"published": True, "pullRequest": {}, "pushed": pushed, "pushedTo": owner_repo,
+                             "harnessRef": harness_ref},
                       [f"[swarm_publish] pushed {branch} to {owner_repo}"])
         head_ref = branch if owner_repo == slug else f"{owner_repo.split('/')[0]}:{branch}"
         closes = int(target.get("number") or 0) if target.get("kind") == "issue" else 0
@@ -297,7 +350,8 @@ def swarm_publish(task):
             created = {"created": False, "number": existing[0], "url": existing[1]}
         pr = {"number": created.get("number"), "url": created.get("url"), "head": pushed["head"],
               "created": bool(created.get("created")), "draft": True, "fork": owner_repo != slug}
-        return ok(task, {"published": True, "pullRequest": pr, "pushed": pushed, "pushedTo": owner_repo},
+        return ok(task, {"published": True, "pullRequest": pr, "pushed": pushed, "pushedTo": owner_repo,
+                         "harnessRef": harness_ref},
                   [f"[swarm_publish] {pr['url']} (draft) from {owner_repo}:{branch}"])
     except Exception as e:  # noqa: BLE001
         return fail(task, "swarm_publish", e)

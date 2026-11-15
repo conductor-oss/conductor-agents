@@ -5,7 +5,7 @@ You write ONE acceptance check for a swarm that is about to build this request, 
 The architect decided the check; you write it exactly as decided:
 {{check}}
 
-Read the architect's brief `.cc/design.md`, above all THE CONTRACT THE CHECKS USE, and the design documents in `design/`: the check drives the program through exactly those words (labels, routes, commands, response shapes, environment variables, the start command). Other authors are writing the other checks beside you; a shared helper they might also write is not shared: keep your check self-contained in its own file.
+Read the architect's brief `.cc/design.md`, above all THE CONTRACT THE CHECKS USE, and the design documents it names in `design/`, if any; when the check `covers` OpenSpec scenarios, read them in `.cc/openspec/specs/` and assert exactly what each scenario's THEN says: the check drives the program through exactly those words (labels, routes, commands, response shapes, environment variables, the start command). Other authors are writing the other checks beside you; a shared helper they might also write is not shared: keep your check self-contained in its own file.
 
 Rules for the check:
 - It runs from the repository root with the given `command`, exits 0 on success and non-zero with a one-line reason.

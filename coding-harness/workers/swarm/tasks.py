@@ -59,10 +59,18 @@ PLAN_SCHEMA = {
         **ITEMS_SCHEMA["properties"],
         "checks": {"type": "array", "items": {"type": "object", "properties": {
             "id": {"type": "string"}, "file": {"type": "string"}, "command": {"type": "string"},
-            "scenario": {"type": "string"}},
-            "required": ["id", "file", "command", "scenario"]}},
+            "scenario": {"type": "string"},
+            # The OpenSpec scenarios this check proves (by name); empty without an OpenSpec spec.
+            "covers": {"type": "array", "items": {"type": "string"}}},
+            "required": ["id", "file", "command", "scenario", "covers"]}},
+        # Checks the repository already has that this request makes wrong or obsolete.
+        "retireChecks": {"type": "array", "items": {"type": "string"}},
+        "spec": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["tla", "openspec", "none"]},
+                                                  "why": {"type": "string"}}, "required": ["kind", "why"]},
+        "design": {"type": "object", "properties": {"docs": {"type": "array", "items": {"type": "string"}},
+                                                    "why": {"type": "string"}}, "required": ["docs", "why"]},
     },
-    "required": ["items", "checks"],
+    "required": ["items", "checks", "retireChecks", "spec", "design"],
 }
 EVALUATE_SCHEMA = {
     "type": "object",
@@ -139,6 +147,22 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(text).lower()).strip("-")[:40] or "work"
 
 
+def _restore_harness_files(work: str, repo: str, ref: str) -> None:
+    """A follow-up on a pull request starts from the pull request's head, which carries no harness files
+    (publishing leaves them out); bring back the previous run's ``.cc/`` and repository memory from the
+    full commit it kept (``restoreHarnessFrom``), so its spec, checks and adapter carry on."""
+    if not ref:
+        return
+    git.git(work, "fetch", "--quiet", "--no-tags", repo, ref)
+    for path in HARNESS_PATHS:
+        if git.git(work, "cat-file", "-e", f"FETCH_HEAD:{path}", check=False).code == 0:
+            git.git(work, "checkout", "FETCH_HEAD", "--", path)
+
+
+# The coding factory's own files in a repository: specs, checks, adapters, the brief, repository memory.
+HARNESS_PATHS = (".cc", ".conductor-code")
+
+
 @worker_task(task_definition_name="swarm_setup")
 def swarm_setup(task):
     """A private clone of the repository for the run, so agents can commit inside their sandbox."""
@@ -154,6 +178,8 @@ def swarm_setup(task):
         branch = f"{named}-{run_id[:8]}" if named else f"swarm/{_slug(i.get('description') or 'work')}-{run_id[:8]}"
         original_branch = git.git(repo, "rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip()
         original_head = git.head(repo)
+        from swarm import spec as spec_mod
+        specs, design = spec_mod.spec_mode(i.get("specs")), spec_mod.design_mode(i.get("design"))
         if not os.path.isdir(os.path.join(work, ".git")):
             git.git(repo, "clone", "--quiet", "--no-local", repo, work)
             # startFrom names a ref in the repository the run starts from (a base branch's tip or a pull
@@ -164,6 +190,10 @@ def swarm_setup(task):
                 git.git(work, "switch", "-c", branch, "FETCH_HEAD")
             else:
                 git.git(work, "switch", "-c", branch)
+            _restore_harness_files(work, repo, str(i.get("restoreHarnessFrom") or "").strip())
+        migrated = spec_mod.migrate_legacy(work)
+        have = spec_mod.existing_kind(work)
+        guide = spec_mod.plan_guide(specs, design, have, spec_mod.read_checks(work), spec_mod.design_docs(work))
         for key in ("user.name", "user.email"):
             value = git.git(repo, "config", key, check=False).stdout.strip()
             git.git(work, "config", key, value or ("conductor-swarm" if key == "user.name" else "swarm@localhost"))
@@ -171,7 +201,8 @@ def swarm_setup(task):
         return ok(task, {"workdir": work, "branch": branch, "base": git.head(work),
                          "originalBranch": original_branch, "originalHead": original_head,
                          "ladder": _ladder_text(resolution), "maxRung": _ladder_top(resolution),
-                         "history": _history_text(repo), "schemas": {
+                         "history": _history_text(repo), "specs": specs, "design": design,
+                         "existingSpec": have, "migratedSpec": migrated, **guide, "schemas": {
             "items": ITEMS_SCHEMA, "plan": PLAN_SCHEMA, "work": WORK_SCHEMA, "evaluate": EVALUATE_SCHEMA},
             "allowedTools": SWARM_ALLOWED_TOOLS, "disallowedTools": SWARM_DISALLOWED_TOOLS},
             [f"[swarm_setup] {work} on {branch}"])
@@ -241,7 +272,7 @@ def _item_flow(it: dict, ctx: dict) -> tuple[dict, dict]:
             {**ctx, "item": it})
 
 
-_CTX_KEYS = ("round", "runId", "workdir", "branch", "description", "repoPath", "ceilingUsd",
+_CTX_KEYS = ("round", "runId", "workdir", "branch", "description", "repoPath", "ceilingUsd", "specBrief",
              "modelProfile", "modelPolicy", "modelPolicySource", "modelPolicySha256", "modelsConfig", "modelOverrides")
 
 
@@ -350,9 +381,10 @@ def swarm_item_prep(task):
             "workSchema": WORK_SCHEMA, "reviewSchema": REVIEW_SCHEMA,
             "allowedTools": SWARM_ALLOWED_TOOLS, "disallowedTools": SWARM_DISALLOWED_TOOLS,
             "promptContext": {"request": i.get("description") or "", "branch": i.get("branch") or "",
-                              "round": str(rnd), "item": item_text, "permissions": granted["text"]},
+                              "round": str(rnd), "item": item_text, "permissions": granted["text"],
+                              "spec": i.get("specBrief") or ""},
             "reviewContext": {"request": i.get("description") or "", "branch": i.get("branch") or "",
-                              "round": str(rnd), "item": item_text},
+                              "round": str(rnd), "item": item_text, "spec": i.get("specBrief") or ""},
         }, [f"[swarm_item_prep] {it['id']}: implementer rung {rung}, reviewer rung {review_rung} ({review_reason}), "
             f"cap ${cap}"])
     except Exception as e:  # noqa: BLE001
@@ -442,20 +474,24 @@ def swarm_item_release(task):
 
 @worker_task(task_definition_name="swarm_formal")
 def swarm_formal(task):
-    """Prove the architect's formal spec before anyone builds from it: TLC checks every invariant in every
-    reachable state of the bounded model, every mutant must break its invariant, and the state graph
-    becomes the trace suite the code is later replayed against (docs/FORMAL_SPEC_DESIGN.md)."""
+    """The gate after planning (docs/FORMAL_SPEC_DESIGN.md): the plan gives the spec and design documents
+    this run asks for (the person's choice, or the architect's), and the spec is proven before anyone
+    builds from it. A TLA+ spec: TLC checks every invariant in every reachable state of the bounded model,
+    every mutant must break its invariant, and the state graph becomes the trace suite the code is
+    replayed against. An OpenSpec spec: well formed, and every scenario proven by an acceptance check."""
     i = task.input_data or {}
     try:
-        from common import formal
-        proof = formal.prove(str(i["workdir"]))
-        out = {k: proof.get(k) for k in ("ok", "summary", "states", "transitions", "traces", "mutants", "module", "missing")}
+        from swarm import spec as spec_mod
+        plan = _mapping(_mapping(i.get("plan")).get("structured"))
+        out = spec_mod.gate(str(i["workdir"]), plan, spec_mod.spec_mode(i.get("specs")),
+                            spec_mod.design_mode(i.get("design")), str(i.get("existingSpec") or ""))
         # What the architect reads in its next attempt (the plan prompt's {{formalFeedback}}).
-        out["feedback"] = ("" if proof.get("ok") else
-                           "THE HARNESS REJECTED YOUR LAST FORMAL SPEC; fix it (the files are still in design/spec/):\n"
-                           + str(proof.get("feedback") or proof.get("summary") or ""))
+        out["feedback"] = ("" if out.get("ok") else
+                           "THE HARNESS REJECTED YOUR LAST PLAN; fix it (your files are still in the tree):\n"
+                           + str(out.get("feedback") or out.get("summary") or ""))
         return ok(task, out,
-                  [f"[swarm_formal] {'proven' if proof.get('ok') else 'not proven'}: {proof.get('summary')}"])
+                  [f"[swarm_formal] spec {out.get('kind') or '?'}: {'ready' if out.get('ok') else 'not ready'}: "
+                   f"{out.get('summary')}"])
     except Exception as e:  # noqa: BLE001
         return fail(task, "swarm_formal", e)
 
@@ -478,15 +514,24 @@ def swarm_authoring(task):
     try:
         from common import budget_gate
         work = str(i["workdir"])
+        from common import formal
+        from swarm import spec as spec_mod
         plan = _mapping(_mapping(i.get("plan")).get("structured"))
         checks = [_mapping(c) for c in _list(plan.get("checks")) if _mapping(c).get("id") and _mapping(c).get("command")]
+        # The repository's existing checks stay (they prove what earlier runs built); the plan's new or
+        # changed ones are written by an author each, the retired ones dropped.
+        merged = spec_mod.merge_checks(spec_mod.read_checks(work), plan)
         os.makedirs(os.path.join(work, ".cc"), exist_ok=True)
-        with open(os.path.join(work, ".cc", "checks.json"), "w", encoding="utf-8") as fh:
-            json.dump([{"id": c["id"], "command": c["command"]} for c in checks], fh, indent=1)
+        with open(os.path.join(work, spec_mod.CHECKS_FILE), "w", encoding="utf-8") as fh:
+            json.dump(merged, fh, indent=1)
         run = str(i.get("runId") or "")
         jobs = [("swarm_author_check", f"check_{_slug(c['id'])}", {"check": json.dumps(c, indent=1)}, f"check:{c['id']}")
                 for c in checks]
-        if os.path.isfile(os.path.join(work, "design", "spec", "abstraction.json")):
+        # The adapter maps the TLA+ spec onto the program: written when there is none yet, and again when
+        # this run changed the spec (its actions or its state may have changed).
+        adapter = os.path.join(work, ".cc", "conformance", "adapter.mjs")
+        spec_changed = bool(git.git(work, "status", "--porcelain", "--", formal.SPEC_DIR, check=False).stdout.strip())
+        if str(i.get("specKind") or "") == "tla" and (not os.path.isfile(adapter) or spec_changed):
             jobs.append(("swarm_author_adapter", "adapter", {}, "adapter"))
         spent = budget_gate.read_spend(run)["usd"] if run else 0.0
         ceiling = float(i.get("ceilingUsd") or 0)
@@ -506,9 +551,10 @@ def swarm_authoring(task):
                 **({"maxBudgetUsd": cap} if cap is not None else {}),
                 "spendRunId": run, "spendAuthor": f"author:{author}",
             }
-        return ok(task, {"dynamicTasks": tasks, "dynamicTasksInput": inputs, "checks": len(checks),
-                         "authors": len(tasks)},
-                  [f"[swarm_authoring] {len(checks)} check(s) listed in .cc/checks.json; {len(tasks)} author session(s)"])
+        return ok(task, {"dynamicTasks": tasks, "dynamicTasksInput": inputs, "checks": len(merged),
+                         "newChecks": len(checks), "authors": len(tasks)},
+                  [f"[swarm_authoring] {len(merged)} check(s) in .cc/checks.json ({len(checks)} new or changed); "
+                   f"{len(tasks)} author session(s)"])
     except Exception as e:  # noqa: BLE001
         return fail(task, "swarm_authoring", e)
 
@@ -568,10 +614,12 @@ def swarm_measure(task):
         threading.Thread(target=_progress, daemon=True).start()
         try:
             _run_checks(checks, results, current, work, env, check_execution, architect)
+            kind = str(i.get("specKind") or "none")
             try:
-                _run_formal(results, current, work, env)
+                _run_spec(kind, results, current, work, env)
             except Exception as e:  # noqa: BLE001 - a fault in the proof machinery is a red check, never a failed run
-                results.append({"id": "spec-conformance", "command": "replay the spec's traces through the adapter",
+                results.append({"id": "spec-conformance" if kind == "tla" else "spec-coverage",
+                                "command": f"check the program against the {kind} spec",
                                 "exitCode": 1, "seconds": 0, "stalled": False,
                                 "output": f"the harness could not check the spec: {type(e).__name__}: {e}"})
         finally:
@@ -599,17 +647,48 @@ def _run_checks(checks, results, current, work, env, check_execution, architect)
             results.append({"id": c.get("id"), "command": c.get("command"), "exitCode": None, "output": str(e)})
 
 
+def _run_spec(kind: str, results, current, work, env) -> None:
+    """The run's spec, of the kind its plan settled (``specKind``), checked on the committed tree. The kind
+    comes from the run, not from what the tree holds: a spec removed after planning is a red check, never
+    a check that silently stops existing."""
+    if kind == "tla":
+        _run_formal(results, current, work, env)
+    elif kind == "openspec":
+        _run_openspec(results, current, work)
+
+
+def _run_openspec(results, current, work) -> None:
+    """The OpenSpec spec: still well formed, every scenario still proven by a check, and which requirements
+    hold on this tree (a scenario holds when every check covering it passed, measured just before)."""
+    import time as _time
+    from common import openspec_spec
+    from swarm import spec as spec_mod
+    current.update(n=len(results) + 1, check={"id": "spec-coverage", "command": "OpenSpec coverage"}, since=_time.monotonic())
+    proof = openspec_spec.prove(work, spec_mod.read_checks(work))
+    held = openspec_spec.status(proof, results) if proof.get("requirements") else ""
+    if proof.get("missing"):
+        proof["feedback"] = (f"The run's OpenSpec spec is gone from {openspec_spec.SPECS}/: it was there after planning. "
+                             "Restore it.")
+    results.append({"id": "spec-coverage", "command": f"validate {openspec_spec.SPECS} and its coverage by the checks",
+                    "exitCode": 0 if proof.get("ok") else 1, "seconds": 0, "stalled": False,
+                    "output": "\n".join(x for x in (proof.get("summary"), proof.get("feedback"), held) if x)})
+
+
 def _run_formal(results, current, work, env) -> None:
-    """With a formal spec: the proof (cached by the spec's hash, so it re-runs only when the spec
-    changed) and, once proven, the conformance of the program to every transition of the bounded model."""
+    """The TLA+ spec: the proof (cached by the spec's hash, so it re-runs only when the spec changed) and,
+    once proven, the conformance of the program to every transition of the bounded model."""
     import time as _time
     from common import conformance, formal
     if not os.path.isfile(os.path.join(work, formal.SPEC_DIR, "abstraction.json")):
+        results.append({"id": "spec-proof", "command": f"TLC model check of {formal.SPEC_DIR}", "exitCode": 1,
+                        "seconds": 0, "stalled": False,
+                        "output": f"The run's TLA+ spec is gone from {formal.SPEC_DIR}/ (no abstraction.json): it was "
+                                  "there after planning. Restore it; the program is checked against it."})
         return
     current.update(n=len(results) + 1, check={"id": "spec-proof", "command": "TLC model check"}, since=_time.monotonic())
     started = _time.monotonic()
     proof = formal.prove(work)
-    results.append({"id": "spec-proof", "command": "TLC model check of design/spec", "exitCode": 0 if proof.get("ok") else 1,
+    results.append({"id": "spec-proof", "command": f"TLC model check of {formal.SPEC_DIR}", "exitCode": 0 if proof.get("ok") else 1,
                     "seconds": round(_time.monotonic() - started, 1), "stalled": False,
                     "output": (proof.get("summary") or "") + ("\n" + proof["feedback"] if proof.get("feedback") else "")})
     if not proof.get("ok"):

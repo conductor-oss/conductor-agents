@@ -53,6 +53,10 @@ intake → model policy → setup (start from intake's ref) → planning → aut
   - it opens a draft PR with a single summary paragraph and `Closes #N`. The paragraph covers the
     architect's assessment, the design documents, the spec proof and the spend;
   - for a PR link it comments on the PR instead.
+  - the pushed commit carries only the project's own changes: the harness's files (`.cc/`: spec, checks,
+    adapter, brief; `.conductor-code/`: repository memory) stay as the base has them, in one commit on the
+    starting commit. `publishHarnessFiles: true` keeps them. The full delivered commit stays in the checkout
+    at `refs/conductor/<run>/harness`, and a CI follow-up restores the harness files from it.
 
   `publish: branch` stops after the push. `publish: none` stops before it (a dry run).
 - **ci** (`swarm_ci`) waits for the repository's own checks on the pushed head. The repository's CI is

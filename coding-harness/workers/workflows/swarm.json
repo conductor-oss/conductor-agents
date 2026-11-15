@@ -25,7 +25,11 @@
     "ciRound",
     "commentOnIssue",
     "closesIssue",
-    "permissionWaitMinutes"
+    "permissionWaitMinutes",
+    "specs",
+    "design",
+    "publishHarnessFiles",
+    "restoreHarnessFrom"
   ],
   "timeoutPolicy": "ALERT_ONLY",
   "timeoutSeconds": 0,
@@ -57,7 +61,8 @@
         "base": "${workflow.input.base}",
         "publish": "${workflow.input.publish}",
         "ready": "${workflow.input.ready}",
-        "runId": "${workflow.workflowId}"
+        "runId": "${workflow.workflowId}",
+        "restoreHarnessFrom": "${workflow.input.restoreHarnessFrom}"
       }
     },
     {
@@ -78,7 +83,10 @@
         "runId": "${workflow.workflowId}",
         "branchName": "${intake.output.branchName}",
         "modelResolution": "${model_policy.output}",
-        "startFrom": "${intake.output.startFrom}"
+        "startFrom": "${intake.output.startFrom}",
+        "specs": "${workflow.input.specs}",
+        "design": "${workflow.input.design}",
+        "restoreHarnessFrom": "${intake.output.restoreHarnessFrom}"
       }
     },
     {
@@ -126,7 +134,10 @@
               "history": "${setup.output.history}",
               "ladder": "${setup.output.ladder}",
               "maxRung": "${setup.output.maxRung}",
-              "formalFeedback": "${workflow.variables.formalFeedback}"
+              "formalFeedback": "${workflow.variables.formalFeedback}",
+              "specGuide": "${setup.output.specGuide}",
+              "designGuide": "${setup.output.designGuide}",
+              "existingChecks": "${setup.output.existingChecks}"
             },
             "schema": "${setup.output.schemas.plan}",
             "modelsConfig": "${workflow.input.modelsConfig}",
@@ -143,7 +154,11 @@
           "taskReferenceName": "formal",
           "type": "SIMPLE",
           "inputParameters": {
-            "workdir": "${setup.output.workdir}"
+            "workdir": "${setup.output.workdir}",
+            "plan": "${plan.output}",
+            "specs": "${setup.output.specs}",
+            "design": "${setup.output.design}",
+            "existingSpec": "${setup.output.existingSpec}"
           }
         },
         {
@@ -173,7 +188,8 @@
         "modelPolicySha256": "${workflow.input.modelPolicySha256}",
         "modelsConfig": "${workflow.input.modelsConfig}",
         "modelOverrides": "${workflow.input.modelOverrides}",
-        "modelResolution": "${model_policy.output}"
+        "modelResolution": "${model_policy.output}",
+        "specKind": "${formal.output.kind}"
       }
     },
     {
@@ -233,7 +249,8 @@
             "modelsConfig": "${workflow.input.modelsConfig}",
             "modelOverrides": "${workflow.input.modelOverrides}",
             "ceilingUsd": "${workflow.input.ceilingUsd}",
-            "repoPath": "${intake.output.repoPath}"
+            "repoPath": "${intake.output.repoPath}",
+            "specBrief": "${formal.output.brief}"
           }
         },
         {
@@ -272,7 +289,8 @@
           "type": "SIMPLE",
           "inputParameters": {
             "workdir": "${setup.output.workdir}",
-            "label": "swarm round ${rounds.output.iteration}"
+            "label": "swarm round ${rounds.output.iteration}",
+            "specKind": "${formal.output.kind}"
           }
         },
         {
@@ -305,7 +323,8 @@
               "reports": "${fold.output.reports}",
               "measurement": "${measure.output.summary}",
               "changes": "${measure.output.changes}",
-              "permissions": "${fold.output.permissions}"
+              "permissions": "${fold.output.permissions}",
+              "spec": "${formal.output.brief}"
             },
             "schema": "${setup.output.schemas.evaluate}",
             "modelsConfig": "${workflow.input.modelsConfig}",
@@ -327,7 +346,8 @@
           "inputParameters": {
             "workdir": "${setup.output.workdir}",
             "label": "swarm round ${rounds.output.iteration}: architect review",
-            "previous": "${measure.output}"
+            "previous": "${measure.output}",
+            "specKind": "${formal.output.kind}"
           }
         },
         {
@@ -411,7 +431,10 @@
         "base": "${setup.output.base}",
         "assessment": "${workflow.variables.assessment}",
         "spendUsd": "${workflow.variables.spentUsd}",
-        "rounds": "${rounds.output.iteration}"
+        "rounds": "${rounds.output.iteration}",
+        "publishHarnessFiles": "${workflow.input.publishHarnessFiles}",
+        "specKind": "${formal.output.kind}",
+        "runId": "${workflow.workflowId}"
       }
     },
     {
@@ -477,7 +500,11 @@
               "modelPolicySource": "${workflow.input.modelPolicySource}",
               "modelPolicySha256": "${workflow.input.modelPolicySha256}",
               "modelsConfig": "${workflow.input.modelsConfig}",
-              "modelOverrides": "${workflow.input.modelOverrides}"
+              "modelOverrides": "${workflow.input.modelOverrides}",
+              "specs": "${workflow.input.specs}",
+              "design": "${workflow.input.design}",
+              "publishHarnessFiles": "${workflow.input.publishHarnessFiles}",
+              "restoreHarnessFrom": "${publish.output.harnessRef}"
             }
           }
         ]
@@ -498,7 +525,13 @@
     "ci": "${ci.output.state}",
     "readyForReview": "${pr_ready.output.ready}",
     "followUp": "${followup.output}",
-    "target": "${intake.output.target}"
+    "target": "${intake.output.target}",
+    "spec": {
+      "kind": "${formal.output.kind}",
+      "why": "${formal.output.why}",
+      "summary": "${formal.output.summary}"
+    },
+    "designDocs": "${formal.output.designDocs}"
   },
   "inputTemplate": {
     "maxRounds": 8,
@@ -521,6 +554,10 @@
     "ciRound": 0,
     "commentOnIssue": false,
     "closesIssue": 0,
-    "permissionWaitMinutes": 0
+    "permissionWaitMinutes": 0,
+    "specs": "auto",
+    "design": "auto",
+    "publishHarnessFiles": false,
+    "restoreHarnessFrom": ""
   }
 }

@@ -79,14 +79,16 @@ def test_authoring_writes_the_checks_list_and_starts_one_cheap_author_per_check_
     monkeypatch.setenv("SWARM_BLACKBOARD_DIR", str(tmp_path / "board"))
     from swarm.tasks import swarm_authoring
     work = tmp_path / "clone"
-    (work / "design" / "spec").mkdir(parents=True)
-    (work / "design" / "spec" / "abstraction.json").write_text("{}")
+    (work / ".cc" / "spec").mkdir(parents=True)
+    (work / ".cc" / "spec" / "abstraction.json").write_text("{}")
     plan = {"structured": {"items": [], "checks": [
         {"id": "strings", "file": ".cc/checks/strings.mjs", "command": "node .cc/checks/strings.mjs", "scenario": "SET then GET"},
         {"id": "lists", "file": ".cc/checks/lists.mjs", "command": "node .cc/checks/lists.mjs", "scenario": "LPUSH then LRANGE"}]}}
-    out = swarm_authoring(fake_task_input(workdir=str(work), plan=plan, runId="r1", ceilingUsd=40)).output_data
+    out = swarm_authoring(fake_task_input(workdir=str(work), plan=plan, runId="r1", ceilingUsd=40,
+                                          specKind="tla")).output_data
     assert json.loads((work / ".cc" / "checks.json").read_text()) == [
-        {"id": "strings", "command": "node .cc/checks/strings.mjs"}, {"id": "lists", "command": "node .cc/checks/lists.mjs"}]
+        {"id": "strings", "command": "node .cc/checks/strings.mjs", "covers": []},
+        {"id": "lists", "command": "node .cc/checks/lists.mjs", "covers": []}]
     refs = [t["taskReferenceName"] for t in out["dynamicTasks"]]
     assert refs == ["author_check_strings", "author_check_lists", "author_adapter"]
     ins = out["dynamicTasksInput"]

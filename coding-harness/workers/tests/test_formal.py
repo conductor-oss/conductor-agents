@@ -53,7 +53,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 
 def _project(tmp_path, *, invariants=("DeletedIsGone",), mutants=(("DeletedIsGone", "NextLeaky"),), spec=SPEC):
     root = tmp_path / "proj"
-    d = root / "design" / "spec"
+    d = root / formal.SPEC_DIR
     d.mkdir(parents=True)
     (d / "Users.tla").write_text(spec)
     (d / "Users.cfg").write_text('CONSTANTS\n  Ids = {"u1", "u2"}\n  Names = {"Ada", "Bob"}\nINIT Init\nNEXT Next\n'

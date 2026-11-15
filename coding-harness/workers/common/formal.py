@@ -1,7 +1,8 @@
 """Formal specs: prove the design with TLC, and turn the bounded model into a transition-covering trace
 suite the conformance runner replays against the program (docs/FORMAL_SPEC_DESIGN.md).
 
-The architect writes, in ``design/spec/``:
+The architect writes, in ``.cc/spec/`` (the harness's own folder: the spec is the coding factory's
+working material, not a file the project's people need):
 
 - ``<Module>.tla`` and ``<Module>.cfg`` — the spec and its bounds (CONSTANTS, INIT, NEXT, INVARIANTs);
 - ``abstraction.json`` — ``{"module", "config", "state": [variables compared after each step],
@@ -10,7 +11,7 @@ The architect writes, in ``design/spec/``:
   in the spec with a fault that must break ``invariant``.
 
 ``prove(workdir)`` model-checks the spec, checks every mutant is caught, dumps the state graph and writes
-``.cc/conformance/traces.json``. Results are cached by the hash of ``design/spec/`` so a measurement of
+``.cc/conformance/traces.json``. Results are cached by the hash of ``.cc/spec/`` so a measurement of
 an unchanged spec costs nothing.
 """
 from __future__ import annotations
@@ -23,7 +24,8 @@ import shutil
 import tempfile
 from collections import deque
 
-SPEC_DIR = os.path.join("design", "spec")
+SPEC_DIR = os.path.join(".cc", "spec")
+LEGACY_SPEC_DIR = os.path.join("design", "spec")  # where runs before 2026-11-14 wrote it
 OUT_DIR = os.path.join(".cc", "conformance")
 TLA_HOME = os.environ.get("CONDUCTOR_TLA_HOME") or os.path.expanduser("~/.cache/conductor-harness/tla")
 TLA_JAR = os.path.join(TLA_HOME, "tla2tools.jar")

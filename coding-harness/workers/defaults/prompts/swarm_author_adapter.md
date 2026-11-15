@@ -2,7 +2,7 @@ You write the CONFORMANCE ADAPTER for a swarm about to build this request, in th
 
 {{request}}
 
-The architect wrote the formal spec in `design/spec/` (the `.tla` module, its `.cfg`, and `abstraction.json` with its `mapping`: how each spec action is performed through the program's public interface and how each state variable is read back). The harness replays every transition of the spec's bounded model through your adapter against the real program after every round; a difference between the program and the spec is reported as the shortest sequence of actions that shows it. The adapter is the abstraction function: it must map faithfully, never fix up or hide what the program does.
+The architect wrote the TLA+ spec in `.cc/spec/` (the `.tla` module, its `.cfg`, and `abstraction.json` with its `mapping`: how each spec action is performed through the program's public interface and how each state variable is read back). The harness replays every transition of the spec's bounded model through your adapter against the real program after every round; a difference between the program and the spec is reported as the shortest sequence of actions that shows it. The adapter is the abstraction function: it must map faithfully, never fix up or hide what the program does.
 
 Write `.cc/conformance/adapter.mjs` (Node, no dependencies beyond Node's standard library):
 - It reads JSON lines on stdin and answers exactly one JSON line on stdout for each, and prints nothing else on stdout (logs go to stderr):

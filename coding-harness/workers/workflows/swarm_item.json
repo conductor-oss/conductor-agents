@@ -18,7 +18,8 @@
     "modelPolicySource",
     "modelPolicySha256",
     "modelsConfig",
-    "modelOverrides"
+    "modelOverrides",
+    "specBrief"
   ],
   "inputTemplate": {
     "branch": "",
@@ -30,7 +31,8 @@
     "modelPolicySource": "",
     "modelPolicySha256": "",
     "modelsConfig": "",
-    "modelOverrides": {}
+    "modelOverrides": {},
+    "specBrief": ""
   },
   "timeoutPolicy": "ALERT_ONLY",
   "timeoutSeconds": 0,
@@ -63,7 +65,8 @@
         "description": "${workflow.input.description}",
         "repoPath": "${workflow.input.repoPath}",
         "ceilingUsd": "${workflow.input.ceilingUsd}",
-        "modelResolution": "${model_policy.output}"
+        "modelResolution": "${model_policy.output}",
+        "specBrief": "${workflow.input.specBrief}"
       }
     },
     {
@@ -126,7 +129,8 @@
           "branch": "${workflow.input.branch}",
           "round": "${workflow.input.round}",
           "item": "${prep.output.reviewContext.item}",
-          "report": "${work.output.structured}"
+          "report": "${work.output.structured}",
+          "spec": "${workflow.input.specBrief}"
         },
         "schema": "${prep.output.reviewSchema}",
         "sharedTree": true,
@@ -173,7 +177,8 @@
         "work": "${work.output}",
         "review": "${review.output}",
         "rung": "${prep.output.rung}",
-        "reviewRung": "${prep.output.reviewRung}"
+        "reviewRung": "${prep.output.reviewRung}",
+        "specBrief": "${workflow.input.specBrief}"
       }
     },
     {

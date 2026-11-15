@@ -362,6 +362,13 @@ def _r_swarm(o: dict) -> ResultCard:
         ("rounds", str(o.get("rounds") or "?")),
         ("spend", f"${float(o.get('spendUsd') or 0):.2f}"),
     ]
+    spec = o.get("spec") if isinstance(o.get("spec"), dict) else {}
+    if spec.get("kind"):
+        name = {"tla": "TLA+", "openspec": "OpenSpec", "none": "none"}.get(str(spec["kind"]), str(spec["kind"]))
+        rows.append(("spec", f"{name}: {spec.get('summary') or spec.get('why') or ''}".rstrip(": ")))
+    docs = o.get("designDocs") if isinstance(o.get("designDocs"), list) else None
+    if docs is not None:
+        rows.append(("design", ", ".join(map(str, docs)) or "none"))
     pr = o.get("pullRequest") if isinstance(o.get("pullRequest"), dict) else {}
     if pr.get("url"):
         rows.append(("pull request", str(pr["url"])))
@@ -628,6 +635,13 @@ CATALOG: dict[str, WorkflowSpec] = {
             Field("description", "What to build", "multiline", "", help="the whole request; with an issue or "
                   "pull request link, anything to add"),
             Field("ceilingUsd", "Spend ceiling $", "float", 60),
+            Field("specs", "Spec", "enum", "auto", choices=("auto", "tla", "openspec", "none"),
+                  help="auto: the architect decides per request; tla: a TLA+ model, the program replayed against "
+                  "every transition; openspec: requirements and scenarios, each proven by a check; none"),
+            Field("design", "Design documents", "enum", "auto", choices=("auto", "always", "none"),
+                  help="auto: the architect writes them when the change needs them and skips them for small fixes"),
+            Field("publishHarnessFiles", "Include the harness's files (.cc/) in the pull request", "bool", False,
+                  advanced=True, help="off: the pull request carries only the project's own changes"),
             Field("publish", "Publish", "enum", "", choices=("", "pr", "branch", "none"), advanced=True,
                   help="pr (default with a link): push and open a draft pull request; branch: push only; none"),
             Field("base", "Base branch", "text", "", advanced=True, help="default: the repository's default branch"),
