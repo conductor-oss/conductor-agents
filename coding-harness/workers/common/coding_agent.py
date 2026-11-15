@@ -212,16 +212,7 @@ TOOL_CACHE_DIR = ".cc-cache"
 # unless a session names domains, so every `npm install` an implementer ran answered 403 from the
 # sandbox proxy and the build shipped untested while the prompt told it to install first (run
 # 74bd988c: ten turns fighting the registry). Codex's workspace-write sandbox has network on.
-DEFAULT_ALLOWED_DOMAINS = [
-    "registry.npmjs.org", "registry.yarnpkg.com", "nodejs.org",
-    "pypi.org", "files.pythonhosted.org",
-    "proxy.golang.org", "sum.golang.org", "storage.googleapis.com",
-    "repo.maven.apache.org", "repo1.maven.org", "plugins.gradle.org", "services.gradle.org",
-    "crates.io", "static.crates.io", "index.crates.io",
-    "rubygems.org", "index.rubygems.org",
-    "playwright.download.prss.microsoft.com", "cdn.playwright.dev", "playwright.azureedge.net",
-    "github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com",
-]
+from .allowed_domains import DEFAULT_ALLOWED_DOMAINS  # noqa: E402  (the one list; the console reads it too)
 
 
 def _tool_cache_env(worktree_abs: str) -> dict[str, str]:
@@ -527,6 +518,7 @@ async def _run_session(
     write_roots: list[str] | None = None,
     context_paths: list[str] | None = None,
     feedback: Any = None,
+    granted_roots: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run one locked-down autonomous coding session to completion (async).
 
@@ -665,7 +657,7 @@ async def _run_session(
             extra_env=(await asyncio.to_thread(_tool_cache_env, worktree_abs)
                        if _is_write_surface(tools) else None),
             steer=(feedback.poll_text if feedback is not None and getattr(feedback, "active", False) else None),
-            max_budget_usd=max_budget_usd,
+            max_budget_usd=max_budget_usd, granted_roots=granted_roots,
         )
         if feedback is not None:
             # The same provenance the Claude path records: what the board delivered into the session.

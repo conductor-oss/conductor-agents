@@ -128,7 +128,9 @@ def _worker_task_names() -> set[str]:
     """``task_definition_name=`` values from the harness's ``@worker_task``s."""
     pat = re.compile(r'@worker_task\(\s*task_definition_name\s*=\s*"([^"]+)"')
     names: set[str] = set()
-    for mod in WORKERS.glob("*/tasks.py"):
+    # A worker is registered by importing its package (main.py's WORKER_MODULES); most packages keep their
+    # workers in tasks.py, the swarm also in link.py.
+    for mod in WORKERS.glob("*/*.py"):
         names.update(pat.findall(mod.read_text()))
     return names
 

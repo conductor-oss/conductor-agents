@@ -303,7 +303,10 @@ def test_launchers_come_from_the_catalog_and_launch_is_signed_and_validated(monk
     forms = {f["workflow"]: f for f in json.loads(body)["launchers"]}
     assert set(forms) == {"swarm"}
     fields = {f["name"]: f for f in forms["swarm"]["fields"]}
-    assert fields["repoPath"]["required"] is True and fields["ceilingUsd"]["default"] == 60
+    # A link (issue, pull request, repository) or a local checkout with a request: neither field alone is
+    # required, the pair is (checked at launch).
+    assert fields["link"]["required"] is False and fields["repoPath"]["required"] is False
+    assert fields["ceilingUsd"]["default"] == 60
     assert fields["maxRounds"]["advanced"] is True
     # Unsigned launches are refused like any other write.
     body = json.dumps({"workflow": "swarm", "values": {"repoPath": str(tmp_path), "description": "x"}}).encode()
@@ -312,7 +315,9 @@ def test_launchers_come_from_the_catalog_and_launch_is_signed_and_validated(monk
     fake = _FakeConductor()
     out = console.launch({"workflow": "swarm", "values": {"repoPath": str(tmp_path), "description": ""}},
                          author="human:a@b", opener=fake)
-    assert out["ok"] is False and "What to build" in out["error"]
+    assert out["ok"] is False and "Link or What to build" in out["error"]
+    out = console.launch({"workflow": "swarm", "values": {}}, author="h", opener=fake)
+    assert out["ok"] is False and "Link or Repo path" in out["error"]
     out = console.launch({"workflow": "swarm", "values": {"repoPath": str(tmp_path / "nope"),
                                                                 "description": "build it"}}, author="h", opener=fake)
     assert out["ok"] is False and "not a directory" in out["error"]
@@ -328,6 +333,12 @@ def test_launchers_come_from_the_catalog_and_launch_is_signed_and_validated(monk
     # The result branch reads as what was asked for (the run id is appended by the workspace).
     assert payload == {"name": "swarm", "input": {"repoPath": str(tmp_path), "description": "build it",
                                                        "maxWidth": 8, "branchName": "swarm/run"}}
+    # From a link alone: no repository path or request needed, and the branch is named by intake (after
+    # the issue), not by the console.
+    out = console.launch({"workflow": "swarm", "values": {"link": "https://github.com/o/r/issues/7"}},
+                         author="h", opener=fake)
+    assert out["ok"] is True
+    assert fake.calls[-1][2] == {"name": "swarm", "input": {"link": "https://github.com/o/r/issues/7"}}
 
 
 def test_whoami_names_the_actor_behind_a_token(monkeypatch, tmp_path):
@@ -754,3 +765,37 @@ def test_a_finished_run_whose_verdict_the_search_index_mangled_is_read_back_as_j
     assert rows["prog-9"]["verdict"] == "PROGRAM_DELIVERED" and rows["prog-9"]["spendUsd"] == 8.5
     console.list_swarm_runs(opener=fake, server_url="http://c/api")
     assert sum(1 for c in fake.calls if "/workflow/prog-9" in c[1]) == 1  # read once, then remembered
+
+
+def test_an_approver_decides_a_permission_request_through_the_api(monkeypatch, tmp_path):
+    """docs/PERMISSIONS.md: pending requests are listed, and a signed actor (a person or an agent) decides one;
+    the decision is recorded as that actor and the request is no longer pending."""
+    bb, cid = _seed(monkeypatch, tmp_path)
+    monkeypatch.setenv("CONDUCTOR_HARNESS_HOME", str(tmp_path / "home"))
+    from common import permissions
+    out = permissions.submit(cid, 1, [{"kind": "network", "target": "api.example.com", "why": "the client calls it"}],
+                             workdir=str(tmp_path), repo_key="github:o/r")
+    rid = out["pending"][0]["id"]
+    s, _, body = console.handle_get("/api/permissions", {"run": [cid]}, bb)
+    assert s == 200 and [r["id"] for r in json.loads(body)["pending"]] == [rid]
+    payload = json.dumps({"run": cid, "id": rid, "decision": "grant", "note": "fine"}).encode()
+    assert console.handle_post("/api/permissions/decide", payload, bb)[0] == 401  # unsigned: refused
+    s, _, body = console.handle_post("/api/permissions/decide", payload, bb, headers=AUTH)
+    assert s == 200 and json.loads(body)["decision"]["by"] == "human:ops@example.com"
+    s, _, body = console.handle_post("/api/permissions/decide", payload, bb, headers=AUTH)
+    assert s == 400 and "already decided" in json.loads(body)["error"]
+    view = json.loads(console.handle_get("/api/permissions", {"run": [cid]}, bb)[2])
+    assert view["pending"] == [] and view["decided"][0]["note"] == "fine"
+
+
+def test_the_permission_api_reads_the_workers_board_before_any_run_page_was_opened(monkeypatch, tmp_path):
+    """An approver agent calls only the API: the board must be located for it, not left to the first page
+    view (a fresh console listed nothing pending while a run waited, run 0757d3cb)."""
+    bb, cid = _seed(monkeypatch, tmp_path)
+    monkeypatch.setenv("CONDUCTOR_HARNESS_HOME", str(tmp_path / "home"))
+    from common import permissions
+    permissions.submit(cid, 1, [{"kind": "decision", "target": "rename the CLI", "why": "public"}],
+                       workdir=str(tmp_path), repo_key="k")
+    monkeypatch.delenv("SWARM_BLACKBOARD_DIR")
+    pending = json.loads(console.handle_get("/api/permissions", {"run": [cid]}, bb)[2])["pending"]
+    assert [r["target"] for r in pending] == ["rename the CLI"]

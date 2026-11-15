@@ -738,42 +738,46 @@ async def _coding_agent(task):
             checkpoint_every=int(i.get("checkpointEveryTurns") or 0), worktree=wt,
             run_id=str(i.get("feedbackRunId") or ""), team=str(i.get("feedbackTeam") or ""), decider=_decider)
         try:
-            res = await run_coding_agent(
-                prompt,
-                worktree=wt,
-                model=model_tier.get("model") or None,
-                fallback_model=i.get("fallbackModel") or None,
-                effort=i.get("effort") or model_tier.get("effort") or None,
-                max_turns=int(model_tier.get("maxTurns") or 50),
-                max_budget_usd=(float(model_tier["maxBudgetUsd"]) if model_tier.get("maxBudgetUsd") is not None else 50.0),
-                resume_session_id=i.get("resumeSessionId") or None,
-                output_schema=output_schema,
-                allowed_domains=domains or None,
-                setting_sources=_resolve_setting_sources(i.get("settingSources")),
-                session_store=_SESSION_STORE,
-                on_turn=reporter.update,
-                # Optional tightening: restrict the tool surface (e.g. a read-only
-                # planner passes tools=["Read","Grep","Glob"]). `tools` is an
-                # availability gate — it can only remove built-ins, never add.
-                tools=_as_list(i.get("tools")),
-                allowed_tools=_as_list(i.get("allowedTools")),
-                disallowed_tools=_as_list(i.get("disallowedTools")),
-                # Prime the prompt with the dir listing (skips the agent's first
-                # ls/Glob turn). Default on; set includeFileTree:false to disable.
-                include_file_tree=(str(i.get("includeFileTree", "true")).lower()
-                                   not in ("false", "0", "no")),
-                # Prime the prompt with the repo guide (AGENTS.md/AGENT.md/CLAUDE.md) so the
-                # agent knows how to build/test/review. Default on; includeRepoGuide:false or
-                # the CODING_AGENT_REPO_GUIDE=0 worker env disables it.
-                include_repo_guide=(str(i.get("includeRepoGuide", "true")).lower()
-                                    not in ("false", "0", "no")),
-                # Backend: "claude" (default) or "codex". If unset, inferred from the
-                # model id (gpt-*/o*/codex-* → codex). See docs/CODING_AGENT_WORKER.md.
-                backend=model_tier["agent"],
-                write_roots=write_roots,
-                context_paths=[entry["path"] for entry in agent_context_paths],
-                feedback=watcher if watcher.active else None,
-            )
+            from common import cost as _cost
+            with _cost.using_prices(model_resolution.get("prices")):
+                res = await run_coding_agent(
+                    prompt,
+                    worktree=wt,
+                    model=model_tier.get("model") or None,
+                    fallback_model=i.get("fallbackModel") or None,
+                    effort=i.get("effort") or model_tier.get("effort") or None,
+                    max_turns=int(model_tier.get("maxTurns") or 50),
+                    max_budget_usd=(float(model_tier["maxBudgetUsd"]) if model_tier.get("maxBudgetUsd") is not None else 50.0),
+                    resume_session_id=i.get("resumeSessionId") or None,
+                    output_schema=output_schema,
+                    allowed_domains=domains or None,
+                    setting_sources=_resolve_setting_sources(i.get("settingSources")),
+                    session_store=_SESSION_STORE,
+                    on_turn=reporter.update,
+                    # Optional tightening: restrict the tool surface (e.g. a read-only
+                    # planner passes tools=["Read","Grep","Glob"]). `tools` is an
+                    # availability gate — it can only remove built-ins, never add.
+                    tools=_as_list(i.get("tools")),
+                    allowed_tools=_as_list(i.get("allowedTools")),
+                    disallowed_tools=_as_list(i.get("disallowedTools")),
+                    # Prime the prompt with the dir listing (skips the agent's first
+                    # ls/Glob turn). Default on; set includeFileTree:false to disable.
+                    include_file_tree=(str(i.get("includeFileTree", "true")).lower()
+                                       not in ("false", "0", "no")),
+                    # Prime the prompt with the repo guide (AGENTS.md/AGENT.md/CLAUDE.md) so the
+                    # agent knows how to build/test/review. Default on; includeRepoGuide:false or
+                    # the CODING_AGENT_REPO_GUIDE=0 worker env disables it.
+                    include_repo_guide=(str(i.get("includeRepoGuide", "true")).lower()
+                                        not in ("false", "0", "no")),
+                    # Backend: "claude" (default) or "codex". If unset, inferred from the
+                    # model id (gpt-*/o*/codex-* → codex). See docs/CODING_AGENT_WORKER.md.
+                    backend=model_tier["agent"],
+                    write_roots=write_roots,
+                    # Paths the run's approvers or its policy granted (docs/PERMISSIONS.md).
+                    granted_roots=_as_list(i.get("writableRoots")),
+                    context_paths=[entry["path"] for entry in agent_context_paths],
+                    feedback=watcher if watcher.active else None,
+                )
         finally:
             try:
                 # stop() joins the heartbeat thread (up to ~2s) — off the loop.

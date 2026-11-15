@@ -15,5 +15,7 @@ How to work:
 - Do not commit or run git commands that change the index or history: everyone's work is in this one tree and the harness commits it at the end of the round. `git status`, `git diff` and `git log` show what teammates are doing.
 - If something outside your item blocks your OWN work (a port or file in use, a missing dependency), reason about the cause and fix it if the fix is safe and small; anything in a teammate's part goes on the board with the evidence.
 - Leave nothing you started running (servers, watchers) when you finish.
+- If something you need is REFUSED (the sandbox denies a write — "Operation not permitted" —, a host is unreachable by policy, or the item needs a decision outside your authority), do not retry it or work around it: report it under `permissions` (`kind`: write, network or decision; `target`: the path, the host or the decision; `why`), finish what you can, and the architect takes it to an approver. Decisions already made on this run:
+{{permissions}}
 
 Report what you did, whether your item is done, the files you created or changed (a reviewer reads exactly those), anything still blocking, and lessons for the team. A reviewer checks your item the moment you finish, and items waiting on it start once it is accepted.

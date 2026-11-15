@@ -138,7 +138,7 @@ def _conductor(method: str, path: str, body: dict | None = None, *, opener=None,
 
 def _title(wf_name: str, inp: dict) -> str:
     """What a human calls the run: the first line of what was asked for."""
-    for key in ("description", "request", "instruction"):
+    for key in ("description", "request", "instruction", "link"):
         text = str(inp.get(key) or "").strip()
         if text:
             line = text.splitlines()[0].strip()
@@ -251,11 +251,50 @@ def run_view(run: str, *, blackboard_dir: str | None = None, opener=None, server
         result = {"error": str(e), "actions": {}}
     return {"run": row, "snapshot": snap, "board": view, "ranks": _ranks(wf) if wf else [], "result": result, "live": live,
             "architect": architect_view(run, blackboard_dir=blackboard_dir),
+            "permissions": permission_view(run, blackboard_dir=blackboard_dir),
             "actions": lifecycle_actions(wf) if wf else {"retry": False, "startOver": False, "editAndRun": False},
             "workflowInput": inp if wf and lifecycle_actions(wf)["editAndRun"] else {},
             "parent": inp.get("parentCorrelationId") or "", "input": {k: inp.get(k) for k in (
-                "repoPath", "description", "request", "ceilingUsd", "maxWidth", "subsystemId") if k in inp},
+                "link", "repoPath", "description", "request", "ceilingUsd", "maxWidth", "subsystemId") if k in inp},
             "conductor": "" if wf else "Conductor did not return this run; showing the board only."}
+
+
+def permission_view(run: str, *, blackboard_dir: str | None = None) -> dict:
+    """The run's permission requests (docs/PERMISSIONS.md): those waiting for an approver, and the
+    decisions made, newest first."""
+    from common import permissions
+    board_mod._use_board_dir(blackboard_dir)
+    done = permissions.decisions(run)
+    return {"pending": permissions.pending(run),
+            "decided": sorted(done.values(), key=lambda d: -float(d.get("ts") or 0))}
+
+
+def permissions_waiting(*, opener=None, server_url: str | None = None, blackboard_dir: str | None = None) -> list[dict]:
+    """Every running swarm's pending permission requests, for an approver (a person or an agent) that
+    watches all runs: ``[{"run", "title", ...request}]``."""
+    out = []
+    for r in list_swarm_runs(opener=opener, server_url=server_url).get("items") or []:
+        if str(r.get("status")) != "RUNNING":
+            continue
+        for req in permission_view(str(r["id"]), blackboard_dir=blackboard_dir)["pending"]:
+            out.append({"run": r["id"], "title": r.get("title") or "", **req})
+    return out
+
+
+def decide_permission(payload: dict, *, author: str, blackboard_dir: str | None = None) -> dict:
+    """An approver's decision on one request: ``{"run", "id", "decision": grant|deny, "scope": run|repository,
+    "note"}``. The run waiting on it continues with the answer."""
+    from common import permissions
+    board_mod._use_board_dir(blackboard_dir)
+    run, rid = str(payload.get("run") or "").strip(), str(payload.get("id") or "").strip()
+    if not run or not rid:
+        return {"ok": False, "error": "run and id are required"}
+    try:
+        d = permissions.decide(run, rid, str(payload.get("decision") or ""), by=author,
+                               note=str(payload.get("note") or ""), scope=str(payload.get("scope") or "run"))
+    except (KeyError, ValueError) as e:
+        return {"ok": False, "error": str(e).strip("'\"")}
+    return {"ok": True, "decision": d}
 
 
 def architect_view(run: str, *, blackboard_dir: str | None = None) -> dict:
@@ -305,6 +344,11 @@ def launch(payload: dict, *, author: str, opener=None, server_url: str | None = 
     values = catalog.normalize_local_paths(dict(payload.get("values") or {}))
     required = _required(spec, name)
     missing = [f.label for f in spec.fields if f.name in required and not str(values.get(f.name) or "").strip()]
+    labels = {f.name: f.label for f in spec.fields}
+    for group in catalog.AT_LEAST_ONE_OF_GROUPS.get(name, ()):
+        shown = [g for g in group if g in labels]
+        if len(shown) > 1 and not any(str(values.get(g) or "").strip() for g in shown):
+            missing.append(" or ".join(labels[g] for g in shown))
     if missing:
         return {"ok": False, "error": "Fill in " + ", ".join(missing) + "."}
     prior = str(payload.get("continueFrom") or "").strip()
@@ -326,7 +370,8 @@ def launch(payload: dict, *, author: str, opener=None, server_url: str | None = 
         body = model_profiles.apply_profile_snapshot(name, body)
     except model_profiles.ProfileError as e:
         return {"ok": False, "error": f"Fix the model settings first: {e}"}
-    if name in _BRANCHED and not str(body.get("branchName") or "").strip():
+    # A run from a link names its branch after the issue or pull request (intake does).
+    if name in _BRANCHED and not str(body.get("branchName") or "").strip() and not str(body.get("link") or "").strip():
         # The result branch reads as what was asked for: swarm/<words of the request>-<run id>.
         from common import git
         body["branchName"] = git.branch_slug(asked or _title(name, values))
@@ -537,8 +582,14 @@ def run_result(wf: dict, *, opener=None, server_url: str | None = None) -> dict 
     exists = summary.get("exists", False)
     merged = bool(summary.get("merged"))
     has_work = exists and (in_place or summary.get("commits", 0) > 0)
-    ship = _latest_ship(str(wf.get("workflowId") or ""), opener=opener, server_url=server_url) if finished else {}
-    target = (remote or {}).get("defaultBranch") or base
+    # A run from a link opens its own pull request; others are shipped from the console (a ship_run).
+    out = _coerce_map(wf.get("output"))
+    own, linked = _coerce_map(out.get("pullRequest")), _coerce_map(out.get("target"))
+    ship = ({"url": own.get("url"), "number": own.get("number") or 0, "state": "published", "status": "COMPLETED",
+             "draft": bool(own.get("draft")) and not out.get("readyForReview"), "ci": str(out.get("ci") or "")}
+            if own.get("url") else
+            _latest_ship(str(wf.get("workflowId") or ""), opener=opener, server_url=server_url) if finished else {})
+    target = linked.get("base") or (remote or {}).get("defaultBranch") or base
     return {
         "branch": branch, "repo": repo, "base": base, "inPlace": in_place, "head": summary.get("head", ""),
         "commits": summary.get("commits", 0), "files": summary.get("files", 0),
@@ -549,7 +600,7 @@ def run_result(wf: dict, *, opener=None, server_url: str | None = None) -> dict 
             "continue": finished and exists and wf.get("workflowName") in LAUNCH_TYPES,
             "pullRequest": finished and has_work and not merged and bool((remote or {}).get("github"))
                            and str(ship.get("status") or "") not in ("RUNNING",) and not ship.get("url"),
-            "merge": finished and has_work and not merged and not in_place and bool(base),
+            "merge": finished and has_work and not merged and not in_place and bool(base) and not own.get("url"),
         },
     }
 
@@ -823,6 +874,12 @@ def handle_get(path: str, query: dict, blackboard_dir: str | None = None,
         ceiling = query.get("ceiling", [None])[0]
         view = board_json(run, ceiling_usd=float(ceiling) if ceiling else None, blackboard_dir=blackboard_dir)
         return 200, "application/json", json.dumps(view, default=str).encode("utf-8")
+    if path == "/api/permissions":
+        # Pending permission requests: one run's (?run=) with its decisions, or every running swarm's.
+        run = (query.get("run") or [""])[0]
+        body = (permission_view(run, blackboard_dir=blackboard_dir) if run
+                else {"pending": permissions_waiting(blackboard_dir=blackboard_dir)})
+        return 200, "application/json", json.dumps(body, default=str).encode("utf-8")
     if path == "/api/state":
         # State on demand for UIs, API clients and other agents (structured, no LLM).
         run = (query.get("run") or [""])[0]
@@ -886,7 +943,7 @@ def handle_get(path: str, query: dict, blackboard_dir: str | None = None,
 def handle_post(path: str, body: bytes, blackboard_dir: str | None = None,
                 headers: dict | None = None) -> tuple[int, str, bytes]:
     if path not in ("/api/steer", "/api/ask", "/api/launch", "/api/retry", "/api/start-over", "/api/ship",
-                    "/api/models", "/api/templates"):
+                    "/api/models", "/api/templates", "/api/permissions/decide"):
         return 404, "application/json", b'{"error":"not found"}'
     # Every steering write is authenticated (H16, §7 #7): the bearer token must belong to a registered
     # actor, and the board write is authored as that actor — never as a caller-supplied name.
@@ -897,6 +954,10 @@ def handle_post(path: str, body: bytes, blackboard_dir: str | None = None,
         payload = json.loads(body.decode("utf-8") or "{}")
     except (ValueError, UnicodeDecodeError):
         return 400, "application/json", b'{"error":"invalid json"}'
+    if path == "/api/permissions/decide":
+        # The approver is whoever holds the token: a person (human:<email>) or an agent (agent:<name>).
+        result = decide_permission(payload, author=actor["author"], blackboard_dir=blackboard_dir)
+        return _json(200 if result.get("ok") else 400, result)
     if path == "/api/launch":
         result = launch(payload, author=actor["author"])
         return _json(200 if result.get("ok") else 400, result)
@@ -958,6 +1019,9 @@ def make_handler(blackboard_dir: str | None = None):
 
 
 def serve(port: int = 8750, host: str = "127.0.0.1", blackboard_dir: str | None = None) -> None:  # pragma: no cover
+    # The board the workers write, from the first request on: an API client (an approver agent) that never
+    # opens a run page read an empty board until someone did (the board was located lazily per view).
+    board_mod._use_board_dir(blackboard_dir)
     httpd = ThreadingHTTPServer((host, port), make_handler(blackboard_dir))
     print(f"[swarm-console] http://{host}:{port}  (blackboard {_bb_dir(blackboard_dir)})")
     httpd.serve_forever()

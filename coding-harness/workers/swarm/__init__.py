@@ -6,3 +6,5 @@ combining it, git refusals, port or file conflicts, wrong checks) is the agents'
 
 from .tasks import (swarm_authoring, swarm_dispatch, swarm_finish, swarm_formal, swarm_item_prep, swarm_item_release, swarm_item_reviewing,  # noqa: F401
                     swarm_measure, swarm_round, swarm_setup)
+from .link import swarm_ci, swarm_intake, swarm_pr_ready, swarm_publish  # noqa: F401,E402
+from .approval import swarm_permissions  # noqa: F401,E402

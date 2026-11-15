@@ -29,12 +29,16 @@ ITEMS_SCHEMA = {
     },
     "required": ["items"],
 }
+from common.permissions import SCHEMA as _PERMISSIONS_SCHEMA  # noqa: E402
+
 WORK_SCHEMA = {
     "type": "object",
     "properties": {"summary": {"type": "string"}, "done": {"type": "boolean"},
                    "files": {"type": "array", "items": {"type": "string"}},
                    "blockers": {"type": "array", "items": {"type": "string"}},
-                   "lessons": {"type": "array", "items": {"type": "string"}}},
+                   "lessons": {"type": "array", "items": {"type": "string"}},
+                   # What the agent needed and was refused (docs/PERMISSIONS.md), instead of retrying it.
+                   "permissions": _PERMISSIONS_SCHEMA},
     "required": ["summary", "done", "files"],
 }
 REVIEW_SCHEMA = {
@@ -63,7 +67,9 @@ PLAN_SCHEMA = {
 EVALUATE_SCHEMA = {
     "type": "object",
     "properties": {"delivered": {"type": "boolean"}, "assessment": {"type": "string"},
-                   **ITEMS_SCHEMA["properties"]},
+                   **ITEMS_SCHEMA["properties"],
+                   # The requests the architect judges necessary; the run waits for each to be decided.
+                   "permissions": _PERMISSIONS_SCHEMA},
     "required": ["delivered", "assessment", "items"],
 }
 
@@ -115,6 +121,20 @@ def _history_text(repo: str) -> str:
                      for (kind, rung), (done, total) in sorted(tally.items()))
 
 
+def _domains(granted: list) -> list[str]:
+    """The hosts a session may reach: the harness's defaults and what an approver granted."""
+    from common.allowed_domains import DEFAULT_ALLOWED_DOMAINS
+    return sorted(set(DEFAULT_ALLOWED_DOMAINS) | set(granted or []))
+
+
+def _granted(run: str) -> dict:
+    """What approvers and the policy granted the run, for the round review's session."""
+    from common import permissions
+    g = permissions.grants(run) if run else {"writableRoots": [], "allowedDomains": [], "text": "(none)"}
+    return {"writableRoots": g["writableRoots"], "allowedDomains": _domains(g["allowedDomains"]),
+            "permissions": g["text"]}
+
+
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(text).lower()).strip("-")[:40] or "work"
 
@@ -136,7 +156,14 @@ def swarm_setup(task):
         original_head = git.head(repo)
         if not os.path.isdir(os.path.join(work, ".git")):
             git.git(repo, "clone", "--quiet", "--no-local", repo, work)
-            git.git(work, "switch", "-c", branch)
+            # startFrom names a ref in the repository the run starts from (a base branch's tip or a pull
+            # request's head, fetched by intake); without it the run starts from the checkout's HEAD.
+            start = str(i.get("startFrom") or "").strip()
+            if start:
+                git.git(work, "fetch", "--quiet", "--no-tags", repo, start)
+                git.git(work, "switch", "-c", branch, "FETCH_HEAD")
+            else:
+                git.git(work, "switch", "-c", branch)
         for key in ("user.name", "user.email"):
             value = git.git(repo, "config", key, check=False).stdout.strip()
             git.git(work, "config", key, value or ("conductor-swarm" if key == "user.name" else "swarm@localhost"))
@@ -313,14 +340,17 @@ def swarm_item_prep(task):
                                                        "rungReason": "chosen by the architect",
                                                        "reviewRung": review_rung, "reviewRungReason": review_reason,
                                                        "capUsd": cap})
+        from common import permissions
+        granted = permissions.grants(run) if run else {"writableRoots": [], "allowedDomains": [], "text": "(none)"}
         item_text = json.dumps(it, indent=1)
         return ok(task, {
+            "writableRoots": granted["writableRoots"], "allowedDomains": _domains(granted["allowedDomains"]),
             "itemId": it["id"], "rung": rung, "reviewRung": review_rung, "reviewRungReason": review_reason,
             "capUsd": cap, "agentAuthor": f"agent:{it['id']}", "reviewAuthor": f"review:{it['id']}",
             "workSchema": WORK_SCHEMA, "reviewSchema": REVIEW_SCHEMA,
             "allowedTools": SWARM_ALLOWED_TOOLS, "disallowedTools": SWARM_DISALLOWED_TOOLS,
             "promptContext": {"request": i.get("description") or "", "branch": i.get("branch") or "",
-                              "round": str(rnd), "item": item_text},
+                              "round": str(rnd), "item": item_text, "permissions": granted["text"]},
             "reviewContext": {"request": i.get("description") or "", "branch": i.get("branch") or "",
                               "round": str(rnd), "item": item_text},
         }, [f"[swarm_item_prep] {it['id']}: implementer rung {rung}, reviewer rung {review_rung} ({review_reason}), "
@@ -671,7 +701,8 @@ def swarm_round(task):
         return ok(task, {"delivered": delivered, "stop": delivered or over, "overBudget": over,
                          "items": next_items, "assessment": verdict.get("assessment") or "",
                          "reports": reports, "spentUsd": round(spend, 4),
-                         "roundReviewRung": round_rung, "roundReviewReason": round_reason},
+                         "roundReviewRung": round_rung, "roundReviewReason": round_reason,
+                         **_granted(run)},
                   [f"[swarm_round] delivered={delivered} spent=${spend:.2f} next={len(next_items)}"])
     except Exception as e:  # noqa: BLE001
         return fail(task, "swarm_round", e)

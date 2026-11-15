@@ -172,6 +172,9 @@ AT_LEAST_ONE_OF_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
     ),
     # A program is described in prose or given as an explicit subsystem list.
     "cc_program": (("description", "subsystems"),),
+    # The swarm works from a link (an issue, pull request or repository) or from a local checkout and a
+    # request; a repository link still needs the request, which intake says when it is missing.
+    "swarm": (("link", "repoPath"), ("link", "description")),
 }
 
 
@@ -359,6 +362,13 @@ def _r_swarm(o: dict) -> ResultCard:
         ("rounds", str(o.get("rounds") or "?")),
         ("spend", f"${float(o.get('spendUsd') or 0):.2f}"),
     ]
+    pr = o.get("pullRequest") if isinstance(o.get("pullRequest"), dict) else {}
+    if pr.get("url"):
+        rows.append(("pull request", str(pr["url"])))
+        rows.append(("CI", str(o.get("ci") or "?")))
+    follow = o.get("followUp") if isinstance(o.get("followUp"), dict) else {}
+    if follow:
+        rows.append(("follow-up", f"{follow.get('verdict') or '?'}, CI {follow.get('ci') or '?'}"))
     return ResultCard("Delivered" if o.get("delivered") is True or o.get("verdict") == "DELIVERED"
                       else "Incomplete", rows, None)
 
@@ -611,9 +621,20 @@ CATALOG: dict[str, WorkflowSpec] = {
               "agents builds it in parallel in one shared clone and works out conflicts themselves; the "
               "architect judges each round until the checks pass. The result is a branch in your repo.",
         fields=(
-            Field("repoPath", "Repo path", "text", help="local directory"),
-            Field("description", "What to build", "multiline", help="the whole request"),
+            Field("link", "Link", "text", "", help="a GitHub issue, pull request or repository; the result "
+                  "is a pull request"),
+            Field("repoPath", "Repo path", "text", "", help="local checkout; with a link, leave empty to work in "
+                  "a temporary checkout"),
+            Field("description", "What to build", "multiline", "", help="the whole request; with an issue or "
+                  "pull request link, anything to add"),
             Field("ceilingUsd", "Spend ceiling $", "float", 60),
+            Field("publish", "Publish", "enum", "", choices=("", "pr", "branch", "none"), advanced=True,
+                  help="pr (default with a link): push and open a draft pull request; branch: push only; none"),
+            Field("base", "Base branch", "text", "", advanced=True, help="default: the repository's default branch"),
+            Field("ready", "Mark ready", "enum", "", choices=("", "ci", "never"), advanced=True,
+                  help="ci (default): take the pull request out of draft once the repository's CI passes"),
+            Field("ciRounds", "Follow-up runs for failing CI", "int", 2, advanced=True),
+            Field("commentOnIssue", "Comment on the issue when ready", "bool", False, advanced=True),
             Field("maxWidth", "Max parallel agents", "int", 10, advanced=True),
             Field("maxRounds", "Max rounds", "int", 8, advanced=True),
             _MODEL_PROFILE,

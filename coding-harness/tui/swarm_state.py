@@ -87,6 +87,16 @@ def _phase(wf: dict, view: dict) -> str:
             return f"measuring {label}: committing the tree and running the checks"
         if any(r.startswith(("memory_write", "finish")) for r in running):
             return "handing the branch back"
+        if "permissions" in running:
+            return "waiting for approval: the agents need permission for something they cannot do"
+        if "intake" in running:
+            return "reading the link and preparing the checkout"
+        if "publish" in running:
+            return "pushing the branch and opening the pull request"
+        if "ci" in running:
+            return "waiting for the repository's CI on the pull request"
+        if "followup" in running:
+            return "CI failed: a follow-up run is fixing it on the pull request"
         states = [it.get("state") for it in view["items"]]
         parts = [f"{n} {label}" for label, n in (
             ("working", states.count("in_progress")), ("waiting on dependencies", states.count("backlog")),

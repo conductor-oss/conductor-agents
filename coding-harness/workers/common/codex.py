@@ -35,6 +35,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 from typing import Any
 
 from . import backend_auth, check_execution
@@ -114,6 +115,38 @@ def _restore_optional(result: dict[str, Any], output_schema: dict | None) -> dic
     return {**result, "structured": structured, "result": json.dumps(structured)}
 
 
+# Directories Codex's workspace-write sandbox keeps read-only inside the workspace (its own config and
+# agent folders; .git too, but the harness commits for the agents). A repository can track files there
+# (an install guide for Codex users in .codex/INSTALL.md): run c5fbbe5b's agents agreed on a one-line fix
+# to it for six rounds and were refused every write.
+SANDBOX_PROTECTED = (".codex", ".agents")
+
+
+def writable_roots(worktree: str, granted: list[str] | None = None) -> list[str]:
+    """Explicit writable roots for the sandbox: the protected directories holding files the repository
+    tracks, and the paths an approver granted the run (docs/PERMISSIONS.md; a granted path inside a
+    protected directory is opened as its directory). Never .git, never outside the worktree."""
+    from . import git
+    root = os.path.realpath(worktree)
+    roots = []
+    for name in SANDBOX_PROTECTED:
+        path = os.path.join(worktree, name)
+        if os.path.isdir(path) and git.git(worktree, "ls-files", "--", name, check=False).stdout.strip():
+            roots.append(os.path.realpath(path))
+    for rel in granted or []:
+        path = os.path.realpath(os.path.join(root, str(rel)))
+        inside = os.path.relpath(path, root)
+        if inside.startswith("..") or inside == ".git" or inside.startswith(".git" + os.sep):
+            continue
+        top = inside.split(os.sep, 1)[0]
+        if top in SANDBOX_PROTECTED:
+            path = os.path.join(root, top)
+            os.makedirs(path, exist_ok=True)
+        if path not in roots and path != root:
+            roots.append(path)
+    return roots
+
+
 def _tokens(usage: dict[str, Any]) -> int:
     # Codex's input_tokens already include the cached ones, and its output_tokens the reasoning ones
     # (total_tokens == input_tokens + output_tokens in every session log).
@@ -169,6 +202,7 @@ async def _run_codex_sdk(
     extra_env: dict[str, str] | None = None,
     steer=None,
     max_budget_usd: float | None = None,
+    granted_roots: list[str] | None = None,
 ) -> dict[str, Any]:
     """Drive one turn via the openai-codex SDK, consuming the notification stream
     ourselves (mirroring the SDK's own _collect_async_turn_result) so we can fire
@@ -187,7 +221,8 @@ async def _run_codex_sdk(
     # failure. This harness already isolates the agent to its own worktree
     # (write_roots, _worktree_guard); there is no additional safety this
     # specific restriction buys here, only false test failures.
-    session_config = {"sandbox_workspace_write": {"network_access": True}} if write else None
+    session_config = ({"sandbox_workspace_write": {"network_access": True, **(
+        {"writable_roots": roots} if (roots := writable_roots(worktree, granted_roots)) else {})}} if write else None)
     turn_kwargs: dict[str, Any] = {}
     if output_schema:
         turn_kwargs["output_schema"] = _strictify_schema(output_schema)
@@ -387,6 +422,7 @@ def _run_codex_cli(
     resume_session_id: str | None = None,
     on_turn=None,
     extra_env: dict[str, str] | None = None,
+    granted_roots: list[str] | None = None,
 ) -> dict[str, Any]:
     """Legacy driver: run one `codex exec` to completion, streaming its JSONL.
 
@@ -410,6 +446,8 @@ def _run_codex_cli(
     # test failure, not a project-code one.
     if write:
         args += ["-c", "sandbox_workspace_write.network_access=true"]
+        if roots := writable_roots(worktree, granted_roots):
+            args += ["-c", "sandbox_workspace_write.writable_roots=" + json.dumps(roots)]
     if model:
         args += ["-m", model]
     if output_schema:
@@ -559,6 +597,7 @@ async def run_codex_agent(
     extra_env: dict[str, str] | None = None,
     steer=None,
     max_budget_usd: float | None = None,
+    granted_roots: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run one Codex session to completion; return the uniform coding_agent dict.
 
@@ -567,15 +606,97 @@ async def run_codex_agent(
     isn't installed or ``CODEX_DRIVER=cli`` is set. ``effort`` is honored only by
     the SDK driver.
     """
+    started = time.time()
     if _sdk_available():
-        return _restore_optional(await _run_codex_sdk(
+        res = _restore_optional(await _run_codex_sdk(
             prompt, worktree=worktree, model=model, write=write, effort=effort,
             output_schema=output_schema, resume_session_id=resume_session_id,
-            on_turn=on_turn, extra_env=extra_env, steer=steer, max_budget_usd=max_budget_usd), output_schema)
-    log.info("codex driver: CLI fallback (%s)",
-             "CODEX_DRIVER=cli" if CODEX_DRIVER == "cli" else "openai_codex not installed")
-    return _restore_optional(await asyncio.to_thread(
-        _run_codex_cli,
-        prompt, worktree=worktree, model=model, write=write,
-        output_schema=output_schema, resume_session_id=resume_session_id,
-        on_turn=on_turn, extra_env=extra_env), output_schema)
+            on_turn=on_turn, extra_env=extra_env, steer=steer, max_budget_usd=max_budget_usd,
+            granted_roots=granted_roots), output_schema)
+    else:
+        log.info("codex driver: CLI fallback (%s)",
+                 "CODEX_DRIVER=cli" if CODEX_DRIVER == "cli" else "openai_codex not installed")
+        res = _restore_optional(await asyncio.to_thread(
+            _run_codex_cli,
+            prompt, worktree=worktree, model=model, write=write,
+            output_schema=output_schema, resume_session_id=resume_session_id,
+            on_turn=on_turn, extra_env=extra_env, granted_roots=granted_roots), output_schema)
+    return with_subagents(res, since=started)
+
+
+def _sessions_home() -> str:
+    return os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"), "sessions")
+
+
+def _rollout_usage(path: str) -> tuple[str, dict]:
+    """``(model, final total_token_usage)`` of one Codex session log."""
+    model, usage = "", {}
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if '"turn_context"' not in line and '"token_count"' not in line:
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            p = e.get("payload") or {}
+            if e.get("type") == "turn_context" and p.get("model"):
+                model = str(p["model"])
+            info = p.get("info") or {} if p.get("type") == "token_count" else {}
+            if info.get("total_token_usage"):
+                usage = info["total_token_usage"]
+    return model, usage
+
+
+def subagent_sessions(thread_id: str, *, since: float) -> list[dict]:
+    """Every Codex session spawned, at any depth, by ``thread_id`` since ``since`` (epoch seconds), read
+    from Codex's own session logs: ``[{"thread", "model", "usage", "tokens", "costUsd"}]``. A session's
+    usage covers its own turns only; a sub-agent it spawns writes its own log (an architect review
+    spawned two in run c5fbbe5b, and their tokens were in no total)."""
+    if not thread_id:
+        return []
+    root = _sessions_home()
+    days = {time.strftime("%Y/%m/%d", time.localtime(t)) for t in (since - 3600, since, time.time())}
+    parent_of: dict[str, tuple[str, str]] = {}
+    for day in days:
+        folder = os.path.join(root, day)
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            try:
+                if not name.startswith("rollout-") or os.path.getmtime(path) < since - 60:
+                    continue
+                with open(path, encoding="utf-8") as fh:
+                    meta = (json.loads(fh.readline() or "{}").get("payload") or {})
+            except (OSError, ValueError):
+                continue
+            spawn = ((meta.get("source") or {}).get("subagent") or {}).get("thread_spawn") or {} \
+                if isinstance(meta.get("source"), dict) else {}
+            if spawn.get("parent_thread_id") and meta.get("id"):
+                parent_of[str(meta["id"])] = (str(spawn["parent_thread_id"]), path)
+    found, frontier, out = set(), {thread_id}, []
+    while frontier:
+        children = {t for t, (parent, _) in parent_of.items() if parent in frontier and t not in found}
+        found |= children
+        frontier = children
+    for t in sorted(found):
+        model, usage = _rollout_usage(parent_of[t][1])
+        out.append({"thread": t, "model": model, "usage": usage, "tokens": _tokens(usage),
+                    "costUsd": round(_usage_cost(usage, model), 6)})
+    return out
+
+
+def with_subagents(res: dict[str, Any], *, since: float) -> dict[str, Any]:
+    """The session's result with its sub-agents' tokens and cost added (and listed under ``subagents``)."""
+    try:
+        subs = subagent_sessions(str(res.get("session_id") or ""), since=since)
+    except Exception as e:  # noqa: BLE001 - accounting must never fail a session
+        log.warning("codex sub-agent usage not read: %s", e)
+        return res
+    if not subs:
+        return res
+    return {**res, "subagents": subs, "tokens": int(res.get("tokens") or 0) + sum(s["tokens"] for s in subs),
+            "cost_usd": round(float(res.get("cost_usd") or 0) + sum(s["costUsd"] for s in subs), 6)}

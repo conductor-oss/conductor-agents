@@ -59,8 +59,12 @@ def resolve(token: str | None) -> dict | None:
     actor = load()["tokens"].get(str(token).strip())
     if not isinstance(actor, dict) or not actor.get("email"):
         return None
-    return {"name": str(actor.get("name") or actor["email"]), "email": str(actor["email"]),
-            "authority": str(actor.get("authority") or "human"), "author": f"human:{actor['email']}"}
+    authority = str(actor.get("authority") or "human")
+    name = str(actor.get("name") or actor["email"])
+    # An agent holding a token (an approver agent deciding permission requests, docs/PERMISSIONS.md)
+    # writes as itself, never as a person.
+    author = f"human:{actor['email']}" if authority == "human" else f"agent:{name}"
+    return {"name": name, "email": str(actor["email"]), "authority": authority, "author": author}
 
 
 def human_emails() -> set[str]:

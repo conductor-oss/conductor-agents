@@ -50,10 +50,19 @@ def decide(req: dict, *, inputs: dict, worktree: str) -> dict:
     prompt = templating.render_default("architect_decide", ctx)
     out: dict = {}
     try:
-        tier, _ = select_role_tier(inputs, role="plan", worktree=worktree)
-        res = asyncio.run(run_coding_agent(prompt, worktree=worktree, model=tier.get("model") or None,
-                                           tools=["Read", "Grep", "Glob"], allowed_tools=["Read", "Grep", "Glob"],
-                                           max_turns=12, max_budget_usd=1.0, output_schema=SCHEMA))
+        from common import budget_gate, cost
+        tier, resolution = select_role_tier(inputs, role="plan", worktree=worktree)
+        with cost.using_prices(resolution.get("prices")):
+            res = asyncio.run(run_coding_agent(prompt, worktree=worktree, model=tier.get("model") or None,
+                                               tools=["Read", "Grep", "Glob"], allowed_tools=["Read", "Grep", "Glob"],
+                                               max_turns=12, max_budget_usd=1.0, output_schema=SCHEMA))
+        # The decision is a session like any other: its spend is the run's (it went unrecorded, run c5fbbe5b).
+        try:
+            budget_gate.record_spend(str(inputs.get("spendRunId") or run), "architect:decision",
+                                     usd=float(res.get("cost_usd") or 0.0), tokens=int(res.get("tokens") or 0),
+                                     model=str(res.get("model") or tier.get("model") or ""))
+        except Exception as e:  # noqa: BLE001 - a board write failure must not lose the decision
+            log.warning("architect decision spend not recorded: %s", e)
         structured = res.get("structured")
         if isinstance(structured, str):
             structured = json.loads(structured)

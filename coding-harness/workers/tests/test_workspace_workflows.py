@@ -278,5 +278,8 @@ def test_a_clone_branch_owner_names_its_branch_after_the_run_and_hands_it_back()
         workflow = _load(name)
         setup = next(t for t in workflow["tasks"] if t["name"] == "swarm_setup")
         assert setup["inputParameters"]["runId"] == "${workflow.workflowId}"
-        assert workflow["tasks"][-1]["name"] == "swarm_finish"
+        names = [t["name"] for t in workflow["tasks"]]
+        # finish hands the branch back; only publication (push, pull request, CI) may follow it.
+        assert "swarm_finish" in names
+        assert set(names[names.index("swarm_finish") + 1:]) <= {"swarm_publish", "swarm_ci", "after_ci"}
         assert workflow["outputParameters"]["sourceHandoff"] == "${finish.output.sourceHandoff}"

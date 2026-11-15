@@ -22,8 +22,9 @@
 
 # Swarm Human-Role Policy
 
-- Humans are passive actors in the agent swarm (`sdlc_intake`, `team_build`, `cc_program` and anything they route to): they monitor, give feedback, and can stop an agent or terminate a run. They never approve.
+- Humans are passive actors in the agent swarm (`sdlc_intake`, `team_build`, `cc_program`, `swarm` and anything they route to): they monitor, give feedback, and can stop an agent or terminate a run. They approve nothing but permission requests (below).
 - No swarm workflow may contain a `WAIT` task, a human-approval gate, or a `humanAvailable`-style input that makes progress depend on a human answer. Every decision the swarm faces is made by the swarm itself: a frozen-contract edit is rejected by the Lead, except an amendment of only frozen acceptance tests, which is held unmerged and decided by the item's peer reviewer (approve → merged and re-frozen at the merged head; reject → discarded), an honored agent pushback exempts that item from that one directive, a quarantine or starvation ends the run naming its mechanism.
+- The one exception: a **permission request** (docs/PERMISSIONS.md). When an agent is refused something the work needs — a sandbox write, a network host, a decision outside its authority — and the run's history, the repository's standing grants and the policy cannot settle it, the run waits for an approver instead of retrying. The approver is a person or another agent, deciding through the console API (`POST /api/permissions/decide`). The same request is never asked twice.
 - Escalations are notices for awareness, not requests for decisions. Human feedback (a plain-language message, a nudge, a stop, a reopen, a constraint lift/replace) is advisory input the team takes at its next tool boundary or dispatch; it never unblocks anything because nothing is ever blocked on a human.
 - Enforcement: `workers/tests/test_team_cycle.py::test_swarm_workflows_never_wait_for_a_human` fails if a swarm workflow gains a `WAIT` or a `humanAvailable` input.
 

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
+import json
+import os
 from typing import Any
 
 # USD per 1M tokens (input/output) — P3.3. Source: Anthropic pricing Jun 2025.
@@ -32,13 +36,60 @@ PRICING: dict[str, tuple[float, float]] = {
 }
 
 
+# The run's own price table (its model policy's ``prices``: the bundled defaults merged with the user's
+# models.json, the table the console's Settings edit), set for the length of one agent session.
+RUN_PRICES: contextvars.ContextVar[dict] = contextvars.ContextVar("conductor_run_prices", default={})
+
+
+@contextlib.contextmanager
+def using_prices(prices: dict | None):
+    """Price the sessions started inside this block from ``prices`` (``{model: {input, output}}``)."""
+    token = RUN_PRICES.set(dict(prices or {}))
+    try:
+        yield
+    finally:
+        RUN_PRICES.reset(token)
+
+
+def _policy_prices() -> dict[str, tuple[float, float]]:
+    """The bundled policy's prices under the run's own: one table, the policy's, with the built-in
+    estimates only for ids the policy does not name."""
+    global _BUNDLED
+    if _BUNDLED is None:
+        try:
+            path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "defaults",
+                                "models.defaults.json")
+            with open(path, encoding="utf-8") as fh:
+                _BUNDLED = dict(json.load(fh).get("prices") or {})
+        except (OSError, ValueError):
+            _BUNDLED = {}
+    out: dict[str, tuple[float, float]] = {}
+    for table in (_BUNDLED, RUN_PRICES.get()):
+        for key, rate in (table or {}).items():
+            try:
+                out[str(key).lower()] = (float(rate["input"]), float(rate["output"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+    return out
+
+
+_BUNDLED: dict | None = None
+
+
 def _price_rates(model: str | None) -> tuple[float, float]:
+    """Rates for a model id: an exact entry first (the policy's, then the built-in table's), else the most
+    specific entry the id contains. The first contained entry was taken before, and "gpt-5" precedes
+    "gpt-5.6-terra", so every GPT-5.6 session was priced at GPT-5's rates (run c5fbbe5b: $2.50 reported
+    for $6.03 of usage)."""
     if not model:
         return (3.0, 15.0)  # caller must use codex:default for an empty Codex model
-    ml = (model or "").lower()
-    for key, rates in PRICING.items():
-        if key in ml:
-            return rates
+    ml = model.lower()
+    table = {**{k.lower(): v for k, v in PRICING.items()}, **_policy_prices()}
+    if ml in table:
+        return table[ml]
+    contained = [k for k in table if k in ml]
+    if contained:
+        return table[max(contained, key=len)]
     return (3.0, 15.0)
 
 

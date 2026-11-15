@@ -16,7 +16,16 @@
     "modelPolicySource",
     "modelPolicySha256",
     "modelsConfig",
-    "modelOverrides"
+    "modelOverrides",
+    "link",
+    "base",
+    "publish",
+    "ready",
+    "ciRounds",
+    "ciRound",
+    "commentOnIssue",
+    "closesIssue",
+    "permissionWaitMinutes"
   ],
   "timeoutPolicy": "ALERT_ONLY",
   "timeoutSeconds": 0,
@@ -37,11 +46,26 @@
       }
     },
     {
+      "name": "swarm_intake",
+      "taskReferenceName": "intake",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "link": "${workflow.input.link}",
+        "repoPath": "${workflow.input.repoPath}",
+        "description": "${workflow.input.description}",
+        "branchName": "${workflow.input.branchName}",
+        "base": "${workflow.input.base}",
+        "publish": "${workflow.input.publish}",
+        "ready": "${workflow.input.ready}",
+        "runId": "${workflow.workflowId}"
+      }
+    },
+    {
       "name": "repo_memory_read",
       "taskReferenceName": "memory_read",
       "type": "SIMPLE",
       "inputParameters": {
-        "repoPath": "${workflow.input.repoPath}"
+        "repoPath": "${intake.output.repoPath}"
       }
     },
     {
@@ -49,11 +73,12 @@
       "taskReferenceName": "setup",
       "type": "SIMPLE",
       "inputParameters": {
-        "repoPath": "${workflow.input.repoPath}",
-        "description": "${workflow.input.description}",
+        "repoPath": "${intake.output.repoPath}",
+        "description": "${intake.output.description}",
         "runId": "${workflow.workflowId}",
-        "branchName": "${workflow.input.branchName}",
-        "modelResolution": "${model_policy.output}"
+        "branchName": "${intake.output.branchName}",
+        "modelResolution": "${model_policy.output}",
+        "startFrom": "${intake.output.startFrom}"
       }
     },
     {
@@ -95,7 +120,7 @@
             "modelPolicySha256": "${workflow.input.modelPolicySha256}",
             "templateKey": "swarm_plan",
             "promptContext": {
-              "request": "${workflow.input.description}",
+              "request": "${intake.output.description}",
               "branch": "${setup.output.branch}",
               "memory": "${memory_read.output.digest}",
               "history": "${setup.output.history}",
@@ -139,7 +164,7 @@
         "workdir": "${setup.output.workdir}",
         "plan": "${plan.output}",
         "runId": "${workflow.workflowId}",
-        "description": "${workflow.input.description}",
+        "description": "${intake.output.description}",
         "branch": "${setup.output.branch}",
         "ceilingUsd": "${workflow.input.ceilingUsd}",
         "modelProfile": "${workflow.input.modelProfile}",
@@ -198,7 +223,7 @@
             "round": "${rounds.output.iteration}",
             "workdir": "${setup.output.workdir}",
             "branch": "${setup.output.branch}",
-            "description": "${workflow.input.description}",
+            "description": "${intake.output.description}",
             "runId": "${workflow.workflowId}",
             "maxWidth": "${workflow.input.maxWidth}",
             "modelProfile": "${workflow.input.modelProfile}",
@@ -208,7 +233,7 @@
             "modelsConfig": "${workflow.input.modelsConfig}",
             "modelOverrides": "${workflow.input.modelOverrides}",
             "ceilingUsd": "${workflow.input.ceilingUsd}",
-            "repoPath": "${workflow.input.repoPath}"
+            "repoPath": "${intake.output.repoPath}"
           }
         },
         {
@@ -237,7 +262,7 @@
           "inputParameters": {
             "runId": "${workflow.workflowId}",
             "round": "${rounds.output.iteration}",
-            "repoPath": "${workflow.input.repoPath}",
+            "repoPath": "${intake.output.repoPath}",
             "modelResolution": "${model_policy.output}"
           }
         },
@@ -270,7 +295,7 @@
             "modelPolicySha256": "${workflow.input.modelPolicySha256}",
             "templateKey": "swarm_evaluate",
             "promptContext": {
-              "request": "${workflow.input.description}",
+              "request": "${intake.output.description}",
               "branch": "${setup.output.branch}",
               "memory": "${memory_read.output.digest}",
               "history": "${setup.output.history}",
@@ -279,7 +304,8 @@
               "round": "${rounds.output.iteration}",
               "reports": "${fold.output.reports}",
               "measurement": "${measure.output.summary}",
-              "changes": "${measure.output.changes}"
+              "changes": "${measure.output.changes}",
+              "permissions": "${fold.output.permissions}"
             },
             "schema": "${setup.output.schemas.evaluate}",
             "modelsConfig": "${workflow.input.modelsConfig}",
@@ -289,7 +315,9 @@
             "promptTemplateSource": "",
             "modelTier": "${fold.output.roundReviewRung}",
             "spendRunId": "${workflow.workflowId}",
-            "spendAuthor": "architect"
+            "spendAuthor": "architect",
+            "writableRoots": "${fold.output.writableRoots}",
+            "allowedDomains": "${fold.output.allowedDomains}"
           }
         },
         {
@@ -312,8 +340,24 @@
             "ceilingUsd": "${workflow.input.ceilingUsd}",
             "runId": "${workflow.workflowId}",
             "round": "${rounds.output.iteration}",
-            "repoPath": "${workflow.input.repoPath}",
+            "repoPath": "${intake.output.repoPath}",
             "roundReviewRung": "${fold.output.roundReviewRung}"
+          }
+        },
+        {
+          "name": "swarm_permissions",
+          "taskReferenceName": "permissions",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "evaluation": "${evaluate.output}",
+            "delivered": "${decide.output.delivered}",
+            "stop": "${decide.output.stop}",
+            "runId": "${workflow.workflowId}",
+            "round": "${rounds.output.iteration}",
+            "workdir": "${setup.output.workdir}",
+            "repoPath": "${intake.output.repoPath}",
+            "target": "${intake.output.target}",
+            "waitMinutes": "${workflow.input.permissionWaitMinutes}"
           }
         },
         {
@@ -344,13 +388,101 @@
       "taskReferenceName": "finish",
       "type": "SIMPLE",
       "inputParameters": {
-        "repoPath": "${workflow.input.repoPath}",
+        "repoPath": "${intake.output.repoPath}",
         "workdir": "${setup.output.workdir}",
         "branch": "${setup.output.branch}",
         "delivered": "${workflow.variables.delivered}",
         "originalBranch": "${setup.output.originalBranch}",
         "originalHead": "${setup.output.originalHead}"
       }
+    },
+    {
+      "name": "swarm_publish",
+      "taskReferenceName": "publish",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "target": "${intake.output.target}",
+        "publish": "${intake.output.publish}",
+        "repoPath": "${intake.output.repoPath}",
+        "branch": "${finish.output.branch}",
+        "head": "${finish.output.head}",
+        "delivered": "${finish.output.delivered}",
+        "workdir": "${setup.output.workdir}",
+        "base": "${setup.output.base}",
+        "assessment": "${workflow.variables.assessment}",
+        "spendUsd": "${workflow.variables.spentUsd}",
+        "rounds": "${rounds.output.iteration}"
+      }
+    },
+    {
+      "name": "swarm_ci",
+      "taskReferenceName": "ci",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "target": "${intake.output.target}",
+        "pullRequest": "${publish.output.pullRequest}",
+        "ciRounds": "${workflow.input.ciRounds}",
+        "ciRound": "${workflow.input.ciRound}",
+        "ceilingUsd": "${workflow.input.ceilingUsd}",
+        "spentUsd": "${workflow.variables.spentUsd}"
+      }
+    },
+    {
+      "name": "after_ci",
+      "taskReferenceName": "after_ci",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "next",
+      "inputParameters": {
+        "next": "${ci.output.next}"
+      },
+      "decisionCases": {
+        "ready": [
+          {
+            "name": "swarm_pr_ready",
+            "taskReferenceName": "pr_ready",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "target": "${intake.output.target}",
+              "pullRequest": "${publish.output.pullRequest}",
+              "ready": "${intake.output.ready}",
+              "commentOnIssue": "${workflow.input.commentOnIssue}",
+              "closesIssue": "${workflow.input.closesIssue}"
+            }
+          }
+        ],
+        "followup": [
+          {
+            "name": "swarm",
+            "taskReferenceName": "followup",
+            "type": "SUB_WORKFLOW",
+            "subWorkflowParam": {
+              "name": "swarm"
+            },
+            "inputParameters": {
+              "link": "${publish.output.pullRequest.url}",
+              "description": "${ci.output.request}",
+              "repoPath": "${intake.output.repoPath}",
+              "publish": "pr",
+              "ready": "${intake.output.ready}",
+              "ciRounds": "${workflow.input.ciRounds}",
+              "ciRound": "${ci.output.nextRound}",
+              "ceilingUsd": "${ci.output.remainingUsd}",
+              "maxRounds": "${workflow.input.maxRounds}",
+              "maxWidth": "${workflow.input.maxWidth}",
+              "commentOnIssue": "${workflow.input.commentOnIssue}",
+              "closesIssue": "${intake.output.target.number}",
+              "modelProfile": "${workflow.input.modelProfile}",
+              "modelPolicy": "${workflow.input.modelPolicy}",
+              "modelPolicySource": "${workflow.input.modelPolicySource}",
+              "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+              "modelsConfig": "${workflow.input.modelsConfig}",
+              "modelOverrides": "${workflow.input.modelOverrides}"
+            }
+          }
+        ]
+      },
+      "defaultCase": []
     }
   ],
   "outputParameters": {
@@ -361,7 +493,12 @@
     "head": "${finish.output.head}",
     "assessment": "${workflow.variables.assessment}",
     "spendUsd": "${workflow.variables.spentUsd}",
-    "rounds": "${rounds.output.iteration}"
+    "rounds": "${rounds.output.iteration}",
+    "pullRequest": "${publish.output.pullRequest}",
+    "ci": "${ci.output.state}",
+    "readyForReview": "${pr_ready.output.ready}",
+    "followUp": "${followup.output}",
+    "target": "${intake.output.target}"
   },
   "inputTemplate": {
     "maxRounds": 8,
@@ -373,6 +510,17 @@
     "modelPolicySha256": "",
     "modelsConfig": "",
     "modelOverrides": {},
-    "branchName": ""
+    "branchName": "",
+    "repoPath": "",
+    "description": "",
+    "link": "",
+    "base": "",
+    "publish": "",
+    "ready": "",
+    "ciRounds": 2,
+    "ciRound": 0,
+    "commentOnIssue": false,
+    "closesIssue": 0,
+    "permissionWaitMinutes": 0
   }
 }

@@ -248,7 +248,11 @@ h3{font-size:14px;font-weight:600;margin:0 0 10px}
 .failure pre{margin:8px 0 0;white-space:pre-wrap;font-family:var(--mono);font-size:12.5px;color:var(--ink);overflow-wrap:anywhere}
 .failure .d{color:var(--ink-2);font-size:14px}
 .result{margin-top:20px;border:1px solid var(--rule);border-left:3px solid var(--done);background:var(--sheet);border-radius:12px;padding:16px 18px}
-.result.merged{border-left-color:var(--accent)}.result.none{border-left-color:var(--queued)}
+.result.merged{border-left-color:var(--accent)}
+.perm{margin-top:20px;border:1px solid var(--rule);border-left:3px solid var(--accent);background:var(--sheet);border-radius:12px;padding:16px 18px}
+.perm h3{margin:0 0 6px;font-size:16px}.perm .req{border-top:1px solid var(--rule);padding:12px 0 4px}.perm .req:first-of-type{border-top:0}
+.perm .why{margin:4px 0 10px}.perm textarea{width:100%;min-height:44px;box-sizing:border-box;margin-bottom:8px;font:inherit}
+.perm .row{display:flex;flex-wrap:wrap;gap:8px}.perm .past{margin-top:10px;font-size:13px}.result.none{border-left-color:var(--queued)}
 .result h3{margin:0;font-size:16px;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .result h3 code{font-family:var(--mono);font-size:14px;font-weight:500;background:var(--sunk);border-radius:6px;padding:2px 8px;overflow-wrap:anywhere}
 .result .d{color:var(--ink-2);font-size:14px;margin-top:6px}
@@ -693,6 +697,7 @@ function renderRun(){
     </div>
     ${running && snap.phase ? `<div class="phase">${esc(capital(snap.phase))}</div>` : ""}
     ${brief && brief.length > (run.title||"").length + 4 ? `<details class="brief"><summary>Show the full brief</summary><div>${esc(brief)}</div></details>` : ""}
+    ${permissionPanel(v.permissions)}
     ${failurePanel(snap.failure, v.actions)}
     ${running ? "" : resultPanel(v.result)}
     ${architectPanel(v, running)}
@@ -712,6 +717,32 @@ function renderRun(){
 }
 const capital = s => s ? s[0].toUpperCase()+s.slice(1) : s;
 const plural = (n, w) => `${Number(n||0).toLocaleString()} ${w}${n===1?"":"s"}`;
+/* What the agents were refused and could not resolve: the run waits for an approver (a person here, or an
+   agent through POST /api/permissions/decide). docs/PERMISSIONS.md */
+const PERM_KIND = {write:"Write", network:"Reach", decision:"Decide"};
+function permissionPanel(p){
+  if(!p || !((p.pending||[]).length || (p.decided||[]).length)) return "";
+  const pend = (p.pending||[]).map(r=>`<div class="req">
+      <div><b>${PERM_KIND[r.kind]||esc(r.kind)}</b> <code>${esc(r.target)}</code> <span class="faint">asked by ${esc(r.by||"the architect")}, round ${esc(r.round)}</span></div>
+      <div class="d why">${esc(r.why||"")}</div>
+      <textarea id="note-${esc(r.id)}" placeholder="Note for the team (optional)"></textarea>
+      <div class="row">
+        <button class="btn primary sm" type="button" onclick="decidePerm('${esc(r.id)}','grant','run')">Allow for this run</button>
+        <button class="btn sm" type="button" onclick="decidePerm('${esc(r.id)}','grant','repository')">Always allow in this repository</button>
+        <button class="btn danger sm" type="button" onclick="decidePerm('${esc(r.id)}','deny','run')">Deny</button>
+      </div></div>`).join("");
+  const past = (p.decided||[]).slice(0,6).map(d=>`<div>${d.decision==="grant"?"Allowed":"Denied"} ${esc(PERM_KIND[d.kind]||d.kind).toLowerCase()} <code>${esc(d.target)}</code> by ${esc(d.by)}${d.note?": "+esc(d.note):""}</div>`).join("");
+  return `<div class="perm">
+    <h3>${(p.pending||[]).length ? `Waiting for approval (${p.pending.length})` : "Permission decisions"}</h3>
+    ${(p.pending||[]).length ? `<div class="d">The agents need something they are not allowed to do and stopped asking for it instead of retrying. The run continues once each request is decided.</div>` : ""}
+    ${pend}${past ? `<div class="past faint">${past}</div>` : ""}</div>`;
+}
+async function decidePerm(id, decision, scope){
+  const note = (document.getElementById("note-"+id)||{}).value || "";
+  const r = await write("/api/permissions/decide", {run: CURRENT, id, decision, scope, note});
+  toast(r.ok ? (decision==="grant" ? "Allowed; the run continues" : "Denied; the team finds another way") : (r.body.error || "Could not record the decision"));
+  if(r.ok) loadRun();
+}
 function resultPanel(r){
   if(!r) return "";
   if(r.error) return `<div class="result none"><h3>Where the work is</h3><div class="d">${esc(r.error)}</div></div>`;
@@ -722,7 +753,8 @@ function resultPanel(r){
   const delta = r.inPlace ? `Committed straight onto your branch in ${esc(r.repo)}.`
     : r.commits ? `${plural(r.commits,"commit")} over <span class="mono">${esc(r.base)}</span>: ${plural(r.files,"file")} changed, <span class="add">+${Number(r.insertions).toLocaleString()}</span> <span class="del">−${Number(r.deletions).toLocaleString()}</span>.`
     : `No commits over <span class="mono">${esc(r.base)}</span>; the run changed nothing.`;
-  const prLine = pr.url ? `<div class="d pr">Pull request <a href="${esc(pr.url)}" target="_blank" rel="noopener">#${esc(pr.number)}</a> is open against <span class="mono">${esc(r.prBase)}</span>.</div>`
+  const CI = {green:"its CI passes", red:"its CI fails", none:"the repository runs no CI on it", timeout:"its CI did not finish in time"};
+  const prLine = pr.url ? `<div class="d pr">Pull request <a href="${esc(pr.url)}" target="_blank" rel="noopener">#${esc(pr.number)}</a> is open against <span class="mono">${esc(r.prBase)}</span>${pr.draft?" as a draft":""}${CI[pr.ci]?"; "+CI[pr.ci]:""}.</div>`
     : pr.status==="RUNNING" ? `<div class="d pr">Pushing the branch and opening the pull request…</div>`
     : pr.status && pr.status!=="COMPLETED" ? `<div class="d pr">Opening the pull request ${esc(pr.status.toLowerCase())}: ${esc(pr.reason||"see the ship run")}.</div>`
     : pr.state && pr.state!=="published" ? `<div class="d pr">The pull request was not opened: ${esc(pr.reason||pr.state)}.</div>` : "";
