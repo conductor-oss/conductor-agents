@@ -65,3 +65,17 @@ def test_dependents_start_once_their_last_dependency_is_accepted_and_a_rejection
     assert held["dynamicTasks"] == [] and sorted(held["held"]) == ["docs", "ui"]
     board = tb.fold_board(run)["items"]
     assert board["ui"]["state"] == tb.BLOCKED and "api" in board["ui"]["reason"] and board["api"]["state"] == tb.REOPENED
+
+
+def test_a_core_item_goes_first_and_is_not_a_chain(tmp_path, monkeypatch, fake_task_input):
+    monkeypatch.setenv("SWARM_BLACKBOARD_DIR", str(tmp_path / "board"))
+    from common import git
+    from swarm import team
+    work = str(tmp_path / "clone")
+    git.ensure_ready(work)
+    items = [{**_it("core"), "core": True}, _it("pubsub"), _it("lists"), _it("lua", "lists")]
+    out = _dispatch(fake_task_input, "run-core", items, work)
+    assert [t["taskReferenceName"] for t in out["dynamicTasks"]] == ["item_core_r1"]
+    assert team.chain_problems(items) == []  # core -> lists -> lua is two items deep, not three
+    started = _release(fake_task_input, "run-core", items[0], work, True)["dynamicTasks"]
+    assert sorted(t["taskReferenceName"] for t in started) == ["item_lists_r1", "item_pubsub_r1"]

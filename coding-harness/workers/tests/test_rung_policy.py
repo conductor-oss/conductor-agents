@@ -279,3 +279,25 @@ def test_an_item_waiting_on_a_sibling_restarts_on_the_same_rung_when_the_sibling
     from swarm.tasks import REPORT_KIND
     first = [d["data"] for d in bb.read_facts(run, kind=REPORT_KIND) if d["data"]["item"] == "pubsub-cmds"][0]
     assert first["cause"] == "waiting"  # the ladder does not count it against rung 1
+
+
+def test_an_item_never_waits_on_an_item_that_is_itself_waiting(tmp_path, monkeypatch, fake_task_input):
+    monkeypatch.setenv("SWARM_BLACKBOARD_DIR", str(tmp_path / "board"))
+    from common import git
+    from swarm.tasks import swarm_dispatch, swarm_item_release
+    work = str(tmp_path / "clone")
+    git.ensure_ready(work)
+    run = "run-cycle"
+    items = [{"id": i, "title": i, "brief": i, "kind": "api", "rung": 0, "dependsOn": []}
+             for i in ("server-core", "admin-info", "admin-persist")]
+    swarm_dispatch(fake_task_input(items=items, round=1, runId=run, workdir=work, maxWidth=10))
+
+    def release(item, blocker):
+        return swarm_item_release(fake_task_input(
+            item=item, round=1, runId=run, workdir=work, rung=0, maxRung=2, reviewRung=0,
+            work={"status": "success", "structured": {"summary": "s", "done": False, "files": [], "blockers": [blocker]}},
+            review={"status": "success", "structured": {"accepted": True, "notes": "n", "fixed": []}})).output_data
+
+    assert release(items[1], "needs admin-persist's snapshot hook")["dynamicTasks"] == []  # waits on admin-persist
+    (_, inp), = release(items[2], "admin-info reads my counters")["dynamicTasksInput"].items()
+    assert inp["item"]["rung"] == 1  # admin-info is waiting: no cycle, an ordinary retry a rung up

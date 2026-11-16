@@ -29,7 +29,10 @@ ITEMS_SCHEMA = {
             # of the lead's files the lead hands to this item (swarm/team.py).
             "owns": {"type": "array", "items": {"type": "string"}},
             # The earlier items this one redoes or fixes: their reviews accepted work that was not finished.
-            "replaces": {"type": "array", "items": {"type": "string"}}},
+            "replaces": {"type": "array", "items": {"type": "string"}},
+            # The one small item that writes a compiled project's module file and shared core types: every other
+            # build item of its round waits for it (_dispatch).
+            "core": {"type": "boolean"}},
             "required": ["id", "title", "brief", "kind", "rung", "dependsOn"]}},
     },
     "required": ["items"],
@@ -501,6 +504,14 @@ def _dispatch(i: dict, items: list[dict], rnd: int, *, protect: bool) -> tuple[d
     width = max(int(i.get("maxWidth") or 10), 1)
     run = str(i.get("runId") or "")
     board_items = team_board.fold_board(run)["items"] if run else {}
+    # In a compiled language nothing builds before the module file and the shared core types exist: the plan's core
+    # item goes first and every other build item of the round waits for it (run 8b40c25c: 9 of 42 items started
+    # with no go.mod or internal/core, could not compile, and were reported unfinished).
+    cores = [x["id"] for x in items if x.get("core") is True and not team_mod.is_design(x)]
+    if cores:
+        items = [x if x["id"] in cores or team_mod.is_design(x)
+                 else {**x, "dependsOn": list(dict.fromkeys([str(d) for d in _list(x.get("dependsOn"))] + cores))}
+                 for x in items]
     deps, unstartable = _graph(items, board_items)
     items = _start_order(items, deps, team_mod)
     ctx = {k: i.get(k) for k in _CTX_KEYS}
@@ -977,9 +988,15 @@ def swarm_item_release(task):
         if cause == "not_accepted" and run and rnd >= 1 and not team_mod.is_design(it) and s.get("done") is False:
             g = (_round_facts(run, rnd, ROUND_KIND) or [{}])[-1]
             acc = {x.get("item") for x in _round_facts(run, rnd, REPORT_KIND) if x.get("accepted")}
-            waited = [w for w in _round_facts(run, rnd, WAIT_KIND) if w.get("item") == it["id"]]
+            waits = _round_facts(run, rnd, WAIT_KIND)
+            waited = [w for w in waits if w.get("item") == it["id"]]
+            # Never wait on an item that is itself waiting: two items naming each other would never restart (run
+            # 8b40c25c: admin-info and admin-persist each waited on the other, both really on server-core).
+            woke = {(w.get("item"), w.get("attempt")) for w in _round_facts(run, rnd, WAKE_KIND)}
+            asleep = {w.get("item") for w in waits if (w.get("item"), w.get("attempt")) not in woke}
             if len(waited) < MAX_ITEM_WAITS:
-                waits_on = _waits_on(it, s, [_mapping(x).get("id") for x in _list(g.get("items"))], acc)
+                waits_on = [x for x in _waits_on(it, s, [_mapping(x).get("id") for x in _list(g.get("items"))], acc)
+                            if x not in asleep]
             if waits_on:
                 cause = "waiting"  # not the agent's: no climb, and the ladder does not count it
         report = {"round": rnd, "item": it["id"], "kind": it.get("kind") or "item", "rung": int(i.get("rung") or 0),

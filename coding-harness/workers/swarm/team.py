@@ -297,7 +297,9 @@ def chain_problems(items: list[dict]) -> list[str]:
         best: list[str] = []
         for d in by_id.get(iid, {}).get("dependsOn") or []:
             d = str(d)
-            if d in by_id and d not in seen:
+            # The core item (the module file and shared types every item compiles against) is not part of a chain:
+            # it is small, goes first, and the harness makes every build item wait for it.
+            if d in by_id and d not in seen and by_id[d].get("core") is not True:
                 path = longest(d, seen | {d})
                 if len(path) > len(best):
                     best = path
