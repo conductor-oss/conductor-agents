@@ -137,3 +137,145 @@ def test_the_standup_dispatches_each_item_on_its_learned_rung_and_a_dead_session
     su = team_standup(fake_task_input(repoPath=shared, correlationId=cid, maxWidth=6)).output_data
     assert su["dynamicTasksInput"]["docs"]["modelTier"] == 0
     assert su["dynamicTasksInput"]["api"]["modelTier"] == 2
+
+
+# The swarm's adaptive loop (2026-11-16): a build item its review does not accept climbs a rung at once, inside
+# its round; the implementer's rung never starts below what history shows works; a reviewer whose accepted
+# item comes back under a new id learns from it.
+
+_LADDER = {"roles": {"code": {"tiers": [{"model": "s", "effort": "medium"}, {"model": "s", "effort": "high"},
+                                        {"model": "o", "effort": "high"}]}}}
+
+
+def _release(fake_task_input, work, item, *, rung, status="success", accepted=False, notes="the PING reply is wrong"):
+    from swarm.tasks import swarm_item_release
+    return swarm_item_release(fake_task_input(
+        item=item, round=1, runId="run-climb", workdir=work, rung=rung, maxRung=2, reviewRung=0,
+        work={"status": status, "error": "stream broke" if status != "success" else None,
+              "structured": {"summary": "built", "done": True, "files": ["a.go"]} if status == "success" else None},
+        review={"status": "success", "structured": {"accepted": accepted, "notes": notes, "fixed": []}})).output_data
+
+
+def test_a_rejected_build_item_climbs_a_rung_at_once_and_stops_after_two_reworks(tmp_path, monkeypatch,
+                                                                                 fake_task_input):
+    monkeypatch.setenv("SWARM_BLACKBOARD_DIR", str(tmp_path / "board"))
+    from common import git, team_board
+    work = str(tmp_path / "clone")
+    git.ensure_ready(work)
+    item = {"id": "ping", "title": "PING", "brief": "reply PONG", "kind": "api", "rung": 0, "dependsOn": []}
+    (ref, inp), = _release(fake_task_input, work, item, rung=0)["dynamicTasksInput"].items()
+    assert ref.endswith("_rework1") and inp["item"]["rung"] == 1 and inp["item"]["attempt"] == 2
+    assert "the PING reply is wrong" in inp["item"]["brief"]
+    assert team_board.fold_board("run-climb")["items"]["ping"]["state"] == team_board.IN_PROGRESS
+    (ref2, inp2), = _release(fake_task_input, work, inp["item"], rung=1)["dynamicTasksInput"].items()
+    assert ref2.endswith("_rework2") and inp2["item"]["rung"] == 2
+    assert inp2["item"]["brief"].count("YOUR LAST ATTEMPT WAS NOT ACCEPTED") == 1
+    assert _release(fake_task_input, work, inp2["item"], rung=2)["dynamicTasks"] == []  # the round review has it
+
+
+def test_a_session_that_never_ran_retries_on_the_same_rung(tmp_path, monkeypatch, fake_task_input):
+    monkeypatch.setenv("SWARM_BLACKBOARD_DIR", str(tmp_path / "board"))
+    from common import git
+    work = str(tmp_path / "clone")
+    git.ensure_ready(work)
+    item = {"id": "ping", "title": "PING", "brief": "b", "kind": "api", "rung": 1, "dependsOn": []}
+    (_, inp), = _release(fake_task_input, work, item, rung=1, status="sdk_error")["dynamicTasksInput"].items()
+    assert inp["item"]["rung"] == 1 and "agent_unavailable" in inp["item"]["brief"]
+
+
+def test_the_implementer_starts_no_lower_than_history_shows_works(tmp_path, monkeypatch, fake_task_input):
+    monkeypatch.setenv("SWARM_BLACKBOARD_DIR", str(tmp_path / "board"))
+    from common import git
+    from swarm.tasks import swarm_item_prep
+    work = str(tmp_path / "clone")
+    git.ensure_ready(work)
+    key = rp.repo_key(work)
+    rp.record(key, role="code", kind="api", rung=0, ok=False, cause="not_accepted")
+    rp.record(key, role="code", kind="ui", rung=0, ok=False, cause="agent_unavailable")  # not the agent's
+    item = {"id": "ping", "title": "PING", "brief": "b", "kind": "api", "rung": 0, "dependsOn": []}
+    out = swarm_item_prep(fake_task_input(item=item, round=1, runId="r", workdir=work, repoPath=work,
+                                          modelResolution=_LADDER)).output_data
+    assert out["rung"] == 1 and "raised from the architect's rung 0" in out["rungReason"]
+    ui = swarm_item_prep(fake_task_input(item={**item, "kind": "ui"}, round=1, runId="r", workdir=work, repoPath=work,
+                                         modelResolution=_LADDER)).output_data
+    assert ui["rung"] == 0
+    high = swarm_item_prep(fake_task_input(item={**item, "rung": 2}, round=1, runId="r", workdir=work, repoPath=work,
+                                           modelResolution=_LADDER)).output_data
+    assert high["rung"] == 2  # the architect may start it higher
+
+
+def test_a_reviewer_whose_accepted_item_is_replaced_learns_it_missed(tmp_path, monkeypatch, fake_task_input):
+    monkeypatch.setenv("SWARM_BLACKBOARD_DIR", str(tmp_path / "board"))
+    from common import blackboard as bb, git
+    from swarm.tasks import REPORT_KIND, swarm_round
+    work = str(tmp_path / "clone")
+    git.ensure_ready(work)
+    for iid in ("ping", "echo"):
+        bb.post_fact("run-rv", "harness", REPORT_KIND, {"round": 1, "item": iid, "kind": "api", "rung": 0,
+                                                        "reviewRung": 0, "accepted": True, "reviewAccepted": True,
+                                                        "done": True})
+    swarm_round(fake_task_input(runId="run-rv", round=1, workdir=work, repoPath=work, allGreen=False,
+                                roundReviewRung=0,
+                                evaluation={"structured": {"delivered": False, "assessment": "PING is wrong",
+                                                           "items": [{"id": "fix-ping", "title": "t", "brief": "b",
+                                                                      "kind": "api", "rung": 1, "dependsOn": [],
+                                                                      "replaces": ["ping"]}]}}))
+    rows = {r["item"]: r["ok"] for r in rp.history(rp.repo_key(work), role="review", kind="api")}
+    assert rows == {"ping": False, "echo": True}
+
+
+def test_an_item_its_agent_did_not_finish_is_reworked_even_when_its_review_accepted(tmp_path, monkeypatch,
+                                                                                    fake_task_input):
+    monkeypatch.setenv("SWARM_BLACKBOARD_DIR", str(tmp_path / "board"))
+    from common import git
+    from swarm.tasks import swarm_item_release
+    work = str(tmp_path / "clone")
+    git.ensure_ready(work)
+    item = {"id": "render", "title": "render", "brief": "b", "kind": "report", "rung": 0, "dependsOn": []}
+
+    def release(structured):
+        return swarm_item_release(fake_task_input(
+            item=item, round=1, runId="run-nd", workdir=work, rung=0, maxRung=2, reviewRung=0,
+            work={"status": "success", "structured": structured},
+            review={"status": "success", "structured": {"accepted": True, "notes": "reads fine", "fixed": []}})).output_data
+
+    out = release({"summary": "wrote render.py", "done": False, "files": ["render.py"],
+                   "blockers": ["fonts.py is not on disk yet"]})
+    (_, inp), = out["dynamicTasksInput"].items()
+    assert out["accepted"] is False and inp["item"]["rung"] == 1 and "fonts.py is not on disk yet" in inp["item"]["brief"]
+    # Refused by the sandbox: an approver decides; no rework and no climb.
+    held = release({"summary": "fonts not vendored", "done": False, "files": [],
+                    "permissions": [{"kind": "network", "target": "github.com", "why": "DejaVu fonts"}]})
+    assert held["accepted"] is False and held["dynamicTasks"] == []
+
+
+def test_an_item_waiting_on_a_sibling_restarts_on_the_same_rung_when_the_sibling_lands(tmp_path, monkeypatch,
+                                                                                       fake_task_input):
+    monkeypatch.setenv("SWARM_BLACKBOARD_DIR", str(tmp_path / "board"))
+    from common import git, team_board
+    from swarm.tasks import swarm_dispatch, swarm_item_release
+    work = str(tmp_path / "clone")
+    git.ensure_ready(work)
+    run = "run-wait"
+    items = [{"id": i, "title": i, "brief": i, "kind": "api", "rung": 0, "dependsOn": []}
+             for i in ("core-server", "pubsub-cmds")]
+    swarm_dispatch(fake_task_input(items=items, round=1, runId=run, workdir=work, maxWidth=10))
+
+    def release(item, structured, accepted):
+        return swarm_item_release(fake_task_input(
+            item=item, round=1, runId=run, workdir=work, rung=1, maxRung=2, reviewRung=0,
+            work={"status": "success", "structured": structured},
+            review={"status": "success", "structured": {"accepted": accepted, "notes": "n", "fixed": []}})).output_data
+
+    waiting = release(items[1], {"summary": "pubsub.go written", "done": False, "files": ["pubsub.go"],
+                                 "blockers": ["internal/server does not compile until core-server lands NotifyKey"]}, True)
+    assert waiting["dynamicTasks"] == []  # no climb, no retry yet: it waits
+    assert team_board.fold_board(run)["items"]["pubsub-cmds"]["state"] == team_board.BLOCKED
+    landed = release(items[0], {"summary": "server", "done": True, "files": ["server.go"]}, True)
+    (ref, inp), = landed["dynamicTasksInput"].items()
+    assert ref.endswith("_wake2") and inp["item"]["rung"] == 1 and "WHAT YOU WAITED FOR HAS LANDED (core-server" in inp["item"]["brief"]
+    assert release(items[0], {"summary": "server", "done": True, "files": ["server.go"]}, True)["dynamicTasks"] == []  # once
+    from common import blackboard as bb
+    from swarm.tasks import REPORT_KIND
+    first = [d["data"] for d in bb.read_facts(run, kind=REPORT_KIND) if d["data"]["item"] == "pubsub-cmds"][0]
+    assert first["cause"] == "waiting"  # the ladder does not count it against rung 1

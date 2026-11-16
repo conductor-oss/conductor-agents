@@ -34,11 +34,21 @@ ROLES = {
     "swarm_plan": "architect (planning)", "swarm_evaluate": "architect (reviewing the round)",
     "swarm_work": "implementer", "swarm_review_item": "reviewer (item)",
     "swarm_author_check": "check author", "swarm_author_adapter": "adapter author",
+    "swarm_verify": "verifier", "swarm_rule": "architect (ruling on verification)",
+    "swarm_design": "architect (designing one subsystem)",
+    "swarm_kickoff": "lead architect (splitting the system into subsystems)",
+    "swarm_review_design": "lead architect (quick review of the designs for gaps)",
 }
 # Steps whose reference names say what they are, for the timeline's labels.
 _STEP_LABELS = (
     # The swarm's harness steps, in what-it-is-doing words.
     ("setup", "preparing the run's clone"), ("seed_round", "starting round 1"), ("dispatch", "dispatching the round"),
+    ("design_review", "lead architect: quick review of the designs for gaps"),
+    ("gap_dispatch", "starting gap-filler architects"), ("gaps_join", "waiting for the gap-fillers"),
+    ("lead_plan", "the lead's plan"), ("lead_step", "lead architect"),
+    ("verify_fork", "starting the verifiers"), ("verifiers_join", "waiting for the verifiers"), ("verify_", "verifier"),
+    ("gate_apply", "applying the architect's rulings"), ("gate_switch", "verification gate"),
+    ("rule_switch", "verification rulings"),
     ("work_join", "waiting for the round's agents"), ("fold", "collecting the round"),
     ("measure", "running the checks on the committed tree"), ("decide", "committing and deciding"),
     ("finish", "handing the branch back"), ("prep", "preparing the item"),
@@ -94,6 +104,8 @@ def _status(t: dict) -> str:
 
 def _label(ref: str, kind: str) -> str:
     base = ref.split("__")[0]
+    if base == "gate":  # the swarm's gate; other workflows have gate_* steps of their own
+        return "reproducing the verifiers' findings"
     for prefix, label in _STEP_LABELS:
         if base.startswith(prefix):
             return label
@@ -104,7 +116,9 @@ def _session(t: dict, *, run: str, item_hint: str) -> dict:
     i, o = t.get("inputData") or {}, t.get("outputData") or {}
     key = str(i.get("templateKey") or "")
     ref = str(t.get("referenceTaskName") or "")
-    role = ROLES.get(key) or ROLES.get(ref.split("__")[0]) or (("scout " + ref.replace("scout_", "")) if ref.startswith("scout_") else "") \
+    # The lead's step after a design team integrates the team's designs; the same prompt plans alone without one.
+    role = ("lead architect (quick review of the designs for gaps)" if ref.split("__")[0] == "design_review" else "") \
+        or ROLES.get(key) or ROLES.get(ref.split("__")[0]) or (("scout " + ref.replace("scout_", "")) if ref.startswith("scout_") else "") \
         or _label(ref, "coding_agent")
     ctx = i.get("promptContext") if isinstance(i.get("promptContext"), dict) else {}
     item = str(i.get("feedbackItem") or ctx.get("item") or item_hint or "")

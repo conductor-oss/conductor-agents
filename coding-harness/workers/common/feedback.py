@@ -108,6 +108,38 @@ class FeedbackWatcher:
     def active(self) -> bool:
         return bool((self.cid and self.item and self.every) or (self.checkpoint_every and self.worktree))
 
+    # A stopped run stops its agents: a session whose run is no longer running gets a blocking stop at its next
+    # step (run d1c2fb15 was stopped from the console and two of its architects kept working, and spending,
+    # for minutes). The run's status is read at most this often.
+    RUN_STATUS_INTERVAL_S = 15.0
+    RUN_STOP_KEY = "harness:run-stopped"
+
+    def _run_status(self) -> str:
+        now = time.time()
+        if now - getattr(self, "_status_ts", 0.0) < self.RUN_STATUS_INTERVAL_S:
+            return getattr(self, "_status", "")
+        self._status_ts = now
+        try:
+            import json as _json
+            import os as _os
+            import urllib.request
+            server = _os.environ.get("CONDUCTOR_SERVER_URL", "http://localhost:8080/api").rstrip("/")
+            with urllib.request.urlopen(f"{server}/workflow/{self.run}?includeTasks=false", timeout=None) as r:
+                self._status = str(_json.load(r).get("status") or "")
+        except Exception:  # noqa: BLE001 - an unreadable status never stops a session
+            self._status = getattr(self, "_status", "")
+        return self._status
+
+    def _stop_directive(self) -> list:
+        """The run's own stop, as a blocking directive for this item, once the run is no longer running."""
+        if not self.run or self._read is not None or self.RUN_STOP_KEY in self.seen:
+            return []
+        status = self._run_status()
+        if status in ("", "RUNNING", "PAUSED"):
+            return []
+        return [{"key": self.RUN_STOP_KEY, "text": f"The run is {status.lower()}: stop now, do nothing more.",
+                 "by": "harness", "authority": "harness", "ts": time.time(), "blocking": True}]
+
     def _facts(self) -> list:
         if self._read is not None:
             return self._read(self.cid)
@@ -156,10 +188,21 @@ class FeedbackWatcher:
         except Exception:  # noqa: BLE001 - the channel never costs the session
             return []
 
+    def _stopped(self) -> dict | None:
+        stop = self._stop_directive()
+        if not stop:
+            return None
+        self.seen.add(self.RUN_STOP_KEY)
+        self.interrupted_by = {"key": stop[0]["key"], "text": stop[0]["text"], "by": "harness"}
+        return stop[0]
+
     def poll_text(self) -> tuple[str, bool]:
         """Hook-free poll for drivers without tool hooks (Codex steers a running turn): the text to hand
         the session now and whether it is blocking. ("", False) when nothing is new."""
         self.calls += 1
+        stop = self._stopped()
+        if stop:
+            return stop["text"], True
         peers = self._channel()
         picked = select(self._facts(), self.item, since_ts=self.since, seen=self.seen,
                         extra_targets=self._extra_targets()) if (self.cid and self.item) \
@@ -187,6 +230,10 @@ class FeedbackWatcher:
             snap = checkpoint(self.worktree, label=f"tool call {self.calls}")
             if snap:
                 self.checkpoints.append({"call": self.calls, **snap})
+        stop = self._stopped()
+        if stop:
+            return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": stop["text"]},
+                    "continue_": False, "stopReason": stop["text"]}
         if not (self.cid and self.item and self.every) or self.calls % self.every:
             return {}
         peers = self._channel()

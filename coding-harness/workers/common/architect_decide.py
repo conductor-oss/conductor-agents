@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import logging
 import time
 
 log = logging.getLogger("coding-harness.workers.architect_decide")
 
+CHECK_ROOTS = (".cc/checks", ".cc/checks.json", ".cc/design.md")
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -52,10 +54,23 @@ def decide(req: dict, *, inputs: dict, worktree: str) -> dict:
     try:
         from common import budget_gate, cost
         tier, resolution = select_role_tier(inputs, role="plan", worktree=worktree)
+        # The architect may fix the checks and the contract itself: ruling a check defective and leaving it for
+        # nobody to fix (only the lead may change them) sent a whole round of agents into working around it while
+        # it kept failing (run f1115a84).
+        from swarm import team as team_mod
+        before = {rel: team_mod._sha(os.path.join(worktree, rel)) for rel in team_mod._protected_files(worktree)}
+        tools = ["Read", "Grep", "Glob", "Edit", "Write", "Bash"]
         with cost.using_prices(resolution.get("prices")):
             res = asyncio.run(run_coding_agent(prompt, worktree=worktree, model=tier.get("model") or None,
-                                               tools=["Read", "Grep", "Glob"], allowed_tools=["Read", "Grep", "Glob"],
-                                               max_turns=12, max_budget_usd=1.0, output_schema=SCHEMA))
+                                               tools=tools, allowed_tools=tools, write_roots=list(CHECK_ROOTS),
+                                               max_turns=25, max_budget_usd=2.0, output_schema=SCHEMA))
+        after = {rel: team_mod._sha(os.path.join(worktree, rel)) for rel in team_mod._protected_files(worktree)}
+        fixed = sorted(rel for rel in set(before) | set(after) if before.get(rel) != after.get(rel))
+        if fixed:
+            team_mod.adopt(worktree, fixed)
+            bb.post_fact(run, "architect", "directive", {
+                "target": "run", "by": "architect", "urgency": "advisory",
+                "text": "ARCHITECT FIXED: " + ", ".join(fixed) + ". Run the checks that drive your part again once."})
         # The decision is a session like any other: its spend is the run's (it went unrecorded, run c5fbbe5b).
         try:
             budget_gate.record_spend(str(inputs.get("spendRunId") or run), "architect:decision",

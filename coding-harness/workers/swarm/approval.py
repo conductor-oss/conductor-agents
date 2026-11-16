@@ -62,3 +62,61 @@ def swarm_permissions(task):
         return fail(task, "swarm_permissions", e)
     finally:
         reporter.stop()
+
+
+@worker_task(task_definition_name="swarm_host_check")
+def swarm_host_check(task):
+    """Right after planning: record the run's platform packs (the lead's declaration plus what the tree shows,
+    common/stacks.py) and check this host has their tools. A missing toolchain (no Xcode for an iOS app) is not
+    found half an hour into the build: the run asks an approver to install it and waits, then checks again."""
+    from common import stacks
+    i = task.input_data or {}
+    run, work = str(i.get("runId") or ""), str(i.get("workdir") or ".")
+    from common.progress import ProgressReporter
+    reporter = ProgressReporter(task, heartbeat_s=15.0).start()
+    try:
+        declared = [str(x) for x in (_list_of(i.get("planStacks")) + _list_of(i.get("kickoffStacks")))]
+        packs = stacks.record(work, declared)
+        missing = stacks.missing_tools(packs)
+        started, asked = time.monotonic(), 0
+        wait_s = float(i.get("waitMinutes") or 0) * 60
+        while missing and run:
+            req = stacks.setup_request(missing)
+            permissions.submit(run, 0, [req], workdir=work,
+                                           repo_key=repo_key(i.get("target"), str(i.get("repoPath") or "")),
+                                           by="harness:host-check")
+            asked += 1
+            rid = permissions.request_id(req["kind"], req["target"])
+            while permissions.pending(run) and rid not in permissions.decisions(run) and (
+                    not wait_s or time.monotonic() - started < wait_s):
+                reporter.update({"progress": "waiting for the host to be set up: " + "; ".join(missing)})
+                time.sleep(POLL_S)
+            decision = permissions.decisions(run).get(rid) or {}
+            if decision.get("decision") != "grant" or (wait_s and time.monotonic() - started >= wait_s):
+                break  # denied (or the wait ran out): build without them; the board says what is missing
+            missing = stacks.missing_tools(packs)  # granted: someone set the host up; look again
+        if missing and run:
+            from common import team_board
+            team_board.post_lesson(run, "harness", "THIS HOST LACKS: " + "; ".join(missing) + ". Do not try to install "
+                                   "them; build what you can and say which checks cannot run here.", confidence="high")
+        return ok(task, {"stacks": packs, "missing": missing, "asked": asked,
+                         "waitedSeconds": round(time.monotonic() - started)},
+                  [f"[swarm_host_check] stacks {', '.join(packs) or 'none'}; "
+                   + (f"MISSING: {'; '.join(missing)}" if missing else "the host has every tool they need")])
+    except Exception as e:  # noqa: BLE001
+        return fail(task, "swarm_host_check", e)
+    finally:
+        reporter.stop()
+
+
+def _list_of(value) -> list:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip().startswith("["):
+        try:
+            import json as _json
+            got = _json.loads(value)
+            return got if isinstance(got, list) else []
+        except ValueError:
+            return []
+    return []

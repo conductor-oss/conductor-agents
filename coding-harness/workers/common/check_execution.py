@@ -224,6 +224,8 @@ class CommandResult:
     output_truncated: bool = False
     # Stopped by the progress rule (``stall_after_s``): no output and next to no CPU for the window.
     stalled: bool = False
+    # Stopped past its expected duration (``expected_s``): far longer than this command usually takes.
+    overran: bool = False
 
     @property
     def passed(self) -> bool:
@@ -398,6 +400,31 @@ def _cpu_seconds(pids: list[int]) -> float:
 STALL_CPU_SHARE = 0.02
 
 
+def _stop_group(proc: subprocess.Popen, marker: str) -> None:
+    """Stop ``proc`` and everything it started: TERM, then KILL whatever ignores it."""
+    if marker:
+        reap_marked(marker)  # wherever it moved
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig) if os.name == "posix" else proc.kill()
+        except OSError:
+            pass
+        waited = 0
+        while proc.poll() is None and waited < 50:
+            time.sleep(0.1)
+            waited += 1
+        if proc.poll() is not None:
+            break
+
+
+def _watch_budget(proc: subprocess.Popen, marker: str, expected_s: float, overran: threading.Event,
+                  done: threading.Event) -> None:
+    """Stop ``proc`` and everything it started once it runs past ``expected_s``."""
+    if not done.wait(expected_s):
+        overran.set()
+        _stop_group(proc, marker)
+
+
 def _watch_progress(proc: subprocess.Popen, marker: str, streams: list, stall_after_s: float,
                     stalled: threading.Event, done: threading.Event) -> None:
     """Stop ``proc`` and everything it started once it has made no progress for ``stall_after_s``."""
@@ -414,19 +441,7 @@ def _watch_progress(proc: subprocess.Popen, marker: str, streams: list, stall_af
             continue
         if time.monotonic() - window_start >= stall_after_s:
             stalled.set()
-            if marker:
-                reap_marked(marker)  # TERM, then KILL whatever ignores it, wherever it moved
-            for sig in (signal.SIGTERM, signal.SIGKILL):
-                try:
-                    os.killpg(proc.pid, sig) if os.name == "posix" else proc.kill()
-                except OSError:
-                    pass
-                waited = 0
-                while proc.poll() is None and waited < 50:
-                    time.sleep(0.1)
-                    waited += 1
-                if proc.poll() is not None:
-                    break
+            _stop_group(proc, marker)
             return
 
 
@@ -547,6 +562,7 @@ def execute(
     capture_limit: int | None = _MAX_CAPTURE_CHARS,
     reap_escaped: bool = True,
     stall_after_s: float | None = None,
+    expected_s: float | None = None,
 ) -> CommandResult:
     """Run one trusted check until completion or explicit cancellation.
 
@@ -561,7 +577,12 @@ def execute(
     ``stall_after_s`` applies the progress rule: the command (and everything it started) is stopped and
     reported ``stalled`` once it has written no output and used next to no CPU for that long. It is
     never a limit on how long working code may run; it is for commands an agent wrote, which the
-    harness must not wait on forever when they block (``swarm_measure``)."""
+    harness must not wait on forever when they block (``swarm_measure``).
+
+    ``expected_s`` is how long this command may take given how long it has taken before (a multiple of its
+    own history, never a fixed number for every command): past it the command and everything it started
+    are stopped and reported ``overran``. A check that usually takes seconds and is still running minutes
+    later is hung; one that usually takes minutes gets minutes. Without history there is none."""
     started = time.monotonic()
     marker = ""
     if reap_escaped:
@@ -591,7 +612,10 @@ def execute(
     stderr_stream = _BoundedStream(proc.stderr, capture_limit)
     stdout_stream.start()
     stderr_stream.start()
-    stalled, finished = threading.Event(), threading.Event()
+    stalled, finished, overran = threading.Event(), threading.Event(), threading.Event()
+    if expected_s:
+        threading.Thread(target=_watch_budget, daemon=True,
+                         args=(proc, marker, float(expected_s), overran, finished)).start()
     if stall_after_s:
         threading.Thread(target=_watch_progress, daemon=True,
                          args=(proc, marker, [stdout_stream, stderr_stream], float(stall_after_s),
@@ -607,10 +631,15 @@ def execute(
             stderr += (f"\n[harness] stopped: no output and next to no CPU for {float(stall_after_s):.0f} s "
                        "(the command and everything it started were idle; it was waiting on something "
                        "that never came)\n")
-        return CommandResult(argv, (proc.returncode or 0) if not stalled.is_set() else (proc.returncode or 1),
+        elif overran.is_set():
+            stderr += (f"\n[harness] stopped after {float(expected_s):.0f} s, far past how long this command has "
+                       "taken before: it is hung (a server, socket or child it never closed, a port another run "
+                       "holds, a wait with no bound), not slow\n")
+        stopped = stalled.is_set() or overran.is_set()
+        return CommandResult(argv, (proc.returncode or 0) if not stopped else (proc.returncode or 1),
                              stdout, stderr, round(time.monotonic() - started, 3),
                              output_truncated=stdout_stream.truncated or stderr_stream.truncated,
-                             stalled=stalled.is_set())
+                             stalled=stalled.is_set(), overran=overran.is_set())
     except KeyboardInterrupt:
         finished.set()
         _terminate_process_group(proc)

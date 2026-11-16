@@ -128,6 +128,13 @@ def test_every_production_subprocess_uses_a_shared_runtime_environment():
         # The conformance adapter answers one JSON line per step of every trace for a whole replay: a
         # long-running interactive process, started with the inherited runtime environment.
         root / "common" / "conformance.py",
+        # The test-runner wrapper agents run inside their own sandbox (its script text launches the agent's
+        # own test command, in the agent's environment); the harness itself launches nothing from it.
+        root / "common" / "test_budget.py",
+        # The host's device service (iOS simulator, Android emulator, Electron) and an emulator it starts for one
+        # job both outlive the call that started them: detached Popens with the inherited runtime environment; its
+        # short host commands go through exec.run.
+        root / "common" / "device_service.py",
     }
     direct_launchers = []
     for source in root.rglob("*.py"):

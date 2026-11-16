@@ -371,6 +371,21 @@ def _r_swarm(o: dict) -> ResultCard:
         rows.append(("design", ", ".join(map(str, docs)) or "none"))
     if isinstance(o.get("skills"), list):
         rows.append(("skills", ", ".join(map(str, o["skills"])) or "none"))
+    ph = o.get("phases") if isinstance(o.get("phases"), list) else []
+    if ph:
+        rows.append(("time", "; ".join(f"{p.get('phase')} {float(p.get('minutes') or 0):.1f} min"
+                                       + (f" (waited on {p.get('waitedOn')}, {float(p.get('waitedOnMinutes') or 0):.1f})"
+                                          if p.get("waitedOn") else "") for p in ph if isinstance(p, dict))))
+    tt = o.get("testTime") if isinstance(o.get("testTime"), dict) else {}
+    if tt.get("runs") or tt.get("reused"):
+        rows.append(("test runs", f"{tt.get('runs', 0)} by agents, {float(tt.get('seconds') or 0):.0f} s; "
+                                  f"{tt.get('reused', 0)} reused (tree unchanged); {tt.get('stopped', 0)} stopped as hung"))
+    ver = o.get("verification") if isinstance(o.get("verification"), dict) else {}
+    if ver.get("focuses"):
+        c = ver.get("counts") if isinstance(ver.get("counts"), dict) else {}
+        rows.append(("verification", f"{', '.join(map(str, ver['focuses']))}: {c.get('blocking', 0)} reproduced, "
+                                     f"{len(ver.get('fixed') or [])} fixed, {len(ver.get('followUps') or [])} follow-up(s), "
+                                     f"{c.get('dropped', 0)} dropped"))
     pr = o.get("pullRequest") if isinstance(o.get("pullRequest"), dict) else {}
     if pr.get("url"):
         rows.append(("pull request", str(pr["url"])))
@@ -645,6 +660,12 @@ CATALOG: dict[str, WorkflowSpec] = {
             Field("skills", "Skills", "text", "", advanced=True,
                   help="blank or all: every installed skill, for every agent (Claude, Codex, Gemini); none; "
                   "or names, comma-separated"),
+            Field("architects", "Architects", "text", "auto", advanced=True,
+                  help="auto: the lead architect decides whether to hand deep parts' designs to designers (none for "
+                  "a small change); 1: the lead alone; N: the lead and at most N-1 designers"),
+            Field("verifiers", "Verifiers", "text", "auto", advanced=True,
+                  help="auto: the lead picks independent verifiers for the green build (none for a small change); "
+                  "0: off; N: that many (at most 4); only what the harness reproduces can block delivery"),
             Field("publishHarnessFiles", "Include the harness's files (.cc/) in the pull request", "bool", False,
                   advanced=True, help="off: the pull request carries only the project's own changes"),
             Field("publish", "Publish", "enum", "", choices=("", "pr", "branch", "none"), advanced=True,

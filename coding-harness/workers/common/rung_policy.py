@@ -24,7 +24,8 @@ OUTCOME_RUN = "_rung_outcomes"
 OUTCOME_KIND = "rung_outcome"
 
 # Reasons an item is reopened that no stronger agent can fix: they retry on the same rung.
-INFRA_CAUSES = frozenset({"agent_unavailable", "audit_unavailable", "staging_fault", "reviewer_unavailable"})
+INFRA_CAUSES = frozenset({"agent_unavailable", "audit_unavailable", "staging_fault", "reviewer_unavailable",
+                          "cap_reached", "interrupted", "needs_permission", "waiting"})
 
 # After this many successes on a rung since the rung below last failed, the rung below is probed again:
 # the code, the prompts or the models may have changed since.
@@ -82,7 +83,7 @@ def history(repo: str, *, role: str, kind: str, backend=None) -> list[dict]:
     rows = []
     for f in bb.read_facts(OUTCOME_RUN, kind=OUTCOME_KIND, backend=backend):
         d = f.get("data") or {}
-        if d.get("repo") == repo and d.get("role") == role and d.get("kind") == kind:
+        if d.get("repo") == repo and d.get("role") == role and d.get("kind") == kind and agent_fixable(d.get("cause")):
             rows.append({**d, "ts": f.get("ts") or 0})
     return sorted(rows, key=lambda r: r["ts"])
 

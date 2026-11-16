@@ -79,8 +79,8 @@ def merge_checks(existing: list[dict], plan: dict) -> list[dict]:
     planned = [c for c in plan.get("checks") or [] if isinstance(c, dict) and c.get("id") and c.get("command")]
     ids = {str(c["id"]) for c in planned}
     keep = [c for c in existing if str(c["id"]) not in retired and str(c["id"]) not in ids]
-    return [{"id": str(c["id"]), "command": str(c["command"]), "covers": list(c.get("covers") or [])}
-            for c in keep + planned]
+    return [{"id": str(c["id"]), "command": str(c["command"]), "covers": list(c.get("covers") or []),
+             **({"smoke": True} if c.get("smoke") else {})} for c in keep + planned]
 
 
 def design_docs(work: str) -> list[str]:
@@ -174,7 +174,18 @@ def plan_guide(specs: str, design: str, have: str, checks: list[dict], docs: lis
                    "or that this request changes (same `id` to replace one); put the ids of checks this request makes "
                    "wrong or obsolete in `retireChecks`." if checks else
                    "The repository has no acceptance checks yet.")
-    return {"specGuide": spec, "designGuide": guide + existing_docs, "existingChecks": have_checks}
+    existing = ""
+    if docs or checks:
+        existing = ("THIS REPOSITORY ALREADY HAS " + (f"a design ({', '.join(f'`{d}`' for d in docs[:20])})" if docs else "no design")
+                    + f" and {len(checks)} acceptance check(s) from earlier runs, which stay and run every round. A team "
+                    "designs only what this request ADDS OR CHANGES: list in `parts` only the subsystems whose design must "
+                    "change, each architect revising its part's existing document. When the request continues or finishes "
+                    "work the existing design already covers (a follow-up, a retry, \"finish what is left\"), return `team` "
+                    "false: you plan alone, from that design and from which checks fail (below). Never "
+                    "re-design or re-propose what exists (a follow-up that re-designed six existing parts and re-authored all "
+                    "30 existing checks spent 30 minutes before building anything, run 0a717ffe).")
+    return {"specGuide": spec, "designGuide": guide + existing_docs, "existingChecks": have_checks,
+            "kickoffExisting": existing}
 
 
 # ─────────────────────────────── the gate after planning ───────────────────────────────
@@ -200,7 +211,11 @@ def gate(work: str, plan: dict, specs: str, design: str, have: str) -> dict:
     if design == "none":
         docs = []
     else:
-        missing = [p for p in docs if not os.path.isfile(os.path.join(work, p))]
+        # A part's document a design item owns is written by its designer after the plan (swarm/team.py).
+        delegated = {p for it in plan.get("items") or [] if isinstance(it, dict)
+                     and str(it.get("kind") or "").strip().lower() == "design"
+                     for p in (it.get("owns") or []) if str(p).endswith(".md")}
+        missing = [p for p in docs if not os.path.isfile(os.path.join(work, p)) and p not in delegated]
         if missing:
             problems.append("These design documents are named in `design.docs` but are not in the tree: "
                             + ", ".join(missing))

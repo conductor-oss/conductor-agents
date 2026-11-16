@@ -32,6 +32,7 @@ import contextvars
 import functools
 import logging
 import os
+import time
 from typing import Any
 
 from common.tool_policy import DEFAULT_ALLOWED_TOOLS, DEFAULT_DISALLOWED_TOOLS
@@ -232,9 +233,13 @@ def _tool_cache_env(worktree_abs: str) -> dict[str, str]:
     git.exclude_generated(worktree_abs)
     # The browser is a host service over loopback (common/browser_service): the sandbox cannot launch
     # one, so a scenario connects to it instead and the implementer runs the check itself.
-    from . import browser_service, team_channel
+    from . import browser_service, device_service, stacks, team_channel
     team_channel.install_client(worktree_abs)
-    return {"GOCACHE": os.path.join(cache, "go-build"), "GOTMPDIR": os.path.join(cache, "tmp"),
+    # Each platform pack's caches (common/stacks.py) for the packs this run uses: the sandbox writes only in the tree.
+    # An app checked on a device (iOS simulator, Android emulator, Electron) gets the host's device service.
+    packs = stacks.chosen(worktree_abs) or stacks.detect(worktree_abs)
+    pack_env = {**stacks.cache_env(cache, packs), **device_service.ensure(worktree_abs, packs)}
+    return {**pack_env, "GOCACHE": os.path.join(cache, "go-build"), "GOTMPDIR": os.path.join(cache, "tmp"),
             "npm_config_cache": os.path.join(cache, "npm"), "PIP_CACHE_DIR": os.path.join(cache, "pip"),
             "PYTHONDONTWRITEBYTECODE": "1", "CI": "1",
             "MAVEN_OPTS": " ".join(filter(None, [os.environ.get("MAVEN_OPTS", ""),
@@ -383,8 +388,13 @@ async def _drive(prompt: str, options: sdk.ClaudeAgentOptions,
     turn = 0
 
     stream_error: str | None = None
+    # A session ends when it has handed in its result: once the StructuredOutput tool accepted the agent's answer,
+    # the harness waits a short grace for the CLI's own end, then closes the stream. The CLI otherwise waits for any
+    # command it moved to the background (run b74d3da7: a `go vet` past its timeout kept a finished item alive
+    # ~30 min); run_coding_agent's cleanup then stops what the session left running.
+    done = {"at": None, "payload": None, "ids": set(), "cost": {}, "model": None}
     try:
-        async for msg in sdk.query(prompt=prompt, options=options):
+        async for msg in _until_result(sdk.query(prompt=prompt, options=options), done):
             if isinstance(msg, sdk.SystemMessage):
                 # session_id is nested in SystemMessage.data in Python (doc §10).
                 if msg.subtype == "init":
@@ -397,6 +407,12 @@ async def _drive(prompt: str, options: sdk.ClaudeAgentOptions,
                     if b.name == "StructuredOutput" and isinstance(b.input, dict):
                         structured_attempts.append(b.input)
                         del structured_attempts[:-3]
+                        done["ids"].add(getattr(b, "id", None))
+                        done["candidate"] = b.input
+                if getattr(msg, "usage", None):
+                    # priced per message (the CLI's final cost never arrives when the stream is closed early)
+                    done["cost"][getattr(msg, "message_id", None) or getattr(msg, "id", None) or turn] = msg.usage
+                    done["model"] = getattr(msg, "model", None) or done["model"]
                 commands = [_summarize_tool(b) for b in tool_blocks]
                 # A short slice of the assistant's prose that accompanied the tool calls,
                 # so a turn with no commands (thinking / final summary) still says something.
@@ -427,6 +443,11 @@ async def _drive(prompt: str, options: sdk.ClaudeAgentOptions,
                         pass
             elif isinstance(msg, sdk.ResultMessage):
                 result = msg
+            elif isinstance(msg, getattr(sdk, "UserMessage", ())) and done["ids"]:
+                for b in (msg.content if isinstance(msg.content, list) else []):
+                    if (getattr(b, "tool_use_id", None) in done["ids"] and not getattr(b, "is_error", False)
+                            and "successfully" in str(getattr(b, "content", ""))):
+                        done["payload"], done["at"] = done.get("candidate"), time.monotonic()
     except Exception as e:  # noqa: BLE001
         # SDK doc gotcha #19: on an error result (error_max_turns / error_max_budget_usd)
         # the CLI exits nonzero and the stream raises AFTER yielding the ResultMessage —
@@ -439,6 +460,15 @@ async def _drive(prompt: str, options: sdk.ClaudeAgentOptions,
             raise
         stream_error = f"{type(e).__name__}: {e}"
 
+    if result is None and done["payload"] is not None:
+        from .cost import price_usage
+        return {"ok": True, "status": "success", "result": "", "structured": done["payload"],
+                "structured_attempts": structured_attempts, "session_id": session_id, "num_turns": turn,
+                "turns": turns, "tokens": sum(usage_tokens(u) for u in done["cost"].values()),
+                "cost_usd": round(sum(price_usage(u, done["model"]) for u in done["cost"].values()), 6),
+                "denials": denials, "denied_writes": [],
+                "turn_log": turn_log + ["ended by the harness: the result was handed in; the session was not waited on"],
+                "error": None}
     if result is None:
         return {"ok": False, "status": "no_result", "result": "", "structured": None,
                 "structured_attempts": structured_attempts,
@@ -478,15 +508,95 @@ async def _drive(prompt: str, options: sdk.ClaudeAgentOptions,
     }
 
 
+async def _hand_in_after_turn_limit(first: dict, options, on_turn=None) -> dict:
+    """A session that runs out of turns still hands in its result: the same session is resumed for a few turns
+    to answer from what it knows. A failed task retried from scratch repeated the same investigation and ran out
+    again, three times (run 4317f3aa's round review, $4.8 for nothing)."""
+    import dataclasses as _dc
+    more = await _drive(HAND_IN_PROMPT, _dc.replace(options, resume=first["session_id"], max_turns=HAND_IN_TURNS),
+                        on_turn=on_turn)
+    cost = (first.get("cost_usd") or 0.0) + (more.get("cost_usd") or 0.0)
+    if more.get("structured") is None:
+        return {**first, "cost_usd": cost}
+    return {**more, "cost_usd": cost,
+            "num_turns": (first.get("num_turns") or 0) + (more.get("num_turns") or 0),
+            "tokens": (first.get("tokens") or 0) + (more.get("tokens") or 0),
+            "turns": (first.get("turns") or []) + (more.get("turns") or []),
+            "turn_log": (first.get("turn_log") or []) + ["turn limit reached: resumed to hand in the result"]
+                        + (more.get("turn_log") or [])}
+
+
+RESULT_GRACE_S = 20.0
+HAND_IN_TURNS = 3
+HAND_IN_PROMPT = ("You have reached your turn limit. Hand in your result NOW with the StructuredOutput tool, from what "
+                  "you know so far: no more reading, commands or edits. Where you did not finish, say so in your answer "
+                  "and hand the rest out (as items, when your answer has items).")
+
+
+async def _until_result(stream, done: dict):
+    """The session's messages until it ends, or until ``RESULT_GRACE_S`` after its result was accepted."""
+    it = stream.__aiter__()
+    try:
+        while True:
+            wait = None if done["at"] is None else max(RESULT_GRACE_S - (time.monotonic() - done["at"]), 0.0)
+            try:
+                msg = await (asyncio.wait_for(it.__anext__(), wait) if wait is not None else it.__anext__())
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError:
+                log.info("session handed in its result %.0f s ago and is still running: ending it", RESULT_GRACE_S)
+                return
+            yield msg
+    finally:
+        aclose = getattr(it, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:  # noqa: BLE001 - closing a finished session never fails the result
+                pass
+
+
+RUN_WATCH_INTERVAL_S = 15.0
+
+
+async def _stop_with_run(feedback, session: "asyncio.Future") -> bool:
+    """Cancel ``session`` the moment its run is no longer running, whatever the session is doing (a turn with no
+    tool call never reaches the board watcher's stop). True when it did."""
+    while not session.done():
+        await asyncio.sleep(RUN_WATCH_INTERVAL_S)
+        status = await asyncio.to_thread(feedback._run_status)
+        if status and status not in ("RUNNING", "PAUSED"):
+            feedback.interrupted_by = {"key": feedback.RUN_STOP_KEY, "text": f"the run is {status.lower()}",
+                                       "by": "harness"}
+            session.cancel()
+            return True
+    return False
+
+
 async def run_coding_agent(*args, **kwargs) -> dict:
     """Run one agent session (``_run_session``), then stop anything it left running: an app or server
     an agent started in the background outlives its shell, and a Codex session's `start.sh` held the
     app's ports for the rest of run 3e3991fc. The session is over, so this is cleanup, not a deadline."""
     marker = check_execution.new_launch_marker()
     token = _SESSION_MARKER.set(marker)
+    feedback = kwargs.get("feedback")
+    session = asyncio.ensure_future(_run_session(*args, **kwargs))
+    watchdog = asyncio.ensure_future(_stop_with_run(feedback, session)) \
+        if feedback is not None and getattr(feedback, "run", "") else None
     try:
-        return await _run_session(*args, **kwargs)
+        return await session
+    except asyncio.CancelledError:
+        if watchdog is None or not watchdog.done() or not watchdog.result():
+            raise
+        # The run was stopped while this session was in a long turn with no tool call to stop it at (two of run
+        # 8da53b05's sessions kept generating for minutes after the run was stopped).
+        return {"result": "", "structured": None, "num_turns": 0, "turns": [], "tokens": 0, "cost_usd": 0.0,
+                "denials": [], "turn_log": ["stopped: the run is no longer running"], "status": "interrupted",
+                "error": "the run was stopped", "session_id": None,
+                **(feedback.report() if hasattr(feedback, "report") else {})}
     finally:
+        if watchdog is not None:
+            watchdog.cancel()
         _SESSION_MARKER.reset(token)
         reaped = await asyncio.to_thread(check_execution.reap_marked, marker)
         if reaped:
@@ -792,6 +902,8 @@ async def _run_session(
                 "tokens": 0, "cost_usd": 0.0, "denials": [], "turn_log": []}
     try:
         res = await _drive(prompt, options, on_turn=on_turn)
+        if output_schema and res.get("status") == "error_max_turns" and res.get("session_id"):
+            res = await _hand_in_after_turn_limit(res, options, on_turn)
         if output_schema and res.get("status") == "error_max_structured_output_retries":
             # The agent wrote its answer; the CLI's validator rejected the mangled tool input (the
             # payload as tagged text inside one string, or raw input it could not parse — runs

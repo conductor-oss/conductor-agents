@@ -1,0 +1,12 @@
+{
+  "name": "swarm_verify_fork",
+  "description": "Start a swarm's verification gate: one verifier session per focus, each in its own copy of the tree.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

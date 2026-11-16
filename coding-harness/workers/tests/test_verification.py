@@ -1368,7 +1368,7 @@ def test_thread_count_override_raises_but_never_lowers(monkeypatch):
     # A broad operator env var must not silently undo a per-task ceiling that
     # exists because that task spawns a real build toolchain.
     assert polling.worker_thread_count("test_run", 3) == 4  # never below the four-thread floor
-    assert polling.worker_thread_count("commit", 1) == 4 and polling.worker_thread_count("coding_agent", 16) == 16
+    assert polling.worker_thread_count("commit", 1) == 4 and polling.worker_thread_count("coding_agent", 32) == 32
     monkeypatch.setenv("CONDUCTOR_WORKER_THREADS_TEST_RUN", "8")
     assert polling.worker_thread_count("test_run", 3) == 8
     monkeypatch.setenv("CONDUCTOR_WORKER_THREADS_TEST_RUN", "1")

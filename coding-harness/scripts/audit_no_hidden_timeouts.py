@@ -19,6 +19,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOTS = (ROOT / "workers", ROOT / "tui", ROOT / "scripts")
 DEADLINE_NAMES = {"timeout", "timeout_s", "timeout_seconds"}
+# Waits that never abort running work, by (file, function): each one says why.
+NON_ABORTING_WAITS = {
+    ("workers/common/coding_agent.py", "_until_result"):
+        "stops reading a session only after the agent handed in its result (its answer is kept); what the CLI was still "
+        "waiting on is a command it moved to the background, which the session's cleanup stops",
+}
 
 
 def _call_name(node: ast.AST) -> str:
@@ -69,6 +75,9 @@ def audit() -> dict:
             except SyntaxError as exc:
                 violations.append(f"{relative}:{exc.lineno}: syntax error: {exc.msg}")
                 continue
+            exempt_lines = [(n.lineno, n.end_lineno or n.lineno) for n in ast.walk(tree)
+                            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                            and (relative, n.name) in NON_ABORTING_WAITS]
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     functions[relative].append(node.name)
@@ -83,7 +92,8 @@ def audit() -> dict:
                                 f"{relative}:{parameter.lineno}: deadline parameter {parameter.arg} in {node.name}")
                 elif isinstance(node, ast.Call):
                     name = _call_name(node.func)
-                    if name.endswith("wait_for"):
+                    if name.endswith("wait_for") and not any(
+                            lo <= node.lineno <= hi for lo, hi in exempt_lines):
                         violations.append(f"{relative}:{node.lineno}: asyncio.wait_for aborts running work")
                     for keyword in node.keywords:
                         if (keyword.arg or "").lower() not in DEADLINE_NAMES:
@@ -137,10 +147,19 @@ def audit() -> dict:
         "functionModules": {name: sorted(names) for name, names in sorted(functions.items())},
         "workersScanned": sorted(workers, key=lambda item: (str(item["source"]), int(item["line"]))),
         "conductorTimeoutFieldsChecked": timeout_fields,
+        "nonAbortingWaits": {f"{f}:{fn}": why for (f, fn), why in NON_ABORTING_WAITS.items()},
         "allowedNonAbortingControls": {
             "workers/common/polling.py": "Conductor batch-poll long-wait; empty response is repolled and no work is aborted",
             "tui notification calls": "Textual message display duration only; no process, request, task, or workflow is aborted",
             "workers/common/claude.py and tui/api.py": "HTTP client deadline is explicitly disabled with None",
+        },
+        # The one stop that is not a cancellation, by the person's rule (2026-11-15): a test run or check
+        # that runs far past how long it has taken before is hung and is stopped to be investigated. Its
+        # budget is a multiple of the command's own measured history, never a fixed deadline; a first run
+        # has none (the progress rule applies), and TEST_BUDGET_S raises it for a suite that needs longer.
+        "historyDerivedBudgets": {
+            "workers/common/test_budget.py": "agents' test runs: BUDGET_FACTOR x their longest recent run + margin",
+            "workers/common/check_execution.py execute(expected_s=)": "acceptance checks: 3x their longest recent run + 60 s",
         },
         "violations": violations,
     }

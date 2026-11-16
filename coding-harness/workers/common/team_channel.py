@@ -19,29 +19,6 @@ import stat
 import time
 
 CLIENT_REL = os.path.join(".cc-cache", "bin", "board")
-NPM_SHIM_REL = os.path.join(".cc-cache", "bin", "npm")
-_NPM_SHIM = """#!/usr/bin/env python3
-\"\"\"npm, one install at a time per tree. Teammates share this working tree; three concurrent `npm install`
-runs left node_modules without jsdom (ENOTEMPTY) and every test failed before collection (run c6c1e7a7).
-A mutating subcommand waits for the tree's install lock; everything else passes straight through.\"\"\"
-import fcntl, os, sys
-here = os.path.dirname(os.path.abspath(__file__))
-real = ""
-for d in os.environ.get("PATH", "").split(os.pathsep):
-    p = os.path.join(d, "npm")
-    if d and os.path.abspath(d) != here and os.path.isfile(p) and os.access(p, os.X_OK):
-        real = p
-        break
-if not real:
-    sys.stderr.write("npm: not found on PATH\\n")
-    sys.exit(127)
-sub = next((a for a in sys.argv[1:] if not a.startswith("-")), "")
-if sub in {"install", "i", "add", "ci", "install-clean", "clean-install", "isntall", "uninstall", "remove", "rm",
-           "un", "unlink", "update", "up", "upgrade", "dedupe", "ddp", "prune", "link", "ln", "rebuild", "rb"}:
-    lock = open(os.path.join(here, "..", "npm.lock"), "a+")
-    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-os.execv(real, [real] + sys.argv[1:])
-"""
 QUEUE_REL = os.path.join(".cc-cache", "board")
 
 _CLIENT = """#!/usr/bin/env python3
@@ -113,15 +90,10 @@ def install_client(worktree: str) -> str:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(_CLIENT)
     os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    shim = os.path.join(worktree, NPM_SHIM_REL)
-    try:
-        current = open(shim, encoding="utf-8").read()
-    except OSError:
-        current = ""
-    if current != _NPM_SHIM:
-        with open(shim, "w", encoding="utf-8") as fh:
-            fh.write(_NPM_SHIM)
-    os.chmod(shim, os.stat(shim).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    # The tool wrappers beside the board: npm one install at a time, and test runs with an expected
+    # duration (common/test_budget.py).
+    from . import test_budget
+    test_budget.install(worktree)
     os.makedirs(os.path.join(worktree, QUEUE_REL, "requests"), exist_ok=True)
     return path
 

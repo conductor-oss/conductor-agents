@@ -78,12 +78,12 @@
       "optional": true,
       "inputParameters": {
         "worktreePath": "${workflow.input.workdir}",
-        "modelRole": "code",
-        "templateKey": "swarm_work",
+        "modelRole": "${prep.output.modelRole}",
+        "templateKey": "${prep.output.templateKey}",
         "promptContext": "${prep.output.promptContext}",
         "schema": "${prep.output.workSchema}",
         "sharedTree": true,
-        "allowedWriteRoots": [],
+        "allowedWriteRoots": "${prep.output.writeRoots}",
         "allowedTools": "${prep.output.allowedTools}",
         "disallowedTools": "${prep.output.disallowedTools}",
         "feedbackCorrelationId": "${workflow.input.runId}",
@@ -133,7 +133,9 @@
           "round": "${workflow.input.round}",
           "item": "${prep.output.reviewContext.item}",
           "report": "${work.output.structured}",
-          "spec": "${workflow.input.specBrief}"
+          "spec": "${workflow.input.specBrief}",
+          "reviewFocus": "${prep.output.reviewContext.reviewFocus}",
+          "precedence": "${prep.output.reviewContext.precedence}"
         },
         "schema": "${prep.output.reviewSchema}",
         "sharedTree": true,
@@ -182,6 +184,7 @@
         "work": "${work.output}",
         "review": "${review.output}",
         "rung": "${prep.output.rung}",
+        "maxRung": "${prep.output.maxRung}",
         "reviewRung": "${prep.output.reviewRung}",
         "specBrief": "${workflow.input.specBrief}"
       }

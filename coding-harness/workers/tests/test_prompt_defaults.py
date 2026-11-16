@@ -47,7 +47,10 @@ def test_every_agent_step_has_a_shipped_default(workflow, task):
     key = task["inputParameters"].get("templateKey")
     assert key, "no templateKey, so no default, repository override or Settings entry can reach this step"
     if str(key).startswith("${"):
-        assert (workflow, task["taskReferenceName"]) == ("code_subtask", "code")  # chosen by each caller
+        # chosen by each caller; a swarm item's by swarm_item_prep: swarm_work, or swarm_design for a design item
+        assert (workflow, task["taskReferenceName"]) in (("code_subtask", "code"), ("swarm_item", "work"))
+        if workflow == "swarm_item":
+            assert t.bundled_default("swarm_work") and t.bundled_default("swarm_design")
         return
     assert t.bundled_default(key), f"no workers/defaults/prompts/{key}.md"
 

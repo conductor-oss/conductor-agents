@@ -55,7 +55,12 @@ def test_dependents_start_once_their_last_dependency_is_accepted_and_a_rejection
     assert _release(fake_task_input, run, items[1], work, True)["dynamicTasks"] == []  # never twice
     claims = [f["data"]["item"] for f in bb.read_facts(run, kind=CLAIM_KIND)]
     assert sorted(claims) == ["api", "auth", "db"]
-    # api rejected by its review: ui and docs (two levels down) are held, not started.
+    # api rejected by its review: it goes back to an agent at once, a rung up, and ui waits for it; once its
+    # reworks are used up, ui and docs (two levels down) are held, not started.
+    for n in (1, 2):
+        again = _release(fake_task_input, run, items[2], work, False)
+        assert [t["taskReferenceName"] for t in again["dynamicTasks"]] == [f"item_api_r1_rework{n}"]
+        assert again["held"] == [] and tb.fold_board(run)["items"]["ui"]["state"] == tb.BACKLOG
     held = _release(fake_task_input, run, items[2], work, False)
     assert held["dynamicTasks"] == [] and sorted(held["held"]) == ["docs", "ui"]
     board = tb.fold_board(run)["items"]

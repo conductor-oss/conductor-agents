@@ -634,6 +634,8 @@ def prepare_continuation(prior_run: str, values: dict, workflow: str, *, opener=
     values["repoPath"] = git.continuation_checkout(repo, branch)
     field = _TEXT_FIELD.get(workflow, "description")
     values[field] = _follow_up(str(values.get(field) or ""), prior, branch)
+    # The run resumes where this one stopped (swarm_setup's `resume`), never from the beginning.
+    values["continueFrom"] = prior_run
     return values
 
 

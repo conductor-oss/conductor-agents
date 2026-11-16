@@ -70,6 +70,9 @@ def poll_response_bound() -> tuple[float, float]:
 # No task type runs single-file: a program's ranks fork several teams whose board steps (standups,
 # integrations, commits, folds) arrive together, and one thread per type queued them behind each other.
 MIN_WORKER_THREADS = 4
+# The most threads one task type may run (agent sessions per host for coding_agent): a Claude session uses ~0.3-0.9 GB,
+# so 32 is ~10-28 GB, well inside a 128 GB host.
+MAX_WORKER_THREADS = 32
 
 
 def worker_thread_count(task_name: str, current: int) -> int:
@@ -88,7 +91,7 @@ def worker_thread_count(task_name: str, current: int) -> int:
         if not value:
             continue
         try:
-            requested = max(1, min(16, int(value)))
+            requested = max(1, min(MAX_WORKER_THREADS, int(value)))
         except ValueError:
             continue
         return max(current, requested)

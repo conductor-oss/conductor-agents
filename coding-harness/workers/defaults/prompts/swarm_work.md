@@ -8,11 +8,15 @@ The acceptance checks are listed in `.cc/checks.json`. Teammates are working bes
 YOUR ITEM (round {{round}}):
 {{item}}
 
+{{itemGuide}}
+
+{{precedence}}
+
 How to work:
-- Build your item completely and verify IT: its own tests and the build of its part, re-run after you change something, not again when nothing changed. Read teammates' code, the design and the board instead of guessing interfaces; honour the design. If your part cannot be built as designed, say so on the board rather than silently diverging.
+- Build your item completely, to the design. DO NOT WRITE TESTS and DO NOT RUN TEST SUITES: the acceptance checks in `.cc/checks.json` are this run's tests, and the harness runs every one of them on the committed tree after the round. Your own unit tests would only cost time: the swarm does not use them. To catch a slip, load or compile your part once (an import, a build), not a test run. Read teammates' code, the design and the board instead of guessing interfaces; honour the design. If your part cannot be built as designed, say so on the board rather than silently diverging.
 - Where there is a spec (above), every behaviour your part implements must do exactly what the spec says, in its success and its failure cases; the harness checks the program against it after the round.
 - Match THE CONTRACT THE CHECKS USE (end of `.cc/design.md`) exactly where it touches your part, and read the check scripts in `.cc/checks/` for what they drive in your part (labels, routes, environment variables): build to those exact words.
-- Run the acceptance checks in `.cc/checks.json` once, when your item is complete and the parts it depends on have landed (`board show` lists every item's state); a failure in your own part you fix and re-run once. Do not use them to debug other parts: when a check fails in a teammate's part (an API answer, the launcher), post the evidence on the board for its owner and the architect and finish your own item. After the round the harness runs the checks on the committed tree and the architect integrates.
+- When your item is complete and the parts it depends on have landed (`board show` lists every item's state), run the acceptance checks that drive YOUR part once; a failure in your own part you fix and run that check once more. That is all the testing you do. Do not use them to debug other parts: when a check fails in a teammate's part (an API answer, the launcher), post the evidence on the board for its owner and the architect and finish your own item. After the round the harness runs the checks on the committed tree and the architect integrates.
 - Do not commit or run git commands that change the index or history: everyone's work is in this one tree and the harness commits it at the end of the round. `git status`, `git diff` and `git log` show what teammates are doing.
 - If something outside your item blocks your OWN work (a port or file in use, a missing dependency), reason about the cause and fix it if the fix is safe and small; anything in a teammate's part goes on the board with the evidence.
 - Leave nothing you started running (servers, watchers) when you finish.

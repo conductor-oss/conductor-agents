@@ -81,6 +81,22 @@ def _phase(wf: dict, view: dict) -> str:
         rnd = next((r.rsplit("__", 1)[1] for r in running if "__" in r), "")
         label = f"round {rnd}" if rnd.isdigit() else "this round"
         waiting = sum(1 for it in view["items"] if it.get("state") == "review")
+        designing = [r for r in running if r.startswith("item_") and r.rsplit("__", 1)[0].endswith("_r0")]
+        if any(r.startswith("design_review") for r in running):
+            return "review: the lead architect is checking the designs for gaps"
+        if any(r.startswith(("gap_dispatch", "gaps")) for r in running):
+            return "gaps: architects are designing the pieces the review found missing"
+        if "kickoff" in running:
+            return "split: the lead architect is splitting the system into subsystems"
+        if designing or any(r.startswith(("design_dispatch", "designs")) for r in running):
+            return f"designing: {len(designing)} architect{'s' if len(designing) != 1 else ''}, one per subsystem"
+        if any(r.startswith(("verify_", "verifiers")) for r in running):
+            n = sum(1 for r in running if r.startswith("verify_") and not r.startswith("verify_fork"))
+            return f"verifying {label}: {n} independent verifier{'s' if n != 1 else ''} at work"
+        if any(r.startswith("gate") for r in running):
+            return f"verifying {label}: the harness is reproducing the verifiers' findings"
+        if any(r.startswith("rule") for r in running):
+            return f"verifying {label}: the architect is ruling on reproduced findings"
         if any(r.startswith("evaluate") for r in running):
             return f"reviewing {label} ({waiting} item{'s' if waiting != 1 else ''} awaiting the architect)"
         if any(r.startswith(("measure", "remeasure")) for r in running):
@@ -98,8 +114,12 @@ def _phase(wf: dict, view: dict) -> str:
         if "followup" in running:
             return "CI failed: a follow-up run is fixing it on the pull request"
         states = [it.get("state") for it in view["items"]]
+        # Who is at work, by role: designers of delegated parts apart from the builders.
+        designing = sum(1 for it in view["items"] if it.get("state") == "in_progress"
+                        and str(it.get("kind") or "").lower() == "design")
         parts = [f"{n} {label}" for label, n in (
-            ("working", states.count("in_progress")), ("waiting on dependencies", states.count("backlog")),
+            ("designing", designing), ("working", states.count("in_progress") - designing),
+            ("waiting on dependencies", states.count("backlog")),
             ("reviewed", states.count("review")), ("held", states.count("blocked")),
             ("reopened", states.count("reopened")), ("done", states.count("done"))) if n]
         if parts:

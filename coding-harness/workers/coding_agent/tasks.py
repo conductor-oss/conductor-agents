@@ -588,7 +588,7 @@ def _host_flight_lock(task_id: str):
     return fh, True
 
 
-@worker_task(task_definition_name="coding_agent", thread_count=16)  # 16 agent sessions at once per fleet
+@worker_task(task_definition_name="coding_agent", thread_count=32)  # 32 agent sessions at once per fleet
 def coding_agent(task):
     """Run the async agent implementation under the ordinary task runner.
 

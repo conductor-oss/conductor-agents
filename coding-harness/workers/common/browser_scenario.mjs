@@ -68,7 +68,7 @@ function freePort() {
   });
 }
 
-export async function scenario(body, { viewport, start, env, url, ports } = {}) {
+export async function scenario(body, { viewport, context: contextOptions, setup, start, env, url, ports } = {}) {
   let browser, app;
   try {
     const given = {};
@@ -77,8 +77,14 @@ export async function scenario(body, { viewport, start, env, url, ports } = {}) 
     if (start) app = startApp(start, { ...(env || {}), ...given });
     if (url) await waitForApp(url, app);
     browser = await chromium.connect(process.env.PLAYWRIGHT_WS_ENDPOINT);
-    const context = await browser.newContext(viewport ? { viewport } : {});
+    // `context`: Playwright's context options, e.g. { geolocation: { latitude, longitude }, permissions: ['geolocation'],
+    // timezoneId, colorScheme, locale }. Granting them here is what a real browser does; a script that replaced
+    // navigator.geolocation instead raced the app's first load (run f1115a84).
+    const context = await browser.newContext({ ...(contextOptions || {}), ...(viewport ? { viewport } : {}) });
     const page = await context.newPage();
+    // `setup({ page, context })` runs BEFORE the page opens: fakes (page.addInitScript, page.route) installed in the
+    // body come after the first load and never reach it (run f1115a84's checks failed on exactly that).
+    if (setup) await setup({ page, context });
     if (url) await page.goto(url);
     await body({ page, context, browser, url, ports: given });
     if (process.exitCode === undefined) process.exitCode = 0;
