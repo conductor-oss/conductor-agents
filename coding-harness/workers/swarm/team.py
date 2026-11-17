@@ -315,6 +315,25 @@ def chain_problems(items: list[dict]) -> list[str]:
             f"has more than {MAX_CHAIN}." for c in sorted(set(out), key=len, reverse=True)[:5]]
 
 
+def core_problems(items: list[dict], compiled: list[str]) -> list[str]:
+    """A new project in a compiled language needs exactly one ``core`` item (the module file and the shared core
+    types), or every item starts with nothing to compile against (run 8b40c25c: 9 of 42 items reported unfinished
+    for want of go.mod and internal/core; run 2678a14f's lead was told and did not mark one)."""
+    if not compiled:
+        return []
+    builds = [i for i in items if isinstance(i, dict) and not is_design(i)]
+    cores = [str(i.get("id")) for i in builds if i.get("core") is True]
+    if len(cores) == 1 or not builds:
+        return []
+    if cores:
+        return [f"the plan marks {len(cores)} items `core: true` ({', '.join(cores)}); mark exactly one: the item that "
+                "writes the module file and the shared core types"]
+    return [f"this is a new {'/'.join(compiled)} project and no item is marked `core: true`: nothing compiles until the "
+            "module file and the shared core types exist. Mark ONE small item `core: true` (kind `core`) that writes only "
+            "those, as `.cc/design.md` gives them; the harness makes every other build item wait for it, and that wait "
+            "is not a chain."]
+
+
 def outside_owns(item: dict, files: list[str], work: str = "") -> list[str]:
     """The files a design item reported that it does not own. A path reported absolute, inside the tree, is the
     tree's relative path: an architect that reported its own spec by its full path was rejected for writing outside

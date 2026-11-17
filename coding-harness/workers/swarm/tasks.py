@@ -1182,6 +1182,8 @@ def swarm_formal(task):
         from swarm import team as team_mod
         problems = team_mod.design_problems(plan, team_mod.architects_mode(i.get("architects")))
         problems += team_mod.chain_problems(_list(plan.get("items")))
+        problems += team_mod.core_problems(_list(plan.get("items")),
+                                           _stacks_mod.needs_core(str(i["workdir"]), _list(plan.get("stacks"))))
         coded = team_mod.non_planning_changes(str(i["workdir"]))
         if coded:
             problems.append("Planning is not coding: you changed files outside `design/` and `.cc/` ("

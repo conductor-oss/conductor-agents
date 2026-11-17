@@ -283,3 +283,17 @@ def test_a_design_item_reporting_its_own_file_by_full_path_is_not_a_stray(tmp_pa
     work.mkdir()
     assert team.outside_owns(GOOD[0], [str(work / "design" / "storage.md")], str(work)) == []
     assert team.outside_owns(GOOD[0], [str(work / ".cc" / "design.md")], str(work)) == [".cc/design.md"]
+
+
+def test_a_new_compiled_project_needs_exactly_one_core_item(tmp_path):
+    from common import stacks
+    work = str(tmp_path / "clone")
+    os.makedirs(work)
+    assert stacks.needs_core(work, ["go", "web"]) == ["go"]
+    items = [_it("server"), _it("lists")]
+    assert "no item is marked `core: true`" in team.core_problems(items, ["go"])[0]
+    assert team.core_problems([{**items[0], "core": True}, items[1]], ["go"]) == []
+    assert "mark exactly one" in team.core_problems([{**x, "core": True} for x in items], ["go"])[0]
+    _write(work, "go.mod", "module x\n")  # a continuation: the module is there already
+    assert stacks.needs_core(work, ["go"]) == [] and team.core_problems(items, []) == []
+    assert stacks.needs_core(work, ["python"]) == []

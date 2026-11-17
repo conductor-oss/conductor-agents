@@ -3,6 +3,8 @@ the round, an item chain, a review fixing everything itself."""
 from __future__ import annotations
 
 import asyncio
+
+import pytest
 import time
 
 from common import coding_agent, git
@@ -177,3 +179,25 @@ def test_a_continuation_resumes_from_the_phase_the_earlier_run_stopped_in(tmp_pa
     (work / ".cc" / "checks.json").write_text(json.dumps([{"id": "a", "command": "true"}]))
     assert tasks._resume_phase(str(work), follow) == "build"  # planned: straight to the rounds
     assert tasks._resume_phase(str(work), {"description": "Follow-up to an earlier swarm run (\"x\")."}) == "build"
+
+
+def test_no_session_command_runs_in_the_background_or_past_its_limit(tmp_path, monkeypatch):
+    """Run 2678a14f: the CLI moved a verifier's hung socket script into the background and the session sat 95 minutes."""
+    import asyncio
+    from common import git
+    work = str(tmp_path / "w")
+    git.ensure_ready(work)
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def capture(**opts):
+        seen.update(opts)
+        raise Stop
+    monkeypatch.setattr(coding_agent.sdk, "ClaudeAgentOptions", capture)
+    with pytest.raises(Stop):
+        asyncio.run(coding_agent.run_coding_agent("hi", worktree=work))
+    env = seen["env"]
+    assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+    assert int(env["BASH_DEFAULT_TIMEOUT_MS"]) == 300000 and int(env["BASH_MAX_TIMEOUT_MS"]) == 600000

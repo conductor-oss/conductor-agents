@@ -199,9 +199,14 @@ button.cell:hover{transform:scale(1.25)}
 .two{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:32px}
 .two>div{min-width:0}
 h3{font-size:14px;font-weight:600;margin:0 0 10px}
-.agent{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--rule)}
-.agent .spark{width:8px;height:8px;border-radius:50%;background:var(--working)}
-@media (prefers-reduced-motion:no-preference){.agent .spark{animation:blink 1.4s ease-in-out infinite}}
+.agent{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:start;padding:12px 14px;margin:0 0 10px;
+  background:var(--working-soft);border:1px solid color-mix(in srgb,var(--working) 35%,transparent);border-left:4px solid var(--working);border-radius:10px}
+.agent b{font-size:15px}
+.agent .spark{width:10px;height:10px;margin-top:6px;border-radius:50%;background:var(--working);box-shadow:0 0 0 0 color-mix(in srgb,var(--working) 55%,transparent)}
+@media (prefers-reduced-motion:no-preference){.agent .spark{animation:livepulse 1.6s ease-out infinite}}
+@keyframes livepulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--working) 55%,transparent)}100%{box-shadow:0 0 0 8px transparent}}
+.agent .what.mono{margin-top:6px;padding:5px 8px;background:var(--sheet);border:1px solid var(--rule);border-radius:6px;color:var(--ink);overflow-wrap:anywhere}
+.agent .ago{color:var(--working);font-weight:600}
 @keyframes blink{50%{opacity:.25}}
 .agent .what{font-size:13px;color:var(--ink-2)}
 .agent .ago{font-size:12.5px;color:var(--ink-3)}
@@ -886,7 +891,7 @@ function renderTab(v){
       <h3>Working now</h3>${roster}
       ${agents.length ? agents.map(a=>`<div class="agent"><span class="spark"></span>
          <div><b>${esc(a.role?capital(a.role)+(a.item&&a.item!==a.role?" on "+a.item:""):a.item)}</b>${runs[a.run]?` <span class="faint">in ${esc(runs[a.run])}</span>`:""}
-           <div class="what">${a.seconds!=null?`<span data-since="${(a.ts||Date.now()/1000)-a.seconds}" data-suffix=" in">${elapsedText((a.ts||Date.now()/1000)-a.seconds)} in</span>`:""}${a.toolCalls?`, ${a.toolCalls} command${a.toolCalls===1?"":"s"}`:""}${a.tokens?`, ${Math.round(a.tokens/1000)}k tokens`:""}${a.costUsd?`, ${money(a.costUsd)}`:""}</div>
+           <div class="what">${[a.seconds!=null?`<span data-since="${(a.ts||Date.now()/1000)-a.seconds}" data-suffix=" in">${elapsedText((a.ts||Date.now()/1000)-a.seconds)} in</span>`:"", a.toolCalls?`${a.toolCalls} command${a.toolCalls===1?"":"s"}`:"", a.tokens?`${Math.round(a.tokens/1000)}k tokens`:"", a.costUsd?money(a.costUsd):""].filter(Boolean).join(", ")}</div>
            ${a.lastText?`<div class="what clamp" onclick="this.classList.toggle('open')">${esc(a.lastText)}</div>`:""}
            <div class="what mono">${esc(a.tool||"thinking")}</div></div>
          <span class="ago">${a.secondsAgo<5?"now":a.secondsAgo<120?a.secondsAgo+"s ago":Math.round(a.secondsAgo/60)+" min ago"}</span></div>`).join("")

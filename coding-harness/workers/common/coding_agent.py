@@ -216,6 +216,11 @@ TOOL_CACHE_DIR = ".cc-cache"
 from .allowed_domains import DEFAULT_ALLOWED_DOMAINS  # noqa: E402  (the one list; the console reads it too)
 
 
+# Every Claude session's commands: 5 minutes unless the agent asks for more, 10 at most, never in the background.
+SESSION_COMMAND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1", "BASH_DEFAULT_TIMEOUT_MS": "300000",
+                       "BASH_MAX_TIMEOUT_MS": "600000"}
+
+
 def _tool_cache_env(worktree_abs: str) -> dict[str, str]:
     """Build caches the sandboxed Bash can write. The OS sandbox allows writes only inside the worktree,
     so Go's default build cache (~/Library/Caches/go-build) made every `go build/vet/test` fail with
@@ -833,6 +838,11 @@ async def _run_session(
         # env MERGES on top of the inherited env in Python (doc gotcha #17), so this
         # keeps ANTHROPIC_API_KEY/PATH while disabling auto-memory for reproducibility.
         "env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+                # No command outlives its limit and nothing goes to the background: the CLI used to move a command
+                # past 2 minutes into the background and the session then sat waiting on it (run 2678a14f: a verifier's
+                # socket script hung 95 minutes; run b74d3da7: a `go vet` held lua-core 30 minutes). Now a command past
+                # its limit is stopped and its agent gets the error and moves on.
+                **SESSION_COMMAND_ENV,
                 # The claude.ai login or the API key, as CLAUDE_AUTH decides (common/backend_auth):
                 # in login mode the key is blanked so the CLI signs in with the stored login.
                 **backend_auth.overrides("claude"),

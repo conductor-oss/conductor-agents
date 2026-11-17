@@ -183,6 +183,17 @@ def detect(work: str) -> list[str]:
     return found
 
 
+# Packs whose code does not build at all until the module file and the shared core types exist (go.mod and the core
+# package, Cargo.toml and the core crate, ...). A new project on one of them starts with a `core` item (swarm/team.py).
+COMPILED = frozenset({"jvm", "go", "rust", "dotnet", "cpp", "ios", "android", "flutter", "tauri"})
+
+
+def needs_core(work: str, declared: list[str]) -> list[str]:
+    """The compiled packs this plan declares whose module file the tree does not have yet."""
+    present = set(detect(work)) if work and os.path.isdir(work) else set()
+    return [p for p in dict.fromkeys(declared or []) if p in COMPILED and p not in present]
+
+
 def chosen(work: str) -> list[str]:
     try:
         with open(os.path.join(work, FILE), encoding="utf-8") as fh:
