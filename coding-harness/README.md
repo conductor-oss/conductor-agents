@@ -20,7 +20,7 @@ coding backend. Claude is the default; run `claude login` or set
 `ANTHROPIC_API_KEY`. See [Prerequisites](#prerequisites) for Codex, Gemini, and GitHub.
 
 ```bash
-# Terminal 1 — from coding-harness/
+# Terminal 1 — from the repository root
 ./run.sh
 ```
 
@@ -90,7 +90,7 @@ failed?"); forms and a live dashboard are a slash-command away:
 
 ```bash
 cd tui && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && cd ..
-# run from coding-harness/ (ANTHROPIC_API_KEY needed for chat):
+# run from the repository root (ANTHROPIC_API_KEY needed for chat):
 CONDUCTOR_SERVER_URL=http://localhost:8080/api tui/.venv/bin/python -m tui        # chat
 CONDUCTOR_SERVER_URL=http://localhost:8080/api tui/.venv/bin/python -m tui --dashboard  # forms
 ```

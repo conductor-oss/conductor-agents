@@ -53,7 +53,7 @@ The natural loop: **`issue_to_pr` → `pr_review` → `address_pr`** (open, revi
 
 ## 60-second setup
 
-From the `coding-harness/` directory, assuming the prerequisites above are installed:
+From the repository root, assuming the prerequisites above are installed:
 
 ```bash
 ./run.sh
@@ -200,7 +200,7 @@ conductor workflow start --workflow address_pr \
 
 ## TUI operations
 
-Install and launch from `coding-harness/`:
+Install and launch from the repository root:
 
 ```bash
 python3 -m venv tui/.venv

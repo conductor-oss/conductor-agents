@@ -1,0 +1,38 @@
+# Never commit runtime state: it can contain live tokens or personal data from real runs.
+
+# Python / build
+.venv/
+.venv-ci/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+node_modules/
+
+# Run output and state
+reports/*
+!reports/.gitkeep
+state/
+workers/state/
+workers/oob/state.json
+.cc-cache/
+.cc-worktrees/
+
+# Conductor local-server embedded DB
+c123.db*
+*.db
+*.db-shm
+*.db-wal
+
+# Env / secrets
+.env
+*.local
+
+# MkDocs build output
+/site/
+
+# OS
+.DS_Store
+.scratch/
