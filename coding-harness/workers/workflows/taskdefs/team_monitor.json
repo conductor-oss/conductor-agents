@@ -1,0 +1,93 @@
+{
+  "name": "team_monitor",
+  "description": "Team cycle (roadmap Phase 3, \u00a74.5): the monitor role. Watches the board each wave with bounded authority \u2014 applies small corrections autonomously (nudge a thrashing item, re-prioritize it) and escalates anything bigger (a blocked item, duplication, a budget breach) to the exception queue for a human to drive. Its primary output is the human rollup + the open-exception count (H7). Never kills work, expands scope, or spends on its own.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "team_monitor_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "correlationId": {
+          "type": "string"
+        },
+        "ceilingUsd": {
+          "type": [
+            "number",
+            "string",
+            "null"
+          ],
+          "description": "Run spend ceiling; a breach is escalated."
+        },
+        "stallAttempts": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "Attempts at which an open item counts as a stall (autonomous nudge)."
+        },
+        "qualityChanges": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "Peer-review changes rounds at which an item counts as a quality regression."
+        },
+        "dispatchedCount": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "How many items this wave's standup dispatched; 0 with scopeWaits and nothing in flight means the next wave is this wave again (starved: scope_wait)."
+        },
+        "scopeWaits": {
+          "type": [
+            "array",
+            "string"
+          ],
+          "description": "The standup's held items ('<item> waits for <owner> to land <path>'), each posted as a scope_wait escalation when the run is starved on them."
+        }
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "team_monitor_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "openExceptions": {
+          "type": "integer",
+          "description": "Open escalations needing a human decision."
+        },
+        "newExceptions": {
+          "type": "integer"
+        },
+        "actionsApplied": {
+          "type": "integer",
+          "description": "Autonomous corrections applied this wave."
+        },
+        "signals": {
+          "type": "array"
+        },
+        "rollup": {
+          "type": "object"
+        },
+        "needsHuman": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "openExceptions",
+        "actionsApplied"
+      ]
+    }
+  }
+}

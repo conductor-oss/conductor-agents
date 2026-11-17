@@ -1,0 +1,37 @@
+{
+  "name": "team_plan_init",
+  "description": "Team cycle (roadmap Phase 2): seed the tracking board from the input work items and freeze the contract (H4) once per run. Each item becomes an append-only board fact the Lead later mutates by state transitions; the frozen-contract fact is recorded so the integrator can route contract edits as controlled events.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "team_plan_init_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "correlationId": {"type": "string", "description": "Run id under which board/contract facts are recorded."},
+        "subtasks": {"type": ["array", "string"], "description": "Work items [{id, title, description, kind, dependsOn, files, acceptanceCriteria, priority}]."},
+        "contractPaths": {"type": ["array", "string"], "description": "Repository-relative frozen-contract files."}
+      }
+    }
+  },
+  "outputSchema": {
+    "name": "team_plan_init_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "total": {"type": "integer", "description": "Items seeded onto the tracking board."},
+        "itemIds": {"type": "array", "items": {"type": "string"}, "description": "Seeded item ids."},
+        "contractPaths": {"type": "array", "items": {"type": "string"}, "description": "Frozen-contract paths echoed back."}
+      },
+      "required": ["total", "itemIds"]
+    }
+  }
+}

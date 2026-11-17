@@ -61,13 +61,6 @@ async def _drive(prompt: str, options: sdk.ClaudeAgentOptions,
     }
 
 
-def _anthropic_client():
-    """Anthropic client with its client-side deadline explicitly disabled."""
-    import anthropic
-    import httpx
-    return anthropic.Anthropic(timeout=httpx.Timeout(None), max_retries=4)
-
-
 # Exceptions worth retrying: transient network faults, connection resets, stalls.
 def _is_retryable(e: Exception) -> bool:
     import anthropic
@@ -95,102 +88,6 @@ def _retry(fn, attempts: int = 5, base: float = 2.0):
             last = e
             time.sleep(base * (a + 1))
     raise last  # unreachable
-
-
-def generate_text(prompt: str, *, model: str, system: str | None = None,
-                  max_tokens: int = 16000, max_continues: int = 4) -> dict[str, Any]:
-    """Direct (NON-agentic) streamed completion — no tools, no multi-turn loop.
-
-    This is the fast path for producing a document: one streamed generation instead
-    of an agentic think→Write→re-read loop that re-sends a growing context every turn.
-    If the model stops at the output-token ceiling (``stop_reason == "max_tokens"``),
-    it continues from where it left off and concatenates — so arbitrarily long output
-    never truncates, without any per-response ceiling problem. Each streamed segment
-    is retried on a network fault (a mid-stream reset re-requests that segment).
-
-    Returns {text, in_tokens, out_tokens, tokens, cost_usd, stop_reason, continues}.
-    """
-    import anthropic
-
-    from .cost import price_usage
-
-    client = _anthropic_client()
-    messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
-    full = ""
-    in_tok = out_tok = cache_r = cache_w = 0
-    stop = None
-    continues = 0
-
-    def stream_once():
-        chunk = ""
-        with client.messages.stream(
-            model=model, max_tokens=max_tokens,
-            system=(system or anthropic.NOT_GIVEN),
-            messages=messages,
-        ) as stream:
-            for piece in stream.text_stream:
-                chunk += piece
-            return chunk, stream.get_final_message()
-
-    for attempt in range(max_continues + 1):
-        chunk, fm = _retry(stream_once)
-        full += chunk
-        u = fm.usage
-        in_tok += u.input_tokens or 0
-        out_tok += u.output_tokens or 0
-        cache_r += getattr(u, "cache_read_input_tokens", 0) or 0
-        cache_w += getattr(u, "cache_creation_input_tokens", 0) or 0
-        stop = fm.stop_reason
-        if stop != "max_tokens":
-            break
-        # Hit the ceiling — continue from the exact cutoff, no repetition.
-        continues += 1
-        messages.append({"role": "assistant", "content": chunk})
-        messages.append({"role": "user", "content": "Continue exactly where you left off. Do not repeat any text you already wrote."})
-    cost = price_usage({"input_tokens": in_tok, "output_tokens": out_tok,
-                        "cache_read_input_tokens": cache_r,
-                        "cache_creation_input_tokens": cache_w}, model)
-    return {"text": full, "in_tokens": in_tok, "out_tokens": out_tok,
-            "tokens": in_tok + out_tok + cache_r + cache_w,
-            "cost_usd": cost, "stop_reason": stop, "continues": continues}
-
-
-def generate_structured(prompt: str, *, schema: dict, model: str,
-                        system: str | None = None, max_tokens: int = 12000) -> dict[str, Any]:
-    """Direct (NON-agentic) structured completion — forces a single tool call whose
-    input matches ``schema`` and returns the parsed object. No CLI, no tool loop,
-    no file-reading turns: the caller injects any needed context into the prompt.
-
-    Returns {structured, text, tokens, cost_usd, stop_reason}.
-    """
-    import anthropic
-
-    from .cost import price_usage
-
-    client = _anthropic_client()
-    tool = {"name": "emit_result", "description": "Emit the structured result.",
-            "input_schema": schema}
-    msg = _retry(lambda: client.messages.create(
-        model=model, max_tokens=max_tokens,
-        system=(system or anthropic.NOT_GIVEN),
-        tools=[tool], tool_choice={"type": "tool", "name": "emit_result"},
-        messages=[{"role": "user", "content": prompt}],
-    ))
-    structured = None
-    text = ""
-    for block in msg.content:
-        if getattr(block, "type", None) == "tool_use" and block.name == "emit_result":
-            structured = block.input
-        elif getattr(block, "type", None) == "text":
-            text += block.text
-    u = msg.usage
-    cost = price_usage({"input_tokens": u.input_tokens, "output_tokens": u.output_tokens,
-                        "cache_read_input_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
-                        "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0},
-                       model)
-    return {"structured": structured, "text": text,
-            "tokens": (u.input_tokens or 0) + (u.output_tokens or 0),
-            "cost_usd": cost, "stop_reason": msg.stop_reason}
 
 
 def run_agent(prompt: str, *, cwd: str | None = None, model: str | None = None,

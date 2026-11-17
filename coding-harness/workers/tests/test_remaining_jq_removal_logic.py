@@ -165,22 +165,6 @@ def test_campaign_publication_plan_uses_committed_sha_when_untested():
     assert plan["head"] == "old-sha"
 
 
-def test_campaign_publication_plan_forces_draft_when_an_agent_authored_test_was_used():
-    plan = feature_campaign.resolve_campaign_publication_plan(
-        outcome="verified", requested_draft=False, test_state="tests_passed",
-        tests_passed=True, tested="sha", committed="old-sha", agent_authored_test=True)
-    assert plan["draft"] is True
-    assert plan["agentAuthoredTest"] is True
-    assert plan["agentAuthoredTestNote"] != ""
-
-    not_authored = feature_campaign.resolve_campaign_publication_plan(
-        outcome="verified", requested_draft=False, test_state="tests_passed",
-        tests_passed=True, tested="sha", committed="old-sha", agent_authored_test=False)
-    assert not_authored["draft"] is False
-    assert not_authored["agentAuthoredTest"] is False
-    assert not_authored["agentAuthoredTestNote"] == ""
-
-
 # --- openspec_artifact_drain -----------------------------------------------------
 
 @pytest.mark.parametrize("value", JUNK)

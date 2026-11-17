@@ -143,8 +143,26 @@ def _compact(value: object) -> str:
     return summary
 
 
-def format_summary(repo: str | Path, summary: object, *, issue_body: object = "") -> dict:
-    """Return the only legal PR body plus auditable template-source metadata."""
+def _closes_number(value: object) -> int:
+    """Normalize an issue reference; 0 means "do not link an issue"."""
+    try:
+        number = int(str(value).strip() or 0)
+    except (TypeError, ValueError):
+        return 0
+    return number if number > 0 else 0
+
+
+def format_summary(repo: str | Path, summary: object, *, issue_body: object = "",
+                   closes: object = 0) -> dict:
+    """Return the only legal PR body plus auditable template-source metadata.
+
+    ``closes`` appends the GitHub auto-close reference as a trailing line. It is
+    not a second section, so the one-``## Summary``-section invariant holds; it
+    has to be applied *here* because this function is the single chokepoint that
+    every published body passes through, and the compaction above deliberately
+    keeps only the first prose block -- a ``Closes #n`` line concatenated onto
+    the caller's text upstream is silently dropped before it ever reaches the PR.
+    """
     templates = issue_template_files(repo)
     selected = ""
     source = "provided_summary"
@@ -164,10 +182,15 @@ def format_summary(repo: str | Path, summary: object, *, issue_body: object = ""
     if not selected:
         selected = "Automated change."
         source = "fallback"
+    body = f"{HEADING}\n\n{selected}"
+    number = _closes_number(closes)
+    if number:
+        body = f"{body}\n\nCloses #{number}"
     return {
-        "body": f"{HEADING}\n\n{selected}",
+        "body": body,
         "summary": selected,
         "summarySource": source,
+        "closesIssue": number,
         "issueTemplateFiles": [path.name for path in templates],
     }
 

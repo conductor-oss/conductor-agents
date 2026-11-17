@@ -26,6 +26,7 @@ class RunDetail(Screen):
         Binding("escape", "back", "back"),
         Binding("t", "terminate", "terminate"),
         Binding("r", "retry", "retry"),
+        Binding("R", "start_over", "start over"),
         Binding("l", "logs", "logs"),
         Binding("o", "open_url", "open"),
         Binding("a", "review_gate", "review"),
@@ -34,6 +35,10 @@ class RunDetail(Screen):
         Binding("c", "conductor", "conductor UI"),
         Binding("y", "yank", "copy id"),
         Binding("n", "rerun", "run again"),
+        Binding("b", "board", "team board"),
+        Binding("F", "continue_run", "continue"),
+        Binding("P", "pull_request", "pull request"),
+        Binding("M", "merge", "merge"),
     ]
 
     def __init__(self, workflow_id: str):
@@ -104,6 +109,21 @@ class RunDetail(Screen):
         t.append(f"{fmt.status_glyph(run.status)} {run.status}", style=fmt.status_color(run.status))
         t.append(f" · {fmt.duration(run.duration_ms())} · "
                  f"{fmt.tokens(tokens)} tok · {fmt.cost(cost)}", style="grey62")
+        # A program's definition of done: the score against its threshold, the ladder rung it ended on
+        # and what it needs (PROGRAM_NEEDS is never a failure: Continue resumes at that rung).
+        out = run.output or {}
+        if out.get("score") is not None:
+            try:
+                score, thr = float(out.get("score")), float(out.get("threshold") or 1.0)
+            except (TypeError, ValueError):
+                score, thr = 0.0, 1.0
+            t.append(f" · done {score:.2f}/{thr:.2f}", style="green" if score >= thr - 1e-9 else "yellow")
+            if out.get("rung"):
+                t.append(f" · {out['rung']}", style="grey62")
+            needs = out.get("needs") if isinstance(out.get("needs"), list) else []
+            if needs:
+                t.append(" · needs " + ", ".join(str((n or {}).get("kind") or "") for n in needs if isinstance(n, dict)),
+                         style="bold yellow")
         gate = d.pending_gate() if run.running else None
         if gate and gate.input.get("workflow") == "feature_campaign":
             phase = gate.input.get("phase") or "checkpoint"
@@ -238,6 +258,21 @@ class RunDetail(Screen):
                       url=url)
 
     # ------------------------------------------------------------------ actions
+    def action_board(self) -> None:
+        """Open the team board for this run (Phase 2, §4.8). The team cycle uses the run's workflowId
+        as the board correlation id, so a team_build run's shared boards are addressable by ``self._id``."""
+        from .board import TeamBoard
+        self.app.push_screen(TeamBoard(self._board_run()))
+
+    def _board_run(self) -> str:
+        """Which run's board to open. team_build and cc_program own their board (keyed by their own id);
+        an sdlc_intake front-door run hands the build to a child team_build, whose id keys the board."""
+        if self.detail and self.detail.run.workflow == "sdlc_intake":
+            for t in self.detail.tasks:
+                if t.ref == "run_team" and t.sub_workflow_id:
+                    return t.sub_workflow_id
+        return self._id
+
     def action_back(self) -> None:
         if self._timer:
             self._timer.stop()
@@ -322,14 +357,66 @@ class RunDetail(Screen):
             self.notify(f"terminate failed: {e}", severity="error")
         self.refresh_detail()
 
+    def _child_of_program(self) -> bool:
+        """A program's child team is driven by its program: retry or start over the program instead."""
+        inp = (self.detail.run.input or {}) if self.detail else {}
+        if inp.get("parentCorrelationId"):
+            self.notify("This is one team of a program: retry or start over the program instead.",
+                        severity="warning")
+            return True
+        return False
+
     def action_retry(self) -> None:
+        """Resume a failed, timed-out or stopped run from the step that ended it; finished work is kept."""
         if not self.detail or self.detail.run.running:
             self.app.bell()
             return
-        if not self.detail.run.status.startswith("FAIL") and self.detail.run.status != "TIMED_OUT":
-            self.app.bell()
+        status = self.detail.run.status
+        if self._child_of_program():
+            return
+        if status == "COMPLETED":
+            self.retry_unfinished()  # the console decides: only a run that did not deliver is retried
+            return
+        if not (status.startswith("FAIL") or status in ("TIMED_OUT", "TERMINATED")):
+            self.notify(f"Only a run that failed, was stopped or did not deliver can be retried (this one is "
+                        f"{status.lower()}); R starts it over.", severity="warning")
             return
         self.run_retry()
+
+    @work(group="mutate")
+    async def retry_unfinished(self) -> None:
+        import asyncio
+        from .. import console as console_mod
+        result = await asyncio.to_thread(console_mod.retry_run, self._id, server_url=self._server())
+        if result.get("ok"):
+            self.notify(f"retry started from this run's branch: {result['run'][:8]}")
+        else:
+            self.notify(result.get("error") or "the run was not retried", severity="warning")
+
+    def action_start_over(self) -> None:
+        """Start a NEW run with the same input. Conductor's restart would reuse the run id, and a swarm's
+        board is keyed by it: the restarted run would read the old run's items and count its spend twice."""
+        if not self.detail or self.detail.run.running:
+            self.app.bell()
+            return
+        run = self.detail.run
+        if self._child_of_program():
+            return
+        msg = (f"Start a new {run.workflow} run with the same request and settings, from the beginning and "
+               f"with a fresh budget? {fmt.short_id(run.id)} stays as it is.")
+        self.app.push_screen(ConfirmModal("Start over", msg, confirm_label="Start over",
+                                          on_confirm=self._do_start_over))
+
+    @work(group="mutate")
+    async def _do_start_over(self, _reason: str = "") -> None:
+        run = self.detail.run
+        try:
+            wid = await self.app.client.start(run.workflow, dict(run.input or {}))
+        except ConductorError as e:
+            self.notify(f"start over failed: {e}", severity="error")
+            return
+        self.notify(f"started over as {fmt.short_id(wid)}")
+        self.app.switch_screen(RunDetail(wid))
 
     @work(group="mutate")
     async def run_retry(self) -> None:
@@ -342,6 +429,79 @@ class RunDetail(Screen):
             self.app.notified.discard(self._id)
         except ConductorError as e:
             self.notify(f"retry failed: {e}", severity="error")
+
+    # ---------------------------------------------------- the run's result branch
+    # A finished run's work is a branch. F continues it with a follow-up run, P opens a pull request
+    # (a GitHub remote is configured), M merges it into the branch the work started from. The same
+    # logic as the web console's result card (console.run_result / prepare_continuation / ship_run).
+    def _server(self) -> str:
+        return getattr(self.app.client, "_base", "") or ""
+
+    async def _result(self) -> dict | None:
+        import asyncio
+        from .. import console as console_mod
+        status, wf = await asyncio.to_thread(
+            console_mod._conductor, "GET", f"/workflow/{self._id}?includeTasks=true", server_url=self._server())
+        if status != 200 or not isinstance(wf, dict):
+            return None
+        return await asyncio.to_thread(console_mod.run_result, {**wf, "workflowId": self._id},
+                                       server_url=self._server())
+
+    @work(group="mutate")
+    async def action_continue_run(self) -> None:
+        import asyncio
+        from .. import console as console_mod
+        result = await self._result()
+        if not result or not (result.get("actions") or {}).get("continue"):
+            self.notify("Only a finished run with a result branch can be continued.", severity="warning")
+            return
+        run = self.detail.run if self.detail else None
+        workflow = run.workflow if run and run.workflow in console_mod.LAUNCH_TYPES else "sdlc_intake"
+        try:
+            values = await asyncio.to_thread(console_mod.prepare_continuation, self._id, {}, workflow,
+                                             server_url=self._server())
+        except Exception as e:  # noqa: BLE001 - say exactly what stands in the way
+            self.notify(str(e), severity="error")
+            return
+        field = console_mod._TEXT_FIELD.get(workflow, "description")
+        values[field] = values[field].rstrip() + "\n\n"  # the follow-up is typed after what it builds on
+        from .launcher import LauncherForm
+        self.app.push_screen(LauncherForm(workflow, values, continues=self._id))
+        self.notify(f"Continuing from {result['branch']}; describe what to add at the end of the request.")
+
+    @work(group="mutate")
+    async def action_pull_request(self) -> None:
+        import asyncio
+        from .. import console as console_mod
+        out = await asyncio.to_thread(console_mod.ship_run, self._id, "pr", author="human:tui",
+                                      server_url=self._server())
+        if out.get("ok"):
+            self.notify(f"Pushing the branch and opening the pull request ({fmt.short_id(out['run'])}).")
+        else:
+            self.notify(out.get("error") or "The pull request was not started.", severity="error")
+
+    @work(group="mutate")
+    async def action_merge(self) -> None:
+        result = await self._result()
+        if not result or not (result.get("actions") or {}).get("merge"):
+            self.notify("This run's branch has nothing left to merge.", severity="warning")
+            return
+        msg = (f"Merge {result['branch']} into {result['base']} in {result['repo']}? A fast-forward when "
+               f"{result['base']} has not moved, otherwise a merge commit. A dirty checkout or a conflict "
+               "changes nothing.")
+        self.app.push_screen(ConfirmModal("Merge", msg, confirm_label="Merge", on_confirm=self._do_merge))
+
+    @work(group="mutate")
+    async def _do_merge(self, _reason: str = "") -> None:
+        import asyncio
+        from .. import console as console_mod
+        out = await asyncio.to_thread(console_mod.ship_run, self._id, "merge", author="human:tui",
+                                      server_url=self._server())
+        if out.get("ok"):
+            self.notify("Already merged." if out.get("already") else
+                        f"Merged into {out['into']}{' (fast-forward)' if out.get('fastForward') else ''}.")
+        else:
+            self.notify(out.get("error") or "Not merged.", severity="error")
 
     def action_rerun(self) -> None:
         if not self.detail:

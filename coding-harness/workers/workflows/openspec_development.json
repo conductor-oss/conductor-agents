@@ -198,7 +198,10 @@
         "modelPolicySha256": "${workflow.input.modelPolicySha256}",
         "modelsConfig": "${workflow.input.modelsConfig}",
         "modelOverrides": "${workflow.input.modelOverrides}",
-        "modelResolution": "${model_policy.output}"
+        "modelResolution": "${model_policy.output}",
+        "promptContext": {
+          "instruction": "${workflow.input.instruction}"
+        }
       },
       "type": "SIMPLE",
       "decisionCases": {},
@@ -275,8 +278,7 @@
             "decisionCases": {},
             "defaultCase": [],
             "subWorkflowParam": {
-              "name": "feature_campaign",
-              "version": 1
+              "name": "feature_campaign"
             }
           },
           {
@@ -323,8 +325,7 @@
             "decisionCases": {},
             "defaultCase": [],
             "subWorkflowParam": {
-              "name": "code_parallel",
-              "version": 1
+              "name": "code_parallel"
             }
           },
           {
@@ -394,7 +395,23 @@
                 },
                 "requirementResults": {
                   "items": {
-                    "type": "object"
+                    "type": "object",
+                    "properties": {
+                      "requirement": {
+                        "type": "string"
+                      },
+                      "passed": {
+                        "type": "boolean"
+                      },
+                      "evidence": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "requirement",
+                      "passed",
+                      "evidence"
+                    ]
                   },
                   "type": "array"
                 }
@@ -416,7 +433,13 @@
             "modelsConfig": "${workflow.input.modelsConfig}",
             "modelOverrides": "${workflow.input.modelOverrides}",
             "modelResolution": "${model_policy.output}",
-            "failSoft": true
+            "failSoft": true,
+            "promptContext": {
+              "previousJson": "${openspec_repair_context.output.previousJson}",
+              "childJson": "${openspec_repair_context.output.childJson}",
+              "testCycleState": "${workflow.variables.childOutput.testCycleState}",
+              "testReport": "${workflow.variables.childOutput.testReport}"
+            }
           },
           "type": "SIMPLE",
           "decisionCases": {},

@@ -35,7 +35,7 @@ echo "[run_workers] CONDUCTOR_SERVER_URL=$CONDUCTOR_SERVER_URL modules=${WORKER_
 # available for local-only work when it is absent.  Probe at startup so a
 # launchd/TUI environment regression is explicit in the worker log instead of
 # first surfacing as an opaque failure in a PR task.
-case ",${WORKER_MODULES:-coding_agent,gitops,campaign,openspec,automation,model_policy,revision}," in
+case ",${WORKER_MODULES:-coding_agent,gitops,campaign,openspec,automation,model_policy}," in
   *,gitops,*|*,campaign,*|*,openspec,*|*,automation,*)
     if gh auth status >/dev/null 2>&1; then
       echo "[run_workers] GitHub authentication preflight passed"

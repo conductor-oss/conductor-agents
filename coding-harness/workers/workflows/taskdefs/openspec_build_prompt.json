@@ -40,6 +40,10 @@
         "prompt": {
           "type": "string",
           "description": "Composed prompt instructing the agent to write exactly one OpenSpec artifact file, including rules, template, and any review feedback."
+        },
+        "promptContext": {
+          "type": "object",
+          "description": "The values of the openspec_artifact default prompt's placeholders."
         }
       },
       "required": [

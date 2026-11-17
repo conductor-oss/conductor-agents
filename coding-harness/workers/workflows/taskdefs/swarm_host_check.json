@@ -1,0 +1,12 @@
+{
+  "name": "swarm_host_check",
+  "description": "Record the run's platform packs and check this host has their tools; a missing toolchain waits for an approver to set the host up.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

@@ -1,0 +1,18 @@
+{
+  "name": "program_outcome",
+  "description": "cc_program (roadmap Phase 6, G4): fold a program build into an honest report — the dependency ranks, whether every subsystem landed in dependency order on the shared program branch, and whether cross-subsystem integration is green. A non-DAG plan is reported PROGRAM_PLAN_CYCLIC rather than looping.",
+  "retryCount": 1, "retryLogic": "FIXED", "retryDelaySeconds": 1,
+  "timeoutSeconds": 0, "responseTimeoutSeconds": 0, "pollTimeoutSeconds": 0, "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {"name": "program_outcome_input", "type": "JSON", "data": {"type": "object", "properties": {
+    "subsystems": {"type": ["array", "string"]}, "delivered": {"type": ["boolean", "string"]},
+    "verdict": {"type": "string"}, "doneCount": {"type": ["integer", "string"]}, "total": {"type": ["integer", "string"]},
+    "testsPassed": {"type": ["boolean", "string", "null"]}, "finalHead": {"type": "string"}
+  }}},
+  "outputSchema": {"name": "program_outcome_output", "type": "JSON", "data": {"type": "object", "properties": {
+    "programDelivered": {"type": "boolean"},
+    "verdict": {"type": "string", "enum": ["PROGRAM_DELIVERED", "PROGRAM_INCOMPLETE", "PROGRAM_PLAN_CYCLIC"]},
+    "ranks": {"type": "array"}, "cyclic": {"type": "array"}, "report": {"type": "string"},
+    "lessons": {"type": "array", "description": "Decayable repo_memory lessons, one per subsystem (refs = its files)."}
+  }, "required": ["programDelivered", "verdict", "report"]}}
+}

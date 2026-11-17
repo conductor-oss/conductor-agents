@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import json
+import time
 import fnmatch
 import re
 import shlex
@@ -42,7 +43,6 @@ _JS_RUNNERS = {"jest", "vitest", "mocha", "ava", "tap"}
 _BROWSER_RUNNERS = {"playwright", "cypress"}
 _GRADLE_GOALS = {"test", "check", "build"}
 _MAVEN_GOALS = {"test", "verify", "package"}
-_SCRIPT_GOALS = {"test", "check", "build"}
 _MAKE_GOALS = {"test", "check", "build"}
 _GENERATED_PARTS = {".gradle", ".gradle-local", ".conductor-verify-build", "build", "target", "dist",
                     "out", "coverage", "__pycache__", ".pytest_cache", ".ruff_cache", ".tox"}
@@ -69,14 +69,10 @@ _HEAVY_MARKERS = ("acceptance", "benchmark", "docker", "e2e", "integration", "pe
 # allowlist above -- and stays untouched by this exemption.
 _FILTER_FLAGS_WITH_SEPARATE_VALUE = {"--tests", "--filter", "-R"}
 _FILTER_VALUE_PREFIXES = ("-Dtest=", "TEST=", "SPEC=")
-_SAFE_ENV_KEYS = (
-    "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TEMP", "TMP",
-    "SYSTEMROOT", "WINDIR", "COMSPEC", "SSL_CERT_FILE", "SSL_CERT_DIR",
-    "REQUESTS_CA_BUNDLE",
-)
 _GRADLE_PROJECT_DIR = re.compile(
     r"project\(\s*['\"]:(?P<name>[^'\"]+)['\"]\s*\)\s*\.projectDir\s*=\s*file\(\s*['\"](?P<directory>[^'\"]+)['\"]\s*\)"
 )
+_GRADLE_ROOT_NAME = re.compile(r"rootProject\.name\s*=\s*['\"](?P<value>[^'\"]+)['\"]")
 _GRADLE_ROOT_CHILD_RENAME = re.compile(
     r"rootProject\.children\.each\s*\{[^\n]*?\.name\s*=\s*['\"](?P<prefix>[^'\"]*)\$\{[^}]*\.name\}(?P<suffix>[^'\"]*)['\"]"
 )
@@ -104,10 +100,8 @@ class VerificationBlocked(ValueError):
 
     def __init__(self, message: str, *, changed_paths: list[str] | None = None) -> None:
         super().__init__(message)
-        # Carried so a caller that must fail soft (test_discover's blocked
-        # branch) can still report what was changed -- e.g. the
-        # allowAgentAuthoredTests content check needs this even when
-        # discovery itself found no runnable command.
+        # Carried so a caller that must fail soft (test_discover's invalid-input branch) can still
+        # report what was changed.
         self.changed_paths = list(changed_paths) if changed_paths else []
 
 
@@ -160,10 +154,18 @@ def runtime_requirements(repo_path: str | Path) -> dict[str, str]:
         match = re.search(r"(?P<version>\d+(?:\.\d+)?)", python_text)
     if match:
         requirements["python"] = match.group("version")
+    # requires-python is a range, like package.json's engines. Reading ">=3.9" as the bare version 3.9
+    # refused every newer interpreter as infrastructure failure (run c2ccb06d: Python 3.14.5).
+    declared = re.search(r"requires-python\s*=\s*['\"](?P<range>[^'\"]+)['\"]", python_text, re.I)
+    if declared:
+        requirements["python"] = " ".join(declared.group("range").replace(",", " ").split())
 
     go = _GO_VERSION.search(_read_first(root, ("go.mod",)))
     if go:
-        requirements["go"] = go.group("version")
+        # The `go` directive is the MINIMUM language version the module needs, never a toolchain pin:
+        # read as a bare version it refused go 1.26 for a module declaring `go 1.21`, the program's
+        # integration check stayed red at every head and the Architect's ladder looped (run 3c84dd5d).
+        requirements["go"] = ">=" + go.group("version")
     rust = _RUST_CHANNEL.search(_read_first(root, ("rust-toolchain.toml", "rust-toolchain")))
     if rust:
         requirements["rust"] = rust.group("version")
@@ -286,7 +288,13 @@ def validate_argv(argv: object, *, allow_heavy: bool = False, root: Path | None 
         if not after_goal_flag or after_goal_flag[0] not in {"test", "build", "check", "vet"}:
             raise VerificationBlocked(f"unsupported {command} verification invocation")
     if command in _JAVA_ENTRYPOINTS:
-        options_with_values = {"--tests", "-pl", "--projects", "-f", "--file"}
+        # Options whose NEXT argv slot holds a value rather than a goal.
+        # Gradle's -p/--project-dir names a project directory: without it
+        # listed here that directory was counted as a second "goal", so every
+        # nested-project `gradle -p <dir> test` candidate this module infers
+        # was rejected as having no single explicit goal.
+        options_with_values = {"--tests", "-pl", "--projects", "-f", "--file",
+                               "-p", "--project-dir"}
         goals: list[str] = []
         skip = False
         for value in values[1:]:
@@ -334,105 +342,6 @@ def validate_argv(argv: object, *, allow_heavy: bool = False, root: Path | None 
     return values
 
 
-def validate_remediation_argv(argv: object, *, root: Path | None = None) -> list[str]:
-    """Enforce the remediation-loop scope invariant.
-
-    This is intentionally stricter than :func:`validate_argv`, which remains
-    useful for one-shot/manual checks.  Every accepted form names an exact test
-    or an affected build unit; no root-level test/build fallback exists.
-    """
-    values = validate_argv(argv, root=root)
-    command = values[0]
-    if command in {"./gradlew", "gradle"}:
-        tasks = [value for value in values[1:] if value.startswith(":")]
-        exact_root_test = "--tests" in values and "test" in values[1:]
-        if not tasks and not exact_root_test:
-            raise VerificationBlocked("remediation refuses a repository-wide Gradle command")
-    elif command in {"./mvnw", "mvn"}:
-        if "-pl" not in values and "--projects" not in values and not any(value.startswith("-Dtest=") for value in values):
-            raise VerificationBlocked("remediation refuses a repository-wide Maven command")
-    elif command == "npm":
-        if "--workspace" not in values and not any(value.startswith("--workspace=") for value in values) and not _has_path_filter(values):
-            raise VerificationBlocked("remediation requires a npm workspace target or explicit test files")
-    elif command == "pnpm":
-        if "--filter" not in values and not any(value.startswith("--filter=") for value in values) and not _has_path_filter(values):
-            raise VerificationBlocked("remediation requires a pnpm workspace target or explicit test files")
-    elif command == "yarn":
-        workspace = len(values) >= 4 and values[1] == "workspace"
-        if not workspace and not _has_path_filter(values):
-            raise VerificationBlocked("remediation requires a yarn workspace target or explicit test files")
-    elif command == "pytest":
-        targets = [value for value in values[1:] if not value.startswith("-")]
-        if not targets or any(value in {".", "./", "tests"} for value in targets):
-            raise VerificationBlocked("remediation requires explicit pytest files")
-    elif command == "go":
-        packages = [value for value in values[2:] if not value.startswith("-")]
-        if not packages or any(value in {"./...", "..."} for value in packages):
-            raise VerificationBlocked("remediation requires explicit Go package directories")
-    elif command == "cargo":
-        if "-p" not in values and "--package" not in values:
-            raise VerificationBlocked("remediation requires an explicit Cargo package")
-    elif command == "cmake":
-        configure = values[1:] == ["-S", ".", "-B", ".conductor-verify-build"]
-        scoped_build = (len(values) >= 5 and values[1:3] == ["--build", ".conductor-verify-build"]
-                        and "--target" in values and values[-1] != "--target")
-        if not configure and not scoped_build:
-            raise VerificationBlocked("remediation permits only an isolated CMake configure or explicit target build")
-    elif command == "ctest":
-        if "--test-dir" not in values or ".conductor-verify-build" not in values or "-R" not in values:
-            raise VerificationBlocked("remediation requires an exact CTest name filter")
-    elif command == "swift":
-        if len(values) < 4 or values[1] != "test" or "--filter" not in values:
-            raise VerificationBlocked("remediation requires a SwiftPM test target filter")
-    elif command == "dotnet":
-        targets = [value for value in values[2:] if not value.startswith("-")]
-        if not targets and not any(value.startswith("--filter") for value in values):
-            raise VerificationBlocked("remediation requires an explicit .NET project or --filter")
-    elif command == "composer":
-        if not any(value.startswith("--filter") or value.endswith("Test.php") for value in values):
-            raise VerificationBlocked("remediation requires a PHPUnit --filter or exact test file")
-    elif command == "mix":
-        targets = [value for value in values[2:] if not value.startswith("-")]
-        if not targets:
-            raise VerificationBlocked("remediation requires an explicit mix test path")
-    elif command == "sbt":
-        if "/" not in values[1]:
-            raise VerificationBlocked("remediation requires a project-scoped sbt task")
-    elif command == "bazel":
-        targets = [value for value in values[2:] if value.startswith("//")]
-        if not targets or any(value.endswith("/...") for value in targets):
-            raise VerificationBlocked("remediation requires exact Bazel test targets")
-    elif command == "bundle":
-        runner = values[2] if len(values) > 2 else ""
-        if runner == "rspec":
-            targets = [value for value in values[3:] if not value.startswith("-")]
-            if not targets or any(value in {".", "./", "spec"} for value in targets):
-                raise VerificationBlocked("remediation requires explicit rspec spec files")
-        elif runner == "rake":
-            if not any(value.startswith(("TEST=", "SPEC=")) for value in values):
-                raise VerificationBlocked("remediation requires an exact rake TEST= target")
-        else:
-            raise VerificationBlocked("remediation requires bundle exec rspec or rake")
-    elif command == "make":
-        # Evidence for make is the weakest of any planner, so the target must be
-        # a test-shaped one this Makefile actually declares; a bare `make build`
-        # proves nothing about the changed files.
-        if len(values) < 2 or not _TEST_TARGET.search(values[1]) \
-                or values[1] in _GENERIC_MAKE_TARGETS:
-            raise VerificationBlocked("remediation requires a qualified make test target")
-    else:
-        raise VerificationBlocked(f"{command} has no deterministic changed-scope remediation adapter")
-    return values
-
-
-def _has_path_filter(values: list[str]) -> bool:
-    """True when the argv passes explicit file targets through to the runner."""
-    if "--" not in values:
-        return [value for value in values[2:] if not value.startswith("-")] != []
-    tail = values[values.index("--") + 1:]
-    return any(not value.startswith("-") and "/" in value for value in tail)
-
-
 def validate_configured_argv(argv: object, *, allow_heavy: bool = False,
                              root: Path | None = None) -> list[str]:
     """Validate a repository-mapped scoped command without a tool allowlist."""
@@ -473,6 +382,41 @@ def _prepared_scoped(entrypoint: str, argv: list[str], directory: str) -> list[s
     return None
 
 
+def _tracked(root: Path) -> set[str] | None:
+    """Paths git tracks under ``root``, relative to it; ``None`` outside a repository, where what is
+    on disk is all there is."""
+    result = git.git(str(root), "ls-files", "-z", check=False)
+    if result.code != 0:
+        return None
+    return {p for p in result.stdout.split("\0") if p}
+
+
+def _committed(root: Path, path: Path, tracked: set[str] | None) -> bool:
+    return tracked is None or _relative(root, path) in tracked
+
+
+# Build systems that resolve dependencies inside the build itself: for them the test command IS the
+# dependency install, so it needs the registry exactly as the prepare phase does.
+_RESOLVES_DURING_BUILD = frozenset({"mvn", "./mvnw", "mvnw", "gradle", "./gradlew", "gradlew", "cargo", "go",
+                                    "dotnet", "sbt", "mill", "bazel", "bazelisk", "swift"})
+
+
+def _needs_network(command: dict) -> bool:
+    """Whether a check command runs with the network on inside the OS sandbox.
+
+    The PREPARE phase (the dependency install) needs the registry: a fresh folder has a cold dependency
+    cache, and a sandboxed `npm install` sat in npm's retry backoff for 60 s or more in every final test
+    cycle (runs 74bd988c, 377b3cd9). So does a build system that resolves while it builds: a sandboxed
+    `mvn test` could not fetch the parent POM nor the surefire plugin ("Operation not permitted"), every
+    item of three teams ended tests_failed_fix_unavailable, and each burned a repair session on a failure
+    no code change fixes (run afb90941). Everything else runs with loopback only.
+    """
+    if command.get("phase") == "prepare":
+        return True
+    argv = command.get("argv") or []
+    return bool(argv) and str(argv[0]) in _RESOLVES_DURING_BUILD
+
+
 def _prepare_commands(root: Path) -> list[dict]:
     """Return the dependency install(s) a fresh clone needs before it can test.
 
@@ -489,6 +433,10 @@ def _prepare_commands(root: Path) -> list[dict]:
     """
     found: list[dict] = []
     covered: set[str] = set()
+    # Only a TRACKED lock file counts: the verification clone has what is committed, not what an agent's
+    # own `npm install` left in a shared working tree (calc27: `npm ci` ran in a clone with no lock file
+    # and every item's cycle failed at the install step before a single test ran).
+    tracked = _tracked(root)
     for detector, argv in (
         ("pnpm-lock.yaml", ["pnpm", "install", "--frozen-lockfile"]),
         ("package-lock.json", ["npm", "ci"]),
@@ -497,6 +445,8 @@ def _prepare_commands(root: Path) -> list[dict]:
         ("mix.lock", ["mix", "deps.get"]),
     ):
         for manifest in _scan(root, detector):
+            if not _committed(root, manifest, tracked):
+                continue
             directory = _relative(root, manifest.parent) or "."
             scoped = _prepared_scoped(argv[0], argv, directory)
             if scoped is None or directory in covered:
@@ -508,7 +458,7 @@ def _prepare_commands(root: Path) -> list[dict]:
                           "coveredPaths": []})
     for manifest in _scan(root, "yarn.lock"):
         directory = _relative(root, manifest.parent) or "."
-        if directory in covered:
+        if directory in covered or not _committed(root, manifest, tracked):
             continue
         berry = (manifest.parent / ".yarnrc.yml").is_file()
         argv = ["yarn", "install", "--immutable" if berry else "--frozen-lockfile"]
@@ -519,9 +469,10 @@ def _prepare_commands(root: Path) -> list[dict]:
         found.append({"argv": scoped, "source": f"prepare:yarn.lock:{directory}", "kind": "prepare",
                       "phase": "prepare", "scope": "affected",
                       "affectedUnit": f"dependencies:{directory}", "coveredPaths": []})
+    # A committed package.json with no committed lock file still needs its install: `npm install`.
     for manifest in _scan(root, "package.json"):
         directory = _relative(root, manifest.parent) or "."
-        if directory in covered:
+        if directory in covered or not _committed(root, manifest, tracked):
             continue
         scoped = _prepared_scoped("npm", ["npm", "install", "--no-audit", "--no-fund"], directory)
         if scoped is None:
@@ -572,175 +523,12 @@ _PREPARE_ARGVS = [
 ]
 
 
-def prepare_failure_outcome(root: Path, changed_paths: list[str]) -> str:
-    """Classify a failed dependency install as the candidate's fault or the host's.
-
-    A broken manifest or lockfile edit is a real defect and should consume the
-    repair budget. A registry outage is not, and burning four agent turns on it
-    would only reproduce the same failure.
-    """
-    for path in changed_paths:
-        if Path(path).name in _BUILD_METADATA_NAMES | _LOCKFILE_NAMES:
-            return "code_failed"
-    return "infra_blocked"
-
-
-_LOCKFILE_NAMES = {
-    "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "Gemfile", "Gemfile.lock",
-    "composer.json", "composer.lock", "mix.exs", "mix.lock", "packages.lock.json",
-}
-
-
 def validate_repository_argv(argv: object, *, allow_heavy: bool = False,
                              root: Path | None = None) -> list[str]:
-    """Validate a repository-wide command for a deliberate full-suite run.
-
-    :func:`validate_remediation_argv` refuses every repository-wide form, so a
-    full run needs its own adapter: the entrypoint allowlist, shell-syntax
-    refusal and per-tool goal rules of :func:`validate_argv` still apply, but
-    the changed-scope requirement does not.  This is the only path that may run
-    the whole suite, and it is reachable only when the caller asked for
-    ``mode="full"``.
-    """
+    """Validate a repository-wide command for a deliberate full-suite run: the entrypoint allowlist,
+    shell-syntax refusal and per-tool goal rules of :func:`validate_argv`, with heavy suites admitted
+    when the caller asked for them."""
     return validate_argv(argv, allow_heavy=allow_heavy, root=root)
-
-
-_AGENT_PATH_LIKE_SUFFIXES = {".py", ".rb", ".go", ".rs", ".java", ".kt", ".js", ".jsx", ".ts", ".tsx",
-                            ".exs", ".ex", ".php", ".cs", ".fs", ".swift", ".scala"}
-
-
-def _agent_path_like(token: str) -> bool:
-    """True when an argv token looks like a file this proposal must prove exists."""
-    return "/" in token or Path(token).suffix in _AGENT_PATH_LIKE_SUFFIXES
-
-
-def _looks_like_test_file(path: str) -> bool:
-    """A conservative, language-neutral guess used only for anti-omission.
-
-    Being too permissive here only means an agent proposal must explicitly
-    cover one more file than strictly necessary, which is the safe direction
-    to err in; being too strict would let a proposal quietly omit a test.
-    """
-    if Path(path).suffix.lower() in _NO_TEST_EXTENSIONS:
-        return False
-    name = Path(path).name.lower()
-    return "test" in name or "spec" in name
-
-
-def _present(root: Path, *names: str) -> bool:
-    """True if any of these manifest names exists anywhere in the repo, not just at
-    its root -- a polyglot repo (or, as here, one that intentionally keeps every
-    scenario self-contained under its own directory to avoid cross-run collisions)
-    legitimately has no root-level manifest at all. Uses the same vendored/generated
-    exclusion as ``_scan`` so a dependency's own build file is never mistaken for
-    this repository's."""
-    return any(_scan(root, name) for name in names)
-
-
-def _detected_build_systems(root: Path) -> set[str]:
-    """Which of this module's known entrypoints this repository shows evidence of.
-
-    An agent proposing ``swift test`` in a repository with no ``Package.swift``
-    is not a command that happened to work by chance; it is refused outright,
-    the same way every planner above already only ever offers a command for a
-    build system it can point at real evidence for. Evidence anywhere in the
-    tree counts (excluding vendored/generated paths, see ``_scan``) -- a nested,
-    self-contained project is just as real as one rooted at the repository top.
-    """
-    detected: set[str] = set()
-    if _present(root, "gradlew"):
-        detected.add("./gradlew")
-    if _present(root, "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"):
-        detected.add("gradle")
-    if _present(root, "mvnw"):
-        detected.add("./mvnw")
-    if _present(root, "pom.xml"):
-        detected.add("mvn")
-    if _present(root, "package.json"):
-        detected.update({"npm", "pnpm", "yarn"})
-    if _present(root, "pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg"):
-        detected.add("pytest")
-    if _present(root, "go.mod"):
-        detected.add("go")
-    if _present(root, "Cargo.toml"):
-        detected.add("cargo")
-    if _present(root, "CMakeLists.txt"):
-        detected.update({"cmake", "ctest"})
-    if _present(root, "Package.swift"):
-        detected.add("swift")
-    if _present(root, "Makefile", "GNUmakefile"):
-        detected.add("make")
-    if _present(root, "Gemfile"):
-        detected.add("bundle")
-    if _present(root, "*.csproj", "*.fsproj"):
-        detected.add("dotnet")
-    if _present(root, "composer.json"):
-        detected.add("composer")
-    if _present(root, "mix.exs"):
-        detected.add("mix")
-    if _present(root, "build.sbt"):
-        detected.add("sbt")
-    if _present(root, "MODULE.bazel", "WORKSPACE", "WORKSPACE.bazel"):
-        detected.add("bazel")
-    return detected
-
-
-def validate_agent_argv(proposals: object, *, mode: str = "targeted", root: Path,
-                        changed_paths: list[str]) -> list[dict]:
-    """Validate an agent's proposed test-command plan -- the strictest layer.
-
-    Every other layer in this module either comes from evidence the candidate
-    cannot rewrite in its own favor (build metadata) or from a human who typed
-    a command at launch time. An agent proposal comes from the same actor
-    whose change is being judged, so it earns the strictest gate: every
-    entrypoint must belong to a build system this repository actually shows
-    evidence of; every path-like token must resolve to a real file at this
-    checkout (no hallucinated targets); every claimed covered path must be a
-    real changed path (no manufacturing coverage of paths never touched); and,
-    outside full mode, every changed file that looks like a test must be
-    covered by some proposal, so the agent cannot omit the one test that would
-    have caught its own regression.
-    """
-    if not isinstance(proposals, list) or not proposals:
-        raise VerificationBlocked("agent proposed no test commands")
-    detected = _detected_build_systems(root)
-    base_validator = validate_repository_argv if mode == "full" else validate_remediation_argv
-    validated: list[dict] = []
-    covered: set[str] = set()
-    for index, entry in enumerate(proposals):
-        if not isinstance(entry, dict):
-            raise VerificationBlocked(f"agent proposal[{index}] must be a command object")
-        argv = base_validator(entry.get("argv"), root=root)
-        if argv[0] not in detected:
-            raise VerificationBlocked(
-                f"agent proposed {argv[0]}, but this repository shows no evidence of a {argv[0]} project")
-        for token in argv[1:]:
-            if _agent_path_like(token) and not _names_existing_path(root, token):
-                raise VerificationBlocked(f"agent proposal references a nonexistent path: {token}")
-        raw_covered = entry.get("coveredPaths")
-        proposal_covered = [path for path in raw_covered if isinstance(path, str) and path] \
-            if isinstance(raw_covered, list) else []
-        unknown = sorted(set(proposal_covered) - set(changed_paths))
-        if unknown:
-            raise VerificationBlocked(
-                "agent claimed coverage of paths outside the candidate diff: " + ", ".join(unknown[:10]))
-        covered.update(proposal_covered)
-        raw_roots = entry.get("repairRoots")
-        repair_roots = [path for path in raw_roots if isinstance(path, str) and path] \
-            if isinstance(raw_roots, list) else []
-        validated.append({
-            "argv": argv, "source": "agent-proposal", "kind": "agent",
-            "scope": "repository" if mode == "full" else ("focused" if proposal_covered else "affected"),
-            "affectedUnit": str(entry.get("affectedUnit") or argv[0]),
-            "coveredPaths": proposal_covered, "repairRoots": repair_roots,
-        })
-    if mode != "full":
-        omitted = sorted(path for path in changed_paths
-                         if _looks_like_test_file(path) and path not in covered)
-        if omitted:
-            raise VerificationBlocked(
-                "agent proposal omits changed test files: " + ", ".join(omitted[:10]))
-    return validated
 
 
 _BROWSER_CONFIG_NAMES = ("playwright.config.ts", "playwright.config.js",
@@ -838,14 +626,14 @@ def _python_test_files(root: Path) -> list[Path]:
     Python project with zero packaging metadata.  Requiring that metadata
     before even considering pytest made a freshly bootstrapped repository
     unverifiable purely because nothing had yet given it packaging metadata --
-    confirmed live: a real, fully-passing delivery reported
-    ``command_discovery_blocked`` for exactly this reason.
+    confirmed live: a real, fully-passing delivery was reported unverifiable
+    for exactly this reason.
     """
     return [path for path in root.rglob("*.py") if _TEST_FILE.search(path.relative_to(root).as_posix())
            and not any(part.startswith(".") for part in path.relative_to(root).parts)]
 
 
-def _inferred_candidates(root: Path) -> list[dict]:
+def _inferred_candidates(root: Path, rejected: list[dict] | None = None, *, allow_heavy: bool = False) -> list[dict]:
     """Fallback only when CI does not expose a simple safe command.
 
     Every manifest location for every recognized build system contributes its
@@ -877,8 +665,20 @@ def _inferred_candidates(root: Path) -> list[dict]:
     wrapper_dirs = {directory for _, directory in scoped("gradlew") if directory == "."}
     if wrapper_dirs:
         choices.append((["./gradlew", "test"], "build-system:gradle-wrapper:."))
+    # A module a root settings file `include`s is a SUBPROJECT of one build,
+    # not an independent nested project: the root build's own `test` task
+    # already schedules `:<module>:test` for every one of them (verified
+    # against a 25-module build). Emitting a second standalone command per
+    # module re-runs exactly the same tests, and because execution stops at
+    # the first command that cannot start, each redundant command is another
+    # chance to convert a passing run into a blocked one -- a bare `gradle`
+    # is not installed on every host that has the repository's own wrapper.
+    # Only a genuinely independent nested project (not part of the root
+    # build) still earns its own command, which is the accumulating
+    # multi-project test repository this fan-out exists for.
+    subproject_dirs = set(_gradle_project_directories(root))
     gradle_dirs = sorted({directory for name in ("build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts")
-                          for _, directory in scoped(name)} - wrapper_dirs)
+                          for _, directory in scoped(name)} - wrapper_dirs - subproject_dirs)
     for directory in gradle_dirs:
         choices.append((["gradle", "-p", directory, "test"], f"build-system:gradle:{directory}"))
 
@@ -927,8 +727,25 @@ def _inferred_candidates(root: Path) -> list[dict]:
             continue
         choices.append((["dotnet", "test", _relative(root, manifest)], f"build-system:dotnet:{directory}"))
 
-    return [{"argv": validate_argv(argv), "source": source, "kind": "inferred"}
-            for argv, source in choices]
+    candidates: list[dict] = []
+    for argv, source in choices:
+        # One unrepresentable inferred candidate must not abort the whole
+        # inference -- the same rule _changed_scope_candidates already
+        # applies to its planners. These argvs are synthesized here from
+        # build files rather than chosen by a caller, so a single nested
+        # project this module cannot yet express (or one that trips the
+        # heavy-marker filter) has to be dropped, leaving the rest --
+        # including the repository-root wrapper command -- to carry the run.
+        # Raising instead let one nested module leave a fully testable repository untested.
+        try:
+            validated = validate_argv(argv, allow_heavy=allow_heavy)
+        except VerificationBlocked as exc:
+            if rejected is not None:
+                rejected.append({"argv": [str(value) for value in argv],
+                                 "source": source, "reason": str(exc)})
+            continue
+        candidates.append({"argv": validated, "source": source, "kind": "inferred"})
+    return candidates
 
 
 def _changed_paths(root: Path, candidate_commit: str | None) -> list[str]:
@@ -962,11 +779,25 @@ def _changed_paths(root: Path, candidate_commit: str | None) -> list[str]:
     return [path[len(prefix):] for path in paths if path.startswith(prefix)]
 
 
+def _resolve_gradle_name(text: str, root_name: str | None) -> str | None:
+    """Substitute ${rootProject.name} in a settings-file string literal.
+
+    Returns None when any interpolation survives, so the caller drops the
+    mapping instead of emitting a Gradle task path containing a literal
+    "${...}" that Gradle cannot resolve.
+    """
+    if root_name:
+        for form in ("${rootProject.name}", "$rootProject.name"):
+            text = text.replace(form, root_name)
+    return None if "$" in text else text
+
+
 def _gradle_project_directories(root: Path) -> dict[str, str]:
     """Map project directories to Gradle project paths from settings files."""
     mapping: dict[str, str] = {}
     includes: set[str] = set()
     root_child_rename: tuple[str, str] | None = None
+    root_name: str | None = None
     for name in ("settings.gradle", "settings.gradle.kts"):
         path = root / name
         if not path.is_file():
@@ -980,6 +811,9 @@ def _gradle_project_directories(root: Path) -> dict[str, str]:
         rename = _GRADLE_ROOT_CHILD_RENAME.search(text)
         if rename:
             root_child_rename = (rename.group("prefix"), rename.group("suffix"))
+        declared = _GRADLE_ROOT_NAME.search(text)
+        if declared:
+            root_name = declared.group("value").strip()
         for line in text.splitlines():
             if not _GRADLE_INCLUDE_LINE.search(line) or "includeBuild" in line:
                 continue
@@ -992,8 +826,17 @@ def _gradle_project_directories(root: Path) -> dict[str, str]:
         if any((root / directory / build).is_file() for build in ("build.gradle", "build.gradle.kts")):
             project_parts = name.split(":")
             if root_child_rename:
-                prefix, suffix = root_child_rename
-                project_parts[0] = prefix + project_parts[0] + suffix
+                # A rename prefix/suffix may itself interpolate
+                # ${rootProject.name} ("${rootProject.name}-${it.name}" is the
+                # common multi-module idiom). Substituting it is what makes the
+                # resulting project path real; leaving it literal produced task
+                # paths like ":${rootProject.name}-common:test" that Gradle
+                # rejects. If any interpolation is still unresolved, drop the
+                # mapping rather than invent a project name.
+                resolved = [_resolve_gradle_name(part, root_name) for part in root_child_rename]
+                if any(part is None for part in resolved):
+                    continue
+                project_parts[0] = resolved[0] + project_parts[0] + resolved[1]
             mapping.setdefault(directory, ":" + ":".join(project_parts))
     return mapping
 
@@ -1044,13 +887,6 @@ def _targeted_gradle_candidates(root: Path, changed_paths: list[str]) -> list[di
                            "coveredPaths": [path for path in changed_paths
                                             if (match := _JVM_TEST_PATH.match(path)) and not match.group("module")]})
     return candidates
-
-
-def _root_gradle_build(argv: list[str]) -> bool:
-    """A root build is broader than this verifier is allowed to select."""
-    if not argv or argv[0] not in {"./gradlew", "gradle"}:
-        return False
-    return "build" in argv[1:] and not any(value.startswith(":") for value in argv[1:])
 
 
 def _maven_modules(root: Path) -> dict[str, str]:
@@ -1201,11 +1037,9 @@ _JS_SPEC_SUFFIXES = (".test.", ".spec.")
 
 
 def _js_runner_accepts_paths(root: Path, directory: str) -> bool:
-    """Only pass file filters to a runner that takes them non-interactively.
-
-    Older vitest defaults to watch mode, which would hang a verification run
-    forever, so a vitest script only qualifies once it already says `run`.
-    """
+    """Only pass file filters to a runner that takes them as positional test files (a browser runner
+    takes projects, not files). Vitest runs once, not in watch mode, because every verification
+    environment sets ``CI=1`` (check_execution.inherited_environment)."""
     manifest = (root / directory / "package.json") if directory != "." else (root / "package.json")
     try:
         script = str((json.loads(manifest.read_text(encoding="utf-8")).get("scripts") or {}).get("test", ""))
@@ -1215,11 +1049,7 @@ def _js_runner_accepts_paths(root: Path, directory: str) -> bool:
     runner = next((token for token in tokens if Path(token).name in _JS_RUNNERS), "")
     if not runner:
         return False
-    if Path(runner).name in _BROWSER_RUNNERS:
-        return False
-    if Path(runner).name == "vitest" and "run" not in tokens:
-        return False
-    return True
+    return Path(runner).name not in _BROWSER_RUNNERS
 
 
 def _js_spec_files(root: Path, directory: str, covered: list[str]) -> list[str]:
@@ -1865,6 +1695,17 @@ def _isolated_environment(
     )
 
 
+def _with_checkout_importable(env: dict[str, str], argv: list[str], checkout: str) -> dict[str, str]:
+    """Bare ``pytest`` puts the test file's own directory on the import path, not the checkout root as
+    ``python -m pytest`` does. A correct acceptance test in tests/acceptance/ importing a root module then
+    died at collection, a repair agent patched sys.path into the frozen test, the reviewers refused the
+    amendment, and the item looped until the budget ran out (run 5e510556)."""
+    if not argv or os.path.basename(str(argv[0])) != "pytest":
+        return env
+    existing = env.get("PYTHONPATH") or ""
+    return {**env, "PYTHONPATH": os.pathsep.join(p for p in (checkout, existing) if p)}
+
+
 def _java_runtime_reason(env: dict[str, str]) -> str | None:
     """Return a diagnostic when the isolated environment cannot start Java."""
     java_home = env.get("JAVA_HOME", "")
@@ -1877,16 +1718,6 @@ def _java_runtime_reason(env: dict[str, str]) -> str | None:
         return None
     detail = str(probe.get("reason") or "unknown Java startup failure").strip().replace("\n", " ")
     return f"verification worker found Java at {java}, but it could not start: {detail[:500]}"
-
-
-def java_runtime_available() -> bool:
-    """Whether the worker can start its default JDK outside a candidate checkout."""
-    java_home = _java_home(None)
-    env = dict(os.environ)
-    if java_home:
-        env["JAVA_HOME"] = java_home
-        env["PATH"] = f"{java_home}/bin:{env.get('PATH', '')}"
-    return _java_runtime_reason(env) is None
 
 
 def runtime_capabilities() -> dict[str, dict]:
@@ -2082,7 +1913,33 @@ def _requires_verification_scope(path: str) -> bool:
         return False
     if candidate.name in _BUILD_METADATA_NAMES:
         return True
-    return not any(part in {"docs", ".github"} for part in candidate.parts)
+    # `.cc/` is the harness's own metadata on the branch (the program's definition of done and its
+    # external checks), never code under test: a team whose branch received the Architect's contract
+    # commit while it built had every changed path unmappable and its final cycle blocked (run 884f7eec).
+    return not any(part in {"docs", ".github", ".cc"} for part in candidate.parts)
+
+
+def repository_suite_available(repo_path: str) -> bool:
+    """Whether the repository has a whole-suite command: documented, or inferred from its build."""
+    try:
+        return bool(discover_commands(repo_path, None, mode="full").get("candidates"))
+    except Exception:  # noqa: BLE001 - "cannot tell" must not change what a caller would otherwise do
+        return False
+
+
+def integration_test_mode(repo_path: str, candidate_commit: str) -> dict:
+    """How to test a merged change: targeted when its files map to exact tests, so a large repository
+    stays fast, otherwise the repository's own suite (after the merge the whole suite is the right
+    proof; a repository with only ``make test`` was never tested at all before this, run 1117790e)."""
+    try:
+        discovered = discover_commands(repo_path, candidate_commit, mode="targeted")
+    except Exception as exc:  # noqa: BLE001 - the test cycle reports the real problem
+        return {"testMode": "targeted", "reason": f"mode selection failed: {exc}"}
+    if discovered["coverage"] == "repository":
+        return {"testMode": "full", "reason": "the changed files have no exact tests: running the repository suite"}
+    if discovered["executionOutcome"] == "discovered":
+        return {"testMode": "targeted", "reason": "the changed files map to exact tests"}
+    return {"testMode": "targeted", "reason": str(discovered.get("reason") or discovered["executionOutcome"])}
 
 
 def validator_for(candidate: dict, *, mode: str = "targeted"):
@@ -2100,12 +1957,14 @@ def validator_for(candidate: dict, *, mode: str = "targeted"):
         return validate_repository_argv
     if candidate.get("adapter") == "configured":
         return validate_configured_argv
-    return validate_remediation_argv
+    return validate_argv
 
 
 # Toolchains whose test runner is installed by the project, not the host, so a
 # fresh clone cannot run them until dependencies are fetched.
 _NEEDS_PREPARE = {"npm", "pnpm", "yarn", "bundle", "rspec", "rake", "composer", "mix", "dotnet"}
+# Toolchains that fetch their own dependencies as part of the build: no install step precedes them.
+_SELF_RESOLVING = {"go", "cargo", "gradle", "./gradlew", "mvn", "./mvnw", "swift", "zig"}
 _PREPARE_SCOPE_FLAG = {"npm": "--prefix", "pnpm": "--dir", "yarn": "--cwd"}
 
 
@@ -2119,22 +1978,32 @@ def _candidate_directory(argv: list[str]) -> str:
     return "."
 
 
-def _with_prepare(root: Path, candidates: list[dict]) -> list[dict]:
-    """Prefix each command needing a dependency install with that install,
-    scoped to the same directory it targets -- a repository with more than
-    one nested project must never install into the wrong one, or into the
-    repository root where there may be no manifest at all."""
-    prepare_by_directory = {command["affectedUnit"].split(":", 1)[1]: command
-                            for command in _prepare_commands(root)}
+def _with_prepare(root: Path, candidates: list[dict], *, broad: bool = False) -> list[dict]:
+    """Prefix each command needing a dependency install with that install, scoped to the directory it
+    targets -- a repository with more than one nested project must never install into the wrong one.
+    ``broad`` (the commands a caller hands in, such as a team's frozen acceptance tests) also gives any
+    runner that is not the project's own (pytest, a script) every manifest's install, each once, since
+    it may drive the project's documented commands: a frozen pytest test drove ``npm test``, ``npm run
+    build`` and the scenario script in a clone with no node_modules, failed with "vitest: command not
+    found", and a test repairer spent three minutes on an environment it could not fix (run f83293f5)."""
+    prepares = _prepare_commands(root)
+    prepare_by_directory = {command["affectedUnit"].split(":", 1)[1]: command for command in prepares}
     result: list[dict] = []
     added: set[str] = set()
     for candidate in candidates:
-        argv = candidate.get("argv") or []
-        entrypoint = str(argv[0]) if argv else ""
+        argv = [str(part) for part in candidate.get("argv") or []]
+        entrypoint = argv[0] if argv else ""
         if entrypoint in _NEEDS_PREPARE:
-            directory = _candidate_directory([str(part) for part in argv])
-            prepare = prepare_by_directory.get(directory)
-            if prepare is not None and directory not in added:
+            needed = [prepare_by_directory.get(_candidate_directory(argv))]
+        elif broad and candidate.get("phase") != "prepare" and entrypoint not in _SELF_RESOLVING:
+            needed = prepares
+        else:
+            needed = []
+        for prepare in needed:
+            if prepare is None:
+                continue
+            directory = prepare["affectedUnit"].split(":", 1)[1]
+            if directory not in added:
                 result.append(prepare)
                 added.add(directory)
         result.append(candidate)
@@ -2146,7 +2015,7 @@ def _discovery_result(*, candidates: list[dict], source_paths: list[str], requir
                       selection: str, coverage: str, affected_units: list,
                       repair_roots: list[str], repair_scope_resolved: bool,
                       execution_outcome: str, rejected: list[dict],
-                      heavy_allowed: bool) -> dict:
+                      heavy_allowed: bool, reason: str = "") -> dict:
     """One output shape for every discovery path.
 
     Full mode used to omit ``executionOutcome``, ``coverage``, ``affectedUnits``
@@ -2154,6 +2023,7 @@ def _discovery_result(*, candidates: list[dict], source_paths: list[str], requir
     discovery silently handed the repair agent an empty write scope.
     """
     return {
+        "reason": reason,
         "candidates": candidates,
         "sourcePaths": source_paths,
         "runtimeRequirements": requirements,
@@ -2169,6 +2039,20 @@ def _discovery_result(*, candidates: list[dict], source_paths: list[str], requir
         "rejectedCandidates": rejected,
         "heavyAllowed": heavy_allowed,
     }
+
+
+def commands_for_test_paths(repo_path: str, paths: list[str]) -> list[dict]:
+    """The repository's own commands that run exactly these test files (``[{"argv": [...]}]``), from the
+    same per-language planners targeted discovery uses; empty when no tooling of the repository maps
+    them. Used for acceptance tests that already exist on the branch (an earlier team froze them)."""
+    root = Path(repo_path)
+    out, seen = [], set()
+    for candidate in _changed_scope_candidates(root, [str(p) for p in paths]):
+        argv = [str(a) for a in candidate.get("argv") or []]
+        if argv and tuple(argv) not in seen:
+            seen.add(tuple(argv))
+            out.append({"argv": argv})
+    return out
 
 
 def _changed_scope_candidates(root: Path, changed_paths: list[str],
@@ -2194,10 +2078,16 @@ def _changed_scope_candidates(root: Path, changed_paths: list[str],
     candidates: list[dict] = []
     seen: set[tuple[str, ...]] = set()
     for planner in planners:
-        for candidate in planner(root, changed_paths):
+        try:
+            planned = planner(root, changed_paths)
+        except VerificationBlocked as exc:
+            # A repository verification.json the configured planner cannot read is that planner's
+            # problem alone: the other planners and the repository suite still cover the change.
+            if rejected is not None:
+                rejected.append({"argv": [], "source": planner.__name__, "reason": str(exc)})
+            continue
+        for candidate in planned:
             # One unmappable planner output must not abort the whole discovery.
-            # Dropping it leaves the coverage check below as the only hard
-            # block, and that check names the paths that are actually uncovered.
             try:
                 argv = validator_for(candidate)(candidate["argv"], root=root)
             except VerificationBlocked as exc:
@@ -2210,121 +2100,132 @@ def _changed_scope_candidates(root: Path, changed_paths: list[str],
                 continue
             seen.add(key)
             candidates.append({**candidate, "argv": argv})
-    covered = {path for candidate in candidates for path in candidate.get("coveredPaths", [])}
-    unmapped = sorted(path for path in changed_paths if _requires_verification_scope(path) and path not in covered)
-    if unmapped:
-        raise VerificationBlocked(
-            "changed files cannot be mapped to an exact test or affected build unit; "
-            "repository-wide fallback is prohibited: " + ", ".join(unmapped[:20]),
-            changed_paths=changed_paths,
-        )
     return candidates
 
 
 def discover_commands(repo_path: str, candidate_commit: str | None = None, *,
                       mode: str | None = None, allow_heavy: bool = False,
                       include_browser_tests: bool = False) -> dict:
-    """Return safe verification commands for one candidate commit.
+    """Return the verification commands for one candidate commit. Discovery never blocks.
 
-    ``mode="targeted"`` derives executable scope from build metadata plus the
-    exact candidate diff; prose guides never authorize commands there, because
-    an automated repair loop must not be steered by text the candidate can
-    edit.  ``mode="full"`` deliberately runs the repository's whole suite and
-    does consult guides.
+    ``mode="targeted"`` climbs a ladder from the smallest honest scope: the exact tests the changed
+    files map to, then the affected build unit's own test command, then the repository's whole suite
+    (documented guidance first, build-system inference second, a heavy suite last) for any changed
+    file no per-language planner maps. ``mode="full"`` starts at the suite. A candidate that changes
+    only documentation ends ``no_tests_required``; a repository with no test command at all ends
+    ``no_tests_found`` with the reason named. Neither is a block: the caller reports it and goes on.
 
-    ``mode=None`` infers the historical behaviour — targeted when a candidate
-    commit is supplied, full otherwise — so existing callers are unchanged.
-
-    ``include_browser_tests`` only ever adds a candidate in full mode, and only
-    when the host already has browser binaries provisioned -- this never
-    triggers an install. There is no honest file-to-browser-spec mapping, so
-    targeted mode never considers this regardless of the flag.
+    ``mode=None`` infers the historical behaviour — targeted when a candidate commit is supplied,
+    full otherwise. ``include_browser_tests`` only ever adds a candidate in full mode, and only when
+    the host already has browser binaries provisioned -- this never triggers an install.
     """
     root = Path(repo_path).resolve()
     _git_root(root)
     resolved_mode = mode or ("targeted" if candidate_commit else "full")
     if resolved_mode not in {"targeted", "full"}:
         raise VerificationBlocked(f"unsupported discovery mode: {resolved_mode}")
+    if resolved_mode == "targeted" and not candidate_commit:
+        raise VerificationBlocked("targeted discovery requires a candidate commit")
     changed_paths = _changed_paths(root, candidate_commit)
     requirements = runtime_requirements(root)
     rejected: list[dict] = []
+    to_verify = [path for path in changed_paths if _requires_verification_scope(path)]
+    scoped = _changed_scope_candidates(root, changed_paths, rejected) if changed_paths else []
+    repair_roots = sorted({path for candidate in scoped for path in candidate.get("repairRoots", [])})
+    common = dict(requirements=requirements, changed_paths=changed_paths, candidate_commit=candidate_commit,
+                  mode=resolved_mode, rejected=rejected)
     if resolved_mode == "targeted":
-        if not candidate_commit:
-            raise VerificationBlocked("targeted discovery requires a candidate commit")
-        if not changed_paths:
-            raise VerificationBlocked("candidate commit has no changed paths to verify")
-        candidates = _changed_scope_candidates(root, changed_paths, rejected)
-        if not candidates:
+        if not to_verify:
             return _discovery_result(
-                candidates=[], source_paths=[], requirements=requirements,
-                changed_paths=changed_paths, candidate_commit=candidate_commit,
-                mode=resolved_mode, selection="no-tests-required", coverage="not-applicable",
+                candidates=[], source_paths=[], selection="no-tests-required", coverage="not-applicable",
                 affected_units=[], repair_roots=[], repair_scope_resolved=False,
-                execution_outcome="no_tests_required", rejected=rejected, heavy_allowed=False)
-        scopes = {candidate["scope"] for candidate in candidates}
-        candidates = _with_prepare(root, candidates)
+                execution_outcome="no_tests_required", heavy_allowed=False,
+                reason="the candidate changes only documentation or non-executable files", **common)
+        covered = {path for candidate in scoped for path in candidate.get("coveredPaths", [])}
+        if scoped and all(path in covered for path in to_verify):
+            scopes = {candidate["scope"] for candidate in scoped}
+            return _discovery_result(
+                candidates=_with_prepare(root, scoped),
+                source_paths=sorted({candidate["source"] for candidate in scoped}),
+                selection="changed-scope", coverage="focused" if scopes == {"focused"} else "affected",
+                affected_units=[candidate["affectedUnit"] for candidate in scoped],
+                repair_roots=repair_roots, repair_scope_resolved=True, execution_outcome="discovered",
+                heavy_allowed=False, **common)
+    # The repository's own suite: full mode, or changed files no per-language planner maps.
+    suite, sources, documented, heavy_allowed = _repository_candidates(
+        root, changed_paths, allow_heavy=allow_heavy,
+        include_browser_tests=resolved_mode == "full" and include_browser_tests, rejected=rejected)
+    # The suite subsumes the focused commands, so they are not run twice.
+    candidates = suite or scoped
+    if not candidates:
+        detail = ""
+        if sources:
+            detail += f" (guides inspected: {', '.join(sources)})"
+        if rejected:
+            detail += "; rejected: " + ", ".join(
+                f"{' '.join(item['argv']) or item['source']} [{item['reason']}]" for item in rejected[:10])
         return _discovery_result(
-            candidates=candidates,
-            source_paths=sorted({candidate["source"] for candidate in candidates}),
-            requirements=requirements, changed_paths=changed_paths,
-            candidate_commit=candidate_commit, mode=resolved_mode, selection="changed-scope",
-            coverage="focused" if scopes == {"focused"} else "affected",
-            affected_units=[candidate["affectedUnit"] for candidate in candidates],
-            repair_roots=sorted({path for candidate in candidates
-                                 for path in candidate.get("repairRoots", [])}),
-            repair_scope_resolved=True, execution_outcome="discovered",
-            rejected=rejected, heavy_allowed=False)
+            candidates=[], source_paths=sources, selection="no-test-command", coverage="not-applicable",
+            affected_units=[], repair_roots=repair_roots, repair_scope_resolved=bool(repair_roots),
+            execution_outcome="no_tests_found", heavy_allowed=heavy_allowed,
+            reason="no test command found in the repository: nothing documented in AGENTS.md/README and "
+                   "no supported build file declares one" + detail, **common)
+    return _discovery_result(
+        candidates=_with_prepare(root, candidates),
+        source_paths=sorted(sources) if suite else sorted({candidate["source"] for candidate in scoped}),
+        selection=("documented-guide" if documented else "build-system-inference") if suite else "changed-scope",
+        coverage="repository" if suite else "affected",
+        affected_units=[] if suite else [candidate["affectedUnit"] for candidate in scoped],
+        repair_roots=repair_roots, repair_scope_resolved=bool(repair_roots), execution_outcome="discovered",
+        heavy_allowed=heavy_allowed, **common)
 
-    # Full mode: the repository's whole suite, from documented guidance first
-    # and build-system inference second.
-    candidates: list[dict] = []
-    changed = set(changed_paths)
-    # Candidate-authored instructions cannot grant command-execution authority.
-    # Existing applicable guidance remains authoritative; if a candidate edits a
-    # guide, use safe build-system inference rather than reading that new text.
-    # This filter only does work once full mode is given a candidate commit --
-    # without one there are no changed paths and nothing to exclude.
-    guides = [path for path in _applicable_guides(root, changed_paths)
-              if _relative(root, path) not in changed]
-    sources = [_relative(root, path) for path in guides]
-    for path in guides:
-        try:
-            candidates.extend(_candidate_from_guide(
-                path.read_text(encoding="utf-8"), _relative(root, path),
-                allow_heavy=allow_heavy, root=root))
-        except OSError:
-            continue
-    # Preserve guide order, but de-duplicate exact argv commands.
-    unique: list[dict] = []
-    seen: set[tuple[str, ...]] = set()
+
+def _dedupe_argv(candidates: list[dict]) -> list[dict]:
+    out, seen = [], set()
     for candidate in candidates:
         key = tuple(candidate["argv"])
         if key not in seen:
             seen.add(key)
-            unique.append(candidate)
+            out.append(candidate)
+    return out
+
+
+def _repository_candidates(root: Path, changed_paths: list[str], *, allow_heavy: bool,
+                           include_browser_tests: bool, rejected: list[dict]) -> tuple[list[dict], list[str], bool, bool]:
+    """The repository's whole-suite commands: ``(candidates, guide sources, documented?, heavy allowed?)``.
+
+    Documented guidance first, build-system inference second. A heavy suite (end-to-end, integration
+    markers) is admitted only when nothing lighter exists: running the repository's one suite beats
+    running nothing. Candidate-authored instructions cannot grant command-execution authority: a guide
+    the candidate itself edits is skipped in favour of build-system inference.
+    """
+    changed = set(changed_paths)
+    guides = [path for path in _applicable_guides(root, changed_paths) if _relative(root, path) not in changed]
+    sources = [_relative(root, path) for path in guides]
+
+    def from_guides(heavy: bool) -> list[dict]:
+        found: list[dict] = []
+        for path in guides:
+            try:
+                found.extend(_candidate_from_guide(path.read_text(encoding="utf-8"), _relative(root, path),
+                                                   allow_heavy=heavy, root=root))
+            except OSError:
+                continue
+        return _dedupe_argv(found)
+
+    heavy_allowed = allow_heavy
+    unique = from_guides(allow_heavy)
     documented = bool(unique)
     if not unique:
-        unique = _inferred_candidates(root)
-    if not unique:
-        raise VerificationBlocked(
-            "no supported repository-wide verification command found; document one in "
-            "AGENTS.md/README or use a supported build file"
-            + (f" (guides inspected: {', '.join(sources)})" if sources else "")
-        )
-    # A full run still needs a write scope for any repair the caller performs.
-    # _changed_paths returns nothing without a commit, so derive the scope from
-    # the candidate when there is one rather than handing back an empty list.
-    repair_roots: list[str] = []
-    if candidate_commit and changed_paths:
-        try:
-            scoped = _changed_scope_candidates(root, changed_paths, rejected)
-            repair_roots = sorted({path for candidate in scoped
-                                   for path in candidate.get("repairRoots", [])})
-        except VerificationBlocked:
-            # A full run must not be blocked by changed-scope mapping; the
-            # repair scope simply stays unresolved.
-            repair_roots = []
-    if resolved_mode == "full" and include_browser_tests and _browser_suite_configured(root):
+        unique = _inferred_candidates(root, rejected)
+    if not unique and not allow_heavy:
+        # A heavy suite is still the repository's suite: it runs when it is the only one.
+        unique = from_guides(True)
+        documented = bool(unique)
+        if not unique:
+            unique = _inferred_candidates(root, rejected, allow_heavy=True)
+        heavy_allowed = bool(unique)
+    if include_browser_tests and _browser_suite_configured(root):
         reason = browser_suite_reason(root)
         if reason is not None:
             # Declared but not runnable here: diagnostic, never a hard block --
@@ -2334,19 +2235,11 @@ def discover_commands(repo_path: str, candidate_commit: str | None = None, *,
         else:
             browser_candidate = _browser_suite_candidate(root)
             if browser_candidate is not None:
-                unique.append({**browser_candidate,
-                               "argv": validate_browser_argv(browser_candidate["argv"])})
+                unique.append({**browser_candidate, "argv": validate_browser_argv(browser_candidate["argv"])})
             else:
                 rejected.append({"argv": [], "source": "browser-suite",
                                  "reason": "browser config present but no dedicated e2e script found"})
-    unique = _with_prepare(root, unique)
-    return _discovery_result(
-        candidates=unique, source_paths=sources, requirements=requirements,
-        changed_paths=changed_paths, candidate_commit=candidate_commit, mode=resolved_mode,
-        selection="documented-guide" if documented else "build-system-inference",
-        coverage="repository", affected_units=[], repair_roots=repair_roots,
-        repair_scope_resolved=bool(repair_roots), execution_outcome="discovered",
-        rejected=rejected, heavy_allowed=allow_heavy)
+    return unique, sources, documented, heavy_allowed
 
 
 def is_generated_path(path: str) -> bool:
@@ -2385,18 +2278,92 @@ def _disposable_checkout(repo: str, sha: str) -> tuple[str, str]:
     if detached.code != 0:
         shutil.rmtree(temp, ignore_errors=True)
         raise RuntimeError((detached.stderr or detached.stdout or "unable to check out verification candidate").strip())
+    # The source's tool cache (git-excluded: a scout's Playwright and Chromium under .cc-cache, the npm
+    # and pip caches) comes along by hard link, so a check's setup is already satisfied here and a
+    # frozen test that drives the scenario script finds what the script needs (run f83293f5).
+    git.seed_cache(os.path.join(repo, git.CACHE_DIR), os.path.join(checkout, git.CACHE_DIR))
     return temp, checkout
 
 
+# ─── check memo: one run per (code, command) ───
+# A frozen acceptance test ran at the same code four times in one small program (its red run, the
+# team's final cycle, the program's final cycle, the Architect's evaluation after an amendment that
+# changed only `.cc/`), and every wave re-ran every integrated item's tests: test time grew with the
+# square of the item count. A completed run (passed or code_failed, never an infrastructure block) is
+# remembered per (code tree without `.cc/`, argv, sandbox, scope) in the repository's dependency cache
+# and reused by any later caller on the same code. CONDUCTOR_CHECK_MEMO=0 turns it off.
+_MEMO_ENV = "CONDUCTOR_CHECK_MEMO"
+_MEMO_FILE = "check-memo.json"
+_MEMO_MAX_ENTRIES = 500
+
+
+def _memo_enabled() -> bool:
+    return str(os.environ.get(_MEMO_ENV, "1")).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def code_tree_id(git_root: str, commit: str) -> str:
+    """A digest of every blob at ``commit`` except the harness's `.cc/` directory: two commits with
+    the same id hold the same code, whatever the contract commits between them."""
+    listing = git.git(git_root, "ls-tree", "-r", commit, check=False)
+    if listing.code != 0:
+        return ""
+    lines = [ln for ln in listing.stdout.splitlines() if "\t" in ln and not ln.split("\t", 1)[1].startswith(".cc/")]
+    return sha256("\n".join(sorted(lines)).encode("utf-8")).hexdigest()
+
+
+def _memo_key(tree: str, argv: list[str], sandbox: bool, scope: str) -> str:
+    return sha256(json.dumps([tree, list(argv), bool(sandbox), scope]).encode("utf-8")).hexdigest()
+
+
+def _memo_load(path: Path) -> dict:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _memo_store(path: Path, entries: dict) -> None:
+    """Merge ``entries`` into the memo on disk (atomic replace; the newest 500 entries are kept)."""
+    if not entries:
+        return
+    data = {**_memo_load(path), **entries}
+    if len(data) > _MEMO_MAX_ENTRIES:
+        data = dict(sorted(data.items(), key=lambda kv: float(kv[1].get("ts") or 0))[-_MEMO_MAX_ENTRIES:])
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def _aggregate_outcome(results: list[dict], selected: list[dict]) -> tuple[bool, str]:
+    blocked = any(item.get("blocked") for item in results)
+    passed = bool(results) and not blocked and all(item.get("exitCode") == 0 for item in results) and len(results) == len(selected)
+    outcome = "passed" if passed else "infra_blocked" if blocked else next(
+        (item["outcome"] for item in results if item.get("outcome") == "cancelled"), "code_failed")
+    return passed, outcome
+
+
 def verify_candidate(repo_path: str, candidate_commit: str, commands: object | None = None, *,
-                     scope: str = "changed", allow_heavy: bool = False, on_progress=None) -> dict:
+                     scope: str = "changed", allow_heavy: bool = False, on_progress=None,
+                     sandbox: bool = False, in_place: bool = False) -> dict:
     """Run validated checks in a disposable detached worktree at exactly ``candidate_commit``.
 
-    ``scope="changed"`` (the default) keeps the remediation contract: every
-    command must name an exact test or affected build unit.  ``scope="repository"``
-    is the deliberate full-suite path -- without it every command a full-mode
-    discovery produces is refused here, because ``validate_remediation_argv``
-    rejects repository-wide forms by design.
+    ``in_place`` runs them in ``repo_path`` itself instead: ONE tree per team, where teammates' files
+    and the installed dependencies live beside the item's own and a clone of one item's commit has
+    neither (calc27: three green items failed their cycles in clones with no package.json or lock
+    file, and the repair step reset the shared tree). No install step runs; the agents already did.
+
+    ``scope="changed"`` (the default) validates each command for safety (argv shape, entrypoint
+    allowlist, no shell); ``scope="repository"`` is the deliberate full-suite path that also admits
+    heavy suites when asked. An empty plan is a passed ``no_tests_found`` outcome, never a block.
 
     ``on_progress``, when given, is called once before each command starts
     with ``{"commandIndex", "totalCommands", "currentCommand", "completedCommands"}``
@@ -2413,14 +2380,20 @@ def verify_candidate(repo_path: str, candidate_commit: str, commands: object | N
     requirements = runtime_requirements(repo)
     if scope not in {"changed", "repository"}:
         raise VerificationBlocked(f"unsupported verification scope: {scope}")
+    given = commands
+    outcome, reason = "no_tests_found", "no verification command was given"
     if commands is None:
         discovered = discover_commands(repo, candidate_commit,
                                        mode="full" if scope == "repository" else "targeted",
                                        allow_heavy=allow_heavy)
         commands = discovered["candidates"]
         requirements = discovered["runtimeRequirements"]
+        outcome, reason = discovered["executionOutcome"], str(discovered.get("reason") or "")
     if not isinstance(commands, list) or not commands:
-        raise VerificationBlocked("verification requires at least one discovered command")
+        return {"verificationState": "passed", "executionOutcome": outcome, "reason": reason,
+                "candidateCommit": git.git(str(git_root), "rev-parse", candidate_commit).stdout.strip(),
+                "runtimeRequirements": requirements, "coverage": "not-applicable", "affectedUnits": [],
+                "commands": [], "reusedCommands": 0}
     selected: list[dict] = []
     for command in commands:
         if isinstance(command, dict):
@@ -2431,7 +2404,7 @@ def verify_candidate(repo_path: str, candidate_commit: str, commands: object | N
             java_version = ((command.get("javaVersion") or requirements.get("java"))
                             if argv[0] in _JAVA_ENTRYPOINTS else None)
             selected.append({"argv": argv, "source": command.get("source", "provided"),
-                             "javaVersion": java_version,
+                             "javaVersion": java_version, "phase": command.get("phase"),
                              "scope": command.get("scope"), "affectedUnit": command.get("affectedUnit"),
                              "coveredPaths": command.get("coveredPaths", []),
                              "adapter": command.get("adapter")})
@@ -2439,17 +2412,56 @@ def verify_candidate(repo_path: str, candidate_commit: str, commands: object | N
             # Unstructured commands have no proof of changed-file scope. They
             # are deliberately refused in automated remediation.
             raise VerificationBlocked("verification commands must include changed-scope discovery evidence")
-    temp, checkout_root = _disposable_checkout(str(git_root), candidate_commit)
-    worktree = str(Path(checkout_root) / relative_project)
+    if given is not None and not any(item.get("phase") == "prepare" for item in selected):
+        # Commands handed in (a team's frozen acceptance tests) carry no install step of their own:
+        # the checkout's manifests decide it (see _with_prepare).
+        selected = [{"javaVersion": None, "adapter": None, **item} for item in _with_prepare(project_root, selected, broad=True)]
     dependency_cache = _dependency_cache(str(git_root))
+    if in_place:
+        selected = [item for item in selected if item.get("phase") != "prepare"]
+    resolved = git.head(str(project_root)) if in_place else git.git(str(git_root), "rev-parse", candidate_commit).stdout.strip()
+    tree = code_tree_id(str(git_root), resolved) if _memo_enabled() and not in_place else ""
+    memo_path = dependency_cache / _MEMO_FILE
+    memo = _memo_load(memo_path) if tree else {}
+    # A dependency install is never reused from the memo: it must run in every fresh clone.
+    keys = [_memo_key(tree, item["argv"], sandbox, scope) if tree and item.get("phase") != "prepare" else ""
+            for item in selected]
+    reused: dict[int, dict] = {}
+    for n, key in enumerate(keys):
+        hit = memo.get(key) if key else None
+        if isinstance(hit, dict) and isinstance(hit.get("result"), dict):
+            reused[n] = {**hit["result"], "argv": list(selected[n]["argv"]), "reused": True,
+                         "reusedFrom": str(hit.get("candidateCommit") or "")}
+    to_run = [n for n in range(len(selected)) if n not in reused]
     artifact_dir = _verification_artifact_dir(candidate_commit)
+    results_by_index: dict[int, dict] = dict(reused)
+    temp = ""
     try:
-        actual = git.head(worktree)
-        if actual != git.git(str(git_root), "rev-parse", candidate_commit).stdout.strip():
-            raise VerificationBlocked("disposable worktree did not resolve the candidate commit exactly")
-        results, passed, execution_outcome = _execute_selected_commands(
-            worktree, temp, selected, dependency_cache, requirements, artifact_dir,
-            on_progress=on_progress)
+        actual = resolved
+        if to_run:
+            if in_place:
+                worktree = str(project_root)
+                scratch = str(dependency_cache / "in-place-state")
+                Path(scratch).mkdir(parents=True, exist_ok=True)
+            else:
+                temp, checkout_root = _disposable_checkout(str(git_root), candidate_commit)
+                worktree = str(Path(checkout_root) / relative_project)
+                scratch = temp
+                actual = git.head(worktree)
+                if actual != resolved:
+                    raise VerificationBlocked("disposable worktree did not resolve the candidate commit exactly")
+            ran, _passed, _outcome = _execute_selected_commands(
+                worktree, scratch, [selected[n] for n in to_run], dependency_cache, requirements, artifact_dir,
+                on_progress=on_progress, sandbox=sandbox)
+            remembered = {}
+            for n, item in zip(to_run, ran):
+                results_by_index[n] = item
+                if keys[n] and item.get("exitCode") is not None and item.get("outcome") in {"passed", "code_failed"}:
+                    remembered[keys[n]] = {"candidateCommit": actual, "ts": time.time(),
+                                           "result": {k: v for k, v in item.items() if k != "logPath"}}
+            _memo_store(memo_path, remembered)
+        results = [results_by_index[n] for n in sorted(results_by_index)]
+        passed, execution_outcome = _aggregate_outcome(results, selected)
         non_code_block = execution_outcome in {"infra_blocked", "cancelled"}
         return {"verificationState": "passed" if passed else "blocked" if non_code_block else "failed",
                 "executionOutcome": execution_outcome, "candidateCommit": actual,
@@ -2458,23 +2470,23 @@ def verify_candidate(repo_path: str, candidate_commit: str, commands: object | N
                 "affectedUnits": [item.get("affectedUnit") for item in selected],
                 "artifactDir": str(artifact_dir),
                 "projectRelativePath": relative_project.as_posix() if relative_project.parts else ".",
-                "commands": results, "worktreeIsDisposable": True,
+                "commands": results, "reusedCommands": len(reused), "worktreeIsDisposable": not in_place,
                 "gitMetadataIsIsolated": True,
                 "sourceRemoteDetached": True}
     finally:
-        shutil.rmtree(temp, ignore_errors=True)
+        if temp:
+            shutil.rmtree(temp, ignore_errors=True)
 
 
 def _execute_selected_commands(worktree: str, temp: str, selected: list[dict],
                                dependency_cache: Path, requirements: dict,
-                               artifact_dir: Path, *, on_progress=None) -> tuple[list[dict], bool, str]:
+                               artifact_dir: Path, *, on_progress=None,
+                               sandbox: bool = False) -> tuple[list[dict], bool, str]:
     """Run a pre-validated, pre-selected command list inside an already-prepared
     disposable worktree, returning (results, passed, executionOutcome).
 
-    Extracted from verify_candidate's own inline loop (behavior-preserving) so
-    verify_authored_test can run the identical execution machinery twice --
-    once for the "red" state and once for "green" -- inside a single
-    disposable checkout, instead of a second, weaker execution path.
+    Extracted from verify_candidate's own inline loop so a caller with its own
+    checkout can run the identical execution machinery.
     """
     results: list[dict] = []
     for command in selected:
@@ -2494,7 +2506,8 @@ def _execute_selected_commands(worktree: str, temp: str, selected: list[dict],
                             "runtime": {"available": False}, "blocked": True,
                             "outcome": "infra_blocked", "output": str(exc)})
             break
-        env = _isolated_environment(temp, java_home, dependency_cache)
+        env = _with_checkout_importable(_isolated_environment(temp, java_home, dependency_cache),
+                                        command["argv"], worktree)
         _prepare_entrypoint(command["argv"], worktree)
         runtime = _runtime_evidence(command["argv"], env, worktree)
         blocked_reason = _runtime_block_reason(command["argv"], env, worktree) or _runtime_requirement_reason(
@@ -2509,8 +2522,23 @@ def _execute_selected_commands(worktree: str, temp: str, selected: list[dict],
                             "output": blocked_reason})
             break
         run_options = {"cwd": worktree, "check": False, "env": env, "clean_env": True}
+        argv = command["argv"]
+        if sandbox:
+            # Agent-written code under test runs OS-sandboxed (H17): writes confined to this disposable
+            # checkout + scratch/caches, no network but loopback. No sandbox tool = a named block.
+            # The commands that fetch from the registry run with the network on (`_needs_network`).
+            try:
+                argv = check_execution.sandboxed_argv(argv, cwd=worktree,
+                                                      writable=[temp, str(dependency_cache), str(artifact_dir)],
+                                                      allow_network=_needs_network(command))
+            except check_execution.SandboxUnavailable as exc:
+                results.append({"argv": command["argv"], "source": command["source"], "exitCode": 127,
+                                "scope": command.get("scope"), "affectedUnit": command.get("affectedUnit"),
+                                "runtime": runtime, "blocked": True, "outcome": "infra_blocked",
+                                "sandbox": "sandbox_unavailable", "output": f"sandbox_unavailable: {exc}"})
+                break
         try:
-            result = run(command["argv"], **run_options)
+            result = run(argv, **run_options)
         except OSError as exc:
             results.append({"argv": command["argv"], "source": command["source"], "exitCode": 127,
                             "scope": command.get("scope"), "affectedUnit": command.get("affectedUnit"),
@@ -2521,6 +2549,7 @@ def _execute_selected_commands(worktree: str, temp: str, selected: list[dict],
         full_output = (result.stdout or "") + ("\n" if result.stdout and result.stderr else "") + (result.stderr or "")
         output = _safe_output(full_output)
         results.append({"argv": command["argv"], "source": command["source"], "exitCode": result.code,
+                        "sandboxed": bool(sandbox),
                         "javaVersion": command.get("javaVersion"),
                         "scope": command.get("scope"), "affectedUnit": command.get("affectedUnit"),
                         "dependencyCache": str(dependency_cache),
@@ -2528,8 +2557,10 @@ def _execute_selected_commands(worktree: str, temp: str, selected: list[dict],
                         "logPath": _write_command_log(artifact_dir, len(results) + 1, full_output),
                         "outcome": "passed" if result.code == 0 else "code_failed",
                         "output": output})
-        if result.code != 0:
-            break
+        # A failing command does not end the run: every selected command leaves evidence. Stopping at
+        # the first failure meant a team's required check commands never ran after an unrelated
+        # repository-wide command failed, and its head was refused as unproven (run 037e1cbe); repair
+        # agents also saw one failure at a time. Only an infrastructure block (above) stops the run.
     blocked = any(item.get("blocked") for item in results)
     passed = bool(results) and not blocked and all(item["exitCode"] == 0 for item in results) and len(results) == len(selected)
     execution_outcome = "passed" if passed else "infra_blocked" if blocked else next(
@@ -2537,264 +2568,3 @@ def _execute_selected_commands(worktree: str, temp: str, selected: list[dict],
         "code_failed",
     )
     return results, passed, execution_outcome
-
-
-# --------------------------------------------------------------------------
-# Agent-authored test verification (allowAgentAuthoredTests)
-#
-# When targeted discovery cannot map a changed file to any existing test (see
-# discover_commands' targeted-mode docstring), a coding agent may author one
-# new test file rather than leave the run permanently blocked. This is a
-# materially bigger trust grant than the read-only propose-a-command fallback
-# above: the same actor whose change is being judged would be authoring the
-# oracle that judges it. Two independent gates keep this safe:
-#   1. validate_authored_test_shape -- the agent's write must be exactly one
-#      new, test-shaped file that references the actual changed code, before
-#      any execution is attempted.
-#   2. verify_authored_test -- the new test must fail against the candidate's
-#      pre-change baseline and pass against the real candidate change (a
-#      red/green check), proving it is not vacuous, using the exact same
-#      disposable-checkout isolation and execution machinery as every other
-#      verification run in this module.
-# Placement/naming of the new file is never decided by this module: the
-# agent is told to mirror the repository's own discoverable test convention,
-# and test_cycle.json proves it got this right by re-running the ordinary,
-# already-per-language discover_commands() against the new file like any
-# other changed path -- no new per-language code is added here.
-# --------------------------------------------------------------------------
-
-def validate_authored_test_shape(repo: str, *, candidate_commit: str,
-                                 changed_paths: list[str],
-                                 agent_touched_paths: list[str] | None = None) -> dict:
-    """Pre-check an agent-authored test file before spending a red/green run.
-
-    Operates on ``repo``'s CURRENT uncommitted working tree -- what the
-    author_missing_test agent step just left dirty. Read-only: makes no git
-    or filesystem mutation. ``candidate_commit`` is the real candidate the
-    agent was trying to cover (before the new test); ``changed_paths`` is
-    that candidate's own changed-path list, used for the content check.
-
-    ``agent_touched_paths``, when given, is the authoring coding_agent task's
-    own before/after reconciliation (workers/coding_agent/tasks.py's
-    ``filesChanged`` output) -- the authoritative record of what THIS turn
-    actually wrote. Without it, a raw whole-tree ``git status`` scan below
-    would attribute anything else already dirty in the workspace (a stray
-    untracked fixture file, a Gradle/.gradle cache artifact a Bash-less agent
-    could never have produced) to this one attempt, and reject a genuinely
-    well-formed single new test file for "touching" paths it never touched.
-    """
-    root = Path(repo).resolve()
-    empty = {"accepted": False, "reason": "", "authoredPath": "", "touchedPaths": [], "matchedIdentifier": ""}
-    changes = git.status_changes(repo, untracked_files_all=True)
-    if agent_touched_paths is not None:
-        allowed = {path for path in agent_touched_paths if isinstance(path, str)}
-        candidates = {path: code for path, code in changes.items() if path in allowed}
-    else:
-        candidates = dict(changes)
-    # Defense in depth even with an authoritative set: a build-tool-generated
-    # path is never evidence of what the agent authored.
-    changes = {path: code for path, code in candidates.items() if not is_generated_path(path)}
-    touched = sorted(changes)
-    if not touched:
-        return {**empty, "reason": "agent made no change"}
-    if len(touched) != 1:
-        return {**empty, "reason": f"agent touched {len(touched)} paths; exactly one new test file is permitted: {touched}",
-                "touchedPaths": touched}
-    path, code = touched[0], changes[touched[0]]
-    if code != "A":
-        return {**empty, "reason": f"agent modified an existing file ({path}, status={code}) instead of adding a new test",
-                "touchedPaths": touched}
-    if not _looks_like_test_file(path):
-        return {**empty, "reason": f"{path} is not a test-shaped file", "touchedPaths": touched}
-    # Defense in depth: "A" (added/untracked) already implies this for the
-    # common case, but confirm the path truly did not exist at the baseline.
-    exists_at_baseline = git.git(repo, "cat-file", "-e", f"{candidate_commit}^:{path}", check=False).code == 0
-    if exists_at_baseline:
-        return {**empty, "reason": f"{path} already exists at the pre-candidate baseline", "touchedPaths": touched}
-    try:
-        text = (root / path).read_text(encoding="utf-8", errors="ignore")[:200_000]
-    except OSError as exc:
-        return {**empty, "reason": f"cannot read authored test file: {exc}", "touchedPaths": touched}
-    lowered = text.lower()
-    non_test_changed = [p for p in changed_paths if isinstance(p, str) and not _looks_like_test_file(p)]
-    matched = ""
-    for candidate_path in non_test_changed:
-        stem, name = Path(candidate_path).stem, Path(candidate_path).name
-        if len(stem) >= 3 and (stem.lower() in lowered or name.lower() in lowered):
-            matched = candidate_path
-            break
-    if not matched:
-        return {**empty, "reason": "authored test text does not reference any changed file by name or basename",
-                "authoredPath": path, "touchedPaths": touched}
-    return {"accepted": True, "reason": "", "authoredPath": path,
-            "touchedPaths": touched, "matchedIdentifier": matched}
-
-
-
-def discard_authored_test_attempt(repo: str, paths: list[str]) -> dict:
-    """Undo a rejected author_missing_test attempt so it can never ride along
-    on a later, unrelated repair commit. Wraps git.restore_path -- the same
-    primitive coding_agent/tasks.py's out-of-scope-path reconciliation uses."""
-    cleaned = [path for path in paths if isinstance(path, str) and path]
-    for path in cleaned:
-        git.restore_path(repo, path)
-    return {"discarded": sorted(cleaned)}
-
-
-def verify_authored_test(repo_path: str, *, pre_candidate_commit: str, authored_commit: str,
-                         commands: object, on_progress=None) -> dict:
-    """Red/green-check ONE agent-authored test inside a single disposable checkout.
-
-    ``pre_candidate_commit`` is the real candidate under verification (C0),
-    WITHOUT the authored test. ``authored_commit`` is C0 plus exactly one new
-    agent-authored test file (C1, validated by validate_authored_test_shape
-    and committed by commit_and_verify_authored_test, which calls this
-    function). ``commands`` is discover_commands' output
-    at ``authored_commit`` -- already-vetted, deterministic evidence for the
-    new test; never re-derived here.
-
-    Red: roll back C0's own non-test changes inside the checkout (the new
-    test file stays present); the given commands MUST fail -- otherwise the
-    test is vacuous. Green: restore C0's real changes; the same commands MUST
-    pass -- otherwise the authored test is simply broken. Accepted only when
-    both hold.
-    """
-    repo = str(Path(repo_path).resolve())
-    project_root = Path(repo)
-    git_root = _git_root(project_root)
-    relative_project = project_root.relative_to(git_root)
-    requirements = runtime_requirements(repo)
-
-    if not isinstance(commands, list) or not commands:
-        raise VerificationBlocked("authored-test verification requires at least one discovered command")
-    selected: list[dict] = []
-    for command in commands:
-        if not isinstance(command, dict):
-            raise VerificationBlocked("authored-test verification commands must include changed-scope discovery evidence")
-        argv = validator_for(command, mode="targeted")(command.get("argv"), root=project_root)
-        java_version = (command.get("javaVersion") or requirements.get("java")) if argv[0] in _JAVA_ENTRYPOINTS else None
-        selected.append({"argv": argv, "source": command.get("source", "provided"), "javaVersion": java_version,
-                         "scope": command.get("scope"), "affectedUnit": command.get("affectedUnit"),
-                         "coveredPaths": command.get("coveredPaths", [])})
-
-    parent_check = git.git(str(git_root), "rev-parse", "--verify", f"{pre_candidate_commit}^{{commit}}", check=False)
-    if parent_check.code != 0:
-        raise VerificationBlocked(f"pre-candidate commit does not exist: {pre_candidate_commit}")
-    authored_parent = git.git(str(git_root), "rev-parse", f"{authored_commit}^", check=False)
-    if authored_parent.code != 0 or authored_parent.stdout.strip() != \
-            git.git(str(git_root), "rev-parse", pre_candidate_commit).stdout.strip():
-        raise VerificationBlocked("authored commit's parent is not the pre-candidate commit being red/green checked")
-    baseline = git.git(str(git_root), "rev-parse", f"{pre_candidate_commit}^", check=False)
-    if baseline.code != 0:
-        raise VerificationBlocked("pre-candidate commit has no parent to compute a red baseline from")
-    baseline_sha = baseline.stdout.strip()
-
-    diff = git.git(str(git_root), "diff", "--name-status", "--no-renames", "-z",
-                   baseline_sha, pre_candidate_commit, check=False)
-    if diff.code != 0:
-        raise VerificationBlocked("unable to read the candidate's own changed paths for the red/green check")
-    fields = [part for part in diff.stdout.split("\0") if part]
-    non_test_changes: list[tuple[str, str]] = []
-    index = 0
-    while index < len(fields):
-        code = fields[index]
-        index += 1
-        path = fields[index] if index < len(fields) else ""
-        index += 1
-        if path and not _looks_like_test_file(path):
-            non_test_changes.append((path, code[0]))
-    if not non_test_changes:
-        raise VerificationBlocked(
-            "candidate changed no non-test source path; an authored test cannot be red/green checked")
-
-    temp, checkout_root = _disposable_checkout(str(git_root), authored_commit)
-    worktree = str(Path(checkout_root) / relative_project)
-    dependency_cache = _dependency_cache(str(git_root))
-    artifact_dir = _verification_artifact_dir(authored_commit)
-    try:
-        actual = git.head(worktree)
-        if actual != git.git(str(git_root), "rev-parse", authored_commit).stdout.strip():
-            raise VerificationBlocked("disposable worktree did not resolve the authored-test commit exactly")
-
-        for path, code in non_test_changes:
-            if code == "A":
-                git.git(worktree, "rm", "-f", "--", path, check=False)
-            else:
-                git.git(worktree, "checkout", baseline_sha, "--", path, check=False)
-        red_results, red_passed, red_outcome = _execute_selected_commands(
-            worktree, temp, selected, dependency_cache, requirements, artifact_dir,
-            on_progress=on_progress)
-
-        for path, code in non_test_changes:
-            if code == "D":
-                git.git(worktree, "rm", "-f", "--", path, check=False)
-            else:
-                git.git(worktree, "checkout", authored_commit, "--", path, check=False)
-        green_results, green_passed, green_outcome = _execute_selected_commands(
-            worktree, temp, selected, dependency_cache, requirements, artifact_dir,
-            on_progress=on_progress)
-
-        accepted = (not red_passed) and green_passed
-        if accepted:
-            reason = ""
-        elif red_passed:
-            reason = "authored test passed even without the candidate's real change (vacuous)"
-        else:
-            reason = "authored test still fails against the candidate's real change"
-        return {
-            "accepted": accepted, "reason": reason,
-            "red": {"passed": red_passed, "executionOutcome": red_outcome, "commands": red_results},
-            "green": {"passed": green_passed, "executionOutcome": green_outcome, "commands": green_results},
-            "artifactDir": str(artifact_dir),
-            "worktreeIsDisposable": True, "gitMetadataIsIsolated": True, "sourceRemoteDetached": True,
-        }
-    finally:
-        shutil.rmtree(temp, ignore_errors=True)
-
-
-def commit_and_verify_authored_test(repo: str, *, pre_candidate_commit: str, message: str,
-                                    test_mode: str = "targeted", allow_heavy_suites: bool = False,
-                                    include_browser_tests: bool = False, on_progress=None) -> dict:
-    """Commit a shape-validated authored test, discover it, and red/green-check it.
-
-    One call replaces what used to be three separate Conductor tasks plus a
-    SWITCH between them (commit, test_discover, test_authored_test_redgreen):
-    the intermediate states -- discovery failed to resolve the new file, or
-    red/green rejected it -- have no independent value to a caller, only the
-    final accepted/rejected verdict does. On any rejection the commit is
-    rolled back (``git reset --hard`` to ``pre_candidate_commit``, safe
-    because nothing else commits in between), so an unproven or unresolved
-    test file never rides along in the delivered diff.
-    """
-    root = str(Path(repo).resolve())
-    empty = {"accepted": False, "reason": "", "commit": pre_candidate_commit,
-             "repairRoots": [], "commands": []}
-    commit_result = git.commit(root, message)
-    if commit_result.get("noOp"):
-        return {**empty, "reason": "agent-authored test produced no committable change"}
-    authored_commit = commit_result["commit"]
-
-    def _reject(reason: str) -> dict:
-        git.reset_hard(root, pre_candidate_commit)
-        return {**empty, "reason": reason}
-
-    try:
-        discovered = discover_commands(root, authored_commit, mode=test_mode,
-                                       allow_heavy=allow_heavy_suites,
-                                       include_browser_tests=include_browser_tests)
-    except VerificationBlocked as exc:
-        return _reject(f"authored test could not be resolved to a runnable command: {exc}")
-    if discovered.get("executionOutcome") != "discovered":
-        return _reject("authored test could not be resolved to a runnable command "
-                       f"(discovery outcome: {discovered.get('executionOutcome')})")
-
-    redgreen = verify_authored_test(root, pre_candidate_commit=pre_candidate_commit,
-                                    authored_commit=authored_commit,
-                                    commands=discovered["candidates"], on_progress=on_progress)
-    if not redgreen.get("accepted"):
-        return _reject(redgreen.get("reason") or "authored test rejected by the red/green check")
-
-    return {"accepted": True, "reason": "", "commit": authored_commit,
-            "repairRoots": discovered.get("repairRoots", []),
-            "commands": discovered["candidates"],
-            "red": redgreen["red"], "green": redgreen["green"]}

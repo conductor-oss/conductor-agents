@@ -8,3 +8,4 @@ boto3>=1.35.0
 google-cloud-storage>=2.18.0
 azure-identity>=1.19.0
 azure-storage-blob>=12.23.0
+psycopg[binary]>=3.2  # optional: Postgres blackboard backend (SWARM_BLACKBOARD_PG_DSN), roadmap H6

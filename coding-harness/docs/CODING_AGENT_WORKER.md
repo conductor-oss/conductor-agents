@@ -140,6 +140,7 @@ Set on `task.input_data`. Only `prompt` and `worktreePath` are required.
 | `maxBudgetUsd` | float | `50.0` | Spend cap before the agent stops (`error_max_budget_usd`). |
 | `resumeSessionId` | string | none | Resume a prior session (retry-as-resume, §7). **Must** use the same `worktreePath` it was created in, or it silently starts fresh (unless a shared session store is configured — see §11). |
 | `schema` | dict \| JSON string | none | JSON Schema forcing a validated `structured` result instead of prose (§11 output). |
+| `skills` | list \| CSV \| `"all"` \| `"none"` | env or `"all"` | The skills the session may use, the same way on every backend (§16). Unset ⇒ the worker's `CONDUCTOR_SKILLS`, else all installed. |
 | `settingSources` | list \| CSV \| `"none"` | env or `["project"]` | Which filesystem config loads. `"none"`/`""`/`[]` loads nothing (untrusted-repo lockdown); overrides the `CODING_AGENT_SETTING_SOURCES` env default. |
 | `tools` / `allowedTools` / `disallowedTools` | list \| CSV | SDK defaults | Restrict the tool surface. `tools` is an availability gate (can only *remove* built-ins) — e.g. a read-only planner passes `tools: ["Read","Grep","Glob"]`. Tightening only. |
 | `includeFileTree` | bool | `true` | Prepend a bounded, `.gitignore`-respecting listing of the working dir to the prompt so the agent skips its reflexive first-turn `ls`/`Glob` (saves a round-trip + tokens). Skipped automatically on resume. Set `false` to disable. |
@@ -249,12 +250,16 @@ never raises for an agent that merely didn't finish):
 | `filesChanged` | string[] | Files created/modified in the worktree (git status diff before→after). |
 | `result` | string | The agent's final text (capped), when not using a schema. |
 | `structured` | object \| null | Validated JSON when `schema` was passed. |
+| `structuredAttempts` | array | The last three StructuredOutput payloads the agent submitted, whole (the turn log caps each command at 300 chars), including the ones the CLI's validator rejected. |
+| `structuredSalvaged` | boolean | `true` when the session ended `error_max_structured_output_retries` and the worker salvaged `structured` from a rejected payload instead (`common/structured_output.py`: the payload emitted as tagged text inside one string, or raw input the CLI could not parse — untangled and validated against `schema`). The task then reports `status: success`. |
 | `sessionId` | string | Session id for resume (present on success **and** error). |
 | `turns` | object[] | Per-turn trace: one entry per assistant turn with `turn` (1-based), `commands` (the tool calls run that turn, e.g. `"$ go run main.go"`, `"Write main.go"`), `tools` (raw tool names), `text` (short prose slice), and `tokens`. |
 | `numTurns` | int | Scalar count of tool-use round trips the agent took. |
 | `tokenUsed` | int | Total tokens (input + output + cache r/w). |
 | `costUsd` | float | Session cost in USD. |
 | `denials` | string[] | Tool calls blocked by the guard/permission layers. |
+| `skills` | string[] | The skills the session was offered (§16). |
+| `skillsMissing` | string[] | Skills asked for by name that this worker does not have (or that are over 20 MB). |
 | `retryable` | bool | (on failure) true for `error_max_turns` / `error_max_budget_usd` — resume instead of restart. |
 | `stderr` | string | (on failure) tail of the subprocess's stderr, for diagnosing opaque failures. |
 
@@ -363,6 +368,9 @@ Set on the worker process (not per task):
 | Env var | Effect |
 |---|---|
 | `CODING_AGENT_SETTING_SOURCES` | Default `settingSources` for all tasks. Set to `` (empty) or `none` to load **no** repo config (untrusted-repo lockdown); unset ⇒ `["project"]`. Per-task `settingSources` overrides it. |
+| `CONDUCTOR_SKILLS` | Default `skills` for all tasks: `all` (unset), `none`, or names (comma-separated). |
+| `CONDUCTOR_SKILL_DIRS` | Extra skill folders (path-separated), read after the repository's and before the user's. |
+| `CONDUCTOR_SKILLS_HOME` | Where the copied skill folders live (default `~/.cache/conductor-harness/skills`). |
 | `CODING_AGENT_SESSION_STORE_DIR` | Shared dir enabling cross-host resume (above). Unset ⇒ host-local sessions only. |
 | `ANTHROPIC_API_KEY` | Required — the SDK subprocess reads it from the environment. |
 
@@ -553,7 +561,7 @@ CONDUCTOR_SERVER_URL=http://localhost:8080/api WORKER_MODULES=coding_agent,gitop
 
 conductor task create workers/workflows/taskdefs/prepare_repo.json  # new taskdef
 conductor workflow create workers/workflows/code_subtask.json       # register sub-workflow FIRST
-conductor workflow create workers/workflows/code_parallel.json      # (the stub pins version:1)
+conductor workflow create workers/workflows/code_parallel.json
 
 conductor workflow start -w code_parallel -i '{
   "repoPath": "/path/to/repo",
@@ -573,7 +581,7 @@ progress (§ Progress reporting) is visible per branch, and so is the planner's 
   where the worker runs.
 - **Worker gate.** The worker must poll `gitops` (for `prepare_repo`/`create_branch`/
   `worktree_add`/`commit`/`merge_worktrees`) in addition to `coding_agent`, or those steps hang.
-- **Register `code_subtask` before `code_parallel`** — the fork stub pins `version:1`.
+- **Register `code_subtask` before `code_parallel`** — the fork stub starts it by name.
 - **Git prep + concurrency are handled.** `prepare_repo` guarantees an inited repo with an
   identity and a HEAD commit; `worktree_add`/`commit` serialize on the shared git dir
   (`fcntl.flock` in `common/git.py`) with a git-lock retry, so the simultaneous worktree burst
@@ -675,6 +683,7 @@ plus an `agent` field recording which ran.
 | Model | `-m` / `model` | `model` (thread param) | `-m` / `model` |
 | Session resume | `resume` session_id | `thread_resume(thread_id)` | `--resume <session_id>` (id from the JSON output) |
 | Progress / turns | `AssistantMessage` loop (per turn) | streamed SDK notifications (per item) | **final-only**: one synthesized summary turn from `stats.tools` (json mode has no per-turn stream); heartbeat covers liveness; `numTurns` ≈ tool-call count |
+| Skills | listed in the prompt; folder in `add_dirs`; own listing off (`skills: []`) | listed in the prompt (sandbox reads anywhere); own listing off (`skills.include_instructions=false`) | listed in the prompt; folder via `--include-directories`; own listing off (`skills.enabled=false` in a system-settings file) |
 | Cost | native USD | **estimated** from tokens (`cost.py` OpenAI rates) | **estimated** from tokens (`cost.py` Gemini rates) |
 | No-ops | — | `fallbackModel`, `settingSources`, `session_store`, `allowedDomains`, fine-grained `allowedTools`/`disallowedTools` (`effort` IS honored by the SDK driver) | `fallbackModel`, `effort`, `settingSources`, `session_store`, `allowedDomains`, fine-grained tool lists |
 
@@ -992,3 +1001,36 @@ conventions), the template is the *task prompt*.
 
 Put build/test/lint commands, architecture notes, and review priorities in `AGENTS.md`; every
 harness run on that repo — local or CI — picks them up automatically.
+
+## 16. Skills (every backend)
+
+A skill is a folder with a `SKILL.md` (front matter `name` and `description`, then instructions) and
+the scripts or references it ships. Each CLI finds skills on its own and in its own folders (Codex in
+`~/.codex/skills` and `~/.agents/skills`, Gemini in `~/.gemini/skills` and `~/.agents/skills`, Claude
+with only project settings in none), so the same run used to see different skills on each backend and
+each host. The worker keeps one list instead (`common/skills.py`):
+
+- **Where it looks**, the first skill of a name winning: the repository's `.agents/skills`,
+  `.claude/skills`, `.codex/skills`, `.gemini/skills` (only when the session loads project settings:
+  an untrusted repository's skills are as repo-controlled as its settings), then `CONDUCTOR_SKILL_DIRS`,
+  then `~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.gemini/skills`. A skill is a
+  direct sub-folder holding `SKILL.md`; dot-folders (Codex's `.system`) and the tools' plugin caches
+  are not read, since those skills drive one tool's own runtime (Codex's in-app browser, say).
+- **Which ones**: the `skills` input (`all`, `none` or names; unset is `CONDUCTOR_SKILLS`, else all).
+  A swarm run settles them once in `swarm_setup` (a name nobody installed stops the run there) and
+  hands the same list to every agent of the run (`skills` input of `swarm`).
+- **How**: the chosen skills are copied into a folder named by their content
+  (`~/.cache/conductor-harness/skills/<digest>`; `node_modules`, `.git` and virtualenvs left out, any
+  skill over 20 MB skipped and reported), so an agent never writes into the user's own skills and a
+  changed skill is a new folder; a copy whose content no longer matches its name is rebuilt. The
+  prompt lists each skill's name, description and `SKILL.md` path, for every backend the same way, and
+  tells the agent to read the whole `SKILL.md` when a part of its task matches. Claude gets the folder
+  as an additional directory, Gemini as an included directory; Codex's sandbox reads anywhere. Each
+  CLI's own listing is off, so nothing is listed twice and nothing the run did not choose appears.
+
+
+## 17. Test runs with an expected duration
+
+A test that runs far past how long it usually takes is hung, not slow, and is stopped to be investigated rather than waited on (`common/test_budget.py`). Every session's `.cc-cache/bin`, first on its `PATH` on every backend and on the harness's own check runs, wraps the common test runners (`node --test`, `npm`/`pnpm`/`yarn test`, `npx vitest|jest|mocha|ava|tap`, `pytest`, `go test`, `cargo test`, `mvn test|verify`, `gradle test|check`); anything else passes straight through (`npm` installs still take the tree's install lock). A test run gets its own process group and a budget of 3× its longest recent finished run in this tree plus 20 s (at least 30 s; history in `.cc-cache/test-times.json`); with no history, the tool's first-run default (120 s for `node --test`, 180 s for npm-style and `pytest`, 300 s for `go`/`cargo`, 600 s for Maven/Gradle). `TEST_BUDGET_S=<seconds>` sets it for a suite that truly needs longer. Past the budget the whole group is stopped, the run exits 124, and the agent reads what usually hangs a test (a server, socket, timer or child it never closed; a fixed port a teammate holds; an unbounded wait) and is told to find the cause before running it again. When the agent's own command timeout kills the wrapper, the wrapper stops the group too, so no test process is left holding a port. `node --test` also gets `--test-force-exit`, so a suite that leaves a handle open exits once its tests are done. The swarm's acceptance checks follow the same rule in `swarm_measure` (`execute(expected_s=)`): 3× the check's longest recent run plus 60 s, from `.cc-cache/check-times.json`; a first run has no budget and only the progress rule.
+
+Every test run is logged in the tree (`.cc-cache/test-runs.jsonl`: command, seconds, outcome, session, and the tree's content digest, which is the same before and after the harness commits it). An agent's run of a command that already ran on exactly this tree, by any teammate or by the harness, is not run again: the agent gets the earlier exit code and the tail of its output, and `TEST_RERUN=1` forces a run (to check for flakiness, say). An agent running one of the run's acceptance checks (`node .cc/checks/<name>`) counts as a test run (first-run default 300 s). The harness's own check runs (`swarm_measure`, the verification gate's reproductions) always run, keep the harness's limits, and are recorded so agents reuse them. Each round's test time (runs by outcome, seconds, runs not repeated, hung runs stopped, the most-run commands, repeats by one session) is posted as a `test_time` fact and handed to the round review with the agents' reports; the run's output carries the totals as `testTime`.

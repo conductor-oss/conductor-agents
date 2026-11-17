@@ -109,6 +109,24 @@
           "type": "array",
           "items": {},
           "description": "Passed-through issues input, coerced to [] when not a list."
+        },
+        "deliveredAndTested": {
+          "type": "boolean",
+          "description": "True only when the work was delivered and its tests passed, or the change needs no tests."
+        },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "DELIVERED",
+            "DELIVERED_UNTESTED",
+            "TESTS_FAILED",
+            "INCOMPLETE"
+          ],
+          "description": "The run's outcome, separating delivery from proof."
+        },
+        "report": {
+          "type": "string",
+          "description": "One sentence naming the verdict and the test cycle's state."
         }
       },
       "required": [

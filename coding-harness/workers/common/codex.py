@@ -35,9 +35,10 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 from typing import Any
 
-from . import check_execution
+from . import backend_auth, check_execution
 from .cost import price_usage
 
 log = logging.getLogger("coding_agent.codex")
@@ -70,7 +71,8 @@ def _strictify_schema(node: Any) -> Any:
     for keyword in _UNSUPPORTED_KEYWORDS:
         if out.pop(keyword, None) is not None:
             log.debug("codex: dropped unsupported schema keyword %r", keyword)
-    if out.get("type") == "object" and isinstance(out.get("properties"), dict):
+    kinds = out.get("type") if isinstance(out.get("type"), list) else [out.get("type")]
+    if "object" in kinds and isinstance(out.get("properties"), dict):
         props = out["properties"]
         original_required = set(out.get("required") or [])
         out["additionalProperties"] = False
@@ -83,15 +85,85 @@ def _strictify_schema(node: Any) -> Any:
                     props[key]["type"] = [t, "null"]
                 elif isinstance(t, list) and "null" not in t:
                     props[key]["type"] = t + ["null"]
+                if isinstance(props[key].get("enum"), list) and None not in props[key]["enum"]:
+                    props[key]["enum"] = [*props[key]["enum"], None]
     if "items" in out:
         out["items"] = _strictify_schema(out["items"])
     return out
 
 
+def _omit_strict_nulls(value: Any, schema: Any) -> Any:
+    """Undo what strict mode forces: a property the schema left optional comes back as null instead of
+    absent. Consumers are written for "absent", and an all-null ``pushback`` object is truthy, so every
+    Codex delivery would have read as a refused directive. Required properties are left as returned."""
+    if not isinstance(schema, dict):
+        return value
+    if isinstance(value, list):
+        return [_omit_strict_nulls(v, schema.get("items")) for v in value]
+    if not isinstance(value, dict) or not isinstance(schema.get("properties"), dict):
+        return value
+    required = set(schema.get("required") or [])
+    return {k: _omit_strict_nulls(v, schema["properties"].get(k)) for k, v in value.items()
+            if v is not None or k in required or k not in schema["properties"]}
+
+
+def _restore_optional(result: dict[str, Any], output_schema: dict | None) -> dict[str, Any]:
+    """The run result with strict-mode nulls removed from its structured output (and its JSON text)."""
+    if not output_schema or not isinstance(result.get("structured"), (dict, list)):
+        return result
+    structured = _omit_strict_nulls(result["structured"], output_schema)
+    return {**result, "structured": structured, "result": json.dumps(structured)}
+
+
+# Directories Codex's workspace-write sandbox keeps read-only inside the workspace (its own config and
+# agent folders; .git too, but the harness commits for the agents). A repository can track files there
+# (an install guide for Codex users in .codex/INSTALL.md): run c5fbbe5b's agents agreed on a one-line fix
+# to it for six rounds and were refused every write.
+SANDBOX_PROTECTED = (".codex", ".agents")
+
+
+def writable_roots(worktree: str, granted: list[str] | None = None) -> list[str]:
+    """Explicit writable roots for the sandbox: the protected directories holding files the repository
+    tracks, and the paths an approver granted the run (docs/PERMISSIONS.md; a granted path inside a
+    protected directory is opened as its directory). Never .git, never outside the worktree."""
+    from . import git
+    root = os.path.realpath(worktree)
+    roots = []
+    for name in SANDBOX_PROTECTED:
+        path = os.path.join(worktree, name)
+        if os.path.isdir(path) and git.git(worktree, "ls-files", "--", name, check=False).stdout.strip():
+            roots.append(os.path.realpath(path))
+    for rel in granted or []:
+        path = os.path.realpath(os.path.join(root, str(rel)))
+        inside = os.path.relpath(path, root)
+        if inside.startswith("..") or inside == ".git" or inside.startswith(".git" + os.sep):
+            continue
+        top = inside.split(os.sep, 1)[0]
+        if top in SANDBOX_PROTECTED:
+            path = os.path.join(root, top)
+            os.makedirs(path, exist_ok=True)
+        if path not in roots and path != root:
+            roots.append(path)
+    return roots
+
+
 def _tokens(usage: dict[str, Any]) -> int:
-    return (int(usage.get("input_tokens") or 0)
-            + int(usage.get("output_tokens") or 0)
-            + int(usage.get("reasoning_output_tokens") or 0))
+    # Codex's input_tokens already include the cached ones, and its output_tokens the reasoning ones
+    # (total_tokens == input_tokens + output_tokens in every session log).
+    return int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+
+
+def _usage_cost(usage: dict[str, Any], model: str | None) -> float:
+    """USD for a Codex usage record. Cached input is billed at the cache rate and only once: pricing
+    input_tokens (which include the cached ones) at the full rate and the cached ones again, and the
+    reasoning tokens on top of output_tokens (which include them), overstated a session's input cost
+    about six times (a session of 845,010 input tokens, 764,160 of them cached)."""
+    if not usage:
+        return 0.0
+    cached = int(usage.get("cached_input_tokens") or 0)
+    return price_usage({"input_tokens": max(int(usage.get("input_tokens") or 0) - cached, 0),
+                        "output_tokens": int(usage.get("output_tokens") or 0),
+                        "cache_read_input_tokens": cached}, model or "codex:default")
 
 
 def _item_command(item: dict[str, Any]) -> str | None:
@@ -115,6 +187,11 @@ def _item_command(item: dict[str, Any]) -> str | None:
     return None
 
 
+# Codex lists the skills it finds itself ($CODEX_HOME/skills, ~/.agents/skills, its plugins) in every
+# session's instructions. The harness lists the run's skills for every backend instead (common/skills.py),
+# so Codex's own listing is off: the same skills on every backend and every host, none listed twice.
+NATIVE_SKILLS_OFF: dict[str, Any] = {"skills": {"include_instructions": False}}
+
 # --------------------------------------------------------------------------- SDK
 
 async def _run_codex_sdk(
@@ -127,6 +204,10 @@ async def _run_codex_sdk(
     output_schema: dict | None,
     resume_session_id: str | None,
     on_turn,
+    extra_env: dict[str, str] | None = None,
+    steer=None,
+    max_budget_usd: float | None = None,
+    granted_roots: list[str] | None = None,
 ) -> dict[str, Any]:
     """Drive one turn via the openai-codex SDK, consuming the notification stream
     ourselves (mirroring the SDK's own _collect_async_turn_result) so we can fire
@@ -145,7 +226,8 @@ async def _run_codex_sdk(
     # failure. This harness already isolates the agent to its own worktree
     # (write_roots, _worktree_guard); there is no additional safety this
     # specific restriction buys here, only false test failures.
-    session_config = {"sandbox_workspace_write": {"network_access": True}} if write else None
+    session_config: dict[str, Any] = {**NATIVE_SKILLS_OFF, **({"sandbox_workspace_write": {"network_access": True, **(
+        {"writable_roots": roots} if (roots := writable_roots(worktree, granted_roots)) else {})}} if write else {})}
     turn_kwargs: dict[str, Any] = {}
     if output_schema:
         turn_kwargs["output_schema"] = _strictify_schema(output_schema)
@@ -161,6 +243,7 @@ async def _run_codex_sdk(
     usage_total: dict[str, Any] = {}
     completed_status: str | None = None
     turn_error: str | None = None
+    over_budget = False
 
     def _snapshot():
         return {"status": "IN_PROGRESS", "turns": _live_turns(), "numTurns": max(turn_idx, 1),
@@ -180,8 +263,21 @@ async def _run_codex_sdk(
             except Exception:  # noqa: BLE001
                 pass
 
+    # The SDK merges ``env`` onto the process environment; the shared runtime environment is passed
+    # whole so the spawned codex sees exactly what every other child process does, with the credential
+    # CODEX_AUTH decides (the ChatGPT login, or the key; common/backend_auth).
+    backend_auth.ensure_codex_key()  # key mode: the CLI's login store must hold the key (run 9b8d3b39)
     try:
-        async with AsyncCodex() as codex:
+        from openai_codex import CodexConfig
+    except ImportError:  # an SDK without CodexConfig (or a test double): the process environment as is
+        CodexConfig = None
+    if CodexConfig is not None:
+        client = AsyncCodex(config=CodexConfig(env=check_execution.inherited_environment(
+            backend_auth.extra("codex", extra_env))))
+    else:
+        client = AsyncCodex()
+    try:
+        async with client as codex:
             if resume_session_id:
                 thread = await codex.thread_resume(
                     resume_session_id, cwd=worktree, sandbox=sandbox,
@@ -197,7 +293,7 @@ async def _run_codex_sdk(
             handle = await thread.turn(prompt, **turn_kwargs)
 
             async def _consume():
-                nonlocal turn_idx, last_text, usage_total, completed_status, turn_error, cur_cmds
+                nonlocal turn_idx, last_text, usage_total, completed_status, turn_error, cur_cmds, over_budget
                 async for event in handle.stream():
                     m = event.method
                     payload = event.payload
@@ -220,6 +316,15 @@ async def _run_codex_sdk(
                         tu = payload.token_usage.total
                         usage_total = tu.model_dump() if hasattr(tu, "model_dump") else {}
                         _fire()
+                        # The spend cap Claude's SDK enforces itself (max_budget_usd): Codex has none,
+                        # so a session ran to $6.40 under a run whose ceiling was meant to bound it.
+                        if (max_budget_usd is not None and not over_budget
+                                and _usage_cost(usage_total, model) > float(max_budget_usd)):
+                            over_budget = True
+                            try:
+                                await handle.interrupt()
+                            except Exception:  # noqa: BLE001 - the turn may have just ended
+                                pass
                         continue
                     if m == "turn/completed":
                         turn = payload.turn
@@ -232,7 +337,45 @@ async def _run_codex_sdk(
                         cur_cmds = []
                         _fire()
 
-            await _consume()
+            async def _steer_loop():
+                # The live team channel for a driver without tool hooks: every few seconds, hand the
+                # running turn whatever arrived on the board (a teammate's lesson, a question, a
+                # directive) through Codex's turn/steer; a blocking directive interrupts the turn.
+                if steer is None:
+                    log.info("codex steer: no watcher for this session")
+                    return
+                log.info("codex steer: polling the team board every 3 s")
+                while True:
+                    await asyncio.sleep(3.0)
+                    try:
+                        text, blocking = await asyncio.to_thread(steer)
+                    except Exception as e:  # noqa: BLE001 - a board read failure costs one poll
+                        log.warning("codex steer: poll failed: %s", e)
+                        continue
+                    if text:
+                        try:
+                            await handle.steer(text)
+                            log.info("codex steer: delivered %d chars to the running turn", len(text))
+                        except Exception as e:  # noqa: BLE001 - the turn may have just ended
+                            log.warning("codex steer: turn/steer failed: %s", e)
+                            return
+                    if blocking:
+                        try:
+                            await handle.interrupt()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return
+
+            consumer = asyncio.ensure_future(_consume())
+            steerer = asyncio.ensure_future(_steer_loop())
+            try:
+                await consumer
+            finally:
+                steerer.cancel()
+                try:
+                    await steerer
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
     except FileNotFoundError as ex:
         return {"ok": False, "status": "codex_error",
                 "error": f"codex runtime not found: {ex}", **err_base}
@@ -250,17 +393,13 @@ async def _run_codex_sdk(
             structured = None
 
     tokens = _tokens(usage_total)
-    cost = price_usage(
-        {"input_tokens": usage_total.get("input_tokens", 0),
-         "output_tokens": (usage_total.get("output_tokens", 0)
-                           + usage_total.get("reasoning_output_tokens", 0)),
-         "cache_read_input_tokens": usage_total.get("cached_input_tokens", 0)},
-        model or "codex:default",
-    ) if usage_total else 0.0
+    cost = _usage_cost(usage_total, model)
 
     return {
         "ok": ok,
-        "status": "success" if ok else (completed_status or "codex_error"),
+        # Claude's status for the same stop, so callers treat both alike (retryable, resumable).
+        "status": ("error_max_budget_usd" if over_budget
+                   else "success" if ok else (completed_status or "codex_error")),
         "result": last_text.strip(),
         "structured": structured,
         "model": model or "",
@@ -287,6 +426,8 @@ def _run_codex_cli(
     output_schema: dict | None = None,
     resume_session_id: str | None = None,
     on_turn=None,
+    extra_env: dict[str, str] | None = None,
+    granted_roots: list[str] | None = None,
 ) -> dict[str, Any]:
     """Legacy driver: run one `codex exec` to completion, streaming its JSONL.
 
@@ -300,15 +441,19 @@ def _run_codex_cli(
     sandbox = "workspace-write" if write else "read-only"
     tmp = tempfile.mkdtemp(prefix=".cc-codex-", dir=worktree)
     out_file = ""
+    backend_auth.ensure_codex_key()
     args = [CODEX_BIN, "exec"]
     if resume_session_id:
         args += ["resume", resume_session_id]
     args += [prompt, "-C", worktree, "--skip-git-repo-check", "--json", "-s", sandbox]
+    args += ["-c", "skills.include_instructions=false"]  # NATIVE_SKILLS_OFF
     # See the matching comment in _run_codex_sdk: workspace-write denies network/
     # socket syscalls (including loopback) by default, which surfaces as a false
     # test failure, not a project-code one.
     if write:
         args += ["-c", "sandbox_workspace_write.network_access=true"]
+        if roots := writable_roots(worktree, granted_roots):
+            args += ["-c", "sandbox_workspace_write.writable_roots=" + json.dumps(roots)]
     if model:
         args += ["-m", model]
     if output_schema:
@@ -338,7 +483,7 @@ def _run_codex_cli(
         proc = subprocess.Popen(
             args, cwd=worktree, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            env=check_execution.inherited_environment(),
+            env=check_execution.inherited_environment(backend_auth.extra("codex", extra_env)),
         )
         for line in proc.stdout:  # streams as Codex emits JSONL
             line = line.strip()
@@ -413,12 +558,7 @@ def _run_codex_cli(
     rc = proc.returncode if proc else 1
     ok = rc == 0 and not errors
     tokens = _tokens(usage)
-    cost = price_usage(
-        {"input_tokens": usage.get("input_tokens", 0),
-         "output_tokens": (usage.get("output_tokens", 0) + usage.get("reasoning_output_tokens", 0)),
-         "cache_read_input_tokens": usage.get("cached_input_tokens", 0)},
-        model or "codex:default",
-    ) if usage else 0.0
+    cost = _usage_cost(usage, model)
     result_text = last_text.strip() or (json.dumps(structured) if structured else "")
     return {
         "ok": ok,
@@ -460,6 +600,10 @@ async def run_codex_agent(
     output_schema: dict | None = None,
     resume_session_id: str | None = None,
     on_turn=None,
+    extra_env: dict[str, str] | None = None,
+    steer=None,
+    max_budget_usd: float | None = None,
+    granted_roots: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run one Codex session to completion; return the uniform coding_agent dict.
 
@@ -468,15 +612,97 @@ async def run_codex_agent(
     isn't installed or ``CODEX_DRIVER=cli`` is set. ``effort`` is honored only by
     the SDK driver.
     """
+    started = time.time()
     if _sdk_available():
-        return await _run_codex_sdk(
+        res = _restore_optional(await _run_codex_sdk(
             prompt, worktree=worktree, model=model, write=write, effort=effort,
             output_schema=output_schema, resume_session_id=resume_session_id,
-            on_turn=on_turn)
-    log.info("codex driver: CLI fallback (%s)",
-             "CODEX_DRIVER=cli" if CODEX_DRIVER == "cli" else "openai_codex not installed")
-    return await asyncio.to_thread(
-        _run_codex_cli,
-        prompt, worktree=worktree, model=model, write=write,
-        output_schema=output_schema, resume_session_id=resume_session_id,
-        on_turn=on_turn)
+            on_turn=on_turn, extra_env=extra_env, steer=steer, max_budget_usd=max_budget_usd,
+            granted_roots=granted_roots), output_schema)
+    else:
+        log.info("codex driver: CLI fallback (%s)",
+                 "CODEX_DRIVER=cli" if CODEX_DRIVER == "cli" else "openai_codex not installed")
+        res = _restore_optional(await asyncio.to_thread(
+            _run_codex_cli,
+            prompt, worktree=worktree, model=model, write=write,
+            output_schema=output_schema, resume_session_id=resume_session_id,
+            on_turn=on_turn, extra_env=extra_env, granted_roots=granted_roots), output_schema)
+    return with_subagents(res, since=started)
+
+
+def _sessions_home() -> str:
+    return os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"), "sessions")
+
+
+def _rollout_usage(path: str) -> tuple[str, dict]:
+    """``(model, final total_token_usage)`` of one Codex session log."""
+    model, usage = "", {}
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if '"turn_context"' not in line and '"token_count"' not in line:
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            p = e.get("payload") or {}
+            if e.get("type") == "turn_context" and p.get("model"):
+                model = str(p["model"])
+            info = p.get("info") or {} if p.get("type") == "token_count" else {}
+            if info.get("total_token_usage"):
+                usage = info["total_token_usage"]
+    return model, usage
+
+
+def subagent_sessions(thread_id: str, *, since: float) -> list[dict]:
+    """Every Codex session spawned, at any depth, by ``thread_id`` since ``since`` (epoch seconds), read
+    from Codex's own session logs: ``[{"thread", "model", "usage", "tokens", "costUsd"}]``. A session's
+    usage covers its own turns only; a sub-agent it spawns writes its own log (an architect review
+    spawned two in run c5fbbe5b, and their tokens were in no total)."""
+    if not thread_id:
+        return []
+    root = _sessions_home()
+    days = {time.strftime("%Y/%m/%d", time.localtime(t)) for t in (since - 3600, since, time.time())}
+    parent_of: dict[str, tuple[str, str]] = {}
+    for day in days:
+        folder = os.path.join(root, day)
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            try:
+                if not name.startswith("rollout-") or os.path.getmtime(path) < since - 60:
+                    continue
+                with open(path, encoding="utf-8") as fh:
+                    meta = (json.loads(fh.readline() or "{}").get("payload") or {})
+            except (OSError, ValueError):
+                continue
+            spawn = ((meta.get("source") or {}).get("subagent") or {}).get("thread_spawn") or {} \
+                if isinstance(meta.get("source"), dict) else {}
+            if spawn.get("parent_thread_id") and meta.get("id"):
+                parent_of[str(meta["id"])] = (str(spawn["parent_thread_id"]), path)
+    found, frontier, out = set(), {thread_id}, []
+    while frontier:
+        children = {t for t, (parent, _) in parent_of.items() if parent in frontier and t not in found}
+        found |= children
+        frontier = children
+    for t in sorted(found):
+        model, usage = _rollout_usage(parent_of[t][1])
+        out.append({"thread": t, "model": model, "usage": usage, "tokens": _tokens(usage),
+                    "costUsd": round(_usage_cost(usage, model), 6)})
+    return out
+
+
+def with_subagents(res: dict[str, Any], *, since: float) -> dict[str, Any]:
+    """The session's result with its sub-agents' tokens and cost added (and listed under ``subagents``)."""
+    try:
+        subs = subagent_sessions(str(res.get("session_id") or ""), since=since)
+    except Exception as e:  # noqa: BLE001 - accounting must never fail a session
+        log.warning("codex sub-agent usage not read: %s", e)
+        return res
+    if not subs:
+        return res
+    return {**res, "subagents": subs, "tokens": int(res.get("tokens") or 0) + sum(s["tokens"] for s in subs),
+            "cost_usd": round(float(res.get("cost_usd") or 0) + sum(s["costUsd"] for s in subs), 6)}

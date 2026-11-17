@@ -1,0 +1,372 @@
+{
+  "name": "project_bootstrap",
+  "description": "Roadmap Phase 5 (G3) greenfield on-ramp: a one-paragraph description + an empty dir become a buildable, TESTED skeleton (with the verification command documented in AGENTS.md so test_cycle works from run one), then hand off to the team to add the first real feature on top — in one driven sequence. bootstrap_init git-inits the dir; a coding_agent scaffolds; test_cycle gates the skeleton green; code_parallel adds the first feature; bootstrap_outcome folds the honest verdict. The project is built on its own run branch in a worktree, so the user's checkout is untouched; the first feature inherits that worktree and branch.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "restartable": true,
+  "inputParameters": [
+    "repoPath",
+    "description",
+    "firstFeature",
+    "stack",
+    "verificationCommand",
+    "codeModel",
+    "maxTurns",
+    "maxBudgetUsd",
+    "maxFixAttempts",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides",
+    "branchName",
+    "branchRunId",
+    "inPlace",
+    "workspacePath"
+  ],
+  "inputTemplate": {
+    "description": "",
+    "firstFeature": "",
+    "stack": "",
+    "verificationCommand": [
+      {
+        "argv": [
+          "make",
+          "test"
+        ]
+      }
+    ],
+    "codeModel": "",
+    "maxTurns": 250,
+    "maxBudgetUsd": 10,
+    "maxFixAttempts": 2,
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {},
+    "branchName": "",
+    "branchRunId": "",
+    "inPlace": false,
+    "workspacePath": ""
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "bootstrap_init",
+      "taskReferenceName": "init",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "firstFeature": "${workflow.input.firstFeature}"
+      }
+    },
+    {
+      "name": "workspace_prepare",
+      "taskReferenceName": "workspace",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${init.output.repoPath}",
+        "branch": "${workflow.input.branchName}",
+        "branchRunId": "${workflow.input.branchRunId}",
+        "inPlace": "${workflow.input.inPlace}",
+        "preserveExisting": true,
+        "workflowId": "${workflow.workflowId}",
+        "workspacePath": "${workflow.input.workspacePath}",
+        "branchDefault": "bootstrap"
+      }
+    },
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "scaffold",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "worktreePath": "${workspace.output.worktreePath}",
+        "tools": [
+          "Read",
+          "Grep",
+          "Glob",
+          "Write",
+          "Edit"
+        ],
+        "templateKey": "project_scaffold",
+        "modelRole": "code",
+        "modelResolution": "${model_policy.output}",
+        "model": "${workflow.input.codeModel}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "prompt": "Scaffold a minimal but BUILDABLE and TESTED project skeleton for this description:\n\n${workflow.input.description}\n\nPreferred stack/hints: ${workflow.input.stack}\n\nRequirements: (1) create the minimal project files for a working skeleton; (2) include at least ONE real, PASSING test; (3) create a Makefile with a `test` target that runs the test suite (for Python: `python3 -m pytest`), and document the command `make test` as a single backticked command in an AGENTS.md file so the test harness can run it from run one; (4) keep it minimal — no feature logic yet, just a green, extensible skeleton.",
+        "promptContext": {
+          "description": "${workflow.input.description}",
+          "stack": "${workflow.input.stack}"
+        },
+        "promptTemplate": "",
+        "promptTemplateSource": "",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "commit",
+      "taskReferenceName": "skeleton_commit",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "message": "project_bootstrap: tested green skeleton from the description"
+      }
+    },
+    {
+      "name": "test_cycle",
+      "taskReferenceName": "verify",
+      "type": "SUB_WORKFLOW",
+      "optional": true,
+      "subWorkflowParam": {
+        "name": "test_cycle"
+      },
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "candidateCommit": "${skeleton_commit.output.commit}",
+        "testMode": "full",
+        "testCommands": "${workflow.input.verificationCommand}",
+        "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+        "model": "${workflow.input.codeModel}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "skeleton_gate",
+      "taskReferenceName": "skeleton_gate",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "green",
+      "inputParameters": {
+        "green": "${verify.output.testCycleState}"
+      },
+      "decisionCases": {
+        "tests_passed": [
+          {
+            "name": "feature_gate",
+            "taskReferenceName": "feature_gate",
+            "type": "SWITCH",
+            "evaluatorType": "value-param",
+            "expression": "has",
+            "inputParameters": {
+              "has": "${init.output.hasFeature}"
+            },
+            "decisionCases": {
+              "true": [
+                {
+                  "name": "code_parallel",
+                  "taskReferenceName": "run_feature",
+                  "type": "SUB_WORKFLOW",
+                  "subWorkflowParam": {
+                    "name": "code_parallel"
+                  },
+                  "inputParameters": {
+                    "repoPath": "${workspace.output.sourceRepoPath}",
+                    "instruction": "${workflow.input.firstFeature}",
+                    "callerWorkflow": "project_bootstrap",
+                    "codeModel": "${workflow.input.codeModel}",
+                    "maxTurns": "${workflow.input.maxTurns}",
+                    "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+                    "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+                    "modelProfile": "${workflow.input.modelProfile}",
+                    "modelPolicy": "${workflow.input.modelPolicy}",
+                    "modelPolicySource": "${workflow.input.modelPolicySource}",
+                    "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                    "modelsConfig": "${workflow.input.modelsConfig}",
+                    "modelOverrides": "${workflow.input.modelOverrides}",
+                    "workspacePath": "${workspace.output.worktreePath}"
+                  }
+                },
+                {
+                  "name": "test_cycle",
+                  "taskReferenceName": "feature_verify",
+                  "type": "SUB_WORKFLOW",
+                  "optional": true,
+                  "subWorkflowParam": {
+                    "name": "test_cycle"
+                  },
+                  "inputParameters": {
+                    "repoPath": "${workspace.output.worktreePath}",
+                    "candidateCommit": "${run_feature.output.verificationCommit}",
+                    "testMode": "full",
+                    "testCommands": "${workflow.input.verificationCommand}",
+                    "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+                    "model": "${workflow.input.codeModel}",
+                    "maxTurns": "${workflow.input.maxTurns}",
+                    "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+                    "modelProfile": "${workflow.input.modelProfile}",
+                    "modelPolicy": "${workflow.input.modelPolicy}",
+                    "modelPolicySource": "${workflow.input.modelPolicySource}",
+                    "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+                    "modelsConfig": "${workflow.input.modelsConfig}",
+                    "modelOverrides": "${workflow.input.modelOverrides}"
+                  }
+                },
+                {
+                  "name": "bootstrap_outcome",
+                  "taskReferenceName": "outcome",
+                  "type": "SIMPLE",
+                  "inputParameters": {
+                    "skeletonGreen": true,
+                    "featureDelivered": "${run_feature.output.verified}",
+                    "featureVerdict": "${run_feature.output.deliveryOutcome}",
+                    "finalHead": "${feature_verify.output.candidateCommit}",
+                    "featureTestsPassed": "${feature_verify.output.testsPassed}",
+                    "featureTestState": "${feature_verify.output.testCycleState}"
+                  }
+                },
+                {
+                  "name": "terminate_feature",
+                  "taskReferenceName": "terminate_feature",
+                  "type": "TERMINATE",
+                  "inputParameters": {
+                    "terminationStatus": "COMPLETED",
+                    "workflowOutput": {
+                      "bootstrapped": "${outcome.output.bootstrapped}",
+                      "verdict": "${outcome.output.verdict}",
+                      "report": "${outcome.output.report}",
+                      "skeletonGreen": true,
+                      "repoPath": "${init.output.repoPath}",
+                      "branch": "${workspace.output.branch}",
+                      "sourceHandoff": {
+                        "sourceRepoPath": "${workspace.output.sourceRepoPath}",
+                        "repoPath": "${workspace.output.worktreePath}",
+                        "branch": "${workspace.output.branch}",
+                        "commit": "${feature_verify.output.candidateCommit}",
+                        "originalBranch": "${workspace.output.originalBranch}",
+                        "originalHead": "${workspace.output.originalHead}",
+                        "baselineCommit": "${workspace.output.baselineCommit}",
+                        "includedSourcePaths": "${workspace.output.baselineIncludedPaths}",
+                        "presented": "${outcome.output.bootstrapped}"
+                      },
+                      "testCycleState": "${feature_verify.output.testCycleState}"
+                    }
+                  }
+                }
+              ]
+            },
+            "defaultCase": [
+              {
+                "name": "bootstrap_outcome",
+                "taskReferenceName": "outcome_skeleton",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "skeletonGreen": true,
+                  "featureDelivered": "none",
+                  "finalHead": "${verify.output.candidateCommit}"
+                }
+              },
+              {
+                "name": "terminate_skeleton_ready",
+                "taskReferenceName": "terminate_skeleton_ready",
+                "type": "TERMINATE",
+                "inputParameters": {
+                  "terminationStatus": "COMPLETED",
+                  "workflowOutput": {
+                    "bootstrapped": "${outcome_skeleton.output.bootstrapped}",
+                    "verdict": "${outcome_skeleton.output.verdict}",
+                    "report": "${outcome_skeleton.output.report}",
+                    "skeletonGreen": true,
+                    "repoPath": "${init.output.repoPath}",
+                    "branch": "${workspace.output.branch}",
+                    "sourceHandoff": {
+                      "sourceRepoPath": "${workspace.output.sourceRepoPath}",
+                      "repoPath": "${workspace.output.worktreePath}",
+                      "branch": "${workspace.output.branch}",
+                      "commit": "${verify.output.candidateCommit}",
+                      "originalBranch": "${workspace.output.originalBranch}",
+                      "originalHead": "${workspace.output.originalHead}",
+                      "baselineCommit": "${workspace.output.baselineCommit}",
+                      "includedSourcePaths": "${workspace.output.baselineIncludedPaths}",
+                      "presented": "${outcome_skeleton.output.bootstrapped}"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "terminate_skeleton_not_green",
+          "taskReferenceName": "terminate_skeleton_not_green",
+          "type": "TERMINATE",
+          "inputParameters": {
+            "terminationStatus": "COMPLETED",
+            "workflowOutput": {
+              "bootstrapped": false,
+              "verdict": "SKELETON_NOT_GREEN",
+              "report": "SKELETON_NOT_GREEN: the scaffolded skeleton is not green under its own documented test command, so it is not ready to hand to the team.",
+              "skeletonGreen": false,
+              "repoPath": "${init.output.repoPath}",
+              "verificationState": "${verify.output.testCycleState}",
+              "branch": "${workspace.output.branch}",
+              "sourceHandoff": {
+                "sourceRepoPath": "${workspace.output.sourceRepoPath}",
+                "repoPath": "${workspace.output.worktreePath}",
+                "branch": "${workspace.output.branch}",
+                "commit": "${verify.output.candidateCommit}",
+                "originalBranch": "${workspace.output.originalBranch}",
+                "originalHead": "${workspace.output.originalHead}",
+                "baselineCommit": "${workspace.output.baselineCommit}",
+                "includedSourcePaths": "${workspace.output.baselineIncludedPaths}",
+                "presented": false
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "outputParameters": {
+    "repoPath": "${init.output.repoPath}",
+    "skeletonBaseCommit": "${init.output.baseCommit}",
+    "skeletonCommit": "${skeleton_commit.output.commit}",
+    "skeletonVerification": "${verify.output.testCycleState}",
+    "branch": "${workspace.output.branch}",
+    "sourceHandoff": {
+      "sourceRepoPath": "${workspace.output.sourceRepoPath}",
+      "repoPath": "${workspace.output.worktreePath}",
+      "branch": "${workspace.output.branch}",
+      "commit": "${verify.output.candidateCommit}",
+      "originalBranch": "${workspace.output.originalBranch}",
+      "originalHead": "${workspace.output.originalHead}",
+      "baselineCommit": "${workspace.output.baselineCommit}",
+      "includedSourcePaths": "${workspace.output.baselineIncludedPaths}",
+      "presented": false
+    }
+  },
+  "enforceSchema": false
+}

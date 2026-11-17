@@ -1,0 +1,181 @@
+{
+  "name": "ship_run",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "description": "Ship a finished swarm run: push its result branch to the remote and open a pull request into the base branch (an existing pull request for the branch is reused and its summary updated). Started from the console's or TUI's Open pull request action.",
+  "timeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "inputParameters": [
+    "repoPath",
+    "branch",
+    "head",
+    "base",
+    "title",
+    "summary",
+    "draft",
+    "remote",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides"
+  ],
+  "inputSchema": {
+    "name": "ship_run_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "required": [
+        "repoPath",
+        "branch",
+        "head",
+        "title"
+      ],
+      "properties": {
+        "repoPath": {
+          "type": "string",
+          "description": "The repository the run delivered into (the run's sourceRepoPath), where its branch lives."
+        },
+        "branch": {
+          "type": "string",
+          "description": "The run's result branch to push and open the pull request from."
+        },
+        "base": {
+          "type": "string",
+          "default": "",
+          "description": "The branch the pull request merges into. Empty uses the repository's default branch."
+        },
+        "title": {
+          "type": "string",
+          "description": "The pull request title: what the run was asked to do."
+        },
+        "summary": {
+          "type": "string",
+          "default": "",
+          "description": "One paragraph describing the change; pr_create writes it as the body's single Summary section (at most 500 characters)."
+        },
+        "draft": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open the pull request as a draft."
+        },
+        "remote": {
+          "type": "string",
+          "default": "origin",
+          "description": "The git remote to push the branch to."
+        },
+        "modelProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Named model profile to resolve; empty string defers to the policy's default profile."
+        },
+        "modelPolicy": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Inline model policy document (or JSON string) merged on top of the bundled and repository policies."
+        },
+        "modelPolicySource": {
+          "type": "string",
+          "default": "",
+          "description": "Provenance label recorded for the inline modelPolicy."
+        },
+        "modelPolicySha256": {
+          "type": "string",
+          "default": "",
+          "description": "Expected canonical SHA-256 of the inline modelPolicy."
+        },
+        "modelsConfig": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path (inside the worktree) to a repository model policy file, overriding the default location."
+        },
+        "modelOverrides": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": {},
+          "description": "Per-role model overrides (or a JSON string of the same) merged on top of the selected profile."
+        },
+        "head": {
+          "type": "string",
+          "description": "The commit the branch must still point at: what the human saw on the result card. The push is refused if the branch moved since."
+        }
+      }
+    }
+  },
+  "inputTemplate": {
+    "base": "",
+    "summary": "",
+    "draft": false,
+    "remote": "origin",
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {}
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "optional": true,
+      "inputParameters": {
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "git_push",
+      "taskReferenceName": "push",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "branch": "${workflow.input.branch}",
+        "remote": "${workflow.input.remote}",
+        "expectedHead": "${workflow.input.head}"
+      }
+    },
+    {
+      "name": "pr_create",
+      "taskReferenceName": "pr",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "head": "${workflow.input.branch}",
+        "base": "${workflow.input.base}",
+        "title": "${workflow.input.title}",
+        "summary": "${workflow.input.summary}",
+        "draft": "${workflow.input.draft}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "pushed": "${push.output.pushed}",
+    "branch": "${workflow.input.branch}",
+    "head": "${push.output.head}",
+    "prNumber": "${pr.output.number}",
+    "prUrl": "${pr.output.url}",
+    "publicationState": "${pr.output.publicationState}",
+    "reason": "${pr.output.reason}"
+  }
+}

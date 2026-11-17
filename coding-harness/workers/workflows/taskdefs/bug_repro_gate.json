@@ -1,0 +1,14 @@
+{
+  "name": "bug_repro_gate",
+  "description": "Bug fix (roadmap Phase 4, G2): gate the fix on a genuine reproduction. The authored regression test must be RED (test_run verificationState=failed) at the parent commit; a passing run is cannot_reproduce (an honest stop, never a silent fix); a blocked run is an infrastructure block.",
+  "retryCount": 1, "retryLogic": "FIXED", "retryDelaySeconds": 1,
+  "timeoutSeconds": 0, "responseTimeoutSeconds": 0, "pollTimeoutSeconds": 0, "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {"name": "bug_repro_gate_input", "type": "JSON", "data": {"type": "object", "properties": {
+    "verificationState": {"type": "string", "description": "Raw test_run verdict at the repro commit: failed = reproduced (red), passed = cannot_reproduce, else blocked."}
+  }}},
+  "outputSchema": {"name": "bug_repro_gate_output", "type": "JSON", "data": {"type": "object", "properties": {
+    "reproduced": {"type": "boolean"}, "outcome": {"type": "string", "enum": ["reproduced", "cannot_reproduce", "blocked"]},
+    "report": {"type": "string"}
+  }, "required": ["reproduced", "outcome"]}}
+}

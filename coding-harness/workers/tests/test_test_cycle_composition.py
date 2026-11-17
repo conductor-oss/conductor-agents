@@ -28,9 +28,9 @@ LOOP_BODY = [
     "discover", "verification_plan", "verify", "repair_history", "record_iteration",
 ]
 TERMINAL_STATES = {
-    "tests_passed", "no_tests_required", "tests_failed_after_fix_budget",
-    "tests_failed_fix_unavailable", "command_discovery_blocked",
-    "runtime_unavailable", "candidate_commit_missing", "verifier_worker_unavailable",
+    "tests_passed", "no_tests_required", "no_tests_found", "tests_failed_after_fix_budget",
+    "tests_failed_fix_unavailable", "runtime_unavailable", "candidate_commit_missing",
+    "verification_input_invalid", "verifier_worker_unavailable",
 }
 
 
@@ -156,14 +156,15 @@ def test_every_worker_outcome_maps_to_a_named_terminal_state():
                 "verification": {"commands": []}, "mode": "targeted", **overrides}
         return test_plan.cycle_outcome(**data)["testCycleState"]
 
-    # test_run emits six outcomes: verify_candidate's four plus the two the
-    # task layer adds. A seventh value means the worker is degraded.
+    # Discovery never blocks: nothing to run is a named, passed state; an input the caller wired
+    # wrong is named too. Any other value means the verifier is degraded.
     assert state("passed") == "tests_passed"
     assert state("no_tests_required") == "no_tests_required"
+    assert state("no_tests_found") == "no_tests_found"
     assert state("code_failed") == "tests_failed_after_fix_budget"
     assert state("code_failed", advanced=False) == "tests_failed_fix_unavailable"
-    assert state("configuration_blocked") == "command_discovery_blocked"
-    assert state("configuration_blocked", candidate="") == "candidate_commit_missing"
+    assert state("invalid_input") == "verification_input_invalid"
+    assert state("invalid_input", candidate="") == "candidate_commit_missing"
     assert state("infra_blocked") == "runtime_unavailable"
     assert state("cancelled") == "runtime_unavailable"
     assert state(None) == "verifier_worker_unavailable"
@@ -174,7 +175,7 @@ def test_declared_terminal_states_match_the_documented_contract():
     from common import test_plan
 
     produced = set()
-    for outcome in ("passed", "no_tests_required", "code_failed", "configuration_blocked",
+    for outcome in ("passed", "no_tests_required", "no_tests_found", "code_failed", "invalid_input",
                     "infra_blocked", "cancelled", None):
         for advanced in (True, False):
             for candidate in ("abc", ""):
@@ -230,77 +231,15 @@ def test_legacy_output_names_survive_so_existing_callers_need_no_edit():
         assert added in outputs, added
 
 
-def test_agent_fallback_is_a_sub_workflow_between_discovery_and_planning():
-    # The entire propose/author fallback used to be embedded inline (5 levels
-    # of nested SWITCH); it now lives in test_agent_fallback.json, called as
-    # one optional, version-pinned SUB_WORKFLOW -- see
-    # test_agent_fallback_composition.py for its own internal structure.
-    workflow = _load("test_cycle")
-    assert workflow["inputTemplate"]["allowAgentTestPlan"] is False
-
-    refs = [task["taskReferenceName"] for task in workflow["tasks"]]
-    assert refs.index("initial_discover") < refs.index("agent_fallback") < \
-        refs.index("record_agent_fallback") < refs.index("initial_plan")
-
-    fallback = _find(workflow, "agent_fallback")
-    assert fallback["type"] == "SUB_WORKFLOW"
-    assert fallback["subWorkflowParam"] == {"name": "test_agent_fallback", "version": 1}
-    assert fallback.get("optional") is True
-    assert fallback["inputParameters"]["candidateCommit"] == "${workflow.variables.candidateCommit}"
-    assert fallback["inputParameters"]["discoveryOutcome"] == "${initial_discover.output.executionOutcome}"
-    assert fallback["inputParameters"]["discoveryReason"] == "${initial_discover.output.reason}"
-    assert fallback["inputParameters"]["changedPaths"] == "${initial_discover.output.changedPaths}"
-    assert fallback["inputParameters"]["repairRoots"] == "${initial_discover.output.repairRoots}"
-    assert fallback["inputParameters"]["allowAgentTestPlan"] == "${workflow.input.allowAgentTestPlan}"
-    assert fallback["inputParameters"]["allowAgentAuthoredTests"] == "${workflow.input.allowAgentAuthoredTests}"
-    assert "modelResolution" not in fallback["inputParameters"]  # resolves its own, see below
-
-
-def test_record_agent_fallback_maps_every_child_output_onto_a_variable():
-    # This SET_VARIABLE is what makes the child a genuine no-op when it skips:
-    # the child always echoes candidateCommit/repairRoots back (unchanged, if
-    # nothing ran), so this can run unconditionally regardless of which
-    # internal branch the child took.
-    workflow = _load("test_cycle")
-    record = _find(workflow, "record_agent_fallback")
-    assert record["type"] == "SET_VARIABLE"
-    assert record.get("optional") is True
-    assert record["inputParameters"] == {
-        "agentCommands": "${agent_fallback.output.agentCommands}",
-        "candidateCommit": "${agent_fallback.output.candidateCommit}",
-        "repairRoots": "${agent_fallback.output.repairRoots}",
-        "agentAuthoredTest": "${agent_fallback.output.agentAuthoredTest}",
-        "agentAuthoredTestPath": "${agent_fallback.output.agentAuthoredTestPath}",
-    }
-
-
-def test_record_initial_run_reads_the_variable_not_the_stale_initial_discovery():
-    # record_agent_fallback (unconditionally, right after the SUB_WORKFLOW call)
-    # seeds workflow.variables.repairRoots from the child's output, which is
-    # either the ORIGINAL (possibly configuration_blocked) discovery's scope
-    # passed straight through, or an accepted authored test's real scope. If
-    # record_initial_run instead read initial_discover.output.repairRoots
-    # directly, an accepted authored test's real repair scope would be
-    # silently discarded.
+def test_discovery_feeds_planning_and_the_initial_run_directly():
+    # Discovery never blocks, so nothing sits between it and the plan: no fallback sub-workflow, no
+    # variable seeded by one. The initial run's repair scope is the discovery's own.
     workflow = _load("test_cycle")
     refs = [task["taskReferenceName"] for task in workflow["tasks"]]
-    assert refs.index("initial_discover") < refs.index("agent_fallback") < \
-        refs.index("record_agent_fallback") < refs.index("record_initial_run")
-
+    assert refs.index("initial_discover") + 1 == refs.index("initial_plan")
+    assert "agent_fallback" not in refs and "allowAgentTestPlan" not in json.dumps(workflow)
     record_initial_run = _find(workflow, "record_initial_run")
-    assert record_initial_run["inputParameters"]["repairRoots"] == "${workflow.variables.repairRoots}"
-
-
-def test_agent_proposal_is_never_re_invoked_inside_the_repair_loop():
-    workflow = _load("test_cycle")
-    loop = _find(workflow, "test_fix_loop")
-    body_refs = [task["taskReferenceName"] for task in loop["loopOver"]]
-    assert "agent_fallback" not in body_refs
-
-    # The accepted plan is carried forward like any other obligation instead.
-    for ref in ("initial_plan", "verification_plan"):
-        assert _find(workflow, ref)["inputParameters"]["agentCommands"] == \
-            "${workflow.variables.agentCommands}"
+    assert record_initial_run["inputParameters"]["repairRoots"] == "${initial_discover.output.repairRoots}"
 
 
 def test_registration_lists_test_cycle_before_every_caller():

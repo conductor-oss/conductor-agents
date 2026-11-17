@@ -22,6 +22,13 @@
           },
           "description": "Repository-relative paths the subtask was planned to change."
         },
+        "optionalPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Planned paths the subtask may write but need not (its frozen acceptance tests); one left untouched is never missing."
+        },
         "commit": {
           "type": "object",
           "description": "Output of the commit task.",
@@ -57,6 +64,17 @@
             "auditAvailable": {
               "type": "boolean",
               "description": "Whether the audit ran successfully."
+            },
+            "state": {
+              "type": "string",
+              "description": "The audit's verdict; 'pushback' makes the outcome 'pushback' (never passed)."
+            },
+            "presentPaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Planned paths already in HEAD's tree before the session; never missing."
             },
             "actualPaths": {
               "type": "array",
@@ -124,15 +142,24 @@
           "type": "string",
           "enum": [
             "passed",
+            "pushback",
             "audit_unavailable",
             "implementation_unavailable",
-            "incomplete_delivery"
+            "incomplete_delivery",
+            "satisfied"
           ],
-          "description": "Overall delivery verdict."
+          "description": "Overall delivery verdict. 'pushback': the implementer declined a directive and made its case; the Lead decides at integration. 'satisfied': the implementer changed nothing because the shared branch already satisfies the item; the peer reviewer decides at integration."
         },
         "passed": {
           "type": "boolean",
-          "description": "True only when every planned path was staged and nothing was rejected."
+          "description": "True only when every planned path was staged (or already on the branch, or optional), nothing was rejected and the implementer did not push back."
+        },
+        "presentPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Planned paths already in HEAD's tree before the session (from the audit); never missing."
         },
         "plannedPaths": {
           "type": "array",

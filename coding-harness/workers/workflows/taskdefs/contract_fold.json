@@ -1,0 +1,12 @@
+{
+  "name": "contract_fold",
+  "description": "Architect: red-prove the scouts' candidates against the untouched head and record the contract revision on the board and the branch.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

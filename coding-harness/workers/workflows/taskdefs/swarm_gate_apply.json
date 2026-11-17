@@ -1,0 +1,12 @@
+{
+  "name": "swarm_gate_apply",
+  "description": "Carry out the lead's rulings on verification findings: adopt checks, reopen, record follow-ups.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

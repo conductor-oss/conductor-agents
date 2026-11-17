@@ -21,7 +21,21 @@ from pathlib import Path
 from .exec import RunError, run
 
 WORKTREES = ".cc-worktrees"
-GROUP_BRANCH = "cc-group-{name}"
+GROUP_BRANCH = "cc-group-{scope}-{name}"
+
+
+def group_branch(repo: str, name: str) -> str:
+    """The fork branch for item ``name`` forked from the shared checkout ``repo``.
+
+    Git branch names are shared by every worktree of one repository, so a bare ``cc-group-<item>``
+    collides across runs on the same repo — concurrently, or with a run left behind by a crash or a
+    termination (measured live: run 6d8af3af's ``design`` fork failed twice with "'cc-group-design' is
+    already used by worktree" held by terminated run 2e888ce3). Each run forks from its own shared
+    checkout, so scoping the name by that checkout's real path makes it unique per run and stable for
+    every caller that holds the same ``repo``."""
+    import hashlib
+    scope = hashlib.sha1(os.path.realpath(repo).encode()).hexdigest()[:8]
+    return GROUP_BRANCH.format(scope=scope, name=name)
 _NON_PRODUCT_PATH_PARTS = {
     ".gradle", ".gradle-local", "build", "target", "out", "dist",
     ".pytest_cache", ".mypy_cache", "coverage", "node_modules",
@@ -118,6 +132,23 @@ def _git_retry(fn, attempts: int = 5, base: float = 0.3):
             last = e
             time.sleep(base * (a + 1))
     raise last  # unreachable
+
+
+def ensure_repo(path: str) -> bool:
+    """Make an existing directory a git repository with a HEAD, if it is not one yet; True when it did.
+
+    Any step may be the first to touch a fresh project directory — a program's planner, an intake
+    classifier, a bug-fix reproducer — and every one of them reads HEAD (run edc1c893 failed four times on
+    `git rev-parse HEAD` in an empty directory before anything else ran). ``ensure_ready`` with
+    ``preserve_worktree`` does the work: ``git init``, a local identity if none is configured, and an empty
+    base commit that leaves the directory's files exactly as they were. A directory already inside a
+    repository with a HEAD is left alone, and a path that does not exist is never created here."""
+    if not path or not os.path.isdir(path):
+        return False
+    if git(path, "rev-parse", "--verify", "HEAD", check=False).code == 0:
+        return False
+    ensure_ready(path, preserve_worktree=True)
+    return True
 
 
 def ensure_ready(repo: str, *, name: str = "conductor-code",
@@ -422,29 +453,55 @@ def vetted_changes(repo: str) -> dict[str, list[str]]:
     return {"changed": changed, "allowed": allowed, "rejected": rejected}
 
 
+def within_write_roots(path: str, write_roots) -> bool:
+    """Whether ``path`` is one of ``write_roots`` or under one of them (a root is a file or a directory
+    prefix). Empty roots confine nothing."""
+    given = [os.path.normpath(str(r).strip()).replace(os.sep, "/") for r in (write_roots or []) if str(r).strip()]
+    if not given:
+        return True
+    roots = [r for r in given if r not in ("", "..") and not r.startswith("../")]  # a root escaping the repo confines to nothing
+    if not roots:
+        return False
+    path = os.path.normpath(str(path).strip()).replace(os.sep, "/")
+    return any(r == "." or path == r or path.startswith(r + "/") for r in roots)
+
+
 def stage_vetted_changes(repo: str, *, force_add_paths: list[str] | tuple[str, ...] | None = None,
-                         allow_noop: bool = False) -> dict:
+                         allow_noop: bool = False, write_roots=None, _locked: bool = False) -> dict:
     """Replace automated staging with the vetted changed-path set only.
 
     A hard reset is never used; ``git reset`` here only clears the index so a
     pre-existing staged cache file cannot hitch a ride on the repair commit.
+
+    ``write_roots``, when given, confines staging to the item's write roots: the agent runner's guard
+    refuses Write/Edit outside them, but Bash can write any file of the worktree (sv-cmd-decr removed a
+    sibling's declaration through Bash after the Edit tool refused it, run ba2491ff). A change outside
+    the roots is left unstaged and reported as ``outsideScope`` — the same refusal the guard records,
+    so the Lead widens the item's scope from it instead of integrating an edit nobody owns.
     """
     classified = vetted_changes(repo)
     forced = _validated_relative_paths(repo, force_add_paths)
     forced = [path for path in forced if is_vetted_change_path(path)]
     allowed = sorted(set(classified["allowed"] + forced))
+    outside = sorted(path for path in allowed if not within_write_roots(path, write_roots))
+    allowed = [path for path in allowed if path not in outside]
     if not allowed:
-        detail = ", ".join(classified["rejected"]) or "no changed files"
+        rejected_all = classified["rejected"]
+        detail = (", ".join(path_sample(rejected_all))
+                  + (f" and {len(rejected_all) - PATH_SAMPLE} more" if len(rejected_all) > PATH_SAMPLE else "")
+                  ) or "no changed files"
+        if outside:
+            detail = f"every change is outside the item's write roots: {', '.join(outside)}"
         if allow_noop:
             # A coding task may correctly find nothing to change.  Do not turn
             # that result into a failed workflow, and never stage generated
             # artifacts merely to manufacture a commit.
-            with _repo_lock(repo):
+            with (_nolock() if _locked else _repo_lock(repo)):
                 _git_retry(lambda: git(repo, "reset", check=False))
-            return {"staged": [], "rejected": classified["rejected"],
+            return {"staged": [], "rejected": classified["rejected"], "outsideScope": outside,
                     "noOp": True, "reason": f"no meaningful source changes: {detail}"}
         raise ValueError(f"no meaningful change to commit; rejected generated/cache-only paths: {detail}")
-    with _repo_lock(repo):
+    with (_nolock() if _locked else _repo_lock(repo)):
         _git_retry(lambda: git(repo, "reset", check=False))
         normal = [path for path in allowed if path not in forced]
         if normal:
@@ -454,36 +511,146 @@ def stage_vetted_changes(repo: str, *, force_add_paths: list[str] | tuple[str, .
         staged = git(repo, "diff", "--cached", "--name-only", check=False).stdout.splitlines()
     if not staged:
         if allow_noop:
-            return {"staged": [], "rejected": classified["rejected"],
+            return {"staged": [], "rejected": classified["rejected"], "outsideScope": outside,
                     "noOp": True, "reason": "no meaningful source changes were staged"}
         raise ValueError("no meaningful change was staged for commit")
-    return {"staged": sorted(staged), "rejected": classified["rejected"], "noOp": False}
+    return {"staged": sorted(staged), "rejected": classified["rejected"], "outsideScope": outside, "noOp": False}
+
+
+@contextmanager
+def _nolock():
+    yield
 
 
 def commit(repo: str, message: str = "conductor-code change", *,
-           force_add_paths: list[str] | tuple[str, ...] | None = None) -> dict:
-    # Serialized on the shared git dir: parallel forks committing to sibling
-    # worktrees write shared refs/reflog and can otherwise collide.
-    staged = stage_vetted_changes(repo, force_add_paths=force_add_paths, allow_noop=True)
-    if staged["noOp"]:
-        return {"commit": head(repo), "stagedPaths": [],
-                "rejectedPaths": staged["rejected"], "noOp": True,
-                "reason": staged["reason"]}
-    with _repo_lock(repo):
-        result = git(repo, "commit", "-m", message or "conductor-code change", check=False)
-        if result.code != 0:
-            raise RunError("git commit", result.code, result.stdout, result.stderr)
-        # Commit identities are an API boundary between workers and workflows.
-        # Always return the canonical object ID; returning an abbreviation here
-        # made this field change shape between real and no-op commits.
-        sha = head(repo)
-    return {"commit": sha, "stagedPaths": staged["staged"],
-            "rejectedPaths": staged["rejected"], "noOp": False}
+           force_add_paths: list[str] | tuple[str, ...] | None = None, write_roots=None,
+           atomic: bool = False) -> dict:
+    """Stage the vetted changes (within ``write_roots``) and commit. ``atomic`` holds the repo lock across
+    staging AND the commit: several agents of one team commit their own files from ONE shared tree, and
+    a teammate's ``git reset`` between this agent's staging and its commit would unstage its files."""
+    def _run():
+        staged = stage_vetted_changes(repo, force_add_paths=force_add_paths, allow_noop=True,
+                                      write_roots=write_roots, _locked=atomic)
+        if staged["noOp"]:
+            return {"commit": head(repo), "stagedPaths": [],
+                    "rejectedPaths": path_sample(staged["rejected"]), "rejectedCount": len(staged["rejected"]),
+                    "outsideScope": staged.get("outsideScope", []),
+                    "noOp": True, "reason": staged["reason"]}
+        with (_nolock() if atomic else _repo_lock(repo)):
+            result = git(repo, "commit", "-m", message or "conductor-code change", check=False)
+            if result.code != 0:
+                raise RunError("git commit", result.code, result.stdout, result.stderr)
+            sha = head(repo)
+        return {"commit": sha, "stagedPaths": staged["staged"],
+                "rejectedPaths": path_sample(staged["rejected"]), "rejectedCount": len(staged["rejected"]),
+                "outsideScope": staged.get("outsideScope", []), "noOp": False}
+    if atomic:
+        with _repo_lock(repo):
+            return _run()
+    return _run()
+
+
+# The tool cache a sandboxed session may write (common.coding_agent.TOOL_CACHE_DIR, architect.CACHE_ROOT):
+# npm and pip caches, Go's build cache, a scout's Playwright browsers. Git-excluded, so a fresh worktree
+# starts without one and every session re-downloaded its dependencies (a React implementer spent part
+# of its 4.6 minutes on `npm install` and a Chromium download its scout had already made, run 0f829d58).
+CACHE_DIR = ".cc-cache"
+
+
+def exclude_path(repo: str, pattern: str) -> None:
+    """Add ``pattern`` to the repository's ``info/exclude`` once (a worktree shares its main
+    repository's; a clone has its own), so a seeded cache never shows as an untracked change."""
+    rel = git(repo, "rev-parse", "--git-path", "info/exclude", check=False).stdout.strip()
+    if not rel:
+        return
+    path = rel if os.path.isabs(rel) else os.path.join(repo, rel)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        text = open(path).read() if os.path.exists(path) else ""
+        if pattern in text.split("\n"):
+            return
+        with open(path, "a") as fh:
+            fh.write(("" if not text or text.endswith("\n") else "\n") + pattern + "\n")
+    except OSError:
+        return
+
+
+# A task output is a message, not a dump: a path list read off the filesystem goes into it as its
+# count plus this many examples. A failed scaffold carried its 15,000 rejected node_modules paths
+# (1 MB) in every attempt's output, joins copied them, and the team workflow passed Conductor's 10 MB
+# payload limit and died (run a87e9ddb). The full list is the tree's own `git status`.
+PATH_SAMPLE = 20
+
+
+def path_sample(paths) -> list[str]:
+    return list(paths or [])[:PATH_SAMPLE]
+
+
+def exclude_generated(repo: str) -> None:
+    """Keep generated directories (dependency installs, build output, caches) out of git's view in
+    ``repo`` and every worktree that shares its ``info/exclude``, whatever the repository's own ignore
+    files say. ``is_vetted_change_path`` already never commits them; excluding them at the source keeps
+    `git status` the size of the work. A frontend scaffold with an empty .gitignore and a team's
+    `npm install` put 15,000 untracked node_modules files in a shared tree, and its `git status` grew to
+    2.8 MB (run a87e9ddb). Tracked files under such a directory stay tracked: exclude rules apply to
+    untracked paths only."""
+    for part in sorted(_NON_PRODUCT_PATH_PARTS):
+        exclude_path(repo, f"{part}/")
+
+
+def seed_cache(src: str, dst: str) -> int:
+    """Warm the tool cache at ``dst`` from the one at ``src``: every file not yet there is hard-linked
+    (the caches are content-addressed and immutable) or copied where linking is refused. Returns the
+    number of files seeded; nothing to seed is 0."""
+    if not src or not os.path.isdir(src) or os.path.realpath(src) == os.path.realpath(dst):
+        return 0
+    if os.path.basename(dst.rstrip(os.sep)) == CACHE_DIR:
+        exclude_path(os.path.dirname(dst.rstrip(os.sep)), f"/{CACHE_DIR}/")
+    seeded = 0
+    for root, dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        target = os.path.join(dst, rel) if rel != "." else dst
+        os.makedirs(target, exist_ok=True)
+        for d in dirs:
+            s = os.path.join(root, d)
+            if os.path.islink(s) and not os.path.lexists(os.path.join(target, d)):
+                os.symlink(os.readlink(s), os.path.join(target, d))
+        dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]
+        for f in files:
+            s, t = os.path.join(root, f), os.path.join(target, f)
+            if os.path.lexists(t):
+                continue
+            try:
+                if os.path.islink(s):
+                    os.symlink(os.readlink(s), t)
+                else:
+                    os.link(s, t)
+            except OSError:
+                try:
+                    shutil.copy2(s, t, follow_symlinks=False)
+                except OSError:
+                    continue
+            seeded += 1
+    return seeded
+
+
+def worktree_shared(repo: str) -> dict:
+    """ONE working tree per team: the item builds in the team's shared checkout itself (no fork), so
+    every agent sees every teammate's files as they land and verifies against the real tree. Three
+    implementers in separate forks each finished "verification could not run" because their fork lacked
+    the others' files (run b93cd3e2)."""
+    return {"worktreePath": repo, "branch": _trim(git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout),
+            "initialCommit": head(repo), "resumed": False, "shared": True}
 
 
 def worktree_add(repo: str, name: str, *, preserve_existing: bool = False) -> dict:
+    exclude_generated(repo)
+    return _worktree_add(repo, name, preserve_existing=preserve_existing)
+
+
+def _worktree_add(repo: str, name: str, *, preserve_existing: bool = False) -> dict:
     wt = os.path.join(repo, WORKTREES, name)
-    br = GROUP_BRANCH.format(name=name)
+    br = group_branch(repo, name)
     if preserve_existing and os.path.isdir(wt):
         inside = git(wt, "rev-parse", "--is-inside-work-tree", check=False)
         if inside.code == 0 and _trim(inside.stdout) == "true":
@@ -512,8 +679,24 @@ def worktree_add(repo: str, name: str, *, preserve_existing: bool = False) -> di
                     shutil.copy2(src, dst)
             except OSError:
                 pass
+    # A fork starts with the shared worktree's tool cache: no second `npm install` download, no second
+    # Chromium, for every implementer, author, reviewer and scout.
+    seed_cache(os.path.join(repo, CACHE_DIR), os.path.join(wt, CACHE_DIR))
     initial = _trim(git(wt, "rev-parse", "HEAD").stdout)
     return {"worktreePath": wt, "branch": br, "initialCommit": initial, "resumed": False}
+
+
+def worktree_add_detached(repo: str, name: str, commit: str) -> dict:
+    """A worktree pinned at ``commit`` with no branch: the tree a read-only session (a peer reviewer)
+    looks at. A session must never run in the shared integration worktree: the agent runner resets the
+    worktree it was given to the HEAD it started from, so a sibling team's merge landing meanwhile was
+    undone and its files left untracked, aborting that team's next fast-forward (run a062184f)."""
+    wt = os.path.join(repo, WORKTREES, name)
+    with _repo_lock(repo):
+        git(repo, "worktree", "prune", check=False)
+        git(repo, "worktree", "remove", "--force", wt, check=False)
+        _git_retry(lambda: git(repo, "worktree", "add", "--detach", wt, commit))
+    return {"worktreePath": wt, "commit": _trim(git(wt, "rev-parse", "HEAD").stdout)}
 
 
 def exclude_worktrees(repo: str) -> str:
@@ -605,10 +788,58 @@ def worktree_remove(repo: str, name: str) -> dict:
     return {"removed": name}
 
 
+def run_worktrees(repo: str) -> dict[str, str]:
+    """The run-level worktrees registered on ``repo`` (``.cc-worktrees/run-<id>``), by run id."""
+    base = os.path.join(os.path.abspath(repo), WORKTREES)
+    listing = git(repo, "worktree", "list", "--porcelain", check=False).stdout
+    out: dict[str, str] = {}
+    for line in listing.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        path = os.path.abspath(line.split(" ", 1)[1].strip())
+        parent, name = os.path.split(path)
+        if parent == base and name.startswith("run-"):
+            out[name[len("run-"):]] = path
+    return out
+
+
+def prune_finished_runs(repo: str, *, keep_run_id: str, prunable) -> dict:
+    """Remove the run worktrees (with their nested fork and review worktrees) of runs that are over for
+    good. ``prunable(run_id)`` answers True for a run that completed, False for one still running or
+    one that failed or was stopped (its retry resumes in this checkout), or None when it cannot tell —
+    an unknown run is kept. Only the checkout goes: the run's branch, and everything it delivered, stays.
+
+    Registered worktrees are not free. Claude Code's Bash sandbox adds filesystem deny paths for every
+    worktree registered on the repository, and at 171 such paths the sandbox profile exceeded the OS
+    exec argument limit: every Bash command of every implementer failed at spawn (E2BIG) — 591 failed
+    calls in one run — and no agent could build or test (run ec0fb6dc; 51 of the 70 registered
+    worktrees belonged to runs that had finished hours earlier)."""
+    removed, kept = [], []
+    keep = _safe_name(keep_run_id) if keep_run_id else ""
+    for run_id, path in sorted(run_worktrees(repo).items()):
+        if run_id == keep:
+            continue
+        if prunable(run_id) is True:
+            worktree_remove_path(repo, path, remove_nested=True)
+            removed.append(run_id)
+        else:
+            kept.append(run_id)
+    return {"removed": removed, "kept": kept}
+
+
+def tracked_at_head(repo: str, paths) -> list[str]:
+    """The given repository paths that exist in HEAD's tree: committed before the current session."""
+    return [str(p) for p in paths
+            if git(repo, "cat-file", "-e", f"HEAD:{p}", check=False).code == 0]
+
+
 def status_files(repo: str) -> set[str]:
-    """Set of paths with uncommitted changes (porcelain). Used to report
-    filesChanged after an agent edits a worktree."""
-    return set(_status_porcelain(repo))
+    """Set of paths with uncommitted changes (porcelain), every untracked file listed by itself. Used
+    to report filesChanged after an agent edits a worktree and to audit a delivery: with git's default
+    collapsing, the first files of a NEW directory showed up as one entry ``resp/`` and the audit
+    reported every planned file of the item missing (three no-op repair agents per such fork, run
+    ec0fb6dc)."""
+    return set(_status_porcelain(repo, untracked_files_all=True))
 
 
 def _status_porcelain(repo: str, *, untracked_files_all: bool = False) -> dict[str, str]:
@@ -920,3 +1151,115 @@ def remote_set(repo: str, url: str, *, name: str = "origin") -> dict:
     else:
         git(repo, "remote", "add", name, url)
     return {"remote": name, "url": url, "existed": exists}
+
+
+# ─────────────────────────────── after a run: continue, summarize, ship ───────────────────────────────
+def branch_slug(text: str, *, prefix: str = "swarm", words: int = 5) -> str:
+    """A readable outcome-branch prefix from what was asked: ``swarm/postgres-compatible-database``.
+    The run id is appended by ``run_specific_branch``, so two runs never share a branch."""
+    tokens = re.findall(r"[a-z0-9]+", str(text or "").lower())
+    stop = {"a", "an", "the", "and", "or", "of", "to", "in", "for", "with", "on", "create", "build", "make",
+            "add", "write", "written", "implement", "please", "that", "this", "it", "is", "be"}
+    picked = [t for t in tokens if t not in stop][:words] or ["run"]
+    return f"{prefix}/{'-'.join(picked)[:48].strip('-')}"
+
+
+def _worktree_branches(repo: str) -> dict[str, str]:
+    """``{branch: worktree path}`` for every worktree registered on the repository."""
+    out, path = {}, None
+    for line in git(repo, "worktree", "list", "--porcelain", check=False).stdout.splitlines():
+        if line.startswith("worktree "):
+            path = os.path.abspath(line.split(" ", 1)[1].strip())
+        elif line.startswith("branch ") and path:
+            out[line.split(" ", 1)[1].strip().removeprefix("refs/heads/")] = path
+    return out
+
+
+def continuation_checkout(repo: str, branch: str) -> str:
+    """A checkout of ``branch`` that a follow-up run can use as its repoPath, so it plans against and
+    builds on that branch's work. The checkout already holding the branch is reused (the main checkout,
+    or an earlier continuation); a finished run's own worktree that still holds it is removed first
+    (its branch keeps the work, and a branch can be checked out in one place only). Otherwise a new
+    worktree ``.cc-worktrees/continue-<branch>`` is created next to the run worktrees. The user's own
+    checkout is never switched."""
+    root = os.path.abspath(_trim(git(repo, "rev-parse", "--show-toplevel").stdout) or repo)
+    common = os.path.abspath(os.path.join(root, _trim(git(root, "rev-parse", "--git-common-dir").stdout)))
+    main = os.path.dirname(common) if os.path.basename(common) == ".git" else root
+    if not _branch_exists(main, branch):
+        raise ValueError(f"branch {branch} does not exist in {main}")
+    holders = _worktree_branches(main)
+    held = holders.get(branch)
+    runs = os.path.join(main, WORKTREES)
+    if held and os.path.dirname(held) == runs and os.path.basename(held).startswith("run-"):
+        if git(held, "status", "--porcelain", check=False).stdout.strip():
+            raise ValueError(f"{held} holds {branch} with uncommitted changes; commit or discard them first")
+        worktree_remove_path(main, held, remove_nested=True)
+        held = None
+    if held:
+        return held
+    path = os.path.join(runs, "continue-" + _safe_name(branch.replace("/", "-")))
+    if os.path.isdir(path):
+        worktree_remove_path(main, path, remove_nested=True)
+    os.makedirs(runs, exist_ok=True)
+    exclude_worktrees(main)
+    git(main, "worktree", "add", path, branch)
+    return path
+
+
+def branch_summary(repo: str, branch: str, base: str = "") -> dict:
+    """What ``branch`` adds over ``base`` (the branch the run started from): commits, files, lines."""
+    if not branch or not _branch_exists(repo, branch):
+        return {"branch": branch, "exists": False}
+    head = _trim(git(repo, "rev-parse", branch).stdout)
+    out = {"branch": branch, "exists": True, "head": head, "base": base}
+    if base and git(repo, "rev-parse", "--verify", base, check=False).code == 0:
+        out["commits"] = int(_trim(git(repo, "rev-list", "--count", f"{base}..{branch}").stdout) or 0)
+        stat = _trim(git(repo, "diff", "--shortstat", f"{base}...{branch}", check=False).stdout)
+        nums = {k: int(v) for v, k in re.findall(r"(\d+) (file|insertion|deletion)", stat)}
+        out.update({"files": nums.get("file", 0), "insertions": nums.get("insertion", 0),
+                    "deletions": nums.get("deletion", 0),
+                    "merged": git(repo, "merge-base", "--is-ancestor", branch, base, check=False).code == 0})
+    return out
+
+
+def remote_info(repo: str, remote: str = "origin") -> dict | None:
+    """The remote a branch can be shipped to: its URL and default branch (from the local tracking
+    ref; no network). None when the repository has no such remote."""
+    url = remote_urls(repo).get(remote)
+    if not url:
+        return None
+    head = _trim(git(repo, "symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD", check=False).stdout)
+    default = head.split("/", 1)[1] if "/" in head else ""
+    if not default:
+        default = next((b for b in ("main", "master") if git(repo, "rev-parse", "--verify",
+                                                               f"refs/remotes/{remote}/{b}", check=False).code == 0), "")
+    github = re.search(r"github\.com[:/](.+?)(?:\.git)?$", url)
+    return {"name": remote, "url": url, "defaultBranch": default, "github": github.group(1) if github else ""}
+
+
+def merge_branch(repo: str, branch: str, into: str) -> dict:
+    """Merge a run's branch into ``into`` locally, only when it is safe: where ``into`` is checked out
+    the checkout must be clean (fast-forward when possible, else a merge commit; a conflict is aborted
+    and reported, never left behind); where it is not checked out it can only be fast-forwarded."""
+    if not _branch_exists(repo, branch) or not _branch_exists(repo, into):
+        raise ValueError(f"both {branch} and {into} must be local branches")
+    holder = _worktree_branches(repo).get(into)
+    if git(repo, "merge-base", "--is-ancestor", branch, into, check=False).code == 0:
+        return {"merged": True, "already": True, "into": into, "head": _trim(git(repo, "rev-parse", into).stdout)}
+    ff = git(repo, "merge-base", "--is-ancestor", into, branch, check=False).code == 0
+    if not holder:
+        if not ff:
+            raise ValueError(f"{into} has moved since the run started; check it out and merge {branch} there")
+        with _repo_lock(repo):
+            git(repo, "update-ref", f"refs/heads/{into}", _trim(git(repo, "rev-parse", branch).stdout))
+        return {"merged": True, "fastForward": True, "into": into, "head": _trim(git(repo, "rev-parse", into).stdout)}
+    if git(holder, "status", "--porcelain", "--untracked-files=no", check=False).stdout.strip():
+        raise ValueError(f"{holder} ({into}) has uncommitted changes; commit or stash them first")
+    with _repo_lock(repo):
+        res = git(holder, "merge", "--ff" if ff else "--no-ff", "--no-edit", branch, check=False)
+        if res.code != 0:
+            git(holder, "merge", "--abort", check=False)
+            raise ValueError(f"merging {branch} into {into} conflicts; nothing was changed: "
+                             f"{(res.stdout + res.stderr).strip()[:400]}")
+    return {"merged": True, "fastForward": ff, "into": into, "checkout": holder,
+            "head": _trim(git(holder, "rev-parse", "HEAD").stdout)}

@@ -9,7 +9,7 @@
 | Review local changes before a commit | `local_review` | `repoPath` |
 | Address existing PR feedback | `address_pr` | `repo`, `prNumber` |
 | Implement a multi-part local change | `code_parallel` | `repoPath`, `instruction` |
-| Run a long-lived, interactive complex feature campaign | `feature_campaign` | `repoPath`, `instruction`; set `createPr: true` to publish a PR |
+| Run a long-lived, interactive complex feature campaign | `feature_campaign` | `repoPath` (local checkout) or `repo` (clone from GitHub), and `instruction` or `issueNumber`; always asks at a PR-draft checkpoint before publishing |
 | Implement an apply-ready OpenSpec change | `openspec_development` | `specSource`, `changeId` (plus `repoPath` except local-source-workspace mode) |
 | Smoke-test GitHub connectivity | `github_demo` | `repoUrl`, `instruction` |
 | Prove build runtimes on both worker pools | `runtime_health` | none |

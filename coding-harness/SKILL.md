@@ -53,14 +53,14 @@ The natural loop: **`issue_to_pr` → `pr_review` → `address_pr`** (open, revi
 
 ## 60-second setup
 
-From the `coding-harness/` directory, assuming the prerequisites above are installed:
+From the repository root, assuming the prerequisites above are installed:
 
 ```bash
 ./run.sh
 ```
 
 This starts a local server when needed, installs worker dependencies, registers definitions,
-runs the worker gate, and starts the worker fleet. Set `CONDUCTOR_SERVER_URL` first when using
+and starts the worker fleet. Set `CONDUCTOR_SERVER_URL` first when using
 a remote server.
 
 Then, in another terminal:
@@ -200,7 +200,7 @@ conductor workflow start --workflow address_pr \
 
 ## TUI operations
 
-Install and launch from `coding-harness/`:
+Install and launch from the repository root:
 
 ```bash
 python3 -m venv tui/.venv
@@ -216,7 +216,7 @@ without it.
 Chat may start at most one workflow per user message. If a request could map to multiple
 workflows, it asks the user to choose one before starting anything. Natural-language requests
 to register, re-register, update, or refresh definitions invoke the same confirmed registration
-flow as `/register`, including the SIMPLE-task worker gate.
+flow as `/register`.
 
 ## Automation schedules
 

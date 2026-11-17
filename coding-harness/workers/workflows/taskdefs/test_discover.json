@@ -21,7 +21,7 @@
         },
         "candidateCommit": {
           "type": "string",
-          "description": "Candidate commit to diff against for targeted discovery. Required when testMode is 'targeted' (the default); discovery is blocked without it."
+          "description": "Candidate commit to diff against for targeted discovery. Required when testMode is 'targeted' (the default); the result is invalid_input without it."
         },
         "testMode": {
           "type": "string",
@@ -68,21 +68,22 @@
             "discovered",
             "blocked"
           ],
-          "description": "'passed' when no tests are required, 'discovered' when a runnable plan was found, 'blocked' when discovery could not proceed."
+          "description": "'passed' when no tests are required, 'discovered' when a runnable plan was found, 'blocked' only for an invalid input or an infrastructure error."
         },
         "executionOutcome": {
           "type": "string",
           "enum": [
             "discovered",
             "no_tests_required",
-            "configuration_blocked",
+            "no_tests_found",
+            "invalid_input",
             "infra_blocked"
           ],
-          "description": "Fine-grained discovery outcome; 'configuration_blocked' is a documented VerificationBlocked reason, 'infra_blocked' is an unexpected discovery error."
+          "description": "Fine-grained discovery outcome. Discovery never blocks: 'no_tests_required' (only documentation changed) and 'no_tests_found' (the repository has no test command) are passed outcomes; 'invalid_input' is a caller wiring defect (no candidate commit, a commit the repository does not have); 'infra_blocked' is an unexpected discovery error."
         },
         "candidates": {
           "type": "array",
-          "description": "Discovered, validated verification commands. Empty when blocked or when no tests are required.",
+          "description": "Discovered, validated verification commands. Empty when nothing ran.",
           "items": {
             "type": "object",
             "description": "One discovered command with its argv, source, scope, and coverage evidence."
@@ -90,7 +91,7 @@
         },
         "reason": {
           "type": "string",
-          "description": "Present only when blocked: the VerificationBlocked message or the infrastructure error text."
+          "description": "Why discovery ended where it did: empty for a discovered plan, the named reason for no_tests_required/no_tests_found, the message for invalid_input or an infrastructure error."
         },
         "sourcePaths": {
           "type": "array",
@@ -108,7 +109,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Repository-relative paths changed by the candidate commit. Present on a successful discovery, and also on a configuration_blocked result (changed paths could not be mapped to a test) so allowAgentAuthoredTests can still validate an authored test's content against them; absent on an infra_blocked infrastructure error."
+          "description": "Repository-relative paths changed by the candidate commit. Present on every discovery result; absent on an infra_blocked infrastructure error."
         },
         "candidateCommit": {
           "type": "string",

@@ -99,24 +99,14 @@ def normalize_verified_delivery(*, delivery: object, verification: object) -> di
             "verification": verification}
 
 
-def resolve_publication_plan(delivery_outcome: object, *, agent_authored_test: object = False) -> dict:
-    """Decide whether the PR should open as a draft, and why.
-
-    ``agent_authored_test`` forces draft even when delivery passed: a
-    red/green check already proved the new test isn't vacuous, but a human
-    should still see that no pre-existing test covered this change before
-    the PR is treated as fully verified (defense in depth).
-    """
+def resolve_publication_plan(delivery_outcome: object) -> dict:
+    """Decide whether the PR should open as a draft, and why."""
     outcome = delivery_outcome if isinstance(delivery_outcome, str) and delivery_outcome \
         else "implementation_unavailable"
-    authored = agent_authored_test is True
-    passed = outcome == "passed" and not authored
+    passed = outcome == "passed"
     # "true" stays a string, matching the workflow's own variable default and
     # the value-param SWITCH convention used elsewhere in this harness.
-    reason = "" if passed else (
-        "agent-authored test" if authored and outcome == "passed" else f"delivery outcome: {outcome}"
-    )
-    return {"publish": "true", "draft": not passed, "reason": reason, "agentAuthoredTest": authored}
+    return {"publish": "true", "draft": not passed, "reason": "" if passed else f"delivery outcome: {outcome}"}
 
 
 def normalize_publication_result(*, push: object, pr: object) -> dict:

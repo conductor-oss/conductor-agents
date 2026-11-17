@@ -211,3 +211,53 @@ def test_address_pr_initial_and_revision_runs_keep_the_checked_out_pr_branch(
     assert revision["worktreePath"] == repo
     assert revision["branch"] == "feature/pr-head"
     assert revision["owned"] is False
+
+
+def test_inplace_execution_prepares_the_checkout_in_place(
+        tmp_git_repo, fake_task_input):
+    # inPlace no longer implies local-only. feature_campaign asks a human at
+    # pr_draft_approval's pr_gate on every run, including an in-place one, and
+    # an approved draft pushes the run-owned branch from this very checkout --
+    # so this worker takes no publication input and refuses nothing.
+    result = workspace_prepare(fake_task_input(
+        repoPath=str(tmp_git_repo), inPlace=True,
+        workflowId="wf-inplace", branch="feature/inplace"))
+    out = result.output_data
+
+    assert result.status.name == "COMPLETED", out
+    assert out["inPlace"] is True
+    assert Path(out["worktreePath"]) == Path(out["sourceRepoPath"]) == tmp_git_repo
+    assert out["owned"] is False
+
+
+def test_workspace_prepare_prunes_the_worktrees_of_finished_runs(tmp_git_repo, fake_task_input, monkeypatch):
+    """Finished runs left their run worktrees (and nested fork worktrees) registered: 51 of the 70
+    registered on the repository belonged to runs over hours earlier. Claude Code's Bash sandbox adds
+    deny paths per registered worktree, and at 171 of them every implementer's Bash failed at spawn
+    (E2BIG, 591 calls; run ec0fb6dc). A new run removes the worktrees of runs the server says are over;
+    a run it cannot ask about is kept, and every branch is untouched."""
+    repo = str(tmp_git_repo)
+    done = git.workspace_add(repo, "wf-done", branch_name="team-build")
+    git.worktree_add(done["worktreePath"], "st-core")  # a nested fork worktree of the finished run
+    live = git.workspace_add(repo, "wf-live", branch_name="team-build")
+    unknown = git.workspace_add(repo, "wf-unknown", branch_name="team-build")
+    failed = git.workspace_add(repo, "wf-failed", branch_name="team-build")  # Conductor's retry resumes here
+    assert len(git.run_worktrees(repo)) == 4
+    status = {"wf-done": "COMPLETED", "wf-live": "RUNNING", "wf-failed": "FAILED", "wf-unknown": None}
+    from common import conductor_status
+    monkeypatch.setattr(conductor_status, "workflow_status", lambda wid: status.get(wid))
+
+    out = workspace_prepare(fake_task_input(repoPath=repo, workflowId="wf-new", branch="team-build")).output_data
+
+    assert out["prunedRuns"] == ["wf-done"]
+    assert sorted(git.run_worktrees(repo)) == ["wf-failed", "wf-live", "wf-new", "wf-unknown"]
+    assert not Path(done["worktreePath"]).exists()
+    assert Path(live["worktreePath"]).exists() and Path(unknown["worktreePath"]).exists()
+    assert Path(failed["worktreePath"]).exists()  # retryable: its checkout must survive
+    assert git.WORKTREES + "/run-wf-done/" not in git.git(repo, "worktree", "list", "--porcelain").stdout
+    # The finished run's branch, and everything it delivered, is still there.
+    assert git.git(repo, "rev-parse", "--verify", done["branch"], check=False).code == 0
+    # A run inherited from a parent (teams of a program) touches nothing.
+    inherited = workspace_prepare(fake_task_input(
+        repoPath=repo, workflowId="wf-child", workspacePath=out["worktreePath"])).output_data
+    assert inherited["resumed"] is True and "prunedRuns" not in inherited

@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import os
-import json
 import random
 import re
 import stat
@@ -300,18 +298,13 @@ def validate_verification_commands() -> int:
         ["cmake", "--build", ".conductor-verify-build"],
         ["ctest", "--test-dir", ".conductor-verify-build"], ["swift", "test"],
     ]
-    for argv in focused:
-        assert verification.validate_remediation_argv(argv) == argv
-    for argv in broad:
-        try:
-            verification.validate_remediation_argv(argv)
-        except verification.VerificationBlocked:
-            pass
-        else:
-            raise AssertionError(f"repository-wide remediation command accepted: {argv}")
+    # Discovery never refuses a command for breadth: focused and repository-wide forms both validate
+    # (the ladder, not the validator, chooses the scope); shell syntax is still refused.
+    for argv in focused + broad:
+        assert verification.validate_argv(argv) == argv, argv
     for token in ("&&", "|", ";", ">", "$(touch bad)", "`touch bad`"):
         try:
-            verification.validate_remediation_argv(["pytest", "tests/test_api.py", token])
+            verification.validate_argv(["pytest", "tests/test_api.py", token])
         except verification.VerificationBlocked:
             pass
         else:
@@ -349,7 +342,7 @@ def validate_workflow_transforms() -> int:
     assert subtask["allowedTools"] == code_parallel.CODE_SUBTASK_TOOLS
     assert not any("swift" in tool or "pytest" in tool for tool in subtask["allowedTools"])
     assert subtask["allowedWriteRoots"] == ["src/a.py"]
-    assert built["dynamicTasks"][0]["subWorkflowParam"] == {"name": "code_subtask", "version": 1}
+    assert built["dynamicTasks"][0]["subWorkflowParam"] == {"name": "code_subtask"}
     assert built["groupIds"] == "multi-runtime"
 
     passed = code_parallel.resolve_verification_outcome(

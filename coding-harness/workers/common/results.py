@@ -28,9 +28,37 @@ def cap(s: Any, limit: int = 4000) -> str:
     return t[:limit] + f"\n…[truncated {len(t) - limit} chars]"
 
 
+# One output field above this is a defect in that field's contract (a task output is a message, not a
+# dump): a 1 MB list of rejected node_modules paths, copied by every join, pushed a team workflow past
+# Conductor's 10 MB payload limit (run a87e9ddb). The field is named in the output and the task log so
+# the next unbounded field is seen on its first run, not when a workflow dies of it.
+FIELD_BYTES_LIMIT = 256 * 1024
+
+
+def oversized_fields(output: dict[str, Any]) -> list[dict]:
+    import json
+    found = []
+    for key, value in (output or {}).items():
+        try:
+            size = len(json.dumps(value, default=str))
+        except (TypeError, ValueError):
+            continue
+        if size > FIELD_BYTES_LIMIT:
+            found.append({"field": key, "bytes": size})
+    return found
+
+
 def ok(task: Task, output: dict[str, Any], logs: list[str] | None = None) -> TaskResult:
     """COMPLETED result with output data and optional log lines."""
     tr = task.to_task_result(TaskResultStatus.COMPLETED)
+    oversized = oversized_fields(output)
+    if oversized:
+        import logging
+        output = {**output, "oversizedFields": oversized}
+        logging.getLogger("coding-harness.results").error(
+            "task %s output fields over %d bytes: %s", getattr(task, "task_def_name", "?"),
+            FIELD_BYTES_LIMIT, oversized)
+        logs = [*(logs or []), f"[results] output fields over {FIELD_BYTES_LIMIT} bytes: {oversized}"]
     tr.output_data = output
     for line in logs or []:
         tr.log(line)

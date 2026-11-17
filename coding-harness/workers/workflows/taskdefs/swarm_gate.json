@@ -1,0 +1,12 @@
+{
+  "name": "swarm_gate",
+  "description": "Fold a swarm's verifier findings: keep what the harness reproduces and what quotes the request, spec or seams.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

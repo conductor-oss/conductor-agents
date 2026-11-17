@@ -21,7 +21,7 @@ def script_path() -> Path:
 
 
 async def register_definitions(server_url: str) -> RegistrationResult:
-    """Register task/workflow definitions and run the worker gate.
+    """Register task/workflow definitions.
 
     The script remains the single source of truth for ordering and validation. The
     selected TUI server overrides any inherited CONDUCTOR_SERVER_URL so `--server`

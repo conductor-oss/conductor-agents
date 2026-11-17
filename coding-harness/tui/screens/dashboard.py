@@ -227,7 +227,7 @@ class Dashboard(Screen):
         self.notify("registering task and workflow definitions…", timeout=10)
         result = await register_definitions(self.app.settings.server_url)
         if result.ok:
-            self.notify("workflow definitions updated; worker gate passed", timeout=8)
+            self.notify("workflow definitions updated", timeout=8)
             self.refresh_data()
         else:
             tail = result.output[-500:] if result.output else "unknown registration error"

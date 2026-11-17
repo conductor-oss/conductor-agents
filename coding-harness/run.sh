@@ -3,7 +3,7 @@
 #
 #   ./run.sh             set up, register definitions, and run workers
 #   ./run.sh setup       install worker dependencies only
-#   ./run.sh register    register/update definitions and run the worker gate
+#   ./run.sh register    register/update definitions
 #   ./run.sh tui         install and launch the terminal UI
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")" && pwd)
@@ -120,8 +120,7 @@ case "${1:-run}" in
   tui)
     require uv
     setup_workers
-    # Keep the server-side contracts in lockstep with the TUI code. This also runs the
-    # SIMPLE-task worker gate, so a newly added workflow cannot silently hang after launch.
+    # Keep the server-side contracts in lockstep with the TUI code.
     register
     if [ ! -x "$TUI_PY" ]; then
       "$UV" venv --python "$PY_VERSION" tui/.venv

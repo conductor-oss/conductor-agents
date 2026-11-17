@@ -65,15 +65,19 @@ class LauncherForm(Screen):
         Binding("ctrl+s", "start", "start"),
     ]
 
-    def __init__(self, name: str, values: dict | None = None):
+    def __init__(self, name: str, values: dict | None = None, *, continues: str = ""):
         super().__init__()
         self.spec = catalog.CATALOG[name]
         self._init = dict(values or {})
+        # A follow-up run (F on a finished run) names the run it continues; its repoPath is a
+        # checkout of that run's branch, prepared before the form opened.
+        self._continues = continues
         self._widgets: dict[str, object] = {}
 
     def compose(self) -> ComposeResult:
         yield FactoryTopBar()
-        yield Label(f"{self.spec.action}  [dim]({self.spec.name})[/dim]", id="launcher_title")
+        title = f"Continue {self._continues[:8]}: {self.spec.action}" if self._continues else self.spec.action
+        yield Label(f"{title}  [dim]({self.spec.name})[/dim]", id="launcher_title")
         with VerticalScroll():
             common = [f for f in self.spec.fields if not f.advanced]
             advanced = [f for f in self.spec.fields if f.advanced]
@@ -381,8 +385,16 @@ class LauncherForm(Screen):
                 "in the new outcome branch baseline",
                 severity="information",
             )
+        from .. import console as console_mod
+        if self.spec.name in console_mod._BRANCHED and not str(payload.get("branchName") or "").strip():
+            # The result branch reads as what was asked for: swarm/<words of the request>-<run id>.
+            from common import git
+            # A follow-up's request opens with what it builds on; its own words are the last paragraph.
+            text = str(payload.get("description") or payload.get("request") or payload.get("bugReport") or "")
+            payload["branchName"] = git.branch_slug(text.strip().split("\n\n")[-1])
         try:
-            wid = await self.app.client.start(self.spec.name, payload)
+            lineage = {"correlation_id": console_mod.CONTINUE_PREFIX + self._continues} if self._continues else {}
+            wid = await self.app.client.start(self.spec.name, payload, **lineage)
         except ConductorError as e:
             self._error(f"Start failed: {e}")
             return
@@ -428,7 +440,7 @@ class LauncherForm(Screen):
                     raise ValueError(f"{f.label} must be Yes or No")
                 continue
             if raw in (None, "", Select.BLANK):
-                if f.required:
+                if f.must_fill:
                     missing.append(f.label)
                 else:
                     values[f.name] = f.default

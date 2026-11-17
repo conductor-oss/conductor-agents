@@ -1,0 +1,12 @@
+{
+  "name": "swarm_permissions",
+  "description": "Decide the round's permission requests by policy, or wait for an approver (a person or an agent) to decide them through the API.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

@@ -78,7 +78,7 @@ def build_schedule(workflow: str, repo: str, *, cron: str = DEFAULT_CRON,
         "paused": paused,
         "runCatchupScheduleInstances": False,
         "startWorkflowRequest": {
-            "name": workflow, "version": 1,
+            "name": workflow,
             "input": inputs,
             "correlationId": "", "taskToDomain": {}, "priority": 0,
         },

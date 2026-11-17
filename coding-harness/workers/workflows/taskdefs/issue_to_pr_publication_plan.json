@@ -18,10 +18,6 @@
         "deliveryOutcome": {
           "type": "string",
           "description": "Delivery state from issue_to_pr_delivery/issue_to_pr_verified_delivery. Non-string or absent is treated as \"implementation_unavailable\"."
-        },
-        "agentAuthoredTest": {
-          "type": "boolean",
-          "description": "Whether the final test_cycle accepted a coding-agent-authored test (no pre-existing test covered the change). Forces draft=true even when deliveryOutcome is \"passed\", as defense in depth alongside the red/green check that already proved the test isn't vacuous."
         }
       }
     }
@@ -41,22 +37,17 @@
         },
         "draft": {
           "type": "boolean",
-          "description": "True unless deliveryOutcome is exactly \"passed\" and agentAuthoredTest is not true; whether the PR should be opened as a draft."
+          "description": "True unless deliveryOutcome is exactly \"passed\"; whether the PR should be opened as a draft."
         },
         "reason": {
           "type": "string",
-          "description": "Empty when passed and not agent-authored; \"agent-authored test\" when passed but agentAuthoredTest is true; otherwise \"delivery outcome: <deliveryOutcome>\"."
-        },
-        "agentAuthoredTest": {
-          "type": "boolean",
-          "description": "Echoes whether a coding-agent-authored test was used; true only when input agentAuthoredTest was exactly true."
+          "description": "Empty when passed; otherwise \"delivery outcome: <deliveryOutcome>\"."
         }
       },
       "required": [
         "publish",
         "draft",
-        "reason",
-        "agentAuthoredTest"
+        "reason"
       ]
     }
   }

@@ -1,0 +1,311 @@
+{
+  "name": "bug_fix",
+  "description": "Roadmap Phase 4 (G2) reproduction-first bug fix: derive a FAILING regression test (confirm it is RED at the parent commit), fix the code, prove it GREEN at the fix, and keep the repro committed as a regression guard. 'Cannot reproduce' is an honest outcome, never a silent fix; the fix may not tamper with the repro test (H13). Reuses code_subtask (repro + fix agents), the raw test_discover/test_plan_resolve/test_run (the red check), and test_cycle (the green gate).",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "viren@orkes.io",
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "restartable": true,
+  "variables": {
+    "finalHead": ""
+  },
+  "inputParameters": [
+    "repoPath",
+    "bugReport",
+    "reproTestPath",
+    "codeModel",
+    "maxTurns",
+    "maxBudgetUsd",
+    "maxFixAttempts",
+    "branchRunId",
+    "inPlace",
+    "workspacePath",
+    "modelProfile",
+    "modelPolicy",
+    "modelPolicySource",
+    "modelPolicySha256",
+    "modelsConfig",
+    "modelOverrides",
+    "branchName"
+  ],
+  "inputTemplate": {
+    "bugReport": "",
+    "reproTestPath": "test_bug_repro.py",
+    "codeModel": "",
+    "maxTurns": 250,
+    "maxBudgetUsd": 10,
+    "maxFixAttempts": 2,
+    "branchRunId": "",
+    "inPlace": false,
+    "workspacePath": "",
+    "modelProfile": "",
+    "modelPolicy": {},
+    "modelPolicySource": "",
+    "modelPolicySha256": "",
+    "modelsConfig": "",
+    "modelOverrides": {},
+    "branchName": "bug-fix"
+  },
+  "tasks": [
+    {
+      "name": "model_profile_resolve",
+      "taskReferenceName": "model_policy",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "modelOverrides": "${workflow.input.modelOverrides}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "repoPath": "${workflow.input.repoPath}"
+      }
+    },
+    {
+      "name": "workspace_prepare",
+      "taskReferenceName": "workspace",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workflow.input.repoPath}",
+        "branch": "${workflow.input.branchName}",
+        "branchRunId": "${workflow.input.branchRunId}",
+        "inPlace": "${workflow.input.inPlace}",
+        "preserveExisting": true,
+        "workflowId": "${workflow.workflowId}",
+        "workspacePath": "${workflow.input.workspacePath}",
+        "branchDefault": "bug-fix"
+      }
+    },
+    {
+      "name": "coding_agent",
+      "taskReferenceName": "repro",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "worktreePath": "${workspace.output.worktreePath}",
+        "tools": [
+          "Read",
+          "Grep",
+          "Glob",
+          "Write",
+          "Edit"
+        ],
+        "templateKey": "bug_repro",
+        "modelRole": "code",
+        "modelResolution": "${model_policy.output}",
+        "model": "${workflow.input.codeModel}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "prompt": "A bug was reported:\n\n${workflow.input.bugReport}\n\nWrite a SINGLE regression test in a NEW file '${workflow.input.reproTestPath}' that reproduces this bug and therefore FAILS on the current (buggy) code. The test must assert the CORRECT expected behavior so it fails now and will pass once the bug is fixed. CRITICAL: do NOT fix the bug and do NOT modify any file other than '${workflow.input.reproTestPath}'. Leave the buggy source exactly as it is — your only job is to write the failing test.",
+        "promptContext": {
+          "bug": "${workflow.input.bugReport}",
+          "reproTestPath": "${workflow.input.reproTestPath}"
+        },
+        "promptTemplate": "",
+        "promptTemplateSource": "",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "commit",
+      "taskReferenceName": "repro_commit",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "message": "bug_fix: failing regression test reproducing the reported bug"
+      }
+    },
+    {
+      "name": "test_discover",
+      "taskReferenceName": "red_discover",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "candidateCommit": "${repro_commit.output.commit}",
+        "testMode": "targeted",
+        "allowHeavySuites": false,
+        "includeBrowserTests": false
+      }
+    },
+    {
+      "name": "test_plan_resolve",
+      "taskReferenceName": "red_plan",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "discovered": "${red_discover.output.candidates}",
+        "discoveryOutcome": "${red_discover.output.executionOutcome}",
+        "discoveryReason": "${red_discover.output.reason}",
+        "selection": "${red_discover.output.selection}"
+      }
+    },
+    {
+      "name": "test_run",
+      "taskReferenceName": "red_run",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "candidateCommit": "${repro_commit.output.commit}",
+        "commands": "${red_plan.output.commands}",
+        "discoveryOutcome": "${red_plan.output.discoveryOutcome}",
+        "discoveryReason": "${red_plan.output.discoveryReason}",
+        "testMode": "targeted",
+        "allowHeavySuites": false
+      }
+    },
+    {
+      "name": "bug_repro_gate",
+      "taskReferenceName": "repro_gate",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "verificationState": "${red_run.output.verificationState}"
+      }
+    },
+    {
+      "name": "repro_switch",
+      "taskReferenceName": "repro_switch",
+      "type": "SWITCH",
+      "evaluatorType": "value-param",
+      "expression": "reproduced",
+      "inputParameters": {
+        "reproduced": "${repro_gate.output.reproduced}"
+      },
+      "decisionCases": {
+        "false": [
+          {
+            "name": "terminate_not_reproduced",
+            "taskReferenceName": "terminate_not_reproduced",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "COMPLETED",
+              "workflowOutput": {
+                "fixed": false,
+                "verdict": "CANNOT_REPRODUCE",
+                "report": "${repro_gate.output.report}",
+                "branch": "${workspace.output.branch}",
+                "reproOutcome": "${repro_gate.output.outcome}",
+                "finalHead": "${repro_commit.output.commit}"
+              }
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "code_subtask",
+      "taskReferenceName": "fix",
+      "type": "SUB_WORKFLOW",
+      "optional": true,
+      "subWorkflowParam": {
+        "name": "code_subtask"
+      },
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "name": "fix",
+        "model": "${workflow.input.codeModel}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "prompt": "A failing regression test at '${workflow.input.reproTestPath}' now reproduces this bug:\n\n${workflow.input.bugReport}\n\nFix the underlying bug in the source code so that the regression test passes. You MUST NOT edit, weaken, or delete the regression test file '${workflow.input.reproTestPath}' — only change the source. Make the smallest correct fix.",
+        "promptTemplate": "",
+        "promptTemplateSource": "",
+        "templateKey": "code",
+        "promptContext": {
+          "bug": "${workflow.input.bugReport}"
+        },
+        "specContextPath": "",
+        "contextPaths": [],
+        "allowedTools": [
+          "Read",
+          "Grep",
+          "Glob",
+          "Write",
+          "Edit"
+        ],
+        "allowedWriteRoots": [],
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "bug_adopt",
+      "taskReferenceName": "adopt_fix",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "sharedRepo": "${workspace.output.worktreePath}",
+        "groupId": "fix"
+      }
+    },
+    {
+      "name": "test_cycle",
+      "taskReferenceName": "green",
+      "type": "SUB_WORKFLOW",
+      "optional": true,
+      "subWorkflowParam": {
+        "name": "test_cycle"
+      },
+      "inputParameters": {
+        "repoPath": "${workspace.output.worktreePath}",
+        "candidateCommit": "${adopt_fix.output.head}",
+        "testMode": "targeted",
+        "maxFixAttempts": "${workflow.input.maxFixAttempts}",
+        "model": "${workflow.input.codeModel}",
+        "maxTurns": "${workflow.input.maxTurns}",
+        "maxBudgetUsd": "${workflow.input.maxBudgetUsd}",
+        "modelProfile": "${workflow.input.modelProfile}",
+        "modelPolicy": "${workflow.input.modelPolicy}",
+        "modelPolicySource": "${workflow.input.modelPolicySource}",
+        "modelPolicySha256": "${workflow.input.modelPolicySha256}",
+        "modelsConfig": "${workflow.input.modelsConfig}",
+        "modelOverrides": "${workflow.input.modelOverrides}"
+      }
+    },
+    {
+      "name": "bug_outcome",
+      "taskReferenceName": "outcome",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "reproduced": true,
+        "testsPassed": "${green.output.testsPassed}",
+        "testCycleState": "${green.output.testCycleState}",
+        "repoPath": "${workspace.output.worktreePath}",
+        "reproCommit": "${repro_commit.output.commit}",
+        "finalHead": "${green.output.candidateCommit}",
+        "reproTestPaths": [
+          "${workflow.input.reproTestPath}"
+        ]
+      }
+    }
+  ],
+  "outputParameters": {
+    "sourceHandoff": {
+      "sourceRepoPath": "${workspace.output.sourceRepoPath}",
+      "repoPath": "${workspace.output.worktreePath}",
+      "branch": "${workspace.output.branch}",
+      "commit": "${green.output.candidateCommit}",
+      "originalBranch": "${workspace.output.originalBranch}",
+      "originalHead": "${workspace.output.originalHead}",
+      "baselineCommit": "${workspace.output.baselineCommit}",
+      "includedSourcePaths": "${workspace.output.baselineIncludedPaths}",
+      "presented": "${outcome.output.fixed}"
+    },
+    "fixed": "${outcome.output.fixed}",
+    "verdict": "${outcome.output.verdict}",
+    "report": "${outcome.output.report}",
+    "reproTestTampered": "${outcome.output.reproTestTampered}",
+    "reproducedCommit": "${repro_commit.output.commit}",
+    "finalHead": "${green.output.candidateCommit}",
+    "branch": "${workspace.output.branch}",
+    "testCycleState": "${green.output.testCycleState}",
+    "testsPassed": "${green.output.testsPassed}"
+  },
+  "enforceSchema": false
+}

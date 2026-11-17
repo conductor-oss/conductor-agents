@@ -128,7 +128,9 @@ def _worker_task_names() -> set[str]:
     """``task_definition_name=`` values from the harness's ``@worker_task``s."""
     pat = re.compile(r'@worker_task\(\s*task_definition_name\s*=\s*"([^"]+)"')
     names: set[str] = set()
-    for mod in WORKERS.glob("*/tasks.py"):
+    # A worker is registered by importing its package (main.py's WORKER_MODULES); most packages keep their
+    # workers in tasks.py, the swarm also in link.py.
+    for mod in WORKERS.glob("*/*.py"):
         names.update(pat.findall(mod.read_text()))
     return names
 
@@ -239,11 +241,9 @@ def test_sub_workflow_references_resolve():
             assert target in by_name, (
                 f"{f.name}: SUB_WORKFLOW references unknown workflow {target!r}"
             )
-            if "version" in param:
-                assert param["version"] == by_name[target]["version"], (
-                    f"{f.name}: SUB_WORKFLOW {target!r} pinned v{param['version']} "
-                    f"but that workflow is v{by_name[target]['version']}"
-                )
+            assert "version" not in param, (
+                f"{f.name}: SUB_WORKFLOW {target!r} must not pass a version"
+            )
     assert seen, "expected at least one static SUB_WORKFLOW reference"
 
 

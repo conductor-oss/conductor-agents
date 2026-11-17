@@ -14,7 +14,7 @@ from pathlib import Path
 from common import github
 from common import linked_context
 from common.exec import RunError, RunResult
-from gitops.tasks import pr_branch_guard, pr_checkout, pr_commit_checks, pr_create, pr_submit_review
+from gitops.tasks import pr_branch_guard, pr_checkout, pr_create, pr_submit_review
 
 
 class RecordingRun:
@@ -431,76 +431,6 @@ def test_pr_diff_uses_paginated_rest_files(monkeypatch):
     assert rec.calls[1]["cmd"] == [
         "gh", "api", "repos/o/r/pulls/12/files?per_page=100", "--paginate", "--slurp",
     ]
-
-
-def test_commit_checks_requires_nonempty_explicit_success(monkeypatch):
-    responses = [
-        {"check_runs": [{"name": "unit", "status": "completed", "conclusion": "success", "html_url": "https://ci/unit"}]},
-        {"statuses": [{"context": "legacy", "state": "success", "target_url": "https://ci/legacy"}]},
-    ]
-    monkeypatch.setattr("common.github.api_json_retry", lambda *args, **kwargs: responses.pop(0))
-
-    outcome = github.commit_checks("o/r", "a" * 40)
-
-    assert outcome["verificationState"] == "passed"
-    assert outcome["checkCount"] == 2
-
-
-def test_commit_checks_blocks_empty_skipped_and_pending(monkeypatch):
-    cases = [
-        ({"check_runs": []}, {"statuses": []}, "empty"),
-        ({"check_runs": [{"name": "lint", "status": "completed", "conclusion": "skipped"}]}, {"statuses": []}, "unknown"),
-        ({"check_runs": [{"name": "test", "status": "in_progress", "conclusion": None}]}, {"statuses": []}, "pending"),
-    ]
-    for checks, statuses, expected in cases:
-        values = [checks, statuses]
-        monkeypatch.setattr("common.github.api_json_retry", lambda *args, **kwargs: values.pop(0))
-        assert github.commit_checks("o/r", "b" * 40)["verificationState"] == expected
-
-
-def test_commit_checks_aggregates_all_pages_before_allowing_success(monkeypatch):
-    responses = [
-        [
-            {"check_runs": [{"name": "unit", "status": "completed", "conclusion": "success"}]},
-            {"check_runs": [{"name": "late-failure", "status": "completed", "conclusion": "failure"}]},
-        ],
-        [{"statuses": [{"context": "legacy", "state": "success"}]}],
-    ]
-    calls = []
-
-    def paged(path, **kwargs):
-        calls.append((path, kwargs))
-        return responses.pop(0)
-
-    monkeypatch.setattr("common.github.api_json_retry", paged)
-    result = github.commit_checks("o/r", "c" * 40)
-
-    assert result["verificationState"] == "failed"
-    assert result["checkCount"] == 3
-    assert all(kwargs["paginate"] is True for _, kwargs in calls)
-
-
-def test_commit_checks_accepts_paginated_bare_statuses_response(monkeypatch):
-    responses = [
-        [{"check_runs": [{"name": "unit", "status": "completed", "conclusion": "success"}]}],
-        [{"context": "legacy", "state": "failure"}],
-    ]
-    monkeypatch.setattr("common.github.api_json_retry", lambda *args, **kwargs: responses.pop(0))
-
-    result = github.commit_checks("o/r", "d" * 40)
-
-    assert result["verificationState"] == "failed"
-    assert result["checkCount"] == 2
-
-
-def test_pr_commit_checks_converts_api_failure_to_unknown_evidence(fake_task_input, monkeypatch):
-    monkeypatch.setattr("common.github.commit_checks", lambda *_args: (_ for _ in ()).throw(RuntimeError("rate limited")))
-
-    result = pr_commit_checks(fake_task_input(repo="o/r", sha="a" * 40))
-
-    assert result.status.value == "COMPLETED"
-    assert result.output_data["verificationState"] == "unknown"
-    assert "rate limited" in result.output_data["reason"]
 
 
 def test_pr_branch_guard_converts_api_failure_to_unknown_evidence(fake_task_input, monkeypatch):

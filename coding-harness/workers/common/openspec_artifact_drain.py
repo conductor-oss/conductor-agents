@@ -34,7 +34,7 @@ def select_ready(*, status: object, generated: object, repo_path: object, change
         ref = f"gen_{artifact_id}"
         dynamic_tasks.append({"name": "openspec_generate_artifact", "taskReferenceName": ref,
                               "type": "SUB_WORKFLOW",
-                              "subWorkflowParam": {"name": "openspec_generate_artifact", "version": 1}})
+                              "subWorkflowParam": {"name": "openspec_generate_artifact"}})
         dynamic_inputs[ref] = {
             "repoPath": repo_path, "changeName": change_name, "artifact": artifact_id,
             "goal": goal, "feedback": feedback, "model": model, "maxTurns": max_turns,

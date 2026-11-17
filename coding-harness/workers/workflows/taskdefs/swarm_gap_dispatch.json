@@ -1,0 +1,12 @@
+{
+  "name": "swarm_gap_dispatch",
+  "description": "Start one gap-filler architect per missing piece the lead review found.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

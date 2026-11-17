@@ -33,6 +33,20 @@
             }
           ]
         },
+        "optionalPaths": {
+          "description": "Planned paths the subtask may write but need not: a frozen acceptance test is writable only so a wrong assertion can be amended, so leaving it untouched is never a missing delivery. Same shape as plannedPaths.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
         "agentReport": {
           "type": "object",
           "description": "Coding agent's own report, used only for evidence (denials, command failures, status) -- never to decide completeness.",
@@ -114,9 +128,12 @@
           "enum": [
             "passed",
             "incomplete_delivery",
-            "audit_unavailable"
+            "interrupted",
+            "pushback",
+            "audit_unavailable",
+            "satisfied"
           ],
-          "description": "Delivery verdict for downstream routing."
+          "description": "Delivery verdict for downstream routing. 'interrupted' (stopped by blocking feedback), 'pushback' (the implementer declined a directive and made its case; the Lead decides at integration) and 'satisfied' (the implementer changed nothing because the shared branch already satisfies the item; the peer reviewer decides at integration) run no repair agent."
         },
         "complete": {
           "type": "boolean",
@@ -128,6 +145,20 @@
             "type": "string"
           },
           "description": "Normalized planned paths (empty on audit failure)."
+        },
+        "optionalPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Normalized optional paths: planned paths that were never required to change (empty on audit failure)."
+        },
+        "presentPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Planned paths already in HEAD's tree and left unchanged by this session: delivered by an earlier attempt (a review re-dispatch) or a pre-existing file the item owns; never missing (empty on audit failure)."
         },
         "actualPaths": {
           "type": "array",

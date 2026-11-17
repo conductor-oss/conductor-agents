@@ -31,12 +31,13 @@ issue  ──issue_to_pr──▶  PR  ──pr_review──▶  review comments
   changed files to exact tests or affected build units and verifies only that scope in a disposable clone; it is
   intentionally not loaded by ordinary coding workers. Start it with
   `WORKER_MODULES=verification workers/.venv/bin/python workers/main.py`.
-  It returns a typed execution outcome: `passed`, `code_failed`, `infra_blocked`,
-  `configuration_blocked`, `timed_out`, or `cancelled`. Only `code_failed` may enter
-  automated remediation.
-  Built-in adapters cover Gradle, Maven, npm/pnpm/Yarn workspaces (JavaScript and TypeScript),
-  pytest, Go, Cargo, CMake/CTest, and SwiftPM. Unknown build graphs must provide
-  `.conductor-code/verification.json`; the worker blocks instead of falling back to a root test suite.
+  It returns a typed execution outcome: `passed`, `no_tests_required`, `no_tests_found`, `code_failed`,
+  `invalid_input`, `infra_blocked`, or `cancelled`. Only `code_failed` may enter automated remediation.
+  Discovery never blocks: it runs the exact tests the changed files map to, else the affected package's
+  own test command, else the repository suite; a repository with no test command at all ends
+  `no_tests_found`, named and passed. Built-in adapters cover Gradle, Maven, npm/pnpm/Yarn workspaces
+  (JavaScript and TypeScript), pytest, Go, Cargo, CMake/CTest, and SwiftPM; `.conductor-code/verification.json`
+  can declare exact changed-scope rules for any other build graph.
 - **`feature_campaign`** is the interactive path for complex work: design and DAG review,
   resumable dependency waves, profile-driven checks, and final verification on a local branch.
 - **`openspec_development`** validates an apply-ready OpenSpec change, selects the appropriate
@@ -77,7 +78,7 @@ conductor workflow start --workflow issue_to_pr -i '{
 
 If no server is running, start one first with `conductor server start` (Java 21+).
 After definitions change, rerun `./workers/register.sh`, ask TUI chat to register them, use `/register`, or
-`g` on the dashboard. Registration updates definitions and verifies the SIMPLE-task worker gate.
+`g` on the dashboard. Registration updates definitions.
 
 Watch progress in the Conductor UI or with `conductor workflow status <id>` — the coding
 tasks push live per-turn updates (files touched, commands run, tokens). For an interactive
@@ -97,9 +98,12 @@ and watch agents work live — see [`../tui/README.md`](../tui/README.md).
 - **At least one agent backend**, authenticated in the worker's environment:
   | Backend | `agent` value | Auth |
   |---|---|---|
-  | Claude Agent SDK (default) | `claude` | `claude login` or `ANTHROPIC_API_KEY` |
-  | OpenAI Codex | `codex` | bundled `openai-codex` SDK — reuses `~/.codex/auth.json` / `OPENAI_API_KEY` (`CODEX_DRIVER=cli` uses the `codex` CLI) |
-  | Google Gemini | `gemini` | `npm i -g @google/gemini-cli`, `GEMINI_API_KEY` (or `~/.gemini/.env`) |
+  | Claude Agent SDK (default) | `claude` | `claude login` (claude.ai account) or `ANTHROPIC_API_KEY`; `CLAUDE_AUTH` = auto \| login \| key |
+  | OpenAI Codex | `codex` | bundled `openai-codex` SDK — `codex login` (ChatGPT account, `~/.codex/auth.json`) or `OPENAI_API_KEY`; `CODEX_AUTH` (`CODEX_DRIVER=cli` uses the `codex` CLI) |
+  | Google Gemini | `gemini` | `npm i -g @google/gemini-cli`, then `gemini` → "Login with Google", or `GEMINI_API_KEY` (or `~/.gemini/.env`); `GEMINI_AUTH` |
+
+  `make auth` shows which credential each backend will use (a login is preferred over a key; in
+  login mode the key variable is withheld from that backend). The workers log the same at startup.
 - **For the GitHub workflows** (`issue_to_pr`, `pr_review`, `address_pr`, `github_demo`): the
   [`gh` CLI](https://cli.github.com) installed and authenticated (`gh auth login`, or
   `GH_TOKEN` in the worker's env). The first remote task runs `gh auth setup-git` so plain
@@ -173,8 +177,8 @@ Agents resume the same session/worktree after feedback or budget exhaustion.
 | `designMaxRevisions` / `planMaxRevisions` | `5` / `5` | Review-loop bounds. |
 Checkpoint actions are Continue, Revise, Adopt edits, Stop, and Later.
 Integration conflicts fail soft and return to the checkpoint. Stop retains
-the branch with an incomplete outcome. Campaigns retain the verified branch locally by default;
-set `createPr:true` explicitly to push it and open a PR.
+the branch with an incomplete outcome. Every campaign ends on a fifth checkpoint -- the PR
+draft -- and pushes the branch and opens the PR only if a human approves it there.
 
 Campaign checks and exact-SHA verification use the same command runner. Each gets the worker's
 real environment (whatever the deployment provides -- Docker env, local shell/config files like
@@ -206,6 +210,17 @@ spawn failure, or explicit cancellation returns a blocked infrastructure outcome
 conductor workflow start --workflow feature_campaign -i '{
   "repoPath": "/path/to/repo",
   "instruction": "Add a durable event subsystem with migrations and tests"
+}'
+```
+
+Supply `repo` (a URL or `owner/name`) in place of `repoPath` to clone the repository instead of
+reusing a local checkout, and `issueNumber` in place of `instruction` to drive the campaign from a
+GitHub issue:
+
+```bash
+conductor workflow start --workflow feature_campaign -i '{
+  "repo": "acme/app",
+  "issueNumber": 3997
 }'
 ```
 
@@ -492,7 +507,7 @@ CONDUCTOR_SERVER_URL=http://localhost:8080/api workers/.venv/bin/python workers/
 ```
 
 `WORKER_MODULES` (comma-separated, default
-`coding_agent,gitops,campaign,openspec,openspecops,automation,model_policy,revision,planning`) selects
+`coding_agent,gitops,campaign,openspec,openspecops,automation,model_policy,planning`) selects
 which task modules load; the default covers every workflow. `coding_agent` is the async agent driver
 (`thread_count=8` = 8 concurrent sessions on one event loop); `gitops` holds the git/GitHub
 tasks; `openspec`/`openspecops` shell out to the `openspec` CLI (must be installed on that host —
@@ -503,7 +518,9 @@ volume).
 `main.py` refuses an overlapping deployment for the same Conductor URL, so a broad default worker
 cannot duplicate a separately started `coding_agent` worker. Worker task types use one poller each;
 `CONDUCTOR_POLL_TIMEOUT_MS` (default `5000`) controls server long
-polling and `CONDUCTOR_POLL_INTERVAL_MS` (default `500`) controls empty-queue backoff.
+polling and `CONDUCTOR_POLL_INTERVAL_MS` (default `500`) controls empty-queue backoff. Each poll
+waits at most the long-poll timeout plus 30 s for its response, then polls again — a lost response
+otherwise parks that task type's only poller forever.
 
 ## Layout
 

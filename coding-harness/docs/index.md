@@ -35,8 +35,8 @@ Local repository ──code_parallel──▶ planned parallel changes ──▶
 - [Local OpenSpec development](openspec.md) — local sources, worktrees, verification, archive, and draft PR behavior.
 - [Worker and backend reference](CODING_AGENT_WORKER.md) — inputs, guardrails, worker internals,
   prompt templates, and Git/GitHub operations.
-- [Repository README](https://github.com/conductor-oss/conductor-agents/blob/main/coding-harness/README.md) — TUI setup and the complete documentation map.
-- [Agent skill](https://github.com/conductor-oss/conductor-agents/blob/main/coding-harness/SKILL.md) — instructions for an AI assistant operating the harness.
+- [Repository README](https://github.com/conductor-oss/conductor-software-factory/blob/main/README.md) — TUI setup and the complete documentation map.
+- [Agent skill](https://github.com/conductor-oss/conductor-software-factory/blob/main/SKILL.md) — instructions for an AI assistant operating the harness.
 
 `SPEC.md`, `DESIGN.md`, `TUI_UX.md`, and `TUI_IMPLEMENTATION.md` are historical or developer
 references. They explain design intent, but the guides above describe the supported operator

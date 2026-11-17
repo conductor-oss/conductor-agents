@@ -1,0 +1,12 @@
+{
+  "name": "team_acceptance_build",
+  "description": "Closure plan WP6 (H13): build one acceptance-test author fork (a coding_agent different from the implementer) per item with acceptance criteria, before any implementer is dispatched.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

@@ -50,7 +50,7 @@
         },
         "discoveryOutcome": {
           "type": "string",
-          "description": "Discovery outcome carried in from test_discover, e.g. discovered, no_tests_required, configuration_blocked."
+          "description": "Discovery outcome carried in from test_discover, e.g. discovered, no_tests_required, no_tests_found."
         },
         "discoveryReason": {
           "type": "string",
@@ -63,20 +63,6 @@
         "testPlanTemplate": {
           "type": "string",
           "description": "Inline JSON string of an operator test-plan template, used only when testCommands is not supplied. A value starting with '@' or invalid JSON is treated as absent."
-        },
-        "agentCommands": {
-          "description": "An already-validated agent test-command proposal, used only as a last resort when discovery and prior obligations are both empty.",
-          "oneOf": [
-            {
-              "type": "array",
-              "items": {
-                "type": "object"
-              }
-            },
-            {
-              "type": "object"
-            }
-          ]
         },
         "testPlanTemplateSource": {
           "type": "string",
@@ -116,7 +102,6 @@
             "repository_guide",
             "repository_config",
             "build_system_inference",
-            "agent_proposal",
             "none"
           ],
           "description": "Which authority supplied the resolved commands."

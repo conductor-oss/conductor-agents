@@ -1,0 +1,51 @@
+{
+  "name": "convergence_outcome",
+  "description": "Convergence spike GO/NO-GO verdict (roadmap Phase 1, pre-registered bar): GO iff every item integrated onto one shared branch (zero big-bang merge), nothing was reopened, nothing was left undispatched by a budget halt, and the branch is green. Counts are read from the durable blackboard (reopen facts) plus the final pending set, so the verdict is an audit, not a loop-threaded tally. A NO-GO names the precise failure mechanism; neither outcome is massaged.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "convergence_outcome_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "correlationId": {"type": "string", "description": "Run id whose reopen + spend facts are folded from the blackboard."},
+        "subtasks": {"type": ["array", "string"], "description": "The full pre-registered item set; its length is the total item count."},
+        "pendingRemaining": {"type": ["array", "string"], "description": "Items never dispatched (non-empty only when a budget halt stopped the run early)."},
+        "finalHead": {"type": "string", "description": "The shared branch head after the last wave."},
+        "testCycleState": {"type": "string", "description": "Terminal state of the shared-branch test_cycle."},
+        "testsPassed": {"type": ["boolean", "string"], "description": "Whether the shared branch is green."}
+      },
+      "required": ["subtasks"]
+    }
+  },
+  "outputSchema": {
+    "name": "convergence_outcome_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "converged": {"type": "boolean", "description": "True only when the pre-registered GO bar is met in full."},
+        "verdict": {"type": "string", "enum": ["GO", "NO-GO"], "description": "The honest experiment verdict."},
+        "bigBangMerge": {"type": "boolean", "description": "Whether a big-bang merge was used (must be false for GO)."},
+        "finalHead": {"type": "string", "description": "Shared branch head after integration."},
+        "integratedCount": {"type": "integer", "description": "total - reopened - undispatched."},
+        "forkCount": {"type": "integer", "description": "Total pre-registered item count."},
+        "reopenedCount": {"type": "integer"},
+        "undispatchedCount": {"type": "integer", "description": "Items never dispatched (budget halt); non-zero disqualifies GO."},
+        "reopened": {"type": "array"},
+        "testCycleState": {"type": "string"},
+        "testsPassed": {"type": "boolean"},
+        "spendUsd": {"type": "number", "description": "Total accumulated run spend folded from the blackboard."},
+        "report": {"type": "string", "description": "Human-readable GO/NO-GO summary naming the mechanism on a NO-GO."}
+      },
+      "required": ["converged", "verdict", "report"]
+    }
+  }
+}

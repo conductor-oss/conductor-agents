@@ -90,7 +90,8 @@ def test_code_parallel_has_one_plan_loop_before_fanout_and_never_inlines_tests()
                  if task.get("subWorkflowParam", {}).get("name") == "test_cycle"]
     assert len(delegated) == 1
     assert delegated[0]["optional"] is True
-    assert delegated[0]["inputParameters"]["testMode"] == "targeted"
+    assert delegated[0]["inputParameters"]["testMode"] == "${post_merge_mode.output.testMode}"
+    assert refs.index("post_merge_mode") == refs.index("post_merge_tests") - 1
     # After the merge produces a candidate, and before the handoff reports it.
     assert refs.index("merge") < refs.index("post_merge_tests") < refs.index("source_handoff")
 

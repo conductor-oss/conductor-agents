@@ -1,0 +1,14 @@
+{
+  "name": "repo_memory_write",
+  "description": "repo_memory (roadmap Phase 6, G5): persist this run's lessons onto the branch and decay stale ones (H10). Folds the run's learning board into the on-branch repo_memory file, re-runs decay, writes and commits it so later runs read it natively.",
+  "retryCount": 1, "retryLogic": "FIXED", "retryDelaySeconds": 1,
+  "timeoutSeconds": 0, "responseTimeoutSeconds": 0, "pollTimeoutSeconds": 0, "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {"name": "repo_memory_write_input", "type": "JSON", "data": {"type": "object", "properties": {
+    "repoPath": {"type": "string"}, "correlationId": {"type": "string", "description": "Run id whose learning board lessons are folded in (if lessons not passed directly)."},
+    "lessons": {"type": ["array", "string"]}, "invariants": {"type": ["array", "string"]}
+  }, "required": ["repoPath"]}},
+  "outputSchema": {"name": "repo_memory_write_output", "type": "JSON", "data": {"type": "object", "properties": {
+    "written": {"type": "boolean"}, "lessons": {"type": "integer"}, "invalidated": {"type": "integer"}, "commit": {"type": "string"}
+  }, "required": ["written", "lessons"]}}
+}

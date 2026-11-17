@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import sys
 import types
 
@@ -45,8 +46,9 @@ def test_run_codex_cli_enables_network_access_in_workspace_write(monkeypatch, tm
     codex._run_codex_cli("fix the bug", worktree=str(tmp_path), write=True)
 
     args = captured["args"]
-    assert "-c" in args
-    assert args[args.index("-c") + 1] == "sandbox_workspace_write.network_access=true"
+    overrides = [args[n + 1] for n, a in enumerate(args) if a == "-c"]
+    assert "sandbox_workspace_write.network_access=true" in overrides
+    assert "skills.include_instructions=false" in overrides  # the harness lists skills, not Codex
 
 
 def test_run_codex_cli_read_only_does_not_touch_network_access(monkeypatch, tmp_path):
@@ -120,7 +122,7 @@ def test_run_codex_sdk_enables_network_access_in_workspace_write(monkeypatch, tm
     assert len(_FakeAsyncCodex.calls) == 1
     call = _FakeAsyncCodex.calls[0]
     assert call["method"] == "thread_start"
-    assert call["config"] == {"sandbox_workspace_write": {"network_access": True}}
+    assert call["config"] == {**codex.NATIVE_SKILLS_OFF, "sandbox_workspace_write": {"network_access": True}}
 
 
 def test_run_codex_sdk_read_only_passes_no_network_override(monkeypatch, tmp_path):
@@ -131,7 +133,7 @@ def test_run_codex_sdk_read_only_passes_no_network_override(monkeypatch, tmp_pat
         effort=None, output_schema=None, resume_session_id=None, on_turn=None,
     ))
 
-    assert _FakeAsyncCodex.calls[0]["config"] is None
+    assert _FakeAsyncCodex.calls[0]["config"] == codex.NATIVE_SKILLS_OFF
 
 
 def test_run_codex_sdk_resume_also_enables_network_access(monkeypatch, tmp_path):
@@ -144,4 +146,35 @@ def test_run_codex_sdk_resume_also_enables_network_access(monkeypatch, tmp_path)
 
     call = _FakeAsyncCodex.calls[0]
     assert call["method"] == "thread_resume"
-    assert call["config"] == {"sandbox_workspace_write": {"network_access": True}}
+    assert call["config"] == {**codex.NATIVE_SKILLS_OFF, "sandbox_workspace_write": {"network_access": True}}
+
+
+def test_a_writing_codex_session_gets_the_writable_build_caches(monkeypatch, tmp_path):
+    """Codex's sandbox writes only inside the worktree, and only the Claude driver was handed caches there:
+    every Codex implementer in run 1177c2d2 reported `go vet` denied on the Go build cache and could not
+    verify its own fix."""
+    import common.coding_agent as ca
+    from common import git
+    git.ensure_repo(str(tmp_path))
+    seen = {}
+
+    async def fake_codex(prompt, **kw):
+        seen.update(kw)
+        return {"ok": True, "status": "success", "result": "", "structured": None, "session_id": "s", "num_turns": 1,
+                "turns": [], "tokens": 1, "cost_usd": 0.0, "denials": [], "denied_writes": [], "turn_log": [], "error": None}
+    monkeypatch.setattr(codex, "run_codex_agent", fake_codex)
+    asyncio.run(ca.run_coding_agent("fix", worktree=str(tmp_path), model="gpt-5.6-sol", backend="codex"))
+    assert seen["extra_env"]["GOCACHE"].startswith(os.path.realpath(tmp_path))
+    assert seen["extra_env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def test_run_codex_cli_passes_extra_env(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_popen(args, **kwargs):
+        captured.update(kwargs)
+        return _FakeProc()
+
+    monkeypatch.setattr(codex.subprocess, "Popen", fake_popen)
+    codex._run_codex_cli("fix", worktree=str(tmp_path), write=True, extra_env={"GOCACHE": "/w/.cc-cache/go-build"})
+    assert captured["env"]["GOCACHE"] == "/w/.cc-cache/go-build" and "PATH" in captured["env"]

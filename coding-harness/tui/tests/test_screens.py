@@ -44,8 +44,8 @@ class FakeClient:
     async def workflow_registered(self, name):
         return True
 
-    async def start(self, name, payload):
-        self.started.append((name, payload))
+    async def start(self, name, payload, **kw):
+        self.started.append((name, payload, *([kw] if kw else [])))
         return "wf-new-123"
 
     async def terminate(self, wid, reason=""):
@@ -422,13 +422,29 @@ async def test_templates_screen_lists_edits_creates_deletes(monkeypatch):
         scr = app.screen
         names = {e.name for e in scr._entries}
         assert {"Alpha review", "Beta"} <= names
-        # edit the first → external editor opens that file
-        scr.action_edit()
+        # E opens the file in the external editor
+        scr.action_edit_external()
         assert opened and opened[-1].endswith(".md")
-        # create a new one → file written + opened for editing
+        # edit the first → the in-app editor; ctrl+s saves the change to the file
+        from textual.widgets import TextArea
+        from tui.screens.settings_edit import TemplateEditor
+        scr.action_edit()
+        await pilot.pause(0.3)
+        ed = app.screen
+        assert isinstance(ed, TemplateEditor)
+        ed.query_one("#te_body", TextArea).text = "focus on authz"
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.2)
+        assert templates.entry_at(ed._entry.path).body == "focus on authz"
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+        # create a new one → file written (seeded with the built-in prompt) + opened in the editor
         scr._create("Gamma", ("code_parallel",))
+        await pilot.pause(0.3)
         assert any(e.name == "Gamma" for e in scr._entries)
-        assert opened[-1].endswith("gamma.md")
+        assert isinstance(app.screen, TemplateEditor) and app.screen._entry.path.name == "gamma.md"
+        app.pop_screen()
+        await pilot.pause(0.2)
         # delete it → gone after reload
         entry = next(e for e in scr._entries if e.name == "Gamma")
         scr._do_delete(entry)
@@ -459,6 +475,8 @@ async def test_templates_new_modal_creates_via_enter_and_button(monkeypatch):
         await pilot.pause(0.3)
         assert not isinstance(app.screen, NewTemplateModal)          # modal closed
         assert any(e.name == "Via Enter" for e in templates.list_templates())
+        app.pop_screen()                                              # the new template's editor
+        await pilot.pause(0.2)
         # 2) the Create button creates
         await pilot.press("n")
         await pilot.pause(0.2)
@@ -467,6 +485,8 @@ async def test_templates_new_modal_creates_via_enter_and_button(monkeypatch):
         await pilot.pause(0.3)
         assert not isinstance(app.screen, NewTemplateModal)
         assert any(e.name == "Via Button" for e in templates.list_templates())
+        app.pop_screen()
+        await pilot.pause(0.2)
         # empty name is a no-op (modal stays open)
         await pilot.press("n")
         await pilot.pause(0.2)
@@ -897,7 +917,10 @@ async def test_run_detail_gate_stop_routes_to_suppression_branch():
         await pilot.pause(0.6)
         assert isinstance(app.screen, ApprovalModal)
         await pilot.click("#stop")
-        await pilot.pause(0.5)
+        for _ in range(50):  # the signal is sent off the click; under full-suite load 0.5 s was not enough
+            await pilot.pause(0.1)
+            if fc.signals:
+                break
         _, ref, status, output = fc.signals[-1]
         assert ref == "review_gate" and status == "COMPLETED"
         assert output == {"approved": False, "action": "stop", "suppressed": True, "feedback": ""}
@@ -1091,3 +1114,121 @@ def test_reopened_gate_explains_the_unrecognized_previous_decision():
     first = ApprovalModal("feature_campaign", {"kind": "pr_draft", "title": "t", "body": "b",
                                                "unrecognizedDecision": ""})
     assert "Re-opened" not in first._draft_text().plain
+
+
+@pytest.mark.asyncio
+async def test_run_detail_retries_a_stopped_run_and_starts_over_as_a_new_run():
+    """r retries a failed, timed-out or stopped run in place; R starts a NEW run with the same input
+    (after a confirmation) and opens it, leaving the original as it was."""
+    ex = _fix("pr_review_completed")
+    ex = {**ex, "status": "TERMINATED"}
+    fc = FakeClient(execution=ex)
+    retried = []
+
+    async def retry(wid):
+        retried.append(wid)
+    fc.retry = retry
+    app = _app(fc)
+    async with app.run_test(size=(140, 45)) as pilot:
+        from tui.screens.run_detail import RunDetail
+        from tui.widgets.modals import ConfirmModal
+        await pilot.pause(0.2)
+        app.push_screen(RunDetail("x"))
+        await pilot.pause(0.6)
+        await pilot.press("r")
+        await pilot.pause(0.3)
+        assert retried == ["x"]
+        await pilot.press("R")
+        await pilot.pause(0.3)
+        assert isinstance(app.screen, ConfirmModal)
+        await pilot.click("#ok")
+        await pilot.pause(0.5)
+        assert fc.started and fc.started[-1][0] == "pr_review"
+        assert fc.started[-1][1] == ex["input"]
+        assert isinstance(app.screen, RunDetail) and app.screen._id == "wf-new-123"
+
+
+@pytest.mark.asyncio
+async def test_a_follow_up_launch_names_the_run_it_continues_and_a_readable_branch(tmp_path):
+    """F on a finished run opens the launcher on a checkout of its branch; the start carries the
+    lineage (correlation id) and the result branch reads as the follow-up's own words."""
+    from tui.screens.launcher import LauncherForm
+    client = FakeClient(execution=_fix("pr_review_completed"))
+    app = _app(client)
+    request = "Follow-up to an earlier swarm run (\"pg\"). Build on it.\n\nWrite docs for the wire protocol"
+    async with app.run_test(size=(140, 50)) as pilot:
+        await pilot.pause(0.2)
+        app.push_screen(LauncherForm("sdlc_intake", {"repoPath": str(tmp_path), "request": request},
+                                     continues="prog-done"))
+        await pilot.pause(0.4)
+        app.screen.start_run()
+        for _ in range(30):
+            await pilot.pause(0.1)
+            if client.started:
+                break
+    name, payload, kw = client.started[-1]
+    assert name == "sdlc_intake" and kw == {"correlation_id": "continue:prog-done"}
+    assert payload["branchName"] == "swarm/docs-wire-protocol"
+
+
+def test_run_screen_offers_continue_pull_request_and_merge():
+    from tui.screens.run_detail import RunDetail
+    keys = {b.key: b.action for b in RunDetail.BINDINGS}
+    assert (keys["F"], keys["P"], keys["M"]) == ("continue_run", "pull_request", "merge")
+
+
+@pytest.mark.asyncio
+async def test_models_screen_edits_a_role_and_the_default_in_app():
+    """The /models screen edits the shared policy in place: a role's agent and model, the default
+    profile; a model the agent cannot run is refused with the workers' reason and nothing is saved."""
+    from textual.widgets import DataTable, Input
+    from tui import model_profiles
+    from tui.screens.model_profiles import ModelProfiles
+    from tui.screens.settings_edit import RoleModal
+    app = _app(FakeClient())
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause(0.2)
+        app.push_screen(ModelProfiles())
+        await pilot.pause(0.3)
+        scr = app.screen
+        rows = scr._rows
+        target = next(i for i, r in enumerate(rows) if r["profile"] == "anthropic-standard" and r["role"] == "plan")
+        scr.query_one("#models_table", DataTable).move_cursor(row=target)
+        scr.action_edit_role()
+        await pilot.pause(0.3)
+        assert isinstance(app.screen, RoleModal)
+        app.screen.query_one("#rm_model", Input).value = "gpt-5.6-sol"   # claude cannot run it
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert isinstance(app.screen, RoleModal)  # refused, still open
+        app.screen.query_one("#rm_model", Input).value = "claude-opus-5-5"
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+        data = model_profiles.user_policy()["data"]
+        assert data["profiles"]["anthropic-standard"]["roles"]["plan"]["model"] == "claude-opus-5-5"
+        scr.query_one("#models_table", DataTable).move_cursor(row=next(
+            i for i, r in enumerate(scr._rows) if r["profile"] == "openai-standard"))
+        scr.action_make_default()
+        await pilot.pause(0.2)
+        assert model_profiles.user_policy()["data"]["defaultProfile"] == "openai-standard"
+
+
+@pytest.mark.asyncio
+async def test_built_in_prompts_screen_shows_each_default_read_only():
+    from textual.widgets import ListView, TextArea
+    from tui.screens.settings_edit import BuiltinPrompts
+    from tui.screens.templates import TemplatesScreen
+    app = _app(FakeClient())
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause(0.2)
+        app.push_screen(TemplatesScreen())
+        await pilot.pause(0.3)
+        await pilot.press("b")
+        await pilot.pause(0.3)
+        assert isinstance(app.screen, BuiltinPrompts)
+        area = app.screen.query_one("#bp_text", TextArea)
+        assert area.read_only and area.text.strip()
+        first = area.text
+        app.screen.query_one("#bp_list", ListView).index = 3
+        await pilot.pause(0.2)
+        assert area.text != first

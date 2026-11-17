@@ -17,7 +17,12 @@ ROLES = {"design", "plan", "code", "review", "judge", "scribe"}
 BACKENDS = {"claude", "codex", "gemini"}
 _ALLOWED = {"version", "name", "description", "workflows", "repos", "defaultProfile",
             "profiles", "roles", "reviewLoop", "budgets", "prices"}
-_ROLE_ALLOWED = {"agent", "model", "tiers", "maxTurns", "maxBudgetUsd", "fallbackTiers"}
+_ROLE_ALLOWED = {"agent", "model", "tiers", "maxTurns", "maxBudgetUsd", "fallbackTiers", "effort"}
+# Reasoning effort a tier runs at (the SDK's `effort`; Codex takes the same words). The Architect's roles
+# run high; an implementer tier starts at medium and the rescue ladder (`modelTier`, one tier per help)
+# climbs to a higher effort before it climbs to a stronger model: the planner ran at the CLI default
+# and spent 215 of its 317 s thinking (run 8fb0cf98).
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
 class ModelPolicyError(ValueError):
@@ -81,7 +86,14 @@ def _validate_roles(roles: Any) -> None:
             if not isinstance(tier, dict) or set(tier) - _ROLE_ALLOWED - {"priceKey"}:
                 raise ModelPolicyError(f"invalid tier for {role}")
             _validate_backend(tier.get("agent"), tier.get("model"))
+            _validate_effort(role, tier.get("effort"))
         _validate_backend(cfg.get("agent"), cfg.get("model"))
+        _validate_effort(role, cfg.get("effort"))
+
+
+def _validate_effort(role: str, effort: Any) -> None:
+    if effort not in (None, "") and str(effort) not in EFFORTS:
+        raise ModelPolicyError(f"invalid effort for {role}: {effort!r} (one of {', '.join(EFFORTS)})")
 
 
 def _backend_for_model(model: str) -> str | None:
@@ -119,14 +131,11 @@ def normalized_models_config(worktree: str, value: str) -> Path:
 def backend_availability(agent: str) -> str:
     """Presence/CLI probe only; this intentionally never claims authentication works."""
     agent = (agent or "").lower()
-    if agent == "claude":
-        return "available" if (os.environ.get("ANTHROPIC_API_KEY") or shutil.which("claude")) else "unknown"
-    if agent == "gemini":
-        return "available" if (os.environ.get("GEMINI_API_KEY") or shutil.which("gemini")) else "unknown"
-    if agent == "codex":
-        if shutil.which("codex") or os.path.exists(os.path.expanduser("~/.codex/auth.json")):
+    from common import backend_auth
+    if agent in backend_auth.BACKENDS:
+        if backend_auth.decide(agent)["mode"] != "none":
             return "available"
-        return "unknown"
+        return "available" if shutil.which({"claude": "claude", "codex": "codex", "gemini": "gemini"}[agent]) else "unknown"
     return "unavailable"
 
 
@@ -253,7 +262,18 @@ def select_role_tier(inputs: dict, *, role: str, worktree: str | None = None) ->
     tiers = ((resolution.get("roles", {}).get(role) or {}).get("tiers") or [])
     if not tiers or not isinstance(tiers[0], dict):
         raise ModelPolicyError(f"model resolution has no tier for role {role!r}")
-    tier = deepcopy(tiers[0])
+    # ``modelTier`` escalates within the role's ordered tiers (0 = the first): a teammate brought in to
+    # help a stuck item runs a stronger tier than the agents that got stuck. Clamped to the last tier.
+    # ``modelTierOrigin`` is the value of ``modelTier`` that means the first tier: a planner inside a
+    # DO_WHILE passes the loop's iteration (1 on the first plan), so a replan runs one rung higher.
+    try:
+        origin = int(inputs.get("modelTierOrigin") or 0)
+        index = min(max(int(inputs.get("modelTier") or 0) - origin, 0), len(tiers) - 1)
+    except (TypeError, ValueError):
+        index = 0
+    while index > 0 and not isinstance(tiers[index], dict):
+        index -= 1
+    tier = deepcopy(tiers[index])
     model = str(inputs.get("model") or tier.get("model") or "").strip()
     agent = str(tier.get("agent") or "").strip().lower()
     if inputs.get("model") not in (None, ""):

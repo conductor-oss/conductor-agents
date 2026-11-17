@@ -17,7 +17,7 @@ WF = Path(__file__).resolve().parents[1] / "workflows"
 
 EMBEDDINGS = {
     "code_subtask": ("subtask_tests", "targeted"),
-    "code_parallel": ("post_merge_tests", "targeted"),
+    "code_parallel": ("post_merge_tests", "${post_merge_mode.output.testMode}"),
     "address_pr": ("verify", "targeted"),
     "feature_campaign": ("campaign_tests", "full"),
     "issue_to_pr": ("delivery_verification", "full"),
@@ -45,13 +45,13 @@ def _children(workflow: dict) -> list[dict]:
             if task.get("subWorkflowParam", {}).get("name") == "test_cycle"]
 
 
-def test_every_embedding_is_optional_pinned_and_in_the_expected_mode():
+def test_every_embedding_is_optional_unpinned_and_in_the_expected_mode():
     for name, (ref, mode) in EMBEDDINGS.items():
         children = _children(_load(name))
         assert len(children) == 1, f"{name}: expected exactly one test_cycle child"
         child = children[0]
         assert child["taskReferenceName"] == ref, name
-        assert child["subWorkflowParam"]["version"] == 1, name
+        assert "version" not in child["subWorkflowParam"], name
         # A failing or unavailable verifier must degrade the caller, not fail it.
         assert child.get("optional") is True, name
         assert child["inputParameters"]["testMode"] == mode, name
@@ -104,17 +104,21 @@ def test_a_post_test_commit_reaches_every_downstream_head_guard():
         < campaign_refs.index("campaign_publication_plan") \
         < campaign_refs.index("campaign_publish_gate")
     push = next(task for task in _walk(campaign) if task.get("name") == "git_push")
-    # Resolved via a workflow variable now (campaign_pr_approval_gate sits
-    # between publication_plan and this push, possibly revising the
-    # candidate through pr_draft_approval), but the exact-SHA guarantee is
-    # unchanged: skip_campaign_pr_approval (requirePrApproval's default
-    # off-path) sets it straight from the publication plan's own head.
+    # Resolved via a workflow variable now (the unconditional pr_draft_approval
+    # gate sits between publication_plan and this push and can revise the
+    # candidate), but the exact-SHA guarantee is unchanged: the gate is handed
+    # the publication plan's own head and record_campaign_pr_approval carries
+    # back whatever candidate it resolved to.
     assert push["inputParameters"]["expectedHead"] == \
         "${workflow.variables.publishCandidateCommit}"
-    skip = next(task for task in _walk(campaign)
-               if task.get("taskReferenceName") == "skip_campaign_pr_approval")
-    assert skip["inputParameters"]["publishCandidateCommit"] == \
+    approval = next(task for task in _walk(campaign)
+                    if task.get("taskReferenceName") == "campaign_pr_approval")
+    assert approval["inputParameters"]["candidateCommit"] == \
         "${campaign_publication_plan.output.head}"
+    recorded = next(task for task in _walk(campaign)
+                    if task.get("taskReferenceName") == "record_campaign_pr_approval")
+    assert recorded["inputParameters"]["publishCandidateCommit"] == \
+        "${campaign_pr_approval.output.candidateCommit}"
 
     # code_subtask: the merge picks up whatever the subtask branch ends on.
     subtask = _load("code_subtask")
@@ -148,34 +152,3 @@ def test_callers_surface_the_verdict_so_a_gate_can_read_it():
         assert "testCycleState" in outputs, name
         assert "testsPassed" in outputs, name
 
-
-def test_address_pr_forwards_the_agent_fallback_flags_to_both_repair_paths():
-    # A PR-comment fix that touches a file with no directly-matching test (a
-    # shared helper, for example) must not be permanently configuration_blocked
-    # in either verification pass -- confirmed live (case
-    # tests/integration/retry_helpers.py) before this wiring existed.
-    # Both default true here (unlike test_cycle/test_agent_fallback's own
-    # default of false): address_pr is the interactive PR-feedback loop,
-    # where leaving a change permanently configuration_blocked on a missing
-    # test-file mapping is worse than trying the agent fallback first.
-    address_pr = _load("address_pr")
-    assert "allowAgentTestPlan" in address_pr["inputParameters"]
-    assert "allowAgentAuthoredTests" in address_pr["inputParameters"]
-    assert address_pr["inputTemplate"]["allowAgentTestPlan"] is True
-    assert address_pr["inputTemplate"]["allowAgentAuthoredTests"] is True
-
-    verify = _children(address_pr)[0]
-    assert verify["inputParameters"]["allowAgentTestPlan"] == "${workflow.input.allowAgentTestPlan}"
-    assert verify["inputParameters"]["allowAgentAuthoredTests"] == "${workflow.input.allowAgentAuthoredTests}"
-
-    repair_call = next(task for task in _walk(address_pr)
-                       if task.get("subWorkflowParam", {}).get("name") == "address_pr_repair")
-    assert repair_call["inputParameters"]["allowAgentTestPlan"] == "${workflow.input.allowAgentTestPlan}"
-    assert repair_call["inputParameters"]["allowAgentAuthoredTests"] == "${workflow.input.allowAgentAuthoredTests}"
-
-    address_pr_repair = _load("address_pr_repair")
-    assert "allowAgentTestPlan" in address_pr_repair["inputParameters"]
-    assert "allowAgentAuthoredTests" in address_pr_repair["inputParameters"]
-    inner_test_cycle = _children(address_pr_repair)[0]
-    assert inner_test_cycle["inputParameters"]["allowAgentTestPlan"] == "${workflow.input.allowAgentTestPlan}"
-    assert inner_test_cycle["inputParameters"]["allowAgentAuthoredTests"] == "${workflow.input.allowAgentAuthoredTests}"

@@ -17,11 +17,11 @@
       "properties": {
         "outcome": {
           "type": "string",
-          "description": "The verification executionOutcome to map onto a terminal state, e.g. passed, no_tests_required, code_failed, configuration_blocked, infra_blocked, cancelled. Defaults to 'worker_unavailable' when blank."
+          "description": "The verification executionOutcome to map onto a terminal state, e.g. passed, no_tests_required, no_tests_found, code_failed, invalid_input, infra_blocked, cancelled. Defaults to 'worker_unavailable' when blank."
         },
         "candidate": {
           "type": "string",
-          "description": "The current candidate commit; used to distinguish command_discovery_blocked (a candidate exists) from candidate_commit_missing (it does not)."
+          "description": "The current candidate commit; used to distinguish verification_input_invalid (a candidate exists) from candidate_commit_missing (it does not)."
         },
         "advanced": {
           "type": "boolean",
@@ -72,7 +72,8 @@
             "no_tests_required",
             "tests_failed_fix_unavailable",
             "tests_failed_after_fix_budget",
-            "command_discovery_blocked",
+            "no_tests_found",
+            "verification_input_invalid",
             "candidate_commit_missing",
             "runtime_unavailable",
             "verifier_worker_unavailable"

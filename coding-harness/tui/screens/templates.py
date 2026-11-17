@@ -1,9 +1,9 @@
 """Templates manager — browse, edit, create, and delete the local prompt-template library.
 
 Templates live as markdown files under ``~/.conductor-harness/templates/`` (see
-``tui/templates.py``). Editing opens the file in your external editor (the same bridge as
-`e` elsewhere) — the TUI doesn't embed an editor. Reachable from the Dashboard (`t`) and
-chat (`/templates`).
+``tui/templates.py``), shared with the web console's Settings page. Enter (or e) edits one in
+the app; E opens the file in your external editor. Reachable from the Dashboard (`t`) and chat
+(`/templates`).
 """
 
 from __future__ import annotations
@@ -22,14 +22,16 @@ class TemplatesScreen(Screen):
     BINDINGS = [
         Binding("escape", "back", "back"),
         Binding("e", "edit", "edit"),          # enter also edits (via ListView.Selected)
+        Binding("E", "edit_external", "open in editor"),
         Binding("n", "new", "new"),
+        Binding("b", "builtins", "built-in prompts"),
         Binding("d", "delete", "delete"),
         Binding("r", "reload", "reload"),
     ]
 
     def compose(self) -> ComposeResult:
         yield FactoryTopBar()
-        yield Static("Prompt templates — enter/e edit in editor · n new · d delete · esc back",
+        yield Static("Prompt templates: enter/e edit · E open in your editor · n new · b built-in prompts · d delete · esc back",
                      id="launcher_title")
         yield ListView(id="tpl_list")
         yield Static("", id="tpl_hint", classes="muted")
@@ -81,7 +83,19 @@ class TemplatesScreen(Screen):
         self._open(entry)
 
     def _open(self, entry) -> None:
+        from .settings_edit import TemplateEditor
+        self.app.push_screen(TemplateEditor(entry))
+
+    def action_edit_external(self) -> None:
+        entry = self._selected()
+        if entry is None:
+            self.app.bell()
+            return
         self.notify(edit.open_path(self.app, str(entry.path), self.app.settings.editor))
+
+    def action_builtins(self) -> None:
+        from .settings_edit import BuiltinPrompts
+        self.app.push_screen(BuiltinPrompts())
 
     def action_new(self) -> None:
         self.app.push_screen(NewTemplateModal(list(catalog.LAUNCHABLE), on_create=self._create))

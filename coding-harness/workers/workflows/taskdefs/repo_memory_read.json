@@ -1,0 +1,63 @@
+{
+  "name": "repo_memory_read",
+  "description": "repo_memory (roadmap Phase 6, G5): read the on-branch codebase knowledge, decay stale lessons (H10 \u2014 a lesson whose referenced files no longer exist is invalidated, never trusted), and return a prompt-ready digest of the trustworthy knowledge for this run's planner.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io",
+  "inputSchema": {
+    "name": "repo_memory_read_input",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "repoPath": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "repoPath"
+      ]
+    }
+  },
+  "outputSchema": {
+    "name": "repo_memory_read_output",
+    "type": "JSON",
+    "data": {
+      "type": "object",
+      "properties": {
+        "memory": {
+          "type": "object"
+        },
+        "digest": {
+          "type": "string"
+        },
+        "liveLessons": {
+          "type": "integer"
+        },
+        "invalidated": {
+          "type": "integer"
+        },
+        "checked": {
+          "type": "integer"
+        },
+        "hasMemory": {
+          "type": "boolean"
+        },
+        "initializedRepo": {
+          "type": "boolean",
+          "description": "True when repoPath had no git HEAD and was initialized before planning."
+        }
+      },
+      "required": [
+        "digest",
+        "liveLessons",
+        "invalidated"
+      ]
+    }
+  }
+}

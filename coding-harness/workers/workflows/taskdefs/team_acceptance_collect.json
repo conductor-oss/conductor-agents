@@ -1,0 +1,12 @@
+{
+  "name": "team_acceptance_collect",
+  "description": "Closure plan WP6 (H13): gather each acceptance author's test file from its isolated worktree into the shared branch and commit them for the raw red run.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

@@ -229,3 +229,16 @@ def _walk_tasks(value):
     elif isinstance(value, list):
         for child in value:
             yield from _walk_tasks(child)
+
+
+def test_swarm_workflows_are_launchable_and_need_their_text():
+    """The swarm is what the TUI starts (the teams-of-teams pipeline and its sdlc_intake front door are
+    no longer launched); a blank description is caught before it reaches Conductor."""
+    from tui.chat import tools
+    assert "swarm" in catalog.LAUNCHABLE and not {"sdlc_intake", "cc_program"} & set(catalog.LAUNCHABLE)
+    assert {"swarm", "team_build", "cc_program", "sdlc_intake"} <= set(catalog.DASHBOARD_TYPES)
+    assert catalog.result_for("swarm", {"verdict": "DELIVERED", "delivered": True}).title == "Delivered"
+    assert "request" in tools._required_inputs("sdlc_intake")
+    assert tools._missing_at_least_one_groups("cc_program", {"repoPath": "/r"}) == [("description", "subsystems")]
+    card = catalog.result_for("team_build", {"verdict": "DELIVERED", "delivered": True, "doneCount": 3, "total": 3})
+    assert card.title == "Team delivered" and ("items", "3/3 done, 0 blocked") in card.rows

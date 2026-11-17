@@ -160,20 +160,94 @@ def write_profile(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
-def replace_repository_policy(worktree: str, data: dict) -> Path:
-    validate_profile(data)
-    root = Path(worktree).resolve()
-    if not (root / ".git").exists():
-        raise ProfileError("repository policy editing requires a validated local checkout")
-    target = root / ".conductor-code" / "models.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix="models.", suffix=".json", dir=target.parent)
+# ─────────────────────────── editing (TUI /models screen and the web console) ───────────────────────────
+def _worker_validate(data: dict) -> None:
+    """The workers' own policy validator (roles, backends, backend/model agreement), so a policy the
+    editor accepts is one every workflow accepts; the TUI's lighter checks run too."""
+    import sys
+    workers = Path(__file__).resolve().parents[1] / "workers"
+    if str(workers) not in sys.path:
+        sys.path.insert(0, str(workers))
+    try:
+        from common.model_policy import ModelPolicyError, validate_policy
+    except Exception:  # noqa: BLE001 - without the workers checkout only the TUI checks apply
+        return
+    try:
+        validate_policy(data)
+    except ModelPolicyError as exc:
+        raise ProfileError(str(exc)) from exc
+
+
+def check_policy(data: Any) -> list[str]:
+    """Every problem with a policy, in words, or [] when it can be saved."""
+    problems = []
+    try:
+        validate_profile(data)
+        _worker_validate(data)
+    except ProfileError as exc:
+        problems.append(str(exc))
+    if not problems:
+        names = set((data.get("profiles") or {}))
+        default = str(data.get("defaultProfile") or "")
+        if names and default not in names:
+            problems.append(f"defaultProfile {default!r} is not one of the profiles: {', '.join(sorted(names))}")
+    return problems
+
+
+def user_policy(root: Path | None = None) -> dict:
+    """The one user-owned policy (seeded on first use): path, data, sha and any problem with it."""
+    path = bootstrap_profiles(root)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"path": str(path), "data": None, "sha256": "", "problems": [f"{path} is not valid JSON: {exc}"],
+                "text": path.read_text(encoding="utf-8") if path.exists() else ""}
+    return {"path": str(path), "data": data, "sha256": _hash(data), "problems": check_policy(data)}
+
+
+def save_user_policy(data: Any, *, expected_sha256: str = "", root: Path | None = None) -> dict:
+    """Validate and write the user policy atomically. ``expected_sha256`` (what the editor loaded)
+    refuses a save over a policy someone changed meanwhile, instead of silently discarding it."""
+    problems = check_policy(data)
+    if problems:
+        raise ProfileError("; ".join(problems))
+    current = user_policy(root)
+    if expected_sha256 and current["sha256"] and current["sha256"] != expected_sha256:
+        raise ProfileError("the model policy changed since you opened it; reload and apply your edit again")
+    path = Path(current["path"])
+    fd, temporary = tempfile.mkstemp(prefix="models.", suffix=".json", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(data, indent=2) + "\n")
-        os.replace(temporary, target)
+        os.replace(temporary, path)
     except Exception:
         try: os.unlink(temporary)
         except OSError: pass
         raise
-    return target
+    return user_policy(root)
+
+
+def role_rows(data: dict) -> list[dict]:
+    """A flat view of a policy for editors: one row per profile × role × tier."""
+    rows = []
+    for name, profile in sorted((data.get("profiles") or {}).items()):
+        for role, cfg in sorted(((profile or {}).get("roles") or {}).items()):
+            tiers = cfg.get("tiers") if isinstance(cfg.get("tiers"), list) else None
+            for i, tier in enumerate(tiers if tiers is not None else [cfg]):
+                rows.append({"profile": name, "role": role, "tier": i if tiers is not None else None,
+                             "agent": str(tier.get("agent") or ""), "model": str(tier.get("model") or "")})
+    return rows
+
+
+def set_role(data: dict, profile: str, role: str, tier: int | None, *, agent: str, model: str) -> dict:
+    """A copy of ``data`` with one role (or one tier of it) set to ``agent``/``model``."""
+    out = json.loads(json.dumps(data))
+    cfg = out.setdefault("profiles", {}).setdefault(profile, {}).setdefault("roles", {}).setdefault(role, {})
+    if tier is None:
+        cfg.update({"agent": agent, "model": model})
+    else:
+        tiers = cfg.setdefault("tiers", [])
+        while len(tiers) <= tier:
+            tiers.append({})
+        tiers[tier] = {**tiers[tier], "agent": agent, "model": model}
+    return out

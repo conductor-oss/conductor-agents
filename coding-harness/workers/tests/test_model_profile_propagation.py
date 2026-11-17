@@ -49,7 +49,10 @@ def test_every_coding_agent_receives_a_role_and_preflight_resolution():
         for task in _walk(_load(path)):
             if task.get("type") == "SIMPLE" and task.get("name") == "coding_agent":
                 inputs = task["inputParameters"]
-                assert inputs["modelRole"] in {"design", "plan", "code", "review", "judge"}
+                # A swarm item's role comes from swarm_item_prep: "design" for a design item, else "code"
+                # (tests/test_swarm_team.py); no other workflow picks a role at run time.
+                assert inputs["modelRole"] in {"design", "plan", "code", "review", "judge"} or (
+                    path.name == "swarm_item.json" and inputs["modelRole"] == "${prep.output.modelRole}")
                 assert inputs["modelResolution"] == "${model_policy.output}"
                 assert ENVELOPE <= set(inputs)
 
@@ -61,10 +64,7 @@ def test_subworkflows_and_started_workflows_forward_the_envelope():
                 assert ENVELOPE <= set(task.get("inputParameters", {})), path.name
             if task.get("type") == "START_WORKFLOW":
                 child = task["inputParameters"]["startWorkflow"]
-                if isinstance(child["version"], int):
-                    assert child["version"] >= 1
-                else:
-                    assert child["version"] == "${workflow.input.childWorkflowVersion}"
+                assert "version" not in child, path.name
                 assert ENVELOPE <= set(child["input"]), path.name
 
 

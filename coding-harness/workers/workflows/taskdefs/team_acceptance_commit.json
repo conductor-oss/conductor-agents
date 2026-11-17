@@ -1,0 +1,12 @@
+{
+  "name": "team_acceptance_commit",
+  "description": "Closure plan WP6 (H13): judge each authored acceptance test from the raw red run (red kept and frozen into the contract, green discarded as tautological) and record author spend.",
+  "retryCount": 1,
+  "retryLogic": "FIXED",
+  "retryDelaySeconds": 1,
+  "timeoutSeconds": 0,
+  "responseTimeoutSeconds": 0,
+  "pollTimeoutSeconds": 0,
+  "timeoutPolicy": "ALERT_ONLY",
+  "ownerEmail": "viren@orkes.io"
+}

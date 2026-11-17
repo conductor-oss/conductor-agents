@@ -349,78 +349,16 @@ def remote_branch_head(repo_or_url: str, branch: str) -> str:
     return sha
 
 
-def commit_checks(repo_or_url: str, sha: str) -> dict:
-    """Read check-runs and legacy status contexts for one immutable commit SHA.
-
-    Empty, skipped, cancelled, neutral, stale/unknown, and pending states are not
-    success.  The caller can therefore post success only for this exact commit.
-    """
-    slug = repo_slug(repo_or_url)
-    checks_raw = api_json_retry(f"repos/{slug}/commits/{sha}/check-runs?per_page=100", paginate=True)
-    statuses_raw = api_json_retry(f"repos/{slug}/commits/{sha}/statuses?per_page=100", paginate=True)
-
-    def page_items(raw: object, field: str) -> list[dict]:
-        pages = raw if isinstance(raw, list) else [raw]
-        collected: list[dict] = []
-        for page in pages:
-            if isinstance(page, dict):
-                nested = page.get(field)
-                if isinstance(nested, list):
-                    collected.extend(item for item in nested if isinstance(item, dict))
-                # `/statuses` returns a bare array of status objects.  api_json
-                # flattens its paginated pages, so each item reaches us directly.
-                elif field == "statuses" and ("state" in page or "context" in page):
-                    collected.append(page)
-            elif isinstance(page, list):
-                collected.extend(item for item in page if isinstance(item, dict))
-        return collected
-
-    check_runs = page_items(checks_raw, "check_runs")
-    statuses = page_items(statuses_raw, "statuses")
-    evidence: list[dict] = []
-    for item in check_runs:
-        status = str(item.get("status") or "unknown").lower()
-        conclusion = str(item.get("conclusion") or "").lower()
-        if status != "completed":
-            state = "pending"
-        elif conclusion == "success":
-            state = "passing"
-        elif conclusion in {"failure", "timed_out", "action_required"}:
-            state = "failed"
-        else:  # skipped, cancelled, neutral, stale, unknown, startup_failure
-            state = "unknown"
-        evidence.append({"name": item.get("name") or "unnamed check", "kind": "check-run",
-                         "state": state, "rawStatus": status, "conclusion": conclusion,
-                         "url": item.get("html_url") or item.get("details_url") or ""})
-    for item in statuses:
-        raw = str(item.get("state") or "unknown").lower()
-        state = "passing" if raw == "success" else ("pending" if raw == "pending" else
-                 "failed" if raw in {"failure", "error"} else "unknown")
-        evidence.append({"name": item.get("context") or "unnamed status", "kind": "status",
-                         "state": state, "rawStatus": raw, "url": item.get("target_url") or ""})
-    if not evidence:
-        verification_state = "empty"
-    elif any(item["state"] == "failed" for item in evidence):
-        verification_state = "failed"
-    elif any(item["state"] == "pending" for item in evidence):
-        verification_state = "pending"
-    elif any(item["state"] == "unknown" for item in evidence):
-        verification_state = "unknown"
-    else:
-        verification_state = "passed"
-    return {"sha": sha, "checks": evidence, "checkCount": len(evidence),
-            "verificationState": verification_state,
-            "links": [item["url"] for item in evidence if item.get("url")]}
-
-
 def pr_create(repo: str, *, title: str, body: str = "", summary: str = "",
               issue_body: str = "", base: str | None = None,
               head_branch: str | None = None, draft: bool = False,
-              fill: bool = False) -> dict:
-    """Open a PR with the canonical Summary-only description."""
+              fill: bool = False, closes: object = 0, repo_ref: str | None = None) -> dict:
+    """Open a PR with the canonical Summary-only description. ``repo_ref`` names the repository the PR
+    is opened against (``--repo``) when the checkout's remotes do not say it unambiguously, e.g. a PR
+    from a fork's branch (``head_branch`` = ``owner:branch``)."""
     ensure_git_auth()
     description = pr_description.format_summary(
-        repo, summary or body or title, issue_body=issue_body,
+        repo, summary or body or title, issue_body=issue_body, closes=closes,
     )
     resolved_title = (title or description["summary"] or "Automated change").strip()
     if len(resolved_title) > 120:
@@ -439,6 +377,8 @@ def pr_create(repo: str, *, title: str, body: str = "", summary: str = "",
             args += ["--head", head_branch]
         if draft:
             args.append("--draft")
+        if repo_ref:
+            args += ["--repo", repo_slug(repo_ref)]
         r = _gh(repo, *args)
     finally:
         os.unlink(body_path)
@@ -703,3 +643,82 @@ def submit_review(repo_or_url: str, number: int, *, summary: str,
         url = _post({"body": folded, "event": ev})
         return {"reviewed": True, "event": ev, "inlineCount": 0,
                 "inline": False, "url": url}
+
+
+# ─────────────────────────── work from a link: repository, fork, pull request, CI ───────────────────────────
+def repo_info(repo_or_url: str) -> dict:
+    """The repository's default branch and whether the signed-in account can push to it."""
+    slug = repo_slug(repo_or_url)
+    d = api_json_retry(f"repos/{slug}")
+    if not isinstance(d, dict) or not d.get("full_name"):
+        raise RuntimeError(f"GitHub has no repository {slug} visible to the signed-in account")
+    perms = d.get("permissions") or {}
+    return {"slug": d["full_name"], "defaultBranch": d.get("default_branch") or "main",
+            "canPush": bool(perms.get("push")), "private": bool(d.get("private")),
+            "cloneUrl": clone_url(d["full_name"])}
+
+
+def ensure_fork(repo_or_url: str, *, attempts: int = 10) -> str:
+    """The signed-in account's fork of the repository (created when missing; GitHub returns the existing
+    fork otherwise). Waits until the fork answers, since GitHub creates it asynchronously."""
+    ensure_git_auth()
+    slug = repo_slug(repo_or_url)
+    r = run(["gh", "api", "--method", "POST", f"repos/{slug}/forks"], check=True)
+    fork = (json.loads(r.stdout or "{}") or {}).get("full_name") or ""
+    if not fork:
+        raise RuntimeError(f"GitHub did not create a fork of {slug}")
+    for attempt in range(attempts):
+        if run(["gh", "api", f"repos/{fork}"], check=False).code == 0:
+            return fork
+        time.sleep(min(2 ** attempt, 15))
+    raise RuntimeError(f"the fork {fork} of {slug} did not become available")
+
+
+def pr_view(repo_or_url: str, number: int) -> dict:
+    """A pull request's description, branches and where its head lives."""
+    ensure_git_auth()
+    r = run(["gh", "pr", "view", str(int(number)), "--repo", repo_slug(repo_or_url), "--json",
+             "number,title,body,state,url,isDraft,headRefName,headRefOid,baseRefName,"
+             "headRepository,headRepositoryOwner,isCrossRepository,maintainerCanModify"], check=True)
+    d = json.loads(r.stdout or "{}")
+    owner = (d.get("headRepositoryOwner") or {}).get("login", "")
+    name = (d.get("headRepository") or {}).get("name", "")
+    return {"number": d.get("number", number), "title": d.get("title", ""), "body": d.get("body", ""),
+            "state": d.get("state"), "url": d.get("url"), "draft": bool(d.get("isDraft")),
+            "head": d.get("headRefName", ""), "headSha": d.get("headRefOid", ""), "base": d.get("baseRefName", ""),
+            "headRepo": f"{owner}/{name}" if owner and name else repo_slug(repo_or_url),
+            "crossRepository": bool(d.get("isCrossRepository")),
+            "maintainerCanModify": bool(d.get("maintainerCanModify"))}
+
+
+def issue_or_pull(repo_or_url: str, number: int) -> str:
+    """``"pull"`` or ``"issue"``: GitHub numbers both from one sequence (``owner/repo#12``)."""
+    d = api_json_retry(f"repos/{repo_slug(repo_or_url)}/issues/{int(number)}")
+    return "pull" if isinstance(d, dict) and d.get("pull_request") else "issue"
+
+
+def pr_checks(repo_or_url: str, number: int) -> list[dict]:
+    """The checks on a pull request's current head: ``[{"name", "bucket", "link"}]`` with bucket one of
+    pass, fail, pending, skipping, cancel. Empty when the repository reports no checks."""
+    ensure_git_auth()
+    r = run(["gh", "pr", "checks", str(int(number)), "--repo", repo_slug(repo_or_url),
+             "--json", "name,state,bucket,link"], check=False)
+    out = (r.stdout or "").strip()
+    if not out:
+        detail = (r.stderr or "").strip()
+        if r.code == 0 or "no checks reported" in detail.lower():
+            return []
+        raise RuntimeError(f"gh pr checks failed for #{number}: {detail[:300]}")
+    data = json.loads(out)
+    return [{"name": c.get("name"), "bucket": (c.get("bucket") or c.get("state") or "").lower(),
+             "link": c.get("link") or ""} for c in data if isinstance(c, dict)]
+
+
+def pr_mark_ready(repo_or_url: str, number: int) -> dict:
+    """Take a draft pull request out of draft (idempotent)."""
+    ensure_git_auth()
+    slug = repo_slug(repo_or_url)
+    if not pr_view(slug, number)["draft"]:
+        return {"number": number, "draft": False, "changed": False}
+    run(["gh", "pr", "ready", str(int(number)), "--repo", slug], check=True)
+    return {"number": number, "draft": False, "changed": True}

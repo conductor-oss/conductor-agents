@@ -28,21 +28,57 @@ UNATTENDED worker:
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import logging
 import os
+import time
 from typing import Any
 
 from common.tool_policy import DEFAULT_ALLOWED_TOOLS, DEFAULT_DISALLOWED_TOOLS
 
 import claude_agent_sdk as sdk
 
+from . import backend_auth, check_execution
 from .cost import usage_tokens
 from .exec import run
+
+_CLI_CHOICE: list[str | None] = []
+
+
+def _cli_version(path: str) -> tuple[int, ...]:
+    import re
+    try:
+        out = run([path, "--version"], check=False).stdout
+    except OSError:
+        return ()
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", out or "")
+    return tuple(int(x) for x in m.groups()) if m else ()
+
+
+def claude_cli() -> str | None:
+    """The Claude Code CLI every session runs: ``CONDUCTOR_CLAUDE_CLI`` when set, else the newer of the
+    one bundled with the agent SDK and the one installed on the host (None = the SDK's own choice, the
+    bundled one). The bundled CLI was 2.1.208 while 2.1.322 was installed: every session ran a CLI 114
+    releases old that could not run Opus 5.5 at all, so the planner was stuck on the slower Opus 4.8
+    (2026-11-11). Chosen once per process."""
+    if _CLI_CHOICE:
+        return _CLI_CHOICE[0]
+    import shutil
+    from pathlib import Path
+    chosen = os.environ.get("CONDUCTOR_CLAUDE_CLI") or None
+    if not chosen:
+        bundled = Path(sdk.__file__).parent / "_bundled" / "claude"
+        host = shutil.which("claude")
+        if host and (not bundled.exists() or _cli_version(host) > _cli_version(str(bundled))):
+            chosen = host
+    _CLI_CHOICE.append(chosen)
+    return chosen
 
 log = logging.getLogger("coding_agent")
 
 # Directories never worth listing in the file-tree prime (noise + huge).
-_TREE_SKIP_DIRS = {".git", ".cc-worktrees", "node_modules", ".venv", "venv",
+_TREE_SKIP_DIRS = {".git", ".cc-worktrees", ".cc-cache","node_modules", ".venv", "venv",
                    "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
                    "dist", "build", "target", ".idea", ".vscode", ".next", ".gradle"}
 
@@ -171,6 +207,60 @@ SCOPE_BOUNDARY = (
 )
 
 
+TOOL_CACHE_DIR = ".cc-cache"
+
+# The package registries and tool downloads a build needs. Claude's OS sandbox allows NO egress
+# unless a session names domains, so every `npm install` an implementer ran answered 403 from the
+# sandbox proxy and the build shipped untested while the prompt told it to install first (run
+# 74bd988c: ten turns fighting the registry). Codex's workspace-write sandbox has network on.
+from .allowed_domains import DEFAULT_ALLOWED_DOMAINS  # noqa: E402  (the one list; the console reads it too)
+
+
+# Every Claude session's commands: 5 minutes unless the agent asks for more, 10 at most, never in the background.
+SESSION_COMMAND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1", "BASH_DEFAULT_TIMEOUT_MS": "300000",
+                       "BASH_MAX_TIMEOUT_MS": "600000"}
+
+
+def _tool_cache_env(worktree_abs: str) -> dict[str, str]:
+    """Build caches the sandboxed Bash can write. The OS sandbox allows writes only inside the worktree,
+    so Go's default build cache (~/Library/Caches/go-build) made every `go build/vet/test` fail with
+    'operation not permitted' and implementers shipped Go code they could never compile (run 3e502ddc).
+    The cache lives in the worktree under a git-excluded directory, so it is never committed."""
+    from . import git
+    cache = os.path.join(worktree_abs, TOOL_CACHE_DIR)
+    # npm and pip too: `npm install` died on EPERM opening ~/.npm/_cacache from the sandbox, so a React
+    # team's first three implementers could neither test nor build (run a8167484).
+    # Maven and Gradle too: the sandbox denied writes to ~/.m2, so no backend agent could build or
+    # verify a Spring Boot service (run 18e18490).
+    for sub in ("go-build", "tmp", "npm", "pip", "m2", "gradle"):
+        os.makedirs(os.path.join(cache, sub), exist_ok=True)
+    git.exclude_path(worktree_abs, f"/{TOOL_CACHE_DIR}/")
+    git.exclude_generated(worktree_abs)
+    # The browser is a host service over loopback (common/browser_service): the sandbox cannot launch
+    # one, so a scenario connects to it instead and the implementer runs the check itself.
+    from . import browser_service, device_service, stacks, team_channel
+    team_channel.install_client(worktree_abs)
+    # Each platform pack's caches (common/stacks.py) for the packs this run uses: the sandbox writes only in the tree.
+    # An app checked on a device (iOS simulator, Android emulator, Electron) gets the host's device service.
+    packs = stacks.chosen(worktree_abs) or stacks.detect(worktree_abs)
+    pack_env = {**stacks.cache_env(cache, packs), **device_service.ensure(worktree_abs, packs)}
+    return {**pack_env, "GOCACHE": os.path.join(cache, "go-build"), "GOTMPDIR": os.path.join(cache, "tmp"),
+            "npm_config_cache": os.path.join(cache, "npm"), "PIP_CACHE_DIR": os.path.join(cache, "pip"),
+            "PYTHONDONTWRITEBYTECODE": "1", "CI": "1",
+            "MAVEN_OPTS": " ".join(filter(None, [os.environ.get("MAVEN_OPTS", ""),
+                                                 f"-Dmaven.repo.local={os.path.join(cache, 'm2')}"])),
+            "GRADLE_USER_HOME": os.path.join(cache, "gradle"),
+            # The tree's own tool bin first: `npm` there serializes installs across the teammates
+            # sharing this tree (three concurrent installs left node_modules without jsdom, run c6c1e7a7).
+            "CONDUCTOR_PATH_PREPEND": os.path.join(cache, "bin"), **browser_service.ensure(),
+            # Everything this session starts carries its launch marker, so what it leaves running is
+            # stopped when the session ends (run_coding_agent; check_execution.reap_marked).
+            **({check_execution.LAUNCH_MARKER: m} if (m := _SESSION_MARKER.get()) else {})}
+
+
+_SESSION_MARKER: contextvars.ContextVar[str] = contextvars.ContextVar("conductor_session_marker", default="")
+
+
 def _worktree_guard(worktree_abs: str, write_roots: list[str] | None = None) -> sdk.HookMatcher:
     """A PreToolUse hook that denies Write/Edit escaping the worktree.
 
@@ -226,6 +316,38 @@ def _worktree_guard(worktree_abs: str, write_roots: list[str] | None = None) -> 
     return sdk.HookMatcher(matcher="Write|Edit|NotebookEdit", hooks=[guard])
 
 
+def _feedback_hook(watcher) -> sdk.HookMatcher:
+    """PostToolUse hook: after every tool call, hand the watcher a turn boundary (off the event loop —
+    it reads the board and may snapshot git). Never raises into the agent: a board read failure costs
+    one missed poll, not the session."""
+    async def on_post_tool(input_data, tool_use_id, context):  # noqa: ARG001
+        if (input_data or {}).get("agent_id"):
+            return {}  # a subagent's tool call; the top-level session owns feedback
+        data = input_data or {}
+        tool_input = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
+        target = (tool_input.get("file_path") or tool_input.get("command") or tool_input.get("pattern")
+                  or tool_input.get("path") or "")
+        tool = f"{data.get('tool_name') or 'tool'} {str(target)[:160]}".strip()
+        try:
+            return await asyncio.to_thread(watcher.on_tool_call, tool)
+        except Exception as e:  # noqa: BLE001
+            log.warning("feedback hook failed (poll skipped): %s", e)
+            return {}
+    return sdk.HookMatcher(matcher=None, hooks=[on_post_tool])
+
+
+def _feedback_stop_hook(watcher) -> sdk.HookMatcher:
+    """Stop hook: one last board poll when the agent tries to finish, so feedback that arrived during its
+    final tool-free turn is not lost (it either continues the session or marks it interrupted)."""
+    async def on_stop(input_data, tool_use_id, context):  # noqa: ARG001
+        try:
+            return await asyncio.to_thread(watcher.on_stop)
+        except Exception as e:  # noqa: BLE001
+            log.warning("feedback stop hook failed (poll skipped): %s", e)
+            return {}
+    return sdk.HookMatcher(matcher=None, hooks=[on_stop])
+
+
 def _summarize_tool(block: sdk.ToolUseBlock) -> str:
     """Human-readable one-liner for a single tool call, surfacing the salient arg.
 
@@ -263,11 +385,21 @@ async def _drive(prompt: str, options: sdk.ClaudeAgentOptions,
     turns: list[dict[str, Any]] = []      # structured per-turn record (the output array)
     turn_log: list[str] = []              # one-line strings for the Conductor logs tab
     denials: list[str] = []
+    # Every StructuredOutput payload the agent submitted, in full (the turn log caps each command at
+    # 300 chars). The validator rejects a payload the model mangled — the retrospective of run a062184f
+    # put its 'learnings' array inside the 'summary' string as tagged text, 8 attempts out of 9 — and
+    # the agent then sent a placeholder to get past it. The consumer salvages the real payload from here.
+    structured_attempts: list[dict[str, Any]] = []
     turn = 0
 
     stream_error: str | None = None
+    # A session ends when it has handed in its result: once the StructuredOutput tool accepted the agent's answer,
+    # the harness waits a short grace for the CLI's own end, then closes the stream. The CLI otherwise waits for any
+    # command it moved to the background (run b74d3da7: a `go vet` past its timeout kept a finished item alive
+    # ~30 min); run_coding_agent's cleanup then stops what the session left running.
+    done = {"at": None, "payload": None, "ids": set(), "cost": {}, "model": None}
     try:
-        async for msg in sdk.query(prompt=prompt, options=options):
+        async for msg in _until_result(sdk.query(prompt=prompt, options=options), done):
             if isinstance(msg, sdk.SystemMessage):
                 # session_id is nested in SystemMessage.data in Python (doc §10).
                 if msg.subtype == "init":
@@ -276,6 +408,16 @@ async def _drive(prompt: str, options: sdk.ClaudeAgentOptions,
                 turn += 1
                 blocks = msg.content or []
                 tool_blocks = [b for b in blocks if isinstance(b, sdk.ToolUseBlock)]
+                for b in tool_blocks:
+                    if b.name == "StructuredOutput" and isinstance(b.input, dict):
+                        structured_attempts.append(b.input)
+                        del structured_attempts[:-3]
+                        done["ids"].add(getattr(b, "id", None))
+                        done["candidate"] = b.input
+                if getattr(msg, "usage", None):
+                    # priced per message (the CLI's final cost never arrives when the stream is closed early)
+                    done["cost"][getattr(msg, "message_id", None) or getattr(msg, "id", None) or turn] = msg.usage
+                    done["model"] = getattr(msg, "model", None) or done["model"]
                 commands = [_summarize_tool(b) for b in tool_blocks]
                 # A short slice of the assistant's prose that accompanied the tool calls,
                 # so a turn with no commands (thinking / final summary) still says something.
@@ -306,6 +448,11 @@ async def _drive(prompt: str, options: sdk.ClaudeAgentOptions,
                         pass
             elif isinstance(msg, sdk.ResultMessage):
                 result = msg
+            elif isinstance(msg, getattr(sdk, "UserMessage", ())) and done["ids"]:
+                for b in (msg.content if isinstance(msg.content, list) else []):
+                    if (getattr(b, "tool_use_id", None) in done["ids"] and not getattr(b, "is_error", False)
+                            and "successfully" in str(getattr(b, "content", ""))):
+                        done["payload"], done["at"] = done.get("candidate"), time.monotonic()
     except Exception as e:  # noqa: BLE001
         # SDK doc gotcha #19: on an error result (error_max_turns / error_max_budget_usd)
         # the CLI exits nonzero and the stream raises AFTER yielding the ResultMessage —
@@ -318,34 +465,150 @@ async def _drive(prompt: str, options: sdk.ClaudeAgentOptions,
             raise
         stream_error = f"{type(e).__name__}: {e}"
 
+    if result is None and done["payload"] is not None:
+        from .cost import price_usage
+        return {"ok": True, "status": "success", "result": "", "structured": done["payload"],
+                "structured_attempts": structured_attempts, "session_id": session_id, "num_turns": turn,
+                "turns": turns, "tokens": sum(usage_tokens(u) for u in done["cost"].values()),
+                "cost_usd": round(sum(price_usage(u, done["model"]) for u in done["cost"].values()), 6),
+                "denials": denials, "denied_writes": [],
+                "turn_log": turn_log + ["ended by the harness: the result was handed in; the session was not waited on"],
+                "error": None}
     if result is None:
         return {"ok": False, "status": "no_result", "result": "", "structured": None,
+                "structured_attempts": structured_attempts,
                 "session_id": session_id, "num_turns": turn, "turns": turns, "tokens": 0,
-                "cost_usd": 0.0, "denials": denials, "turn_log": turn_log,
+                "cost_usd": 0.0, "denials": denials, "denied_writes": [], "turn_log": turn_log,
                 "error": stream_error or "no ResultMessage from agent"}
 
-    denials = [
-        f"{d.get('tool_name', '?')}: {d.get('tool_input', '')}"
-        for d in (getattr(result, "permission_denials", None) or [])
-    ]
+    refused = [d if isinstance(d, dict) else {} for d in (getattr(result, "permission_denials", None) or [])]
+    denials = [f"{d.get('tool_name', '?')}: {d.get('tool_input', '')}" for d in refused]
+    # The files the worktree guard refused to let the agent write, kept structured (not only as the
+    # log line above) so the Lead can act on them: an implementer denied a file outside its write
+    # roots is the signal that its scope was sliced too narrowly (st-lru / store.go, run fc6467b7).
+    denied_writes = []
+    for d in refused:
+        if d.get("tool_name") not in ("Write", "Edit", "NotebookEdit"):
+            continue
+        inp = d.get("tool_input") if isinstance(d.get("tool_input"), dict) else {}
+        path = str(inp.get("file_path") or inp.get("notebook_path") or "")
+        if path and path not in denied_writes:
+            denied_writes.append(path)
     return {
         "ok": not result.is_error,
         "status": result.subtype,
         "result": result.result or "",
         "structured": result.structured_output,
+        "structured_attempts": structured_attempts,
         "session_id": result.session_id or session_id,
         "num_turns": result.num_turns,
         "turns": turns,
         "tokens": usage_tokens(result.usage),
         "cost_usd": result.total_cost_usd or 0.0,
         "denials": denials,
+        "denied_writes": denied_writes,
         "turn_log": turn_log,
         "error": ("; ".join(result.errors) if getattr(result, "errors", None) else None)
                  or stream_error,
     }
 
 
-async def run_coding_agent(
+async def _hand_in_after_turn_limit(first: dict, options, on_turn=None) -> dict:
+    """A session that runs out of turns still hands in its result: the same session is resumed for a few turns
+    to answer from what it knows. A failed task retried from scratch repeated the same investigation and ran out
+    again, three times (run 4317f3aa's round review, $4.8 for nothing)."""
+    import dataclasses as _dc
+    more = await _drive(HAND_IN_PROMPT, _dc.replace(options, resume=first["session_id"], max_turns=HAND_IN_TURNS),
+                        on_turn=on_turn)
+    cost = (first.get("cost_usd") or 0.0) + (more.get("cost_usd") or 0.0)
+    if more.get("structured") is None:
+        return {**first, "cost_usd": cost}
+    return {**more, "cost_usd": cost,
+            "num_turns": (first.get("num_turns") or 0) + (more.get("num_turns") or 0),
+            "tokens": (first.get("tokens") or 0) + (more.get("tokens") or 0),
+            "turns": (first.get("turns") or []) + (more.get("turns") or []),
+            "turn_log": (first.get("turn_log") or []) + ["turn limit reached: resumed to hand in the result"]
+                        + (more.get("turn_log") or [])}
+
+
+RESULT_GRACE_S = 20.0
+HAND_IN_TURNS = 3
+HAND_IN_PROMPT = ("You have reached your turn limit. Hand in your result NOW with the StructuredOutput tool, from what "
+                  "you know so far: no more reading, commands or edits. Where you did not finish, say so in your answer "
+                  "and hand the rest out (as items, when your answer has items).")
+
+
+async def _until_result(stream, done: dict):
+    """The session's messages until it ends, or until ``RESULT_GRACE_S`` after its result was accepted."""
+    it = stream.__aiter__()
+    try:
+        while True:
+            wait = None if done["at"] is None else max(RESULT_GRACE_S - (time.monotonic() - done["at"]), 0.0)
+            try:
+                msg = await (asyncio.wait_for(it.__anext__(), wait) if wait is not None else it.__anext__())
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError:
+                log.info("session handed in its result %.0f s ago and is still running: ending it", RESULT_GRACE_S)
+                return
+            yield msg
+    finally:
+        aclose = getattr(it, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:  # noqa: BLE001 - closing a finished session never fails the result
+                pass
+
+
+RUN_WATCH_INTERVAL_S = 15.0
+
+
+async def _stop_with_run(feedback, session: "asyncio.Future") -> bool:
+    """Cancel ``session`` the moment its run is no longer running, whatever the session is doing (a turn with no
+    tool call never reaches the board watcher's stop). True when it did."""
+    while not session.done():
+        await asyncio.sleep(RUN_WATCH_INTERVAL_S)
+        status = await asyncio.to_thread(feedback._run_status)
+        if status and status not in ("RUNNING", "PAUSED"):
+            feedback.interrupted_by = {"key": feedback.RUN_STOP_KEY, "text": f"the run is {status.lower()}",
+                                       "by": "harness"}
+            session.cancel()
+            return True
+    return False
+
+
+async def run_coding_agent(*args, **kwargs) -> dict:
+    """Run one agent session (``_run_session``), then stop anything it left running: an app or server
+    an agent started in the background outlives its shell, and a Codex session's `start.sh` held the
+    app's ports for the rest of run 3e3991fc. The session is over, so this is cleanup, not a deadline."""
+    marker = check_execution.new_launch_marker()
+    token = _SESSION_MARKER.set(marker)
+    feedback = kwargs.get("feedback")
+    session = asyncio.ensure_future(_run_session(*args, **kwargs))
+    watchdog = asyncio.ensure_future(_stop_with_run(feedback, session)) \
+        if feedback is not None and getattr(feedback, "run", "") else None
+    try:
+        return await session
+    except asyncio.CancelledError:
+        if watchdog is None or not watchdog.done() or not watchdog.result():
+            raise
+        # The run was stopped while this session was in a long turn with no tool call to stop it at (two of run
+        # 8da53b05's sessions kept generating for minutes after the run was stopped).
+        return {"result": "", "structured": None, "num_turns": 0, "turns": [], "tokens": 0, "cost_usd": 0.0,
+                "denials": [], "turn_log": ["stopped: the run is no longer running"], "status": "interrupted",
+                "error": "the run was stopped", "session_id": None,
+                **(feedback.report() if hasattr(feedback, "report") else {})}
+    finally:
+        if watchdog is not None:
+            watchdog.cancel()
+        _SESSION_MARKER.reset(token)
+        reaped = await asyncio.to_thread(check_execution.reap_marked, marker)
+        if reaped:
+            log.info("stopped %d process(es) an agent session left running", reaped)
+
+
+async def _run_session(
     prompt: str,
     *,
     worktree: str,
@@ -369,8 +632,21 @@ async def run_coding_agent(
     backend: str | None = None,
     write_roots: list[str] | None = None,
     context_paths: list[str] | None = None,
+    feedback: Any = None,
+    granted_roots: list[str] | None = None,
+    skills: Any = None,
 ) -> dict[str, Any]:
     """Run one locked-down autonomous coding session to completion (async).
+
+    ``skills`` picks the skills the session may use, the same way for every backend (common/skills.py):
+    ``"all"``, ``"none"`` or names; unset is the worker's ``CONDUCTOR_SKILLS``, else all. The chosen ones
+    are listed in the prompt and their copied folder made readable; each CLI's own listing is off. The
+    result names them (``skills``) and any name asked for that no folder has (``skillsMissing``).
+
+    ``feedback`` (a ``common.feedback.FeedbackWatcher``) makes the session take team feedback while it
+    works (roadmap H11): after every tool call a PostToolUse hook injects new board directives for this
+    item into the running session, stops it on blocking feedback, and snapshots the worktree every N
+    calls (H17). A session that starts on a clean worktree with a matching checkpoint restores it.
 
     Runs directly on the caller's event loop — under conductor-python's
     AsyncTaskRunner every concurrent coding_agent task shares ONE loop, so the
@@ -429,6 +705,16 @@ async def run_coding_agent(
     # Prime the prompt with the current file listing so the agent doesn't burn its
     # first turn discovering the directory structure. Only on a cold start — a
     # resumed session already knows the tree.
+    restored = None
+    if feedback is not None and getattr(feedback, "worktree", "") and getattr(feedback, "checkpoint_every", 0):
+        from .feedback import restore as _restore_checkpoint
+        restored = await asyncio.to_thread(_restore_checkpoint, feedback.worktree)
+        if restored:
+            prompt = (f"PROGRESS RESTORED: a previous session on this task was lost; its work in progress "
+                      f"({', '.join(restored['files']) or 'no files'}) has been restored into the working "
+                      f"tree from checkpoint {restored['sha'][:12]}. Continue from it rather than starting "
+                      f"over.\n\n{prompt}")
+
     if include_file_tree and not resume_session_id:
         # `git ls-files` can take seconds on a big repo — off the shared loop.
         tree = await asyncio.to_thread(_file_tree, worktree_abs)
@@ -475,6 +761,23 @@ async def run_coding_agent(
             prompt = (f"Repository guide ({name}) — authoritative conventions for building, "
                       f"testing, and reviewing this repository; follow it:\n\n{text}\n\n---\n\n{prompt}")
 
+    # The run's skills, listed the same way for every backend; the repository's own skills only when its
+    # project settings load (an untrusted repo's skills are as repo-controlled as its settings).
+    from . import skills as _skills
+    kit = await asyncio.to_thread(_skills.prepare, worktree_abs, skills,
+                                  repo="project" in (setting_sources if setting_sources is not None else ["project"]))
+    if kit["text"] and not resume_session_id:
+        prompt += "\n\n" + kit["text"]
+    skill_dirs = [kit["dir"]] if kit["dir"] else []
+
+    def _with_skills(res: dict[str, Any]) -> dict[str, Any]:
+        res["skills"] = kit["names"]
+        if kit["missing"] or kit["skipped"]:
+            res["skillsMissing"] = kit["missing"] + kit["skipped"]
+            res.setdefault("turn_log", []).append(
+                "skills not available on this worker: " + ", ".join(kit["missing"] + kit["skipped"]))
+        return res
+
     # Keep the boundary after repo-provided guidance and caller templates so it
     # cannot be displaced by either.  It prevents agents from burning turns on
     # futile sandbox workarounds such as disabling Gradle's cache-lock listener.
@@ -484,12 +787,22 @@ async def run_coding_agent(
         from .codex import run_codex_agent
         # Native async (openai-codex SDK; internally falls back to the CLI on a
         # worker thread). Passes `effort` through — honored by the SDK driver.
-        return await run_codex_agent(
+        res = await run_codex_agent(
             prompt, worktree=worktree_abs, model=model,
             write=_is_write_surface(tools), effort=effort,
             output_schema=output_schema, resume_session_id=resume_session_id,
             on_turn=on_turn,
+            extra_env=(await asyncio.to_thread(_tool_cache_env, worktree_abs)
+                       if _is_write_surface(tools) else None),
+            steer=(feedback.poll_text if feedback is not None and getattr(feedback, "active", False) else None),
+            max_budget_usd=max_budget_usd, granted_roots=granted_roots,
         )
+        if feedback is not None:
+            # The same provenance the Claude path records: what the board delivered into the session.
+            res.update(feedback.report())
+            if feedback.interrupted_by:
+                res["status"] = "interrupted"
+        return _with_skills(res)
     if be == "gemini":
         from .gemini import run_gemini_agent
         # Blocking subprocess driver — a worker thread, not the shared event loop.
@@ -498,10 +811,10 @@ async def run_coding_agent(
             prompt, worktree=worktree_abs, model=model,
             write=_is_write_surface(tools),
             output_schema=output_schema, resume_session_id=resume_session_id,
-            on_turn=on_turn,
+            on_turn=on_turn, read_dirs=skill_dirs,
         )
         res.setdefault("model", model or "")
-        return res
+        return _with_skills(res)
 
     system_prompt: dict[str, Any] = {
         "type": "preset",
@@ -519,20 +832,35 @@ async def run_coding_agent(
         # Claude's SDK needs explicit additional roots to make user-supplied
         # references visible.  They are never write roots; the file-tool hook and
         # the OS sandbox continue to limit writes to ``worktree_abs``.
-        "add_dirs": [worktree_abs, *context_paths],
+        "add_dirs": [worktree_abs, *context_paths, *skill_dirs],
         "system_prompt": system_prompt,
         "setting_sources": setting_sources if setting_sources is not None else ["project"],
         # env MERGES on top of the inherited env in Python (doc gotcha #17), so this
         # keeps ANTHROPIC_API_KEY/PATH while disabling auto-memory for reproducibility.
-        "env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"},
+        "env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+                # No command outlives its limit and nothing goes to the background: the CLI used to move a command
+                # past 2 minutes into the background and the session then sat waiting on it (run 2678a14f: a verifier's
+                # socket script hung 95 minutes; run b74d3da7: a `go vet` held lua-core 30 minutes). Now a command past
+                # its limit is stopped and its agent gets the error and moves on.
+                **SESSION_COMMAND_ENV,
+                # The claude.ai login or the API key, as CLAUDE_AUTH decides (common/backend_auth):
+                # in login mode the key is blanked so the CLI signs in with the stored login.
+                **backend_auth.overrides("claude"),
+                **(await asyncio.to_thread(_tool_cache_env, worktree_abs) if sandbox_enabled else {})},
         "permission_mode": "dontAsk",
+        "cli_path": claude_cli(),
         # Availability trim: only these built-ins exist in context (doc §6).
         "tools": tools if tools is not None else DEFAULT_TOOLS,
         "allowed_tools": allowed_tools if allowed_tools is not None else DEFAULT_ALLOWED_TOOLS,
         "disallowed_tools": disallowed_tools if disallowed_tools is not None else DEFAULT_DISALLOWED_TOOLS,
-        "hooks": {"PreToolUse": [_worktree_guard(worktree_abs, write_roots)]},
+        "hooks": {"PreToolUse": [_worktree_guard(worktree_abs, write_roots)],
+                  **({"PostToolUse": [_feedback_hook(feedback)], "Stop": [_feedback_stop_hook(feedback)]}
+                     if feedback is not None and feedback.active else {})},
         "max_turns": max_turns,
         "stderr": stderr_lines.append,
+        # Claude's own skill listing (and its Skill tool) off: the run's skills are listed in the prompt
+        # for every backend and read from their folder (common/skills.py).
+        "skills": [],
     }
     if session_store is not None:
         opts["session_store"] = session_store
@@ -569,15 +897,49 @@ async def run_coding_agent(
     options = sdk.ClaudeAgentOptions(**opts)
 
     def _attach(d: dict[str, Any]) -> dict[str, Any]:
+        _with_skills(d)
         # Tail of subprocess stderr, capped, for diagnosing opaque failures.
         d["stderr"] = "".join(stderr_lines)[-4000:]
         d.setdefault("model", model or "")
+        if feedback is not None:
+            d.update(feedback.report())
+            d["restoredCheckpoint"] = restored
+            if feedback.interrupted_by:
+                d["status"] = "interrupted"
         return d
 
     err_base = {"result": "", "structured": None, "num_turns": 0, "turns": [],
                 "tokens": 0, "cost_usd": 0.0, "denials": [], "turn_log": []}
     try:
-        return _attach(await _drive(prompt, options, on_turn=on_turn))
+        res = await _drive(prompt, options, on_turn=on_turn)
+        if output_schema and res.get("status") == "error_max_turns" and res.get("session_id"):
+            res = await _hand_in_after_turn_limit(res, options, on_turn)
+        if output_schema and res.get("status") == "error_max_structured_output_retries":
+            # The agent wrote its answer; the CLI's validator rejected the mangled tool input (the
+            # payload as tagged text inside one string, or raw input it could not parse — runs
+            # a062184f, a33d7061). Keep the answer instead of failing the task.
+            import json as _json
+            from .structured_output import salvage
+            fixed = salvage(res.get("structured_attempts") or [], output_schema)
+            if fixed is not None:
+                res.update({"ok": True, "status": "success", "structured": fixed, "error": None,
+                            "result": _json.dumps(fixed), "structured_salvaged": True})
+                res.setdefault("turn_log", []).append(
+                    "structured output salvaged from a payload the validator rejected")
+        elif output_schema and res.get("status") == "success" and isinstance(res.get("structured"), dict):
+            # The validator accepted a placeholder the agent sent after it rejected the real answer
+            # (the program planner's six-subsystem plan, twice as tagged text; then one "test" item —
+            # built and reported delivered, run b8dc259b). Keep the answer the agent wrote.
+            import json as _json
+            from .structured_output import prefer_substantive
+            better = prefer_substantive(res["structured"], res.get("structured_attempts") or [], output_schema)
+            if better is not None:
+                res.update({"structured": better, "result": _json.dumps(better),
+                            "structured_salvaged": "placeholder"})
+                res.setdefault("turn_log", []).append(
+                    "structured output: the validator-accepted placeholder was replaced by the substantive "
+                    "payload the validator had rejected")
+        return _attach(res)
     except sdk.ClaudeSDKError as e:
         return _attach({"ok": False, "status": "sdk_error", "session_id": resume_session_id,
                         "error": f"{type(e).__name__}: {e}", **err_base})

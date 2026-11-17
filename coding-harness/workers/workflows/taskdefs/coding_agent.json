@@ -247,6 +247,35 @@
           "type": "boolean",
           "default": false,
           "description": "When true, agent/policy failures are returned as a COMPLETED task with status/error fields set instead of failing the task."
+        },
+        "feedbackCorrelationId": {
+          "type": "string",
+          "description": "Board run id whose directives this session takes while it works (closure plan WP2, H11). Empty disables in-session feedback."
+        },
+        "feedbackItem": {
+          "type": "string",
+          "description": "Work-item id whose directives (and team/agent:<item> directives) are injected after each tool call."
+        },
+        "feedbackSince": {
+          "type": [
+            "number",
+            "string"
+          ],
+          "description": "Epoch seconds; directives at or before this time were already in the prompt and are not re-injected."
+        },
+        "feedbackEveryTurns": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "Poll the board every N tool calls (default 1; 0 disables)."
+        },
+        "checkpointEveryTurns": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "Snapshot the worktree into refs/cc-checkpoints/<branch> every N tool calls (0 disables, H17)."
         }
       },
       "required": [
@@ -424,6 +453,38 @@
         "stderr": {
           "type": "string",
           "description": "Set only on a failure/failSoft path: captured stderr tail, truncated to 2000 characters."
+        },
+        "feedbackInjections": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Board directives injected into the running session: {call, key, text, authority, postedTs, injectedTs, latencySec, urgency}."
+        },
+        "interruptedBy": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "The blocking directive that stopped the session, or null."
+        },
+        "checkpoints": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Worktree snapshots taken during the session: {call, sha, ref}."
+        },
+        "restoredCheckpoint": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "The checkpoint restored at session start ({sha, files}), or null."
+        },
+        "initializedRepo": {
+          "type": "boolean",
+          "description": "True when worktreePath was a directory without a git HEAD and the worker made it a repository (git init, local identity if none, empty base commit; the directory's files untouched) before running the agent."
         }
       },
       "required": [

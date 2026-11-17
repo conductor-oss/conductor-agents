@@ -469,6 +469,11 @@ checks behind the score — and which run per-round vs per-wave/final — live i
   agent-resolved `integrate` is the safety net for residual overlap.
 - **Budget at the JOIN** — parallel branches must not race on `workflow.variables`;
   per-group cost/usage is summed from the join output.
+- **Every JOIN is `joinMode: SYNC`** — Conductor backs an asynchronous JOIN off
+  exponentially after 200 polls (about 10 s), up to its 30 s callback cap, so a join
+  whose branch is a minutes-long build noticed the finished branch up to 30 s late
+  (two program joins lost 60 s of a 10-minute run, b00146a9). A synchronous join is
+  re-evaluated on every system-task poll. `test_architect.py` holds every workflow to it.
 - **Soft-fail + re-plan + escalation** — a failing group returns a status (doesn't
   abort the wave); the coordinator re-plans remaining work or raises a human escalation
   gate; agent/model escalation applies inside each group.
